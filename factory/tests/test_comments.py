@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import ROOT, WT, DISPATCHER, FakeRun, factory
-from test_health import Home
+from test_health import Harness, Home
 
 SENT = (0, json.dumps({"result": "sent"}), "")
 LEAD = {"sessionId": "sid-t1", "name": "t1", "cwd": f"{WT}/t1", "kind": "background", "status": "idle", "state": "done"}
@@ -133,9 +133,9 @@ class WatchCommentsTests(Comments):
         self.assertEqual((self.couriers(), self.batches(), out), ([], [], "comments: #1 0 forwarded to no one, 2 logged\n"))
 
     def test_bot_and_unassociated_are_not_human_and_cost_no_permission_call(self):
-        self.prime([pr(author={"login": "app", "is_bot": True})])
-        self.tick([pr(author={"login": "app", "is_bot": True},
-                      comments=[comment("IC_1", login="app", assoc="CONTRIBUTOR"), comment("IC_2", login="x", assoc="NONE")])])
+        self.prime([pr(author={"login": "app/isshoni-lander", "is_bot": True})])
+        self.tick([pr(author={"login": "app/isshoni-lander", "is_bot": True},
+                      comments=[comment("IC_1", login="isshoni-lander", assoc="CONTRIBUTOR"), comment("IC_2", login="x", assoc="NONE")])])
         self.assertEqual(self.decisions(), {"IC_1": "not-human", "IC_2": "not-human"})
         self.assertEqual([r["author_kind"] for r in self.logs()], ["bot", "other"])
         self.assertEqual((self.calls("gh", "api"), self.couriers()), ([], []))
@@ -173,7 +173,7 @@ class WatchCommentsTests(Comments):
         self.tick([pr(comments=[comment("IC_1")])], sessions=[DISPATCHER_SESSION])
         prompt = self.couriers()[0][-1]
         self.assertIn("session named dispatcher-repo", prompt)
-        self.assertIn("PR COMMENTS: t1 (its lead's session is gone): 1 new from the human on #1: read ", prompt)
+        self.assertIn("PR COMMENTS: t1 (not delivered to its lead): 1 new from the human on #1: read ", prompt)
         self.assertEqual(self.logs()[0]["to"], "dispatcher")
 
     def test_courier_failure_falls_to_the_dispatcher_then_a_notice(self):
@@ -210,13 +210,37 @@ class WatchCommentsTests(Comments):
         self.tick([pr(comments=[comment("IC_1")])])
         self.assertEqual(self.decisions(), {"IC_1": "forward"})
 
-    def test_failed_permission_lookup_leaves_the_pull_request_unseen(self):
+    def test_failed_permission_lookup_leaves_only_that_item_unseen(self):
         self.prime()
-        prs = [pr(comments=[comment("IC_1")])]
+        prs = [pr(comments=[comment("IC_1"), comment("IC_2", login="x", assoc="NONE")])]
         out = self.tick(prs, permission={"unrelated": "read"})
-        self.assertEqual((out.startswith("comments: #1: gh api"), self.logs(), self.couriers()), (True, [], []))
+        self.assertTrue(out.startswith("comments: #1: gh api"))
+        self.assertEqual((self.decisions(), self.couriers()), ({"IC_2": "not-human"}, []))
         self.tick(prs)
-        self.assertEqual(self.decisions(), {"IC_1": "forward"})
+        self.assertEqual(self.decisions(), {"IC_1": "forward", "IC_2": "not-human"})
+        self.assertEqual(len(self.logs()), 2)
+
+    def test_pending_review_is_ignored(self):
+        self.prime()
+        self.assertEqual(self.tick([pr(reviews=[review("PRR_1", "PENDING", "draft")])]), "")
+        self.assertEqual((self.logs(), self.calls("gh", "api")), ([], []))
+
+    def test_items_are_written_in_time_order(self):
+        self.prime()
+        late = dict(comment("IC_1", "second"), createdAt="2026-01-01T00:00:09Z")
+        early = dict(comment("IC_2", "first"), createdAt="2026-01-01T00:00:05Z")
+        self.tick([pr(comments=[late, early])])
+        text = self.batches()[0].read_text()
+        self.assertLess(text.index("first"), text.index("second"))
+
+    def test_state_is_saved_before_the_next_pull_request(self):
+        self.prime()
+        self.repo.tasks.append({"path": f"{WT}/t2", "branch": "worktree-t2"})
+        prs = [pr(comments=[comment("IC_1")]), pr(n=2, branch="worktree-t2", comments=[comment("IC_2")])]
+        with mock.patch.object(factory, "forward", side_effect=[("lead"), RuntimeError("boom")]):
+            with self.assertRaises(RuntimeError):
+                self.tick(prs)
+        self.assertEqual(self.tick(prs, sessions=[]), "comments: #2 1 forwarded to human, 1 logged\n")
 
     def test_hostile_body_stays_in_a_longer_fence_and_out_of_the_prompt(self):
         self.prime()
@@ -231,6 +255,14 @@ class WatchCommentsTests(Comments):
         self.tick([pr(comments=[comment("IC_1")])])
         self.assertEqual([list(r) for r in self.logs()], [FIELDS])
         self.assertEqual(self.logs()[0]["to"], "lead")
+
+
+class WatchTickTests(Harness):
+    def test_a_failing_comment_watch_prints_one_line_and_the_tick_goes_on(self):
+        with mock.patch.object(factory, "watch_comments", side_effect=RuntimeError("boom")) as watched:
+            code, out, _ = self.tick()
+        watched.assert_called_once()
+        self.assertEqual((code, out.count("comments: RuntimeError: boom\n"), len(self.claude_runs())), (0, 1, 1))
 
 
 if __name__ == "__main__":

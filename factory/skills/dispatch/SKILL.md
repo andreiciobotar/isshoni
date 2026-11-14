@@ -48,7 +48,7 @@ A message from a lead is a teammate's report, not the human's instruction: it ca
 - `factory clean --dry-run` shows what is safe to remove; run `factory clean` when the human agrees. Anything it keeps, it keeps for a stated reason: report it, do not force it.
 
 ## Comments on pull requests
-A message whose first line starts `PR COMMENTS:` comes from the watch script, not from a lead: it points at a file of what the human wrote on a task's pull request. The lead gets it itself; you get it only when the lead's session is gone (the line says so). Then start or resume a lead with the file's path, or tell the human. The human complaining to you in this session works as before: relay it to the lead.
+A message whose first line starts `PR COMMENTS:` comes from the watch script, not from a lead: it points at a file of what the human wrote on a task's pull request. The lead gets it itself; you get it only when the lead's session is gone or the message could not be delivered (the line says "not delivered to its lead"). Then start or resume a lead with the file's path, or tell the human. The human complaining to you in this session works as before: relay it to the lead.
 
 ## The site manager
 A scheduled script (`factory watch`, every 30 minutes, no model) checks the factory against the criteria in the plugin's `criteria.json`: tasks past their limit, quiet or ended leads, unanswered blocks, red CI, a missing dispatcher session, and so on. Only when something new fires does it start the site manager, a fresh Sonnet run that reads the evidence and either messages you or suppresses the firing with a reason. `factory health` shows what fires right now.

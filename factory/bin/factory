@@ -2705,7 +2705,7 @@ def pr_items(pr):
             who = x.get("author") or {}
             if x.get("id") and x.get("state") != "PENDING":
                 items.append({"id": x["id"], "kind": kind, "author": who.get("login"), "association": x.get("authorAssociation"),
-                              "bot": bool(pr_author.get("is_bot")) and who.get("login") == pr_author.get("login"),
+                              "bot": bool(pr_author.get("is_bot")) and who.get("login") == str(pr_author.get("login")).removeprefix("app/"),
                               "state": x.get("state") if kind == "review" else None, "body": x.get("body") or "",
                               "url": x.get("url") or pr["url"], "at": x.get(at) or ""})
     return items
@@ -2729,8 +2729,7 @@ def author_kind(p, item, permission):
     if item["bot"]:
         return "bot"
     if item["association"] in HUMAN_ASSOCIATIONS and item["author"]:
-        found = collaborator(p, item["author"], permission)
-        if found["permission"] in ("admin", "write") and (found.get("user") or {}).get("type") == "User":
+        if has_write(p, item["author"], permission) and (permission[item["author"]].get("user") or {}).get("type") == "User":
             return "human"
     return "other"
 
@@ -2785,7 +2784,7 @@ def forward(repo, dispatcher, slug, pr, k, path):
     lead = [s for s in sessions_in(sessions, repo.root, repo.worktree_path(slug)) if s.get("name") == slug]
     asked = [("lead", slug, f"PR COMMENTS: {slug}: {said}")] if lead else []
     if live_dispatchers(sessions, repo.root, dispatcher):
-        asked.append(("dispatcher", dispatcher, f"PR COMMENTS: {slug} (its lead's session is gone): {said}"))
+        asked.append(("dispatcher", dispatcher, f"PR COMMENTS: {slug} (not delivered to its lead): {said}"))
     for to, name, line in asked:
         if courier(repo, name, line):
             return to
@@ -2794,6 +2793,13 @@ def forward(repo, dispatcher, slug, pr, k, path):
     if not (argv and run(argv)[0] == 0):
         print(f"notify: {title}: {path}")
     return "human"
+
+
+def save_comments(path, since, kept):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps({"since": since, "seen": kept}))
+    os.replace(temp, path)
 
 
 def watch_comments(repo, dispatcher):
@@ -2811,27 +2817,35 @@ def watch_comments(repo, dispatcher):
         seen, since = state["seen"], state["since"]
     except (OSError, ValueError, KeyError, TypeError):
         seen, since = None, now()
-    p, permission, kept = {"gh": lambda *args: gh_json(repo, *args)}, {}, {}
+    p, permission = {"gh": lambda *args: gh_json(repo, *args)}, {}
     first = not isinstance(seen, dict)
     if first:  # what is there is history, not news
         kept = {str(pr["number"]): [i["id"] for i in pr_items(pr)] for pr in prs}
-    for pr in [] if first else prs:
+        save_comments(path, since, kept)
+        return
+    kept = {str(pr["number"]): seen.get(str(pr["number"]), []) for pr in prs}
+    for pr in prs:
         n, slug = str(pr["number"]), task_slug(repo, pr)
         old = set(seen.get(n, ()))
         current = pr_items(pr)
+        news = lambda items: [i for i in items if i["id"] not in old and i["at"] >= since]
         try:
-            news = lambda items: [i for i in items if i["id"] not in old and i["at"] >= since]
             if any(i["kind"] == "review" for i in news(current)):
-                current += line_items(p, pr)
-            new = news(current)
-            for i in new:
-                i["author_kind"] = author_kind(p, i, permission)
-                i["decision"] = decide(i)
-        except NotEvaluated as e:  # nothing of this pull request is marked seen: the next tick tries again
+                current += line_items(p, pr)  # a failure leaves the whole pull request unseen: its lines are not lost
+        except NotEvaluated as e:
             print(f"comments: #{n}: {e}")
-            kept[n] = sorted(old)
             continue
-        kept[n] = sorted(old | {i["id"] for i in current})
+        new, retry = [], set()
+        for i in news(current):
+            try:
+                i["author_kind"] = author_kind(p, i, permission)
+            except NotEvaluated as e:  # only this item stays unseen: the next tick tries it again
+                print(f"comments: #{n}: {e}")
+                retry.add(i["id"])
+                continue
+            i["decision"] = decide(i)
+            new.append(i)
+        kept[n] = sorted(old | {i["id"] for i in current} - retry)
         sent = sorted((i for i in new if i["decision"] == "forward"), key=lambda i: i["at"])
         batch = write_batch(slug, pr, sent) if sent else None
         to = forward(repo, dispatcher, slug, pr, len(sent), batch) if sent else None
@@ -2843,15 +2857,12 @@ def watch_comments(repo, dispatcher):
                              "batch": str(batch) if go else None})
         if new:
             print(f"comments: #{n} {len(sent)} forwarded to {to or 'no one'}, {len(new)} logged")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(json.dumps({"since": since, "seen": kept}))
-    os.replace(temp, path)
+        save_comments(path, since, kept)
 
 
 # ---- identity ---------------------------------------------------------------
 
-GITHUB ="https://api.github.com"
+GITHUB = "https://api.github.com"
 TOKEN_MARGIN = 900
 REPO_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 GITHUB_REMOTE_RE = re.compile(r"(?:https://(?:[^/@\s]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)([^/\s:]+)/([^/\s]+?)(?:\.git)?/?", re.I)
