@@ -500,7 +500,7 @@ class SiteManagerTests(Store):
         """The one place the two folds are compared: `factory firings --json` run on a store holding one repository."""
         home = os.path.dirname(self.factory)
         repo = os.path.realpath(os.path.join(home, "alpha"))
-        subprocess.run(["git", "init", "-q", repo], check=True)
+        subprocess.run(["git", "init", "-q", repo], check=True, timeout=60)
         self.factory = os.path.join(home, ".claude", "factory")
         self.log("firings.jsonl", [
             fired("f1", "2026-11-10T10:00:00Z", repo), fired("f2", "2026-11-10T10:01:00Z", repo),
@@ -514,7 +514,7 @@ class SiteManagerTests(Store):
             {"ts": "2026-11-10T13:00:00Z", "repo": repo, "miss": "m", "slug": None, "firing": "f2"},
             {"ts": "2026-11-10T13:01:00Z", "repo": repo, "miss": "n", "slug": None, "firing": None}])
         p = subprocess.run([os.path.join(ROOT, "factory", "bin", "factory"), "firings", "--json"], cwd=repo,
-                           env={**os.environ, "HOME": home}, capture_output=True, text=True)
+                           env={**os.environ, "HOME": home}, capture_output=True, text=True, timeout=60)
         self.assertEqual(p.returncode, 0, p.stderr)
         theirs = json.loads(p.stdout)["summary"]
         self.assertEqual((theirs["escalated"], theirs["missed"]), (3, 2))

@@ -89,6 +89,21 @@ class FrameTests(unittest.TestCase):
         self.assertEqual(record.deny_words(sessions, {"own"}), {"beta", "t2"})
 
 
+class ChildTests(unittest.TestCase):
+    def test_a_child_that_hangs_ends_at_the_timeout_and_the_failure_names_the_command(self):
+        with self.assertRaises(SystemExit) as cm:
+            record.strip.run(["sleep", "30"], 1)
+        self.assertRegex(str(cm.exception.code), r"no answer in 1 s: sleep 30$")
+
+    def test_a_child_that_fails_is_named_with_its_exit_code(self):
+        with self.assertRaises(SystemExit) as cm:
+            record.strip.run(["sh", "-c", "exit 3"])
+        self.assertRegex(str(cm.exception.code), r"exit 3: sh -c exit 3$")
+
+    def test_a_child_that_works_returns_its_output(self):
+        self.assertEqual(record.strip.run(["echo", "hi"], capture_output=True, text=True).stdout, "hi\n")
+
+
 class HanamiAtTests(unittest.TestCase):
     def test_no_merge(self):
         self.assertIsNone(record.hanami_at([{"ts": "2026-01-01T00:00:00+00:00", "kind": "tool"}]))
@@ -131,7 +146,7 @@ class MainTests(unittest.TestCase):
                     mock.patch.object(record, "snapshot", return_value="a beta frame\n"), \
                     mock.patch.object(record.os, "listdir", return_value=[ENC]), \
                     mock.patch.object(record.os, "symlink"), \
-                    mock.patch.object(record.subprocess, "run", return_value=mock.Mock(stdout=sessions)), \
+                    mock.patch.object(record.strip.subprocess, "run", return_value=mock.Mock(stdout=sessions)), \
                     mock.patch.object(record.strip, "render") as render, \
                     mock.patch.object(sys, "stderr", io.StringIO()) as err:
                 with self.assertRaises(SystemExit) as cm:

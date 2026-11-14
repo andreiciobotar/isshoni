@@ -21,6 +21,8 @@ You decide nothing about behavior. When a step needs a decision, you stop and re
 - A denied permission is a stop, not something to work around. "Could not resolve host" is the network, not a denial: retry up to three times before you stop (`other`).
 - Read every command's exit code; blank output is not success (`git merge-base --is-ancestor` answers only by its code).
 - One plain command per Bash call: worktree isolation refuses loops, `$(...)`, heredocs and compound commands whose text mentions git. A `cd` does not carry to the next call.
+- Wait for a background command through its completion notice, never with a loop that asks whether it still runs (a pattern such as "until ! pgrep -f name" matches its own command line and never ends).
+- Before you report, stop every background command you started; say how many you stopped.
 
 ## Steps
 1. `factory state working`. Then `git status --porcelain`: anything uncommitted is a stop (`dirty`); you do not decide what belongs in a commit. `git rev-parse HEAD` must be the reviewed head, and the branch must not be the default branch; else stop (`other`).

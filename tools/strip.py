@@ -13,6 +13,14 @@ CELL_W=9      # px per cell column, the pitch `make screenshot` already assumes
 PAD=8         # the pre's padding, around each frame
 GAP=6         # between frames, and around the grid
 MAX_SHOT_H=8000  # px of one screenshot; a taller grid is split in several
+CHILD_TIMEOUT=120  # seconds for Chrome and for the dashboard binary
+GIT_TIMEOUT=30
+
+def run(cmd,timeout=CHILD_TIMEOUT,**kw):
+    """subprocess.run(check=True) that ends the child at `timeout` and fails with a sentence naming the command."""
+    try: return subprocess.run(cmd,check=True,timeout=timeout,**kw)
+    except subprocess.TimeoutExpired: sys.exit('%s: no answer in %d s: %s'%(os.path.basename(sys.argv[0]),timeout,' '.join(map(str,cmd))))
+    except subprocess.CalledProcessError as e: sys.exit('%s: exit %d: %s'%(os.path.basename(sys.argv[0]),e.returncode,' '.join(map(str,cmd))))
 
 def split_frames(text):
     """The non-empty frames of `text`, separated by a line that is exactly a form feed."""
@@ -39,9 +47,9 @@ def render(frames,out,size,chrome,cols=4):
         with open(name+'.html','w',encoding='utf-8') as f_:
             f_.write('<html><body style="margin:0;background:%s"><div style="position:relative;width:%dpx;height:%dpx">%s</div></body></html>'
                      %(a2h.BG,width,height,cells))
-        subprocess.run([chrome,'--headless','--disable-gpu','--hide-scrollbars','--window-size=%d,%d'%(width,height),
+        run([chrome,'--headless','--disable-gpu','--hide-scrollbars','--window-size=%d,%d'%(width,height),
                         '--screenshot='+os.path.abspath(name+'.png'),'file://'+os.path.abspath(name+'.html')],
-                       stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True)
+                       stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         pngs.append(name+'.png'); crops.append((name+'.png',boxes,height))
     try:
         from PIL import Image
