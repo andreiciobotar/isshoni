@@ -181,7 +181,7 @@ counts of `refusals` cover whole runs, because the parser keeps counts, not time
   `classifier` (starts `Permission for this action was denied by the Claude Code auto mode classifier`). `bash` counts the
   role's Bash calls over whole runs, the refusals those at or after the cutoff. `after_cost` is the cost of the next 3 calls of the
   run after each refusal, a call counted once. Roles: the task sessions (`lead`, `tech-lead`), their dispatches by role, and the
-  dispatcher and site manager sessions (`dispatcher`, `site_manager`, their dispatches by role); a role with no Bash call and no
+  dispatcher and site manager sessions with a call at or after the cutoff (`dispatcher`, `site_manager`, their dispatches by role; one with none adds nothing, not even its Bash calls); a role with no Bash call and no
   refusal is left out. The `PermissionDenied` events stay what they are: the `DENIED` stops. Bad: over 5% for a role.
 - `wakeups` (`prompts`, `tasks`, `cost`, `per_prompt`): prompts from the session (`from` is `session`) to a task's lead after its
   first hand-over, the tasks with at least one, and the cost of the session's calls (main thread and dispatches) from each such

@@ -370,7 +370,7 @@ def _task(key, recs, sessions, prices, tech_sessions):
          "state": states[-1] if states else None, "pr": None, "landed": False,
          "mode": last_start.get("mode") if last_start.get("mode") in MODES else "single",
          "brief_to_pr_s": None, "pr_to_merge_s": None, "cost": None, "review_rounds": None, "first_pass": None,
-         "_roles": _role_facts(sessions, prices, tech_sessions), "_wakeups": len(_wakeups(recs, handed)),
+         "_roles": _role_facts(sessions, prices, tech_sessions), "_wakeups": _wakeups(recs, handed),
          "_size": last_start.get("size") if last_start.get("size") in SIZES else None, "_handover_s": None}
     if handed and started and handed >= started:
         t["_handover_s"] = _seconds(handed, started)
@@ -538,7 +538,7 @@ def _by_mode(landed):
                 "first_pass": sum(t["first_pass"] is True for t in ts),
                 "review_rounds_median": _median(t["review_rounds"] for t in ts),
                 "defects": {k: sum(d[k] for d in defects) for k in DEFECT_KINDS} if defects else None,
-                "lead_wakeups": sum(t["_wakeups"] for t in ts),
+                "lead_wakeups": sum(len(t["_wakeups"]) for t in ts),
                 "build_runs_median": _median(t["_build_runs"] for t in ts) if mode == "team" else None})
     return rows
 
@@ -685,7 +685,7 @@ def _tech_lead(records, cutoff, tasks):
     return {"came_back": len(mine), "resolved": outcome("resolved"), "escalated": outcome("escalated"),
             "stopped": outcome("stopped"), "unstarted": outcome("unstarted"), "cost": spent(mine),
             "cost_resolved": spent([r for r in mine if r.get("outcome") == "resolved"]),
-            "landed": len(landed), "lead_wakeups": sum(t["_wakeups"] for t in landed)}
+            "landed": len(landed), "lead_wakeups": sum(len(t["_wakeups"]) for t in landed)}
 
 
 # ---- the document -------------------------------------------------------------------
@@ -762,7 +762,7 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     tech_lead = _tech_lead(tech, cutoff, tasks)
     queue = pulse.read_queue(factory_dir)
     pulse_doc = pulse.build(factory_dir, everyone, by_task, sessions, prices, queue, now, cached)
-    friction_doc = friction.build(factory_dir, tasks, by_task, sessions, prices, cutoff, queue, tech_sessions)
+    friction_doc = friction.build(factory_dir, tasks, by_task, sessions, mine, prices, cutoff, queue, tech_sessions)
     for t in everyone:
         for private in [k for k in t if k.startswith("_")]:
             del t[private]

@@ -31,7 +31,7 @@ func squeeze(out string) string {
 func TestFrictionRowsAndFigures(t *testing.T) {
 	out := squeeze(frictionPage(t, 140, nil))
 	for _, want := range []string{
-		"DISPATCHER $0.18* / call n=400 calls median context 450k",
+		"DISPATCHER $0.18* / call n=400 calls median context 450.0k",
 		"COST AFTER THE FIRST REVIEW 40% of task cost $48.00 of $120 median $2.50 / task n=10 (subagents only: 9%)",
 		"DEFECT CAUSES spec 40% 2 brief 0 conflict 20% 1 scope 0 code 40% 2 n=5 stated · 20 unstated",
 		"REFUSED BASH CALLS role refused guard classifier next 3 calls",
@@ -46,12 +46,32 @@ func TestFrictionRowsAndFigures(t *testing.T) {
 		"LATE CONFLICTS task / file queue log git history (backfill)",
 		"by task fixture-alpha/fx-late-00 2 12",
 		"by file fixture-beta/src/mod0/main.go 1 9",
-		"9 tasks in the log · 9 of 14 PRs in git history (backfill)",
+		"9 tasks in the queue log (since 11-15 09:00) · 9 of 14 PRs in git history (backfill)",
 		"OUTBOX 6 triaged of 20 issues · 14 open",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the page lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestFrictionNarrowTablesDropWholeColumnsAndTheSinceDateGoesFirst(t *testing.T) {
+	for _, w := range []int{71, 60} {
+		var table []string
+		for _, l := range strings.Split(frictionPage(t, w, nil), "\n") {
+			if strings.Contains(l, "REFUSED BASH") || len(table) > 0 {
+				if strings.TrimSpace(l) == "" {
+					break
+				}
+				table = append(table, l)
+			}
+		}
+		if len(table) < 2 || strings.Contains(strings.Join(table, "\n"), "…") {
+			t.Errorf("at %d columns the refusals table drops columns, it does not cut a cell:\n%s", w, strings.Join(table, "\n"))
+		}
+	}
+	if out := squeeze(frictionPage(t, 71, nil)); !strings.Contains(out, "9 tasks in the queue log · 9 of 14") {
+		t.Errorf("narrow, the footer drops the date:\n%s", out)
 	}
 }
 
@@ -135,7 +155,7 @@ func TestFrictionBadValuesAreWarningColoured(t *testing.T) {
 		unitCell int    // the figure sits in a table cell of this width, 0 when it is a row piece
 	}{
 		{"dispatcher over $0.15 a call", func(f *data.Friction) { f.Dispatcher.PerCall = ptr(0.15) }, "$0.15* / call", func(f *data.Friction) { f.Dispatcher.PerCall = ptr(0.16) }, "$0.16* / call", 0},
-		{"median context over 400k", func(f *data.Friction) { f.Dispatcher.ContextMedian = ptr(400000.0) }, "median context 400k", func(f *data.Friction) { f.Dispatcher.ContextMedian = ptr(401000.0) }, "median context 401k", 0},
+		{"median context over 400k", func(f *data.Friction) { f.Dispatcher.ContextMedian = ptr(400000.0) }, "median context 400.0k", func(f *data.Friction) { f.Dispatcher.ContextMedian = ptr(401000.0) }, "median context 401.0k", 0},
 		{"rework over a third", func(f *data.Friction) { f.Rework.Share = ptr(1.0 / 3) }, "33% of task cost", func(f *data.Friction) { f.Rework.Share = ptr(0.34) }, "34% of task cost", 0},
 		{"a cause over a third of the stated", causes(1, 1, 1), "spec 33% 1", causes(2, 1, 1), "spec 50% 2", 0},
 		{"refused over 5% of a role's Bash", refused(0.05, 14), "5.0% 22/300", refused(0.051, 14), "5.1% 22/300", 16},

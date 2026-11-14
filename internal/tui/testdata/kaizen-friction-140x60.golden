@@ -1,7 +1,7 @@
  Isshoni 一緒に  1 Dashboard  2 Agents  3 Factory [4 Kaizen] 5 Hanami                                            24h [7d] 30d  all   ○ idle 
  Kaizen   Pulse [Friction] Flow  Anatomy  Board   ←→  · 20 landed of 24 tasks in 7d  · as of 11:00:00                                       
                                                                                                                                             
- DISPATCHER                     $0.18* / call  n=400 calls  median context 450k                                                             
+ DISPATCHER                     $0.18* / call  n=400 calls  median context 450.0k                                                           
  COST AFTER THE FIRST REVIEW    40% of task cost  $48.00 of $120  median $2.50 / task  n=10  (subagents only: 9%)                           
  DEFECT CAUSES                  spec 40% 2  brief 0  conflict 20% 1  scope 0  code 40% 2  n=5 stated · 20 unstated                          
  REFUSED BASH CALLS             role          refused           guard  classifier  next 3 calls                                             
@@ -37,7 +37,7 @@
                                 by file   fixture-beta/src/mod0/main.go  1          9                                                       
                                           fixture-beta/src/mod1/main.go  1          8                                                       
                                           fixture-beta/src/mod2/main.go  1          7                                                       
-                                9 tasks in the log · 9 of 14 PRs in git history (backfill)                                                  
+                                9 tasks in the queue log (since 11-15 09:00) · 9 of 14 PRs in git history (backfill)                        
                                                                                                                                             
  OUTBOX                         6 triaged of 20 issues · 14 open                                                                            
                                                                                                                                             

@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime, timezone
 
 from isshoni import cli, friction, kaizen
-from tests.test_kaizen import ALPHA, BETA, assistant, ev, loose, session
+from tests.test_kaizen import ALPHA, BETA, assistant, came_back, ev, loose, session
 from tests.test_pulse import NOW, PulseStore
 
 DAY = "2026-11-10"
@@ -128,6 +128,21 @@ class RefusalTests(FrictionStore):
                                       result(at("10:02", "01"), "t2", GUARD)])
         row = self.roles(self.friction(cutoff=datetime(2026, 11, 10, 10, 2, tzinfo=timezone.utc)))["lead"]
         self.assertEqual((row["bash"], row["guard"]), (2, 1))
+
+    def test_a_dispatcher_session_with_no_call_in_range_adds_no_bash_calls(self):
+        self.task("late", 2, OLD, started="2026-11-10T11:30:00Z")
+        loose(self.projects, "disp", ALPHA, [(at("10:00"), "claude-fable-5-2", 1000000)], title="dispatcher-alpha")
+        append(os.path.join(self.projects, "p-disp", "disp.jsonl"), [use(at("10:10"), "d1", "dt1")])
+        self.assertEqual(self.roles(self.friction())["dispatcher"]["bash"], 1)
+        self.assertNotIn("dispatcher", self.roles(self.friction(cutoff=datetime(2026, 11, 10, 11, tzinfo=timezone.utc))))
+
+    def test_a_tech_lead_session_is_attributed_to_the_tech_lead(self):
+        self.lead("t1")
+        self.log("techlead-2026-11.jsonl", [came_back(at("11:00"), "resolved", slug="t1", session="s-t1")])
+        append(self.lead_file("t1"), [use(at("10:01"), "b1", "t1"), result(at("10:01", "01"), "t1", GUARD)])
+        row = self.roles(self.friction())
+        self.assertEqual((row["tech-lead"]["bash"], row["tech-lead"]["guard"]), (1, 1))
+        self.assertNotIn("lead", row)
 
     def test_a_dispatch_is_attributed_to_its_role_and_a_role_with_no_bash_call_is_left_out(self):
         self.lead("t1", dispatches=[("coder", "claude-haiku-5-5", 1000000, "10:30", "10:35"), ("explorer", "claude-haiku-5-5", 0, "10:40", "10:41")])
@@ -257,6 +272,17 @@ class RangeTests(FrictionStore):
             self.assertNotEqual(whole[key], cut[key], key)
         self.assertEqual((whole["queue"]["merged"], cut["queue"]["merged"]), (2, 1))
         self.assertEqual((whole["causes"]["spec"], cut["causes"]["spec"]), (1, 0))
+
+    def test_a_cutoff_drops_the_wake_ups_and_the_conflicts_before_it(self):
+        self.task("w", 1, OLD, handed="2026-11-10T09:00:00Z", started="2026-11-10T11:30:00Z")
+        for ts in ("2026-11-10T10:00:00Z", "2026-11-10T12:00:00Z"):
+            self.events.append(ev(ts, "UserPromptSubmit", slug="w", role="lead", session="s-w", **{"from": "session"}))
+            self.queue("land-conflict", 1, ts, slug="w", files=["a.go"])
+        cutoff = datetime(2026, 11, 10, 11, tzinfo=timezone.utc)
+        self.assertEqual(self.friction()["wakeups"]["prompts"], 2)
+        self.assertEqual(self.friction(cutoff)["wakeups"]["prompts"], 1)
+        self.assertEqual(self.friction()["late_conflicts"]["tasks"][0]["log"], 2)
+        self.assertEqual(self.friction(cutoff)["late_conflicts"]["tasks"][0]["log"], 1)
 
 
 class DocumentTests(FrictionStore):

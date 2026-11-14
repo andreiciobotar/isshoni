@@ -54,11 +54,14 @@ func (m *model) frictionLines(p paint, w int) block {
 		}
 		return fit(line, w, p)
 	}
-	// table lays out columns under a header; the label shows on the header line only.
+	// table lays out columns under a header; the label shows on the header line only. A column that does not fit goes whole.
 	table := func(label string, cols []int, head []string, rows [][]string, bad func(r, c int) bool, more int) block {
 		put := func(label string, cells []string, col func(c int) color.Color) string {
 			line := p.sp(1) + p.b(cell(label, lw-1, false), th.Text)
 			for c, s := range cells {
+				if width(line)+cols[c] > w {
+					break
+				}
 				line += p.t(cell(s, cols[c], false), col(c)) + p.sp(2)
 			}
 			return fit(line, w, p)
@@ -113,7 +116,7 @@ func (m *model) frictionLines(p paint, w int) block {
 	lines = append(lines, row("DISPATCHER",
 		fseg{perCall, hue(d.PerCall != nil && *d.PerCall > frictionDearCall)},
 		dim(fmt.Sprintf("n=%d calls", d.Calls)),
-		fseg{"median context " + opt(d.ContextMedian, kzTokens), hue(d.ContextMedian != nil && *d.ContextMedian > frictionLongContext)}))
+		fseg{"median context " + opt(d.ContextMedian, Human), hue(d.ContextMedian != nil && *d.ContextMedian > frictionLongContext)}))
 
 	r := f.Rework
 	subagents := "-"
@@ -243,25 +246,22 @@ func (m *model) frictionLines(p paint, w int) block {
 		nw = max(nw, width(r[1]))
 	}
 	nw = min(nw, max(8, w-lw-47))
-	logs := "no queue log yet"
+	git := fmt.Sprintf(" · %d of %d PRs in git history (backfill)", lc.GitTasks, lc.GitPRs)
+	logs := "no queue log yet" + git
 	if lc.LogTasks != nil {
-		logs = plural(*lc.LogTasks, "task") + " in the log"
+		logs = plural(*lc.LogTasks, "task") + " in the queue log"
+		if f.Queue != nil && lw+width(logs+" (since 00-00 00:00)"+git) <= w { // the date goes first when narrow
+			logs += " (since " + kzTime(f.Queue.Since) + ")"
+		}
+		logs += git
 	}
 	lines = append(lines, table("LATE CONFLICTS", []int{8, nw, 9, 22},
 		[]string{"", "task / file", "queue log", "git history (backfill)"}, rows, nil, 0)...)
-	lines = append(lines, p.sp(lw)+p.t(fmt.Sprintf("%s · %d of %d PRs in git history (backfill)", logs, lc.GitTasks, lc.GitPRs), th.Faint))
+	lines = append(lines, p.sp(lw)+p.t(logs, th.Faint))
 	lines = append(lines, "")
 
 	is := m.kz.doc.Outbox.Issues
 	triaged := is.Accepted + is.Rejected + is.Done
 	lines = append(lines, row("OUTBOX", fseg{fmt.Sprintf("%d triaged of %d issues · %d open", triaged, triaged+is.Open, is.Open), th.Text}))
 	return append(lines, "")
-}
-
-// kzTokens is a token count as 310k.
-func kzTokens(x float64) string {
-	if x >= 1000 {
-		return fmt.Sprintf("%.0fk", x/1000)
-	}
-	return strconv.Itoa(int(x))
 }

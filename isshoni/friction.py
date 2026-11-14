@@ -10,7 +10,6 @@ from .kaizen import CAUSES, ROLES, _dispatch_role, _iso, _key, _median, _name, _
 
 AFTER_CALLS = 3  # the calls after a refusal whose spend is shown
 QUEUE_STEPS = {"updated": "updated", "rerun": "rerun", "sent-back": "sent_back", "stopped": "stopped"}
-CONFLICT_STEPS = ("sent-back", "land-conflict")
 ORDER = (*[r for r in ROLES if r != "other"], "dispatcher", "site_manager", "other")
 
 
@@ -39,13 +38,16 @@ def _rework(tasks):
             "per_task_median": _median(after), "n": len(after)}
 
 
-def _runs(sessions, keys, repos, tech_sessions):
-    """[(role, run)] of the task sessions and of the dispatcher and site manager sessions: main threads, then their dispatches."""
+def _runs(sessions, keys, repos, tech_sessions, prices, cutoff):
+    """[(role, run)] of the task sessions and of the dispatcher and site manager sessions with a call in range: main threads,
+    then their dispatches."""
     for s in sessions:
         if (s.repo_path, s.task) in keys:
             main = "tech-lead" if s.id in tech_sessions else "lead"
         else:
             main = kaizen._spender(s, repos)
+            if cutoff is not None and next(kaizen._spend(s, prices, cutoff), None) is None:
+                main = None
         if main:
             yield main, s.run
             for d in s.dispatches:
@@ -75,15 +77,14 @@ def _refusals(runs, prices, cutoff):
     return {"after_calls": AFTER_CALLS, "roles": sorted(out, key=lambda r: ORDER.index(r["role"]))}
 
 
-def _wakeups(tasks, by_task, mine, prices, cutoff):
+def _wakeups(tasks, mine, prices, cutoff):
     """The prompts from the session after a hand-over, and what the session's calls cost from each until the next prompt
     from the session or the human (one from a subagent or a notification continues the same work)."""
     prompts = woken = 0
     cost = 0.0
     for t in tasks:
         key = (t["repo_path"], t["slug"])
-        recs = by_task[key]
-        events = kaizen._wakeups(recs, kaizen._handed_over(recs))
+        events = t["_wakeups"]
         counted = [e.get("from") == "session" and (cutoff is None or _ts(e) >= cutoff) for e in events]
         prompts += sum(counted)
         woken += any(counted)
@@ -170,20 +171,17 @@ def _late_conflicts(factory_dir, tasks, queue, cutoff):
             "log_tasks": len(log_task) if queue else None, "git_tasks": len(git_task), "git_prs": len(found)}
 
 
-def build(factory_dir, tasks, by_task, sessions, prices, cutoff, queue, tech_sessions):
+def build(factory_dir, tasks, by_task, sessions, mine, prices, cutoff, queue, tech_sessions):
     """The `friction` of the document. `tasks`: those kept by the cutoff, with their pull request and cost; `by_task`: every task's
-    records by store; `queue`: `pulse.read_queue`'s records; `tech_sessions`: ids of the tech lead runs."""
+    records by store; `mine`: the sessions per task; `queue`: `pulse.read_queue`'s records; `tech_sessions`: ids of the tech lead runs."""
     keys = {(t["repo_path"], t["slug"]) for t in tasks}
     repos = {k[0] for k in keys}
-    mine = {}
-    for s in sessions:
-        mine.setdefault((s.repo_path, s.task), []).append(s)
     return {
         "dispatcher": _dispatcher(sessions, repos, prices, cutoff),
         "rework": _rework(tasks),
         "causes": {k: sum(t["_causes"][k] for t in tasks if t["_causes"]) for k in (*CAUSES, "unstated")},
-        "refusals": _refusals(_runs(sessions, keys, repos, tech_sessions), prices, cutoff),
-        "wakeups": _wakeups(tasks, by_task, mine, prices, cutoff),
+        "refusals": _refusals(_runs(sessions, keys, repos, tech_sessions, prices, cutoff), prices, cutoff),
+        "wakeups": _wakeups(tasks, mine, prices, cutoff),
         "queue": _queue(queue, cutoff),
         "held": _held(by_task, queue, cutoff),
         "late_conflicts": _late_conflicts(factory_dir, tasks, queue, cutoff)}

@@ -31,7 +31,7 @@ const (
 	pageBoard
 )
 
-var kaizenPages = []string{"Pulse", "Friction", "Flow", "Anatomy", "Board"}
+var kaizenPages = [...]string{"Pulse", "Friction", "Flow", "Anatomy", "Board"}
 
 type kaizenState struct {
 	doc       *data.Kaizen
@@ -42,9 +42,9 @@ type kaizenState struct {
 	doneRange int
 	err       string // the last load failed: the first line of why; doc is the result before it
 	page      kaizenPage
-	top       [5]int    // first visible body line, per page
-	born      time.Time // when the numbers on screen arrived: the columns grow from here
-	shownAt   time.Time // when the rewards line was shown: it shimmers from here
+	top       [len(kaizenPages)]int // first visible body line, per page
+	born      time.Time             // when the numbers on screen arrived: the columns grow from here
+	shownAt   time.Time             // when the rewards line was shown: it shimmers from here
 }
 
 type kaizenMsg struct {
