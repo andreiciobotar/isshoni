@@ -136,6 +136,7 @@ type hBlossom struct {
 	work        float64   // what its agent has done: tool calls, and output tokens by the 800
 	size        sv        // radius in dots, following work
 	heat        float64   // 1 at its agent's event, decaying
+	called      time.Time // its agent's last tool call
 	closed      time.Time // when its agent returned (or its session came to rest); zero while it works
 }
 
@@ -234,6 +235,10 @@ type hanamiScene struct {
 	swell, flash        sv
 	flashCol            hrgb
 	forte               float64 // 1 at a merge, decaying: the whole stage is lit
+	toolAcc, toolRate   float64 // tool calls this frame; per event second, smoothed over 12 s: the tempo
+	beatPhase           float64 // beats since the start
+	beats               int     // beats that were struck
+	pulse, bar          float64 // the amp at a beat, and at every fourth, decaying in a quarter of a beat
 
 	branches []*hBranch
 	petals   []hPetal
@@ -469,6 +474,10 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 			bl.heat = 1
 		}
 		if e.Kind == "tool" {
+			s.toolAcc++
+			if bl != nil {
+				bl.called = e.TS
+			}
 			s.note(g, e.Tool, col, e.Session+"/"+e.Agent)
 			x, _ := s.origin(g, b, bl)
 			s.ring(g, x, e.Session+"/"+e.Agent, col)
@@ -702,7 +711,9 @@ func (s *hanamiScene) Step(now time.Time) {
 	}
 	s.rate += (s.acc/dt/s.scale - s.rate) * dt / 0.9
 	s.cacheRate += (s.cacheAcc/dt/s.scale - s.cacheRate) * dt / 1.5
-	s.acc, s.cacheAcc = 0, 0
+	s.toolRate += (s.toolAcc/dt/s.scale - s.toolRate) * math.Min(1, dt*s.scale/12) // 12 event seconds, so a replay keeps the day's tempo
+	s.acc, s.cacheAcc, s.toolAcc = 0, 0, 0
+	s.keepTime(g, dt)
 	s.swell.to(springSwell, 1-math.Exp(-s.rate/2.5))
 	s.flash.to(springSwell, 0)
 	s.windN.to(springSwell, s.windTarget(g))
@@ -740,7 +751,7 @@ func (s *hanamiScene) Step(now time.Time) {
 	}
 
 	c := s.cacheLevel()
-	gust := 1 + 2.5*s.forte
+	gust := 1 + 2.5*s.forte + 0.5*s.bar
 	for i := range s.wind {
 		p := &s.wind[i]
 		far := 1.0
@@ -878,6 +889,31 @@ func spread(rs []hRipple, dt float64) []hRipple {
 		}
 	}
 	return kept
+}
+
+// bpm is the tempo: the rate of tool calls, from one lead thinking to a busy minute.
+func (s *hanamiScene) bpm() float64 { return 44 + 96*(1-math.Exp(-s.toolRate/0.6)) }
+
+// amp is how much the beat is felt: none without tool calls.
+func (s *hanamiScene) amp() float64 { return math.Min(1, s.toolRate/0.25) }
+
+// keepTime advances the beat: a pulse at each whole beat, a bar at every fourth, both decaying in a quarter of a beat.
+func (s *hanamiScene) keepTime(g hGeo, dt float64) {
+	bpm := s.bpm()
+	decay := 1 - dt*bpm/15
+	s.pulse *= decay
+	s.bar *= decay
+	before := math.Floor(s.beatPhase)
+	s.beatPhase += dt * bpm / 60
+	if a := s.amp(); a > 0.02 && math.Floor(s.beatPhase) > before {
+		s.pulse = a
+		if s.beats++; s.beats%4 == 0 {
+			s.bar = a
+			if len(s.rings) < maxRings { // the downbeat crosses the water from the disc's foot: wide and faint
+				s.rings = append(s.rings, hRipple{x: g.cx, y: g.waterY + 2, r: g.R * 0.6, speed: 45, maxR: 0.85 * g.W, alpha: 0.45 * a, col: toRGB(s.th.gradientAt(0.5))})
+			}
+		}
+	}
 }
 
 // withdrawn says a branch has nothing left to show: its place went to a newer session, what it bore has faded,
@@ -1160,7 +1196,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 	for i := 0; i < windN && i < len(s.wind); i++ {
 		p := s.wind[i]
 		a, col := (0.34+0.36*c)*loud, muted
-		n := 2 + int((5*c+6*forte)*p.speed) // a streak: longer the harder it blows
+		n := 2 + int((5*c+6*forte+2*s.bar)*p.speed) // a streak: longer the harder it blows
 		if i%3 == 0 {
 			a, col, n = a*0.6, faint, 1+n/3
 		} else {
@@ -1240,6 +1276,11 @@ func (s *hanamiScene) draw(legend bool) []string {
 				x, y, bx, by := b.blossomAt(g, bl)
 				col := toRGB(th.AgentColor(bl.role))
 				r := math.Max(1.5, bl.size.x) * math.Max(0.15, bl.open.x)
+				throb := 0.0 // an open blossom whose agent called a tool lately keeps the beat
+				if pass == 1 && s.now.Sub(bl.called) < 10*time.Second {
+					throb = s.pulse
+				}
+				r *= 1 + 0.14*throb
 				cv.layer = 3
 				for k := 0; k <= 8; k++ {
 					f := float64(k) / 8
@@ -1254,7 +1295,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 					continue
 				}
 				cv.flower(x, y, r, rot, col.mix(text, 0.35*bl.heat), loud, false)
-				cv.glow(x, y, 2.4*r+4, col, 0.2+0.3*bl.heat)
+				cv.glow(x, y, 2.4*r+4, col, 0.2+0.3*bl.heat+0.15*throb)
 			}
 		}
 	}
@@ -1310,10 +1351,10 @@ func (s *hanamiScene) draw(legend bool) []string {
 
 	// the disc: a solid body with a breathing halo, and the name inside
 	cv.layer = 7
-	rim := g.R + 1.5*math.Min(1, level) + 0.5*math.Sin(s.t*0.9) // the sine is the ambient breath
+	rim := g.R + 1.5*math.Min(1, level) + 0.5*math.Sin(s.t*0.9) + 1.8*s.pulse // the sine is the ambient breath; the pulse is the beat
 	grad := func(dx, dy float64) hrgb { return toRGB(th.gradientAt((dx-dy)*0.3536 + 0.5)) }
 	halo := grad(0.3, -0.3).mix(s.flashCol, fl)
-	cv.glow(g.cx, g.cy, rim*(2.5+0.6*math.Min(1, level)+0.6*fl)+2*math.Sin(s.t*0.9), halo, 0.27+0.22*math.Min(1, level)+0.3*fl+0.2*forte)
+	cv.glow(g.cx, g.cy, rim*(2.5+0.6*math.Min(1, level)+0.6*fl)+2*math.Sin(s.t*0.9), halo, 0.27+0.22*math.Min(1, level)+0.3*fl+0.2*forte+0.2*s.pulse)
 	for cy := max(0, int((g.cy-rim)/4)-1); cy <= min(g.waterRow-1, int((g.cy+rim)/4)+1); cy++ {
 		for cx := max(0, int((g.cx-rim)/2)-1); cx <= min(w-1, int((g.cx+rim)/2)+1); cx++ {
 			cell := &cv.cells[cy*w+cx]
@@ -1449,14 +1490,14 @@ func (s *hanamiScene) draw(legend bool) []string {
 				cell := &cv.cells[y*w+x]
 				*cell = hCell{fill: sheet, filled: true}
 				if d := float64(head - x); d >= 0 && d < 26 { // the voice glows at the playhead as loud as it is
-					cell.fill = sheet.mix(s.voiceCol[i], (0.1+0.3*v)*(1-d/26)*(0.4+0.6*math.Max(v, s.beat[i])))
+					cell.fill = sheet.mix(s.voiceCol[i], (0.1+0.3*v)*(1-d/26)*(0.4+0.6*math.Max(v, math.Max(s.beat[i], s.pulse))))
 				}
 				if x >= 3 && x < head {
 					cell.ch, cell.c = '─', line
 				}
 			}
 			cv.glyph(1, y, t.glyph, faint.mix(text, 0.3+0.7*s.beat[i]), false)
-			cv.glyph(head, y, '┃', line.mix(text, 0.25+0.75*s.beat[i]), false)
+			cv.glyph(head, y, '┃', line.mix(text, 0.25+0.75*math.Max(s.beat[i], s.pulse)), false)
 			meter := []rune(" ▁▂▃▄▅▆▇█")[int(v*8+0.5)]
 			cv.glyph(head+1, y, meter, s.voiceCol[i], false)
 			cv.glyph(head+2, y, meter, s.voiceCol[i].mix(sheet, 0.45), false)
@@ -1516,7 +1557,7 @@ func (s *hanamiScene) reflect(cv *hCanvas, g hGeo) {
 	for j := 0; j < rows; j++ {
 		depth := float64(j) / float64(max(1, rows-1))
 		k := (0.42 - 0.22*depth) / 2
-		shift := int(math.Round(2 * depth * math.Sin(float64(g.waterRow+j)*1.7+s.t*0.9)))
+		shift := int(math.Round(2 * depth * math.Sin(float64(g.waterRow+j)*1.7+s.t*0.9+s.beatPhase)))
 		for x := 0; x < cv.w; x++ {
 			sx := min(cv.w-1, max(0, x-shift))
 			var l hrgb
@@ -1546,6 +1587,8 @@ var hanamiLegend = [][2]string{
 	{"✦", "a ringed star above the disc: a question waiting for the human"},
 	{"◌", "a ripple from the disc: the site manager's tick"},
 	{"⠒", "water: a ring a tool call, the sky mirrored. Horizon: the hour"},
+	{"◐", "the beat: tempo is the rate of tool calls. The disc, the staff and"},
+	{"", "working blossoms pulse; every fourth beat, a swell crosses the water"},
 	{"", "colour: the agent's role, on blossoms, notes, streaks and petals"},
 	{"", "ambient, not data: the breath, the lanterns' sway, the slowest breeze"},
 }

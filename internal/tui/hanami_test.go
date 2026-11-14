@@ -816,3 +816,57 @@ func TestHanamiHorizonTellsTheHour(t *testing.T) {
 		t.Fatal("the band is not strongest at the line")
 	}
 }
+
+// The scene keeps time: with no tool calls there is no beat; a steady rate sets the tempo, a bar falls on
+// every fourth beat, and a replay of the same events keeps the same tempo.
+func TestHanamiKeepsTime(t *testing.T) {
+	idle := newHanamiScene(NewTheme(true))
+	for i := 0; i < 30*hanamiFPS; i++ {
+		idle.Step(goldenNow)
+		if idle.amp() != 0 || idle.pulse != 0 || idle.bar != 0 {
+			t.Fatalf("frame %d: a beat without tool calls", i)
+		}
+	}
+
+	live := newHanamiScene(NewTheme(true))
+	pulses, bars := 0, 0
+	was, wasBar := 0.0, 0.0
+	for f := 0; f < 90*hanamiFPS; f++ { // a tool call every 3.35 s: 0.3 a second
+		if f%67 == 0 {
+			live.Apply(ev("tool", float64(f)*0.05, func(e *data.Event) { e.Tool = "edit" }), false)
+		}
+		live.Step(goldenNow)
+		if live.pulse > was {
+			pulses++
+		}
+		if live.bar > wasBar {
+			bars++
+		}
+		was, wasBar = live.pulse, live.bar
+	}
+	if bpm := live.bpm(); bpm < 70 || bpm > 95 {
+		t.Fatalf("0.3 tool calls a second is %.0f bpm", bpm)
+	}
+	if pulses < 60 || bars != pulses/4 {
+		t.Fatalf("%d pulses and %d bars: a bar is every fourth pulse", pulses, bars)
+	}
+
+	replay := newHanamiScene(NewTheme(true))
+	replay.scale = 60 // the same events at a minute a second
+	for f, sent := 0, 0; f < 40*hanamiFPS; f++ {
+		for ; float64(sent) < 0.3*60*float64(f+1)*hanamiSecond; sent++ {
+			replay.Apply(ev("tool", float64(f), func(e *data.Event) { e.Tool = "edit" }), false)
+		}
+		replay.Step(goldenNow)
+	}
+	if d := replay.bpm() - live.bpm(); d < -8 || d > 8 {
+		t.Fatalf("a replay at x60 keeps %.0f bpm, live %.0f", replay.bpm(), live.bpm())
+	}
+	// the beat shows: the disc is larger on a pulse than between them
+	live.pulse, live.bar = 1, 0
+	a := strings.Join(live.draw(false), "\n")
+	live.pulse = 0
+	if a == strings.Join(live.draw(false), "\n") {
+		t.Fatal("the pulse does not show in the disc")
+	}
+}
