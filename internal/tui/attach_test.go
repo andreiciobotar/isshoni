@@ -32,7 +32,7 @@ func attachModel(t *testing.T, settings string) (*model, *[]string) {
 }
 
 func TestDOpensTheOnlyDispatcherAtOnce(t *testing.T) {
-	m, asked := attachModel(t, `{"dispatchers": ["dispatcher-isshoni"]}`)
+	m, asked := attachModel(t, "[sessions]\ndispatchers = [\"dispatcher-isshoni\"]\n")
 	for _, v := range []viewID{viewDashboard, viewAgents, viewFactory, viewKaizen, viewHanami} {
 		*asked = nil
 		m.view = v
@@ -43,7 +43,7 @@ func TestDOpensTheOnlyDispatcherAtOnce(t *testing.T) {
 }
 
 func TestDPicksAmongSeveral(t *testing.T) {
-	m, asked := attachModel(t, `{"dispatchers": ["dispatcher-a", "-bad", "dispatcher-b", "dispatcher-c"]}`)
+	m, asked := attachModel(t, "[sessions]\ndispatchers = [\"dispatcher-a\", \"-bad\", \"dispatcher-b\", \"dispatcher-c\"]\n")
 	send(m, "d")
 	out := plain(m)
 	if len(*asked) != 0 || !strings.Contains(out, "1  dispatcher-a") || !strings.Contains(out, "2  dispatcher-b") || strings.Contains(out, "-bad") {
@@ -74,7 +74,7 @@ func TestThePickerShowsTheRealRangeAndFollowsTheCursor(t *testing.T) {
 	for i := range names {
 		names[i] = fmt.Sprintf("dispatcher-%02d", i+1)
 	}
-	m, asked := attachModel(t, `{"dispatchers": ["`+strings.Join(names, `","`)+`"]}`)
+	m, asked := attachModel(t, "[sessions]\ndispatchers = [\""+strings.Join(names, "\",\"")+"\"]\n")
 	m.w, m.h = 60, 16
 	send(m, "d")
 	out := plain(m)
@@ -99,7 +99,7 @@ func TestThePickerShowsTheRealRangeAndFollowsTheCursor(t *testing.T) {
 	if len(*asked) != 1 || (*asked)[0] != "dispatcher-12" {
 		t.Fatalf("the 12th is reachable: %v", *asked)
 	}
-	m, _ = attachModel(t, `{"dispatchers": ["dispatcher-a", "dispatcher-b"]}`)
+	m, _ = attachModel(t, "[sessions]\ndispatchers = [\"dispatcher-a\", \"dispatcher-b\"]\n")
 	send(m, "d")
 	if out := plain(m); !strings.Contains(out, "1-2 or") {
 		t.Fatalf("the hint names the range:\n%s", out)
@@ -107,12 +107,12 @@ func TestThePickerShowsTheRealRangeAndFollowsTheCursor(t *testing.T) {
 }
 
 func TestDRefusesWithoutADispatcherOrWithoutWrite(t *testing.T) {
-	m, asked := attachModel(t, `{"worktree_cap": 5}`)
+	m, asked := attachModel(t, "[limits]\nworktree_cap = 5\n")
 	send(m, "d")
 	if !m.toast.err || !strings.Contains(m.toast.text, `no dispatcher: "dispatchers" is `) || len(*asked) != 0 {
 		t.Fatalf("toast %q", m.toast.text)
 	}
-	m, asked = attachModel(t, `{"dispatchers": ["dispatcher-a"]}`)
+	m, asked = attachModel(t, "[sessions]\ndispatchers = [\"dispatcher-a\"]\n")
 	m.opts.ReadOnly = true
 	send(m, "d")
 	if m.toast.text != "read-only key: no dispatcher" || len(*asked) != 0 {
@@ -121,7 +121,7 @@ func TestDRefusesWithoutADispatcherOrWithoutWrite(t *testing.T) {
 }
 
 func TestDDoesNothingWhereAttachIsUnavailable(t *testing.T) {
-	settingsFile(t, `{"dispatchers": ["dispatcher-a"]}`)
+	settingsFile(t, "[sessions]\ndispatchers = [\"dispatcher-a\"]\n")
 	m := fakeModel(true, 100, 30)
 	send(m, "d")
 	if m.toast.text != "" || m.pick != nil {
@@ -138,7 +138,7 @@ func TestDDoesNothingWhereAttachIsUnavailable(t *testing.T) {
 }
 
 func TestDIsNotTakenInsideAnOpenInput(t *testing.T) {
-	m, asked := attachModel(t, `{"dispatchers": ["dispatcher-a"]}`)
+	m, asked := attachModel(t, "[sessions]\ndispatchers = [\"dispatcher-a\"]\n")
 	send(m, "/", "d")
 	if m.filter != "d" || len(*asked) != 0 {
 		t.Fatalf("filter %q, asked %v", m.filter, *asked)
@@ -146,7 +146,7 @@ func TestDIsNotTakenInsideAnOpenInput(t *testing.T) {
 }
 
 func TestTheEndOfAnAttachToastsAFailure(t *testing.T) {
-	m, _ := attachModel(t, `{}`)
+	m, _ := attachModel(t, "")
 	m.Update(attachMsg{name: "dispatcher-a"})
 	if m.toast.text != "" {
 		t.Fatalf("a clean return toasts %q", m.toast.text)

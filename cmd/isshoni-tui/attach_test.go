@@ -27,7 +27,8 @@ func (e *testEnv) withDispatchers(names []string) {
 	if names == nil {
 		return
 	}
-	body, _ := json.Marshal(map[string][]string{"dispatchers": names})
+	list, _ := json.Marshal(names) // a JSON list of strings is a TOML array
+	body := []byte("[sessions]\ndispatchers = " + string(list) + "\n")
 	if err := os.MkdirAll(filepath.Dir(settingsPath(e)), 0o755); err != nil {
 		e.t.Fatal(err)
 	}

@@ -1,7 +1,9 @@
 import io
 import json
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -84,6 +86,18 @@ class Comments(Home):
 
     def batches(self):
         return sorted((self.store / "comments").glob("*.md"))
+
+
+class CourierModelTests(unittest.TestCase):
+    def test_the_courier_runs_on_the_configured_model(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "settings.toml"
+            path.write_text('[models]\ncourier = "sonnet"\n')
+            with mock.patch.object(factory, "SETTINGS_PATH", path), \
+                    mock.patch.object(factory, "run", lambda argv, **kw: calls.append(argv) or (0, "{}", "")):
+                factory.courier(SimpleNamespace(root=ROOT), "lead-x", "read the file")
+        self.assertEqual(calls[0][:4], ["claude", "-p", "--model", "sonnet"])
 
 
 class WatchCommentsTests(Comments):

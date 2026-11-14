@@ -13,11 +13,13 @@ end() {
 }
 
 # revive starts the dispatchers recorded in the factory's settings that a restart left out. It runs in the
-# background and skips, with one line, what it cannot do; no settings file is no line. Each claude call
-# gets 30 s (a listing or a start that takes longer is hung) and is a background child of revive, so that
-# a TERM (stop) ends revive and the call at once.
+# background and skips, with one line, what it cannot do; no settings file is no line. A server upgraded from
+# before settings.toml has only settings.json until the first factory command: that list counts then. Each
+# claude call gets 30 s (a listing or a start that takes longer is hung) and is a background child of revive,
+# so that a TERM (stop) ends revive and the call at once.
 revive() {
-	settings="$HOME/.claude/factory/settings.json"
+	settings="$HOME/.claude/factory/settings.toml"
+	[ -r "$settings" ] || settings="$HOME/.claude/factory/settings.json"
 	[ -r "$settings" ] || return 0
 	child= stopping= out="$TMPDIR/revive.$$"
 	trap 'stopping=1; [ -z "$child" ] || end "$child"' TERM INT
@@ -35,10 +37,14 @@ revive() {
 	}
 	bg timeout 30 claude agents --json >"$out" 2>/dev/null || { echo "dispatchers not restarted: claude cannot list sessions" >&2; return 0; }
 	missing=$(python3 -c '
-import json, sys
+import json, sys, tomllib
 try:
     have = {a.get("name") for a in json.load(sys.stdin)}
-    want = json.load(open(sys.argv[1])).get("dispatchers", [])
+    with open(sys.argv[1], "rb") as f:
+        if sys.argv[1].endswith(".toml"):
+            want = tomllib.load(f).get("sessions", {}).get("dispatchers", [])
+        else:
+            want = json.load(f).get("dispatchers", [])
     print(*[n for n in want if isinstance(n, str) and n not in have], sep="\n")
 except (OSError, ValueError, TypeError, AttributeError):
     sys.exit(1)

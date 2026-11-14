@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -73,10 +74,13 @@ elif a[:2] == ["plugin", "install"]:
 json.dump(s, open(path, "w"))
 '''
 
-# Stands in for the factory script in the container: `dispatcher` answers from the agents of the claude stub.
+# Stands in for the factory script in the container: `dispatcher` answers from the agents of the claude stub;
+# `settings set` is the real script's, on the server's own home (not the laptop's FACTORY_HOME).
 FACTORY_STUB = r'''#!/usr/bin/env python3
 import json, os, sys
 home = os.environ["HOME"]
+if sys.argv[1:2] == ["settings"]:
+    os.execve(sys.executable, [sys.executable, "@REAL@", *sys.argv[1:]], {**os.environ, "FACTORY_HOME": home + "/.claude/factory"})
 if sys.argv[1:] == ["dispatcher"]:
     if os.path.exists(home + "/agents-broken"):
         print("supervisor unreachable")
@@ -88,7 +92,7 @@ if sys.argv[1:] == ["dispatcher"]:
         sys.exit(0)
     print("factory: no dispatcher session", file=sys.stderr)
     sys.exit(1)
-'''
+'''.replace("@REAL@", os.path.join(ROOT, "factory", "bin", "factory"))
 
 FAKE_DOCKER = r"""#!/bin/sh
 S=$FAKE_SRV
@@ -225,6 +229,10 @@ class HostTests(unittest.TestCase):
             head = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True, timeout=60).strip()
             self.assertEqual((home / ".isshoni/.rev").read_text().strip(), head)
             self.assertIn("dispatcher-widgets", (home / "stub-state.json").read_text())
+            settings = tomllib.loads((home / ".claude/factory/settings.toml").read_text())
+            self.assertEqual((settings["paths"]["monitor"], settings["sessions"]["dispatchers"]),
+                             ("/state/home/.isshoni/bin/isshoni", ["dispatcher-widgets"]))
+            self.assertFalse((home / ".claude/factory/settings.json").exists())
         with self.subTest("image and compose"):
             args = (self.srv / "image.args").read_text().split()
             self.assertEqual(args[-1], "-")
@@ -520,9 +528,12 @@ class HostTests(unittest.TestCase):
         self.assertEqual(self.add()[0], 0)
         self.assertEqual(self.add(target="nas2")[0], 0)
         self.assertNotIn(line, self.run_host("remove", "nas")[1])  # another host is left
-        (self.fh / "settings.json").write_text("{}")
-        self.assertNotIn(line, self.run_host("remove", "nas2")[1])  # an install here
-        (self.fh / "settings.json").unlink()
+        for name in ("settings.toml", "settings.json"):  # an install here, migrated or not
+            if name == "settings.json":
+                self.assertEqual(self.add(target="nas2")[0], 0)
+            (self.fh / name).write_text("")
+            self.assertNotIn(line, self.run_host("remove", "nas2")[1])
+            (self.fh / name).unlink()
         self.assertEqual(self.add()[0], 0)
         app = self.fh / "identity/app.json"
         kept = app.read_text()
@@ -558,7 +569,7 @@ exec "$(dirname "$0")/claude-real" "$@"
         keys.parent.mkdir(parents=True)
         keys.write_text("ssh-ed25519 AAAAother bob\n" + PUB + "\n")
         (claude / "settings.json").write_text(json.dumps({"theme": "dark", "env": {"A": "b"}}))
-        (factory / "settings.json").write_text(json.dumps({"worktree_cap": 3, "monitor": "old"}))
+        (factory / "settings.json").write_text(json.dumps({"worktree_cap": 3, "monitor": "old"}))  # an install from before settings.toml
         keys.rename(keys.with_name("keys-aside"))
         keys.mkdir()  # unreadable as a file: not the same as missing, and no key may be dropped over it
         rc, out, err = self.add("--repo", "acme/widgets", "--repo", "acme/private-thing")
@@ -570,8 +581,10 @@ exec "$(dirname "$0")/claude-real" "$@"
         self.assertEqual(rc, 0, err)
         self.assertEqual(json.loads((claude / "settings.json").read_text()),
                          {"theme": "dark", "env": {"A": "b", "CLAUDE_CODE_OAUTH_TOKEN": TOKEN}})
-        self.assertEqual(json.loads((factory / "settings.json").read_text()),
-                         {"worktree_cap": 3, "monitor": "/state/home/.isshoni/bin/isshoni", "dispatchers": ["dispatcher-widgets", "dispatcher-private-thing"]})
+        settings = tomllib.loads((factory / "settings.toml").read_text())
+        self.assertEqual((settings["limits"]["worktree_cap"], settings["paths"]["monitor"], settings["sessions"]["dispatchers"]),
+                         (3, "/state/home/.isshoni/bin/isshoni", ["dispatcher-widgets", "dispatcher-private-thing"]))
+        self.assertEqual(json.loads((factory / "settings.json").read_text()), {"worktree_cap": 3, "monitor": "old"})  # left as it was
         self.assertEqual(keys.read_text(), "ssh-ed25519 AAAAother bob\nwrite " + PUB + "\n")
         self.assertTrue((self.srv / "serving").exists())
         calls = [c["argv"][1] for c in self.calls()]
