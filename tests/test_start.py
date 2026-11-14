@@ -26,6 +26,7 @@ class StartScript(unittest.TestCase):
         write_exe(self.bin / "claude", CLAUDE_STUB)
         write_exe(self.bin / "supercronic", "#!/bin/sh\nexit 0\n")
         (self.home / "tmp").mkdir()
+        (self.home / ".container-id").write_text("box1\n")  # this container has started before
 
     def settings(self, content):
         path = self.home / ".claude/factory/settings.json"
@@ -47,7 +48,7 @@ class StartScript(unittest.TestCase):
         write_exe(self.home / ".isshoni/bin/isshoni-tui", SLEEP)
 
     def env(self):
-        return {"PATH": "%s:/usr/bin:/bin" % self.bin, "HOME": str(self.home), "TMPDIR": str(self.home / "tmp")}
+        return {"PATH": "%s:/usr/bin:/bin" % self.bin, "HOME": str(self.home), "HOSTNAME": "box1", "TMPDIR": str(self.home / "tmp")}
 
     def start(self):
         # The pipes stay open until the background `revive` ends, so run() returns after it.
@@ -72,17 +73,31 @@ class StartScript(unittest.TestCase):
                 self.assertEqual(self.bg(), [{"argv": ["--bg", "-n", "dispatcher-b", "--permission-mode", "auto", "/factory:dispatch"],
                                               "cwd": str(self.home / "code/b")}])
 
-    def test_skips_with_at_most_one_line_and_still_comes_up(self):
-        cases = {
-            "no settings file": lambda: None,
-            "no key": lambda: self.settings({"monitor": "x"}),
-            "not json": lambda: self.settings("{"),
-            "not an object": lambda: self.settings("[]"),
-            "no repository directory": lambda: self.settings({"dispatchers": ["dispatcher-gone"]}),
-            "not logged in": lambda: (self.settings({"dispatchers": ["dispatcher-a"]}), (self.home / "agents-broken").write_text("")),
-            "no claude": lambda: (self.settings({"dispatchers": ["dispatcher-a"]}), (self.bin / "claude").unlink()),
+    def test_a_new_container_records_its_id_and_starts_nothing(self):
+        for before in (None, "other\n"):
+            with self.subTest(before=before):
+                self.fresh()
+                (self.home / ".container-id").unlink()
+                if before:
+                    (self.home / ".container-id").write_text(before)
+                self.settings({"dispatchers": ["dispatcher-a"]})
+                self.repos("a")
+                done = self.start()
+                self.assertEqual((done.returncode, done.stderr, self.bg()), (0, "", []))
+                self.assertEqual((self.home / ".container-id").read_text(), "box1\n")
+
+    def test_skips_and_still_comes_up(self):
+        broken = lambda: (self.settings({"dispatchers": ["dispatcher-a"]}), (self.home / "agents-broken").write_text(""))
+        cases = {  # name: (arrange, stderr lines)
+            "no settings file": (lambda: None, 0),
+            "no key": (lambda: self.settings({"monitor": "x"}), 0),
+            "not json": (lambda: self.settings("{"), 1),
+            "not an object": (lambda: self.settings("[]"), 1),
+            "no repository directory": (lambda: self.settings({"dispatchers": ["dispatcher-gone"]}), 1),
+            "not logged in": (broken, 1),
+            "no claude": (lambda: (self.settings({"dispatchers": ["dispatcher-a"]}), (self.bin / "claude").unlink()), 1),
         }
-        for name, arrange in cases.items():
+        for name, (arrange, lines) in cases.items():
             with self.subTest(name):
                 self.fresh()
                 self.repos("a")
@@ -90,7 +105,7 @@ class StartScript(unittest.TestCase):
                 done = self.start()
                 self.assertEqual(done.returncode, 0, done.stderr)
                 self.assertEqual(self.bg(), [])
-                self.assertLessEqual(len(done.stderr.splitlines()), 1, done.stderr)
+                self.assertEqual(len(done.stderr.splitlines()), lines, done.stderr)
 
     def test_term_ends_the_script_with_the_dashboard(self):
         self.settings({"dispatchers": ["dispatcher-a"]})
