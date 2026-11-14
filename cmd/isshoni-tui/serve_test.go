@@ -619,6 +619,24 @@ func TestServeQuitDeliversTheLastBytes(t *testing.T) {
 	}
 }
 
+// bareNewline is a line feed the renderer meant as "down, same column". The ssh library's
+// emulated pty turns every one into \r\n, which moves the redraw's cursor to column 0.
+var bareNewline = regexp.MustCompile("[^\r]\n")
+
+func TestServeRedrawsReachTheClientAsTheDashboardWroteThem(t *testing.T) {
+	e := newTestEnv(t)
+	s := newSigner(t)
+	e.allow(keyLine(s, ""))
+	addr, _ := e.start()
+	v := e.view(addr, viewOpts{signer: s, w: 120, h: 36})
+	v.waitFor("zebrafish")
+	mark := v.out.Len()
+	for _, k := range []string{"j", "j", "j", "j", "3", "1"} {
+		v.send(k)
+	}
+	waitFor(t, "a redraw with a bare line feed", func() bool { return bareNewline.MatchString(v.out.String()[mark:]) })
+}
+
 func TestServeShutdownClosesViewersAndLeavesNoProcess(t *testing.T) {
 	e := newTestEnv(t)
 	s := newSigner(t)

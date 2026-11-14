@@ -103,7 +103,7 @@ func TestAttachGivesTheTerminalToTheDispatcherAndComesBack(t *testing.T) {
 	}
 }
 
-func TestAttachFollowsTheWindowAndTheDashboardComesBackAtItsSize(t *testing.T) {
+func TestAttachFollowsEveryWindowChangeAndTheDashboardComesBackAtTheLastSize(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("macOS revokes the pty when a session leader exits, so the client runs without a controlling terminal and gets no SIGWINCH")
 	}
@@ -113,7 +113,7 @@ func TestAttachFollowsTheWindowAndTheDashboardComesBackAtItsSize(t *testing.T) {
 	e.withDispatchers([]string{"dispatcher-a"})
 	addr, _ := e.start()
 
-	wide := e.view(addr, viewOpts{signer: s, w: 150, h: 40})
+	wide := e.view(addr, viewOpts{signer: s, w: 160, h: 45})
 	wide.waitFor("zebrafish")
 	wantRule := rule(wide.out.String())
 
@@ -125,13 +125,17 @@ func TestAttachFollowsTheWindowAndTheDashboardComesBackAtItsSize(t *testing.T) {
 	}
 	v.send("d")
 	v.waitFor("STUB ATTACHED dispatcher-a tty=yes size=30 100")
-	if err := v.sess.WindowChange(40, 150); err != nil {
+	if err := v.sess.WindowChange(40, 130); err != nil {
 		t.Fatal(err)
 	}
-	v.waitFor("STUB WINCH 40 150")
+	v.waitFor("STUB WINCH 40 130")
+	if err := v.sess.WindowChange(45, 160); err != nil { // the dashboard is still in exec: the pty follows anyway
+		t.Fatal(err)
+	}
+	v.waitFor("STUB WINCH 45 160")
 	mark := v.out.Len()
 	v.send("detach\r")
-	waitFor(t, "the dashboard at the new width", func() bool { return rule(v.out.String()[mark:]) == wantRule })
+	waitFor(t, "the dashboard at the last width", func() bool { return rule(v.out.String()[mark:]) == wantRule })
 }
 
 func TestAttachEndsWithItsConnection(t *testing.T) {

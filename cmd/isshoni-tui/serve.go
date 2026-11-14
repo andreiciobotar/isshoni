@@ -26,8 +26,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/ssh"
 	"charm.land/wish/v2"
-	"charm.land/wish/v2/activeterm"
-	"charm.land/wish/v2/bubbletea"
+	"github.com/charmbracelet/colorprofile"
+	xterm "github.com/charmbracelet/x/term"
 	"github.com/creack/pty"
 	gossh "golang.org/x/crypto/ssh"
 
@@ -80,7 +80,7 @@ func serve(ctx context.Context, ln net.Listener, o serveOptions) error {
 	defer cancelShare()
 	o.Runner.Share = shareCtx
 	s := &server{o: o}
-	srv, err := wish.NewServer(ssh.HostKeyPEM(hostPEM), wish.WithPublicKeyAuth(s.auth))
+	srv, err := wish.NewServer(ssh.HostKeyPEM(hostPEM), wish.WithPublicKeyAuth(s.auth), func(srv *ssh.Server) error { srv.PtyHandler = recordPty; return nil })
 	if err != nil {
 		return err
 	}
@@ -220,42 +220,62 @@ func (s *server) session(sess ssh.Session) {
 	s.o.Log.Printf("session start %s", who)
 	defer s.o.Log.Printf("session end %s", who)
 
+	req, ok := sess.Context().Value(ptyRequest{}).(ssh.Pty)
+	if !ok {
+		wish.Println(sess, "Requires an active PTY")
+		_ = sess.Exit(1)
+		return
+	}
+	term, err := openTerminal(sess, ptySize(req))
+	if err != nil {
+		s.o.Log.Printf("no terminal for %s: %v", who, err)
+		wish.Fatalln(sess, "no terminal:", err)
+		return
+	}
+	defer term.close()
+
 	// the viewer's calls end with its program, not only with its connection
 	ctx, cancel := context.WithCancel(sess.Context())
 	defer cancel()
-	var term *terminal
-	defer func() {
-		if term != nil {
-			term.close()
+	o := tui.Options{Runner: s.o.Runner, Ctx: ctx, Range: s.o.Range, Follow: s.o.Follow, NoColor: s.o.NoColor, ReadOnly: !write}
+	if write {
+		o.Attach = func(name string) tea.ExecCommand {
+			return attachCommand{func() error { return s.attach(sess, req.Term, term.slave.Name(), name) }}
 		}
-	}()
-	program := bubbletea.MiddlewareWithProgramHandler(func(ssh.Session) *tea.Program { // the session without its window channel: not used
-		o := tui.Options{Runner: s.o.Runner, Ctx: ctx, Range: s.o.Range, Follow: s.o.Follow, NoColor: s.o.NoColor, ReadOnly: !write}
-		req, window, _ := sess.Pty()
-		var err error
-		if term, err = openTerminal(sess, ptySize(sess)); err != nil {
-			s.o.Log.Printf("no terminal for %s: %v", who, err)
-			return nil
-		}
-		if write {
-			o.Attach = func(name string) tea.ExecCommand {
-				return attachCommand{func() error { return s.attach(sess, req.Term, term.slave.Name(), name) }}
+	}
+	envs := append(sess.Environ(), "TERM="+req.Term)
+	p := tea.NewProgram(tui.New(o),
+		tea.WithInput(term.slave), tea.WithOutput(term.slave),
+		tea.WithEnvironment(envs), tea.WithColorProfile(colorprofile.Env(envs)),
+		// replaces wish's filter, which turns ctrl+z into a no-op instead of stopping the server's process
+		tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
+			switch msg := msg.(type) {
+			case tea.SuspendMsg:
+				return tea.ResumeMsg{}
+			case tea.WindowSizeMsg:
+				if msg.Width <= 0 || msg.Height <= 0 { // the dashboard cannot lay out in no space
+					return nil
+				}
 			}
-		}
-		p := tea.NewProgram(tui.New(o), append(programOptions(sess), tea.WithInput(term.slave), tea.WithOutput(term.slave))...)
-		go term.follow(ctx, window, p)
-		return p
-	})
-	activeterm.Middleware()(program(func(ssh.Session) {}))(noWindowChanges{sess})
+			return msg
+		}))
+	_, window, _ := sess.Pty() // the channel comes back though the library holds no pty for this session
+	term.follow(ctx, window, p)
+	if _, err := p.Run(); err != nil {
+		s.o.Log.Printf("dashboard for %s: %v", who, err)
+	}
+	p.Kill() // restores the terminal if the dashboard crashed
 }
 
-// noWindowChanges keeps wish from reading the session's window changes: the channel has one
-// reader, terminal.follow, which resizes the pty as well as telling the dashboard.
-type noWindowChanges struct{ ssh.Session }
+// ptyRequest is the ssh context key of the session's pty request.
+type ptyRequest struct{}
 
-func (s noWindowChanges) Pty() (ssh.Pty, <-chan ssh.Window, bool) {
-	pty, _, ok := s.Session.Pty()
-	return pty, nil, ok
+// recordPty is the server's PtyHandler: it keeps the request for the session and allocates
+// nothing, so the library neither emulates a pty (which would turn every \n the session writes
+// into \r\n, under a real terminal's own output processing) nor reads the window changes.
+func recordPty(ctx ssh.Context, _ ssh.Session, pty ssh.Pty) (func() error, error) {
+	ctx.SetValue(ptyRequest{}, pty)
+	return func() error { return nil }, nil
 }
 
 // terminal is the pseudo-terminal of one session: the dashboard and the attach client run on
@@ -266,6 +286,8 @@ type terminal struct {
 	master *os.File
 	slave  ttyFile
 	copied chan struct{} // closed when everything the slave wrote has reached the client
+	stop   chan struct{} // closed by close: the window goroutines end
+	window sync.WaitGroup
 }
 
 // ttyFile is the slave as Bubble Tea gets it. RestoreTerminal starts a goroutine that calls Fd
@@ -290,7 +312,13 @@ func openTerminal(sess ssh.Session, size ssh.Window) (*terminal, error) {
 		slave.Close()
 		return nil, err
 	}
-	t := &terminal{master, ttyFile{slave, slave.Fd()}, make(chan struct{})}
+	// raw before the copies start, so nothing typed on connect is echoed or eaten by the line discipline
+	if _, err := xterm.MakeRaw(slave.Fd()); err != nil {
+		master.Close()
+		slave.Close()
+		return nil, err
+	}
+	t := &terminal{master: master, slave: ttyFile{slave, slave.Fd()}, copied: make(chan struct{}), stop: make(chan struct{})}
 	go io.Copy(master, sess) // ends with the connection
 	go func() {
 		defer close(t.copied)
@@ -300,27 +328,58 @@ func openTerminal(sess ssh.Session, size ssh.Window) (*terminal, error) {
 	return t, nil
 }
 
-// follow resizes the pty and tells the program whenever the client's window changes, until ctx ends.
+// follow resizes the pty whenever the client's window changes, so an attached client is signalled
+// at once, and tells the program the latest size. The program takes no message while it runs the
+// attach client, so a second goroutine delivers it, and the first never waits. It quits the
+// program when ctx ends, and both goroutines end with close.
 func (t *terminal) follow(ctx context.Context, window <-chan ssh.Window, p *tea.Program) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case w, ok := <-window:
-			if !ok {
+	latest := make(chan tea.WindowSizeMsg, 1) // a mailbox where the newest size replaces an unread one
+	t.window.Add(2)
+	go func() {
+		defer t.window.Done()
+		for {
+			select {
+			case <-ctx.Done():
 				return
+			case <-t.stop:
+				return
+			case w, ok := <-window:
+				if !ok {
+					return
+				}
+				if w.Width <= 0 || w.Height <= 0 { // a client without a window
+					continue
+				}
+				pty.Setsize(t.master, &pty.Winsize{Rows: uint16(w.Height), Cols: uint16(w.Width)})
+				select {
+				case <-latest:
+				default:
+				}
+				latest <- tea.WindowSizeMsg{Width: w.Width, Height: w.Height}
 			}
-			if w.Width <= 0 || w.Height <= 0 { // a client without a window
-				continue
-			}
-			pty.Setsize(t.master, &pty.Winsize{Rows: uint16(w.Height), Cols: uint16(w.Width)})
-			p.Send(tea.WindowSizeMsg{Width: w.Width, Height: w.Height})
 		}
-	}
+	}()
+	go func() {
+		defer t.window.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				p.Quit()
+				return
+			case <-t.stop:
+				return
+			case m := <-latest:
+				p.Send(m)
+			}
+		}
+	}()
 }
 
-// close ends the slave and waits, up to 2 seconds, for the client to get the last bytes.
+// close ends the window goroutines, then the slave, and waits, up to 2 seconds, for the client to
+// get the last bytes.
 func (t *terminal) close() {
+	close(t.stop)
+	t.window.Wait()
 	t.slave.Close()
 	select {
 	case <-t.copied:
@@ -381,30 +440,9 @@ func (s *server) attach(sess ssh.Session, term, tty, name string) (err error) {
 
 // ptySize is the window the client asked for, 80x24 when it has none (ssh -tt without a local
 // terminal reports 0x0).
-func ptySize(sess ssh.Session) ssh.Window {
-	if pty, _, _ := sess.Pty(); pty.Window.Width > 0 && pty.Window.Height > 0 {
-		return pty.Window
+func ptySize(req ssh.Pty) ssh.Window {
+	if req.Window.Width > 0 && req.Window.Height > 0 {
+		return req.Window
 	}
 	return ssh.Window{Width: 80, Height: 24}
-}
-
-// programOptions is what wish makes of the session, with two repairs: a client that has no
-// terminal size gets 80x24 (ptySize), and a 0x0 resize is dropped: the dashboard cannot lay out
-// in no space.
-func programOptions(sess ssh.Session) []tea.ProgramOption {
-	opts := bubbletea.MakeOptions(sess)
-	size := ptySize(sess)
-	opts = append(opts, tea.WithWindowSize(size.Width, size.Height))
-	// replaces wish's filter, which turns ctrl+z into a no-op instead of stopping the server's process
-	return append(opts, tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
-		switch msg := msg.(type) {
-		case tea.SuspendMsg:
-			return tea.ResumeMsg{}
-		case tea.WindowSizeMsg:
-			if msg.Width <= 0 || msg.Height <= 0 {
-				return nil
-			}
-		}
-		return msg
-	}))
 }
