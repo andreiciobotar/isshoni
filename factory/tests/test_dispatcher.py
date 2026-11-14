@@ -78,11 +78,11 @@ class CommandTests(SchedHarness):
 
     def test_register_again_in_the_same_session_changes_nothing(self):
         me = running("sid-d", "my session", cwd=ROOT)
-        self.run_in(ROOT, "dispatcher", "register", sessions=[me])
+        register("sid-d")
         before = self.registered()
         code, out, _ = self.run_in(ROOT, "dispatcher", "register", sessions=[me])
         self.assertEqual((code, out), (0, f"dispatcher of {ROOT}: this session (my session)\n"))
-        self.assertEqual(self.registered(), before)
+        self.assertEqual((self.registered(), before["since"]), (before, "t"))
 
     def test_register_takes_over_from_a_running_dispatcher_and_names_it(self):
         register("sid-old")

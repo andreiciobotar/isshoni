@@ -1168,10 +1168,9 @@ def follow_dispatcher(p):
     me = next((s for s in sessions if s.get("sessionId") == p.get("session_id")), None)
     registered = read_registration(repo.root)
     # A session that is ending may already be unlisted; its payload carries its id and custom title.
-    if me:
-        mine = me is find_dispatcher(sessions, repo.root)[0]
-    else:
-        mine = p.get("session_id") == registered if registered else p.get("session_title") == dispatcher_name(repo.root)
+    mine = (registered and p.get("session_id") == registered) \
+        or (me is not None and me is find_dispatcher(sessions, repo.root)[0]) \
+        or (not me and not registered and p.get("session_title") == dispatcher_name(repo.root))
     if not mine:
         return
     if event != "SessionEnd":
@@ -2083,7 +2082,7 @@ def cmd_watch(args):
             send.append({**f, "id": old["id"]})
     if not send:
         print("nothing new")
-    elif orphaned or any(f["criterion"] == "dispatcher-missing" for f in current):
+    elif orphaned or p["dispatcher"] is None or any(f["criterion"] == "dispatcher-missing" for f in current):
         for f in send:
             if f["criterion"] == "dispatcher-missing":
                 notify(repo, f)
@@ -2095,7 +2094,7 @@ def cmd_watch(args):
         schedule_remove(repo, scheduler())
     last, digests = last_digest(repo.root), job_criteria(every, "digest")
     due = p["now"] - (last and epoch(last["ts"]) or 0) >= DIGEST_HOURS * 3600
-    if due and digests and not orphaned and not any(f["criterion"] == "dispatcher-missing" for f in current):
+    if due and digests and not orphaned and p["dispatcher"] and not any(f["criterion"] == "dispatcher-missing" for f in current):
         digest(p, digests, by_hand=False)
     return 0
 

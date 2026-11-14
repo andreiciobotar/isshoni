@@ -78,7 +78,12 @@ if sys.argv[1:] == ["dispatcher"]:
         print("supervisor unreachable")
         sys.exit(2)
     agents = json.load(open(home + "/stub-state.json"))["agents"]
-    sys.exit(0 if "dispatcher-" + os.path.basename(os.getcwd()) in agents else 1)
+    if os.path.exists(home + "/stub-crash"):
+        sys.exit(1)
+    if "dispatcher-" + os.path.basename(os.getcwd()) in agents:
+        sys.exit(0)
+    print("factory: no dispatcher session", file=sys.stderr)
+    sys.exit(1)
 '''
 
 FAKE_DOCKER = r"""#!/bin/sh
@@ -262,6 +267,10 @@ class HostTests(unittest.TestCase):
             self.assertIn("dispatcher-widgets unknown", out)
             self.assertNotIn("missing", out)
             (self.srv / "home/agents-broken").unlink()
+            (self.srv / "home/stub-crash").touch()
+            rc, out, _ = self.run_host("status")
+            self.assertIn("dispatcher-widgets unknown", out)
+            (self.srv / "home/stub-crash").unlink()
         with self.subTest("list needs no network, status follows what runs"):
             n = len(self.calls())
             self.assertEqual(self.run_host("list"), (0, "nas  nas  %s  acme/widgets  factory\n" % self.state, ""))

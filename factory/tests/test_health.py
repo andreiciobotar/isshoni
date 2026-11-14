@@ -668,6 +668,12 @@ class WatchTests(Harness):
         [argv] = self.claude_runs()
         self.assertIn("The dispatcher's session name is renamed.", argv[-1])
 
+    def test_no_site_manager_runs_when_no_dispatcher_can_be_addressed(self):
+        self.use("past-limit")
+        register("sid-d")
+        self.tick(sessions=[DISPATCHER | {"name": None, "pid": 7}, self.overtime()])
+        self.assertEqual((len(self.records()), self.claude_runs()), (1, []))
+
     def test_a_new_firing_is_logged_and_sent(self):
         code, out, _ = self.tick()
         [record] = self.records()
@@ -1376,6 +1382,12 @@ class HookTests(SchedHarness):
         self.hook("SessionEnd", reason="other", sessions=[], session_id="sid-other")
         self.assertTrue(self.plist().exists())
         self.hook("SessionEnd", reason="other", sessions=[], session_title="not the old-style name")
+        self.assertFalse(self.plist().exists())
+
+    def test_a_registered_session_without_a_process_still_ends_the_job(self):
+        register("sid-d")
+        self.put_plist()
+        self.hook("SessionEnd", reason="other", sessions=[DISPATCHER | {"name": "custom"}])
         self.assertFalse(self.plist().exists())
 
     def test_a_session_that_is_not_the_registered_one_starts_nothing(self):

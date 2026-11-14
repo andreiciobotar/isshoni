@@ -441,9 +441,9 @@ def dashboard_key(c):
 
 
 def dispatcher_runs(target, repo):
-    """Whether the dispatcher of ~/code/<repo> runs in the container (`factory dispatcher`: exit 0 yes, 1 no); Stop when it cannot say."""
+    """Whether the dispatcher of ~/code/<repo> runs in the container (`factory dispatcher`: exit 0 yes, 1 with its own "factory: " refusal no); Stop when it cannot say."""
     rc, out, err = box(target, 'cd "$HOME/code/$1" && "$HOME/.isshoni/factory/bin/factory" dispatcher', repo)
-    if rc in (0, 1):
+    if rc == 0 or (rc == 1 and "factory: " in err):
         return rc == 0
     raise Stop("cannot tell which dispatchers run: `factory dispatcher` printed:\n%s" % tail(out + err))
 
