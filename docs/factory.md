@@ -230,8 +230,9 @@ A digest answers where a task's money goes. It is a set of findings computed by 
 | `dearest-task` | 1.5 (times) | the dearest current task cost more than that many times the baseline's median task; names the role that explains most of it |
 | `role-growing` | 20 (percent) | a role in at least 3 current and 3 baseline tasks has a median context per call, or median number of own tool calls per task, that much above the baseline's |
 | `version-shift` | 20 (percent) | at least 3 current tasks ran a plugin version no baseline task ran, and their median task cost, the lead's share of cost or the lead's median context moved by more than that, up or down |
+| `lead-authoring` | 50 (percent) | the lead made a product-code or test write (`written.product` or `written.tests` calls above 0 in its anatomy block) in that percent or more of the current tasks; names them and compares with the baseline. Not evaluated with a monitor that reports no `written` |
 
-To turn the digest off, delete the four `"job": "digest"` lines of `criteria.json`, or one of them to drop that finding. Without `monitor` in the settings it is skipped. A fifth finding is one line in `criteria.json`, one function and one entry in `CRITERIA`.
+To turn the digest off, delete the five `"job": "digest"` lines of `criteria.json`, or one of them to drop that finding. Without `monitor` in the settings it is skipped. A sixth finding is one line in `criteria.json`, one function and one entry in `CRITERIA`.
 
 ## Merging
 `factory merge` merges pull requests with no model. It merges only what is mechanical and stops at the first thing that is not. Two things start it:

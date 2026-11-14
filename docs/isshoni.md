@@ -415,3 +415,23 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 
 A session is live when its transcript changed in the last 30 seconds or so. Agents keep
 one colour and one order everywhere: main, coder, reviewer, explorer, lander, then the rest.
+
+### Over SSH
+```
+bin/isshoni-tui --serve ADDR [--authorized-keys FILE] [--host-key FILE]
+```
+`--serve 127.0.0.1:2222` serves the dashboard to whoever connects with `ssh -p 2222 HOST`, each connection with a dashboard of its own (its own range, view, cursor and terminal size) over one shared set of `isshoni` calls. `ADDR` is used as given: there is no default port, and `--serve` cannot be combined with `--snapshot`.
+
+| Flag | Default | |
+|---|---|---|
+| `--authorized-keys` | `~/.claude/factory/dashboard/authorized_keys` | OpenSSH's format, one public key per line. Required: the server does not start without the file. Read again on every connection, so a key added or removed applies at once |
+| `--host-key` | `~/.claude/factory/dashboard/host_key` | the server's private key; an ed25519 key is created on the first start (directory 0700, file 0600). The start line, on stderr, prints its SHA256 fingerprint: check it against what `ssh` asks you to accept the first time |
+
+- **The key file is the only gate.** Public keys only: no password, no keyboard-interactive login, no banner. A key that is listed sees everything the dashboard shows (session titles, repositories, costs). Put `write` before a key (`write ssh-ed25519 AAAA... laptop`) and that key may also change the worktree cap with `c` on the Factory view, which writes `~/.claude/factory/settings.json` of the account the server runs as; every other key is read-only (`c` says so). Any other option on a line is ignored.
+- **Shared calls.** Viewers who ask for the same thing at the same time share one `isshoni` or `factory status` process. A result is used for up to 10 seconds, and not once a transcript has changed since it was started (sessions) or the cap was saved (everything), so the periodic data (agents, kaizen, factory status) can be up to 10 seconds older than on a local dashboard. Viewers on different ranges, or on different sessions, each cost their own call. Two further limits: a transcript that is deleted does not invalidate a shared `sessions` result, so a deleted session can stay listed for a viewer until the next transcript change, or until the 10 seconds lapse and a viewer refetches; and freshness compares the time a run started with file modification times, so on a filesystem with coarse (one-second) times a shared result can miss a write made in the same second until the next change.
+- **Colour** follows what each client's `TERM` promises (`xterm-256color`: 256 colours; `dumb`: none). Most SSH clients do not forward `COLORTERM`, so truecolor needs it asked for: `ssh -o SetEnv=COLORTERM=truecolor -p 2222 HOST` (the server takes any variable the client sets; a test covers it). The server's own `NO_COLOR` is not consulted; `--no-color` makes every viewer plain.
+- `q` or a dropped connection ends that viewer only. SIGINT and SIGTERM close every connection and every `isshoni` process before the server exits; it waits at most 5 seconds for the viewers. A connection has 30 seconds to finish its handshake.
+- Known limit: a window too small for the Factory view to lay out (width 0, for one) panics that viewer's program in `internal/tui`; serve mode guards only the 0x0 size that wish sends at disconnect and that `ssh -tt` without a local terminal reports. The panic is recovered by Bubble Tea and ends that viewer only.
+- A client that reports no terminal size (`ssh -tt` without a local terminal) gets 80x24. A connection without a terminal (`ssh HOST command`) is refused.
+- One line per session start and end (remote address, key fingerprint, read-only or write) and one per refused key go to stderr. Nothing else about a client is logged.
+- Outside the container ([container.md](container.md)), run it under whatever keeps your processes alive (systemd, tmux); it does not detach. Bind it to a loopback or VPN address, or reach it through an SSH tunnel to the host.
