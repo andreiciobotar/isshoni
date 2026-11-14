@@ -7,6 +7,7 @@ import re
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -80,7 +81,12 @@ class Wizard(unittest.TestCase):
                                                 "DISPLAY": ":0"})
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.identity = self.home / ".claude" / "factory" / "identity"
+        store = self.home / ".claude" / "factory"
+        for name, value in (("STORE", store), ("SETTINGS_PATH", store / "settings.json"), ("IDENTITY", store / "identity")):
+            patch = mock.patch.object(factory, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.identity = store / "identity"
         self.opened = []
         self.forms = []
         self.gh = None
@@ -110,16 +116,22 @@ class Wizard(unittest.TestCase):
             self.assertEqual(caught.exception.code, 400)
         urllib.request.urlopen(f"{url}callback?code=THECODE&state={state}", timeout=5)
 
-    def wizard(self, *args, github=None, browser=None, wait=600, git=None):
+    def wizard(self, *args, github=None, browser=None, wait=600, login=(0, "octocat\n", "")):
+        """The App step of the wizard, answering every question yes; `login` is what `gh api user` says."""
         self.gh = FakeGitHub(github if github is not None else routes(self.pem))
         out, err = io.StringIO(), io.StringIO()
-        fake_git = FakeRun(git or {})
+        fake_gh = FakeRun({("gh", "api", "user"): login})
         with mock.patch.object(factory, "github_api", self.gh), \
-                mock.patch.object(factory, "run", lambda argv, **kw: fake_git(argv, **kw) if argv[0] == "git" else real_run(argv, **kw)), \
+                mock.patch.object(factory, "run", lambda argv, **kw: fake_gh(argv, **kw) if argv[0] == "gh" else real_run(argv, **kw)), \
                 mock.patch.object(factory.webbrowser, "open", browser or self.browser), \
                 mock.patch.object(factory, "WIZARD_WAIT", wait), mock.patch.object(factory, "INSTALL_POLL", 0), \
                 redirect_stdout(out), redirect_stderr(err):
-            rc = factory.main(["wizard", *args])
+            try:
+                factory.setup_app(factory.parse_args(["wizard", "--yes", *args]), None)
+                rc = 0
+            except factory.Fail as e:
+                print(f"factory: {e}", file=sys.stderr)
+                rc = e.code
         self.out, self.err = out.getvalue(), err.getvalue()
         return rc
 
@@ -201,8 +213,9 @@ class FirstRunTests(Wizard):
             "bot_login": "factory-octocat[bot]", "bot_id": 99999999,
             "bot_email": "99999999+factory-octocat[bot]@users.noreply.github.com"})
         for line in ("octocat/one", "octocat/two", "factory-octocat[bot]", str(factory.IDENTITY),
-                     "https://github.com/settings/apps/factory-octocat/advanced", INSTALL_URL):
+                     "To remove it: `factory uninstall`"):
             self.assertIn(line, self.out)
+        self.assertNotIn("advanced", self.out)
         self.assertQuiet()
         self.assertNotIn("whsec-1", (self.identity / "app.json").read_text() + self.out)
         self.assertNotIn("csec-1", (self.identity / "app.json").read_text() + self.out)
@@ -214,7 +227,7 @@ class FirstRunTests(Wizard):
         self.assertEqual(self.wizard("--owner", "octocat", github=github), 0, self.err)
         self.assertRegex(self.forms[0][0], r"^https://github\.com/organizations/octocat/settings/apps/new\?state=")
         self.assertEqual(self.app_json()["owner_type"], "Organization")
-        self.assertIn("organizations/octocat/settings/apps/factory-octocat/advanced", self.out)
+        self.assertEqual(factory.delete_url(self.app_json()), "https://github.com/organizations/octocat/settings/apps/factory-octocat/advanced")
 
     def test_name_is_cut_to_34_characters(self):
         owner = "o" * 40
@@ -226,10 +239,7 @@ class FirstRunTests(Wizard):
         self.assertEqual(self.forms[0][1]["name"], "my-factory")
         self.assertIn("named my-factory", self.out)
 
-    def test_a_name_over_34_characters_is_refused_not_cut(self):
-        self.assertEqual(self.wizard("--owner", "octocat", "--name", "n" * 35), 2)
-        self.assertIn("35 characters", self.err)
-        self.assertEqual(self.gh.calls, [])
+    def test_a_name_of_34_characters_is_accepted(self):
         self.assertEqual(self.wizard("--owner", "octocat", "--name", "n" * 34), 0, self.err)
 
     def test_name_with_a_stored_identity_is_refused(self):
@@ -325,14 +335,13 @@ class OwnerTests(Wizard):
         with mock.patch.object(factory, "run", FakeRun({})):
             self.assertIsNone(factory.remote_repo())
 
-    def test_no_owner_asks_for_the_flag(self):
-        self.assertEqual(self.wizard(git={}), 1)
+    def test_no_login_asks_for_the_flag(self):
+        self.assertEqual(self.wizard(login=(1, "", "not logged in")), 1)
         self.assertIn("--owner", self.err)
         self.assertEqual(self.opened, [])
 
-    def test_origin_is_used_without_the_flag(self):
-        git = repo_answers([], (), {("git", "remote", "get-url"): (0, "git@github.com:octocat/repo.git\n", "")})
-        self.assertEqual(self.wizard(git=git), 0, self.err)
+    def test_your_login_is_the_owner_without_the_flag(self):
+        self.assertEqual(self.wizard(), 0, self.err)
         self.assertEqual(self.app_json()["owner"], "octocat")
 
 
@@ -362,7 +371,7 @@ class RerunTests(Wizard):
             "bot_email": "99999999+isshoni-lander[bot]@users.noreply.github.com"})
         self.assertIn("renamed: factory-octocat -> isshoni-lander\n", self.out)
         self.assertIn(f"App isshoni-lander: {new}", self.out)
-        self.assertIn("https://github.com/settings/apps/isshoni-lander/advanced", self.out)
+        self.assertIn("To remove it: `factory uninstall`", self.out)
         self.assertNotIn("factory-octocat\n", self.out.replace("renamed: factory-octocat -> isshoni-lander\n", ""))
         self.assertEqual(cache.read_text(), '{"token": "t"}')
 

@@ -270,7 +270,7 @@ def cmd_kaizen(args):
 
     prices = price_file.load(args.prices)
     cutoff = parse_since(args.since) if args.since else None
-    doc = kaizen.build(args.factory_dir, lambda: load_all(args, prices), prices, cutoff)
+    doc = kaizen.build(args.factory_dir, lambda: load_all(args, prices), prices, cutoff, cached=args.cached)
     if args.json:
         emit_json(doc)
         return 0
@@ -287,6 +287,9 @@ def cmd_kaizen(args):
     for r in doc["repos"]:
         if r["prs"] != "ok":
             print("pull requests unavailable for %s: %s" % (r["repo"], r["prs"]))
+        elif r["prs_error"]:
+            age = datetime.now(timezone.utc) - datetime.strptime(r["prs_as_of"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            print("pull requests for %s as of %s ago: %s" % (r["repo"], fmt_duration(age.total_seconds() * 1000), r["prs_error"]))
     dur = lambda v: "-" if v is None else fmt_duration(v * 1000)  # noqa: E731
     rows = [[t["slug"], t["version"] or "-", "landed" if t["landed"] else t["state"] or "-", dur(t["brief_to_pr_s"]),
              dur(t["pr_to_merge_s"]), "-" if t["cost"] is None else money(t["cost"]["total"], cur, t["cost"]["unpriced_tokens"]),
@@ -312,12 +315,14 @@ def cmd_anatomy(args):
     for t in doc["tasks"]:
         for name, r in t["roles"].items():
             c, x = r["cost"], r["context"]
+            written = " ".join("%s %d/%d" % (k, w["calls"], w["lines"]) for k, w in r["written"].items() if w["calls"])
             rows.append([t["task"], t["version"] or "-", name, r["runs"], r["calls"], human(x["first"]), human(x["median"]),
                          human(x["max"]), money(c["total"], prices.currency), share(c, "input"), share(c, "output"),
                          share(c, "cache_write_5m", "cache_write_1h"), share(c, "cache_read"), sum(r["tools"].values()),
-                         r["dispatches"]])
+                         r["dispatches"], written or "-"])
     print(table(["task", "version", "role", "runs", "calls", "ctx first", "ctx median", "ctx max", "cost", "in%", "out%",
-                 "cw%", "cr%", "tools", "disp"], rows, left=("task", "version", "role")))
+                 "cw%", "cr%", "tools", "disp", "written (calls/lines)"], rows, left=("task", "version", "role", "written (calls/lines)")))
+    print("%d written calls matched no kind (--json lists them as unmatched)" % sum(u["calls"] for u in doc["unmatched"]))
     unpriced = sum(t["unpriced_tokens"] for t in doc["tasks"])
     models = {m for t in doc["tasks"] for r in t["roles"].values() for m in r["models"] if prices.parts(m, {}) is None}
     footer(prices, sorted(models) if unpriced else [], unpriced)
@@ -380,6 +385,7 @@ def build_parser():
     s.set_defaults(func=cmd_agents)
     s = sub.add_parser("kaizen", parents=[_common(True), since], help="improvement measures of the factory")
     s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")
+    s.add_argument("--cached", action="store_true", help="pull requests from the disk cache only; never run gh")
     s.set_defaults(func=cmd_kaizen)
     s = sub.add_parser("anatomy", parents=[_common(True), since, scope], help="cost anatomy of each task per role")
     s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")

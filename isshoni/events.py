@@ -9,6 +9,7 @@ import glob
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -49,7 +50,22 @@ def write(out, batch):
 
 def gh_prs(repo_path):
     """Every pull request of the repository with its check rollup; kaizen.GhError when gh cannot list them."""
-    return kaizen.gh_prs(repo_path, GH_FIELDS)
+    if not os.path.isdir(repo_path):
+        raise kaizen.GhError("no such repository path")
+    try:
+        p = subprocess.run(["gh", "pr", "list", "--state", "all", "--limit", "1000", "--json", GH_FIELDS],
+                           cwd=repo_path, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise kaizen.GhError("gh unavailable: %s" % str(e).splitlines()[0] if str(e) else "gh unavailable")
+    if p.returncode != 0:
+        raise kaizen.GhError((p.stderr.strip().splitlines() or ["gh exited %d" % p.returncode])[0])
+    try:
+        prs = json.loads(p.stdout)
+    except ValueError:
+        raise kaizen.GhError("gh printed no JSON")
+    if not isinstance(prs, list):
+        raise kaizen.GhError("gh printed an unexpected document")
+    return prs
 
 
 def ci_state(rollup):

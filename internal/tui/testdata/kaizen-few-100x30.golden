@@ -1,8 +1,9 @@
  Isshoni  1 Dash  2 Agents  3 Factory [4 Kaizen] 5 ✿                     24h [7d] 30d  all   ○ idle 
  Kaizen  [Pulse] Flow  Anatomy  Board   ←→  · 2 landed of 2 tasks in 7d  · as of 11:00:00           
-▌ LANDED             ▌ COST / TASK       ▌ BRIEF → PR        ▌ PR → MERGE        ▌ FIRST PASS       
-▌ 2                  ▌ $9.90             ▌ 50m00s            ▌ 12m30s            ▌ 0/2              
-▌ 0 in flight        ▌ 2 tasks           ▌ 2 tasks           ▌ 2 tasks           ▌ rework 9%        
+▌ LANDED         ▌ COST / TASK    ▌ OVERHEAD       ▌ BRIEF → PR     ▌ PR → MERGE     ▌ FIRST PASS   
+▌ 2              ▌ $9.90          ▌ $2.06          ▌ 50m00s         ▌ 12m30s         ▌ 0/2          
+▌ 0 in flight    ▌ 2 tasks        ▌ 20 landed      ▌ 2 tasks        ▌ 2 tasks        ▌ rework 9%    
+ overhead: $38.40 dispatcher + $2.70 site manager over 20 landed tasks                              
                                                                                                     
  comparing latest with earlier starts at 10 landed tasks (have 2)                                   
                                                                                                     
@@ -25,6 +26,5 @@
 │     ────────────────────────────────────────── │ │        ────────────────────────────────────── │
 │     v0.1.0                                     │ │        v0.1.0                                 │
 │ latest 4 · median 3.5                          │ │ latest 11m00s · median 12m30s                 │
-╰────────────────────────────────────────────────╯ ╰───────────────────────────────────────────────╯
- +11 more lines · ↓ to scroll                                                                       
+ +12 more lines · ↓ to scroll                                                                       
  ←→/hl kaizen page  ·  ↑↓/jk move  ·  r range  ·  tab next view  ·  ? help  ·  q quit               

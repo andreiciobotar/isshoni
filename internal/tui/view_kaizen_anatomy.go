@@ -86,6 +86,12 @@ func roleN(v data.AnatomyVersion, role string) int {
 func (m *model) anatomyLines(p paint, w int) block {
 	a := m.kz.doc.Summary.Anatomy
 	lines := append(m.prWarnings(p, w), m.anatomyVerdict(p, w)...)
+	if au := m.anatomyAuthoring(p, w); len(au) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, au...)
+		lines = append(lines, "")
+		lines = append(lines, m.authoringChart(p, w, a)...)
+	}
 	for _, c := range []struct {
 		title string
 		get   func(*data.AnatomyMedians) *float64
@@ -125,6 +131,22 @@ func (m *model) anatomyChart(p paint, w int, title string, a data.KaizenAnatomy,
 	return m.pointsChart(p, w, title, fmt.Sprintf("median of %d tasks", a.Window), a.Window, o, vers)
 }
 
+// pointsChange tells a share's move from x0 to x1 in percentage points; down is green, up orange.
+func (m *model) pointsChange(x1, x0 float64) (string, color.Color) {
+	d := int(math.Round((x1 - x0) * 100))
+	arrow, col := "≈", m.th.Muted
+	switch {
+	case d < 0:
+		arrow, col = "↓", m.th.Green
+	case d > 0:
+		arrow, col = "↑", m.th.Orange
+	}
+	if max(d, -d) == 1 {
+		return arrow + " 1 pt", col
+	}
+	return fmt.Sprintf("%s %d pts", arrow, max(d, -d)), col
+}
+
 // anatomyVerdictVersionW caps a version's column: a longer name is cut.
 const anatomyVerdictVersionW = 12
 
@@ -153,18 +175,7 @@ func (m *model) anatomyVerdict(p paint, w int) block {
 		arrow, rel, col := m.trendLook(*x1, *x0)
 		text := fmt.Sprintf("%s %d%%", arrow, rel)
 		if ms.points {
-			d := int(math.Round((*x1 - *x0) * 100))
-			arrow, col = "≈", th.Muted
-			switch {
-			case d < 0:
-				arrow, col = "↓", th.Green
-			case d > 0:
-				arrow, col = "↑", th.Orange
-			}
-			text = fmt.Sprintf("%s %d pts", arrow, max(d, -d))
-			if max(d, -d) == 1 {
-				text = fmt.Sprintf("%s 1 pt", arrow)
-			}
+			text, col = m.pointsChange(*x1, *x0)
 		}
 		if !ms.lower {
 			col = th.Muted
@@ -278,6 +289,113 @@ func (m *model) anatomyVerdict(p paint, w int) block {
 		lines = append(lines, p.sp(1)+p.t(l, th.Faint))
 	}
 	return lines
+}
+
+// authoringShares is the lead's, the coder's and every other role's part of a version's product
+// code and test lines; "-" three times when nobody wrote any.
+func authoringShares(au data.Authoring) [3]string {
+	if au.Share == nil {
+		return [3]string{"-", "-", "-"}
+	}
+	others := 0.0
+	for role, s := range au.Share {
+		if role != "lead" && role != "coder" {
+			others += s
+		}
+	}
+	return [3]string{pct(au.Share["lead"] * 100), pct(au.Share["coder"] * 100), pct(others * 100)}
+}
+
+// anatomyAuthoring is who wrote the product code and tests in every version with landed tasks,
+// oldest first; the lead's change (latest against before) shows only when both wrote some in at
+// least min tasks, and a version under min is dimmed. Under it, the lead's share in the last
+// landed tasks.
+func (m *model) anatomyAuthoring(p paint, w int) block {
+	th := m.th
+	a := m.kz.doc.Summary.Anatomy
+	beforeAt, latestAt := anatomyLatest(a)
+	if latestAt < 0 {
+		return nil
+	}
+	var rows []data.AnatomyVersion
+	for _, v := range a.Versions {
+		if v.Tasks > 0 {
+			rows = append(rows, v)
+		}
+	}
+	enough := beforeAt >= 0 && a.Versions[beforeAt].Authoring.Tasks >= a.Min && a.Versions[latestAt].Authoring.Tasks >= a.Min
+	change, changeCol := "-", th.Faint
+	if enough && a.Versions[beforeAt].Authoring.Share != nil && a.Versions[latestAt].Authoring.Share != nil {
+		change, changeCol = m.pointsChange(a.Versions[latestAt].Authoring.Share["lead"], a.Versions[beforeAt].Authoring.Share["lead"])
+	}
+
+	lines := block{m.heading(p, w, "who wrote the product code and tests", "landed tasks only · share of lines")}
+	head := p.sp(1) + p.sp(anatomyVerdictVersionW)
+	for _, h := range []string{"lead", "coder", "others"} {
+		head += p.sp(2) + p.sp(6-width(h)) + p.t(h, th.Faint)
+	}
+	head += p.sp(2) + p.t(cell("lead wrote some in", 22, false), th.Faint)
+	if enough {
+		head += p.sp(2) + p.t("change", th.Faint)
+	}
+	lines = append(lines, fit(head, w, p))
+	for _, v := range rows {
+		au := v.Authoring
+		col := th.Text
+		if au.Tasks < a.Min {
+			col = th.Faint
+		}
+		line := p.sp(1) + p.b(cell(trunc(v.Version, anatomyVerdictVersionW), anatomyVerdictVersionW, false), th.Purple)
+		for _, s := range authoringShares(au) {
+			line += p.sp(2) + p.t(cell(s, 6, true), col)
+		}
+		line += p.sp(2) + p.t(cell(fmt.Sprintf("%d of %d tasks", au.LeadTasks, au.Tasks), 22, false), col)
+		if enough && v.Version == a.Versions[latestAt].Version {
+			line += p.sp(2) + p.t(change, changeCol)
+		}
+		lines = append(lines, fit(line, w, p))
+	}
+
+	var recent []string
+	for _, t := range landedTasks(m.kz.doc) {
+		s := "-"
+		if t.Authoring.LeadShare != nil {
+			s = pct(*t.Authoring.LeadShare * 100)
+		}
+		recent = append(recent, t.Slug+" "+s)
+		if len(recent) > 5 {
+			recent = recent[1:]
+		}
+	}
+	if len(recent) > 0 {
+		lines = append(lines, "")
+		for _, l := range wrapPlain("the lead's share in the last landed tasks: "+strings.Join(recent, " · "), w-2) {
+			lines = append(lines, p.sp(1)+p.t(l, th.Muted))
+		}
+	}
+	return lines
+}
+
+// authoringChart is each role's part of the product code and test lines over time; a point
+// with no such line leaves a gap.
+func (m *model) authoringChart(p paint, w int, a data.KaizenAnatomy) block {
+	o := lineOpts{label: func(v float64) string { return pct(v * 100) }}
+	vers := make([]string, len(a.Points))
+	for i, pt := range a.Points {
+		vers[i] = pt.Version
+	}
+	for _, role := range m.kz.doc.Roles {
+		s := lineSeries{name: role, color: m.roleColor(role)}
+		for _, pt := range a.Points {
+			v := math.NaN()
+			if x, ok := pt.Authoring.Share[role]; ok {
+				v = x
+			}
+			s.vals = append(s.vals, v)
+		}
+		o.series = append(o.series, s)
+	}
+	return m.pointsChart(p, w, "share of product code and test lines", fmt.Sprintf("pooled over %d tasks", a.Window), a.Window, o, vers)
 }
 
 // anatomyRoles is each role but the lead, latest against before: "before → latest", the
