@@ -22,8 +22,8 @@ HANAMI_STEP='150ms'
 
 # name -> (ms per frame, the argument lists of bin/isshoni-tui, one snapshot each; {replay} and {at} are Hanami's)
 SCENES={
-    'dashboard':(900,[['--snapshot','dashboard','--range','24h','--row',str(r)] for r in range(8)]
-                     +[['--snapshot','dashboard','--range','24h','--row','1','--fold']]),
+    'dashboard':(900,[['--snapshot','dashboard','--range','24h','--row','0','--frames','8'],
+                      ['--snapshot','dashboard','--range','24h','--row','1','--fold']]),
     'agents':(1200,[['--snapshot','agents','--range',r] for r in ('24h','7d','30d','all')]),
     'factory':(900,[['--snapshot','factory','--range','24h']]*4),
     'kaizen':(2000,[['--snapshot',v,'--range','7d'] for v in ('kaizen','kaizen-flow','kaizen-anatomy','kaizen-board')]),
