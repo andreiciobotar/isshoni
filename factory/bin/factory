@@ -2371,7 +2371,7 @@ def cmd_merge(args):
     permission = {} if args.approved else None
     for i, pr in enumerate(selected):
         stop = merge_one(p, pr, merged, args.dry_run, permission)
-        if stop and stop[0] == "unapproved" and pr["number"] not in args.prs:
+        if stop and stop[0] in ("unapproved", "stale", "head-time") and pr["number"] not in args.prs:
             print(f"#{pr['number']} skipped: {stop[1]}")
             continue
         if stop:
@@ -2475,6 +2475,9 @@ def stale_approval(p, pr, approval, heads):
 
 def approval_stop(p, pr, permission):
     """(kind, reason) when GitHub's records hold no valid approval of the head of `pr`, else None."""
+    if pr["isDraft"]:
+        return "unapproved", ("not approved on GitHub: it is a draft, and only a pull request that is ready "
+                              "for review is merged on an approval")
     try:
         heads = approved_heads(p["repo"], pr)
         review = approving_review(p, pr, permission, heads)
@@ -3199,7 +3202,7 @@ def cmd_land(args):
 MERGE_TIMEOUT = 3600
 MERGE_BASH_MS = "2400000"
 NOTICE_TIMEOUT = 20
-NOTICE_FIELDS = "number,headRefOid,headRefName,baseRefName,author,isCrossRepository,latestReviews,comments"
+NOTICE_FIELDS = "number,url,isDraft,headRefOid,headRefName,baseRefName,author,isCrossRepository,latestReviews,comments"
 MERGE_TOOLS = ("Read", "Grep", "Glob", "SendMessage", "ToolSearch", "Bash(factory merge --approved *)",
                "Bash(factory land *)", "Bash(factory status*)", "Bash(gh pr view *)", "Bash(gh pr checks *)",
                "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(sleep *)")
@@ -3259,22 +3262,33 @@ def snapshot(repo):
 
 def approved_at(pr):
     """The newest time an approving review or an `lgtm` comment was left on `pr`, or None. Only a prefilter: the
-    gate of `factory merge --approved` decides."""
+    gate of `factory merge --approved` decides. A draft is never one."""
+    if pr.get("isDraft"):
+        return None
     times = [r.get("submittedAt") for r in pr.get("latestReviews") or [] if r.get("state") == "APPROVED"]
     times += [c.get("createdAt") for c in pr.get("comments") or [] if str(c.get("body")).strip().lower() == "lgtm"]
     return max((t for t in times if t), default=None)
 
 
+def task_slug(repo, pr):
+    """The slug of the task worktree whose branch is the head of `pr`, or None."""
+    return next((os.path.basename(t["path"]) for t in repo.tasks if t["branch"] == pr["headRefName"]), None)
+
+
 def merge_brief(repo, given, word, dispatcher):
     lines = ["Merge run.", f"Repository: {repo.root}", "Pull requests:"]
+    act_git(repo.root, "fetch", repo.remote)
     for pr in given:
         n = pr["number"]
-        slug = next((os.path.basename(t["path"]) for t in repo.tasks if t["branch"] == pr["headRefName"]), None)
+        slug = task_slug(repo, pr)
         how = (f"on the human's word: merge with `factory merge {n}`" if n in word
                else f"approved on GitHub: merge with `factory merge --approved {n}`")
-        lines.append(f"- #{n}: head {pr['headRefName']}, base {pr['baseRefName']}, "
+        moved = repo.git("merge-base", "--is-ancestor", f"{repo.remote}/{pr['baseRefName']}", pr["headRefOid"])[0] != 0
+        lines.append(f"- #{n}: head {pr['headRefName']}, base {pr['baseRefName']} "
+                     f"({'its base has moved: bring it up to date first' if moved else 'its base has not moved'}), "
                      f"{f'task {slug} (its lead is the session {slug})' if slug else 'no task'}; {how}")
-    return "\n".join([*lines, f"The dispatcher's session name is {dispatcher}." if dispatcher
+    return "\n".join([*lines, "The dispatcher started this run: do not message it." if word
+                      else f"The dispatcher's session name is {dispatcher}." if dispatcher
                       else "No dispatcher session is alive."])
 
 
@@ -3311,9 +3325,12 @@ def run_lander(repo, snap, given, word, name):
     rc, out, _ = run(argv, cwd=repo.root, timeout=MERGE_TIMEOUT, env=env)
     results, reply = lander_results(rc, out, [pr["number"] for pr in given])
     try:
-        snap = snapshot(repo)  # the heads and approvals as the run left them
+        snap, opened = snapshot(repo), True  # the heads and approvals as the run left them
     except NotEvaluated:
-        pass
+        opened = False
+    if rc and opened:  # a run that died may have merged first: what is no longer open merged
+        shown = {pr["number"] for pr in snap}
+        results.update({pr["number"]: ("merged", pr["url"]) for pr in given if pr["number"] not in shown})
     state, heads = read_lander(repo), {pr["number"]: pr["headRefOid"] for pr in snap}
     state["noticed"] = {str(pr["number"]): f"{pr['headRefOid']}:{at}" for pr in snap if (at := approved_at(pr))}
     state["stopped"] = {n: s for n, s in state["stopped"].items() if int(n) in heads}
@@ -3325,9 +3342,13 @@ def run_lander(repo, snap, given, word, name):
         print(f"#{n} stopped {kind}: {text}")
         if n in heads:
             state["stopped"][str(n)] = {"head": heads[n], "kind": kind, "text": text, "ts": now()}
-        if not alive:
-            notify(repo, fire(repo, {"criterion": "lgtm-blocked", "escalate": "always", "slug": None,
-                                     "subject": f"#{n}/{kind}", "detail": f"#{n} stopped {kind}: {text}"}))
+        firing = fire(repo, {"criterion": "lgtm-blocked", "escalate": "always",
+                             "slug": task_slug(repo, next(pr for pr in given if pr["number"] == n)),
+                             "subject": f"#{n}/{kind}", "detail": f"#{n} stopped {kind}: {text}"})
+        if alive:  # the lander told it; the health run must not send it again
+            log_firing(repo, id=firing["id"], decision="escalated", by="lander", reason="reported by the lander run")
+        else:
+            notify(repo, firing)
     write_lander(repo, state)
     if "num_turns" in reply:
         print(f"lander: {reply['num_turns']} turns, ${reply.get('total_cost_usd', 0):.2f}, "

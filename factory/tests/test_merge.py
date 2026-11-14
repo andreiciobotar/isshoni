@@ -459,6 +459,23 @@ class ApprovedTests(World):
         self.assertIn("#2 skipped: not approved on GitHub", out)
         self.assertEqual(self.merges(), ["1", "3"])
 
+    def test_a_draft_is_not_merged_on_an_approval(self):
+        code, out, _ = self.approved([pr(1, draft=True)], {1: [comment()]}, reviews={1: [review()]})
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped: not approved on GitHub: it is a draft, and only a pull request that is ready "
+                      "for review is merged on an approval", out)
+        self.assertEqual(self.gh_mutations(), [])
+        code, out, _ = self.approved([pr(1, draft=True), pr(2)], {}, "--all", reviews={1: [review()], 2: [review(n=2)]})
+        self.assertEqual(code, 0)
+        self.assertIn("#1 skipped: not approved on GitHub: it is a draft", out)
+        self.assertEqual(self.merges(), ["2"])
+
+    def test_all_skips_a_stale_approval_and_goes_on(self):
+        code, out, _ = self.approved([pr(1), pr(2)], {1: [comment(at=NOW - 7200)], 2: [comment(n=2)]}, "--all")
+        self.assertEqual(code, 0)
+        self.assertIn("#1 skipped: its head changed after the lgtm", out)
+        self.assertEqual(self.merges(), ["2"])
+
     def test_a_named_number_that_is_not_approved_stops_the_run(self):
         code, out, _ = self.approved([pr(1), pr(2)], {2: [comment(n=2)]}, "1", "2")
         self.assertEqual(code, 1)

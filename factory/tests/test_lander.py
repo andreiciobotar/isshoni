@@ -62,10 +62,18 @@ class StarterTests(World):
         self.assertEqual((env["BASH_DEFAULT_TIMEOUT_MS"], env["BASH_MAX_TIMEOUT_MS"]), ("2400000", "2400000"))
         brief = argv[-1]
         self.assertTrue(brief.startswith("Merge run.\nRepository: /repo\n"))
-        self.assertIn("- #12: head worktree-t12, base main, task t12 (its lead is the session t12); "
-                      "on the human's word: merge with `factory merge 12`", brief)
+        self.assertIn("- #12: head worktree-t12, base main (its base has moved: bring it up to date first), "
+                      "task t12 (its lead is the session t12); on the human's word: merge with `factory merge 12`", brief)
         self.assertNotIn("#14", brief)
-        self.assertTrue(brief.endswith(f"The dispatcher's session name is {SESSION}."))
+        self.assertTrue(brief.endswith("The dispatcher started this run: do not message it."))
+
+    def test_the_brief_says_whether_the_base_has_moved(self):
+        self.lander(prs=[reviewed(1)], answer=reply("#1 merged u"),
+                    extra={("git", "merge-base", "--is-ancestor"): (0, "", "")})
+        self.assertIn("(its base has not moved)", self.claude_runs()[0][-1])
+        self.assertIn(["git", "merge-base", "--is-ancestor", "origin/main", SHA], self.fake.calls)
+        self.assertTrue(self.fake.ran("git", "fetch", "origin"))
+        self.assertTrue(self.claude_runs()[0][-1].endswith(f"The dispatcher's session name is {SESSION}."))
 
     def test_the_merge_tools_cannot_merge_approve_comment_push_or_edit(self):
         tools = " ".join(factory.MERGE_TOOLS)
@@ -158,11 +166,11 @@ class StarterTests(World):
 
     def test_a_stop_is_told_to_the_human_when_no_dispatcher_is_alive(self):
         answers = {("osascript",): (0, "", "")}
-        world, listed, slugs = self.world([plain(1)])
+        world, listed, slugs = self.world([reviewed(1)])
         world.update(answers)
         world[("claude", "-p")] = reply("#1 stopped ci: red")
-        world[LIST] = (0, json.dumps([plain(1)]), "")
-        code, out, _ = self.cli("lander", "1", answers=world, sessions=listed[1:], entries=slugs)
+        world[LIST] = (0, json.dumps([reviewed(1)]), "")
+        code, out, _ = self.cli("lander", answers=world, sessions=listed[1:], entries=slugs)
         self.assertEqual(code, 1)
         [notice] = [c for c in self.fake.calls if c[0] == "osascript"]
         self.assertIn("#1 stopped ci: red", notice[2])
@@ -171,10 +179,32 @@ class StarterTests(World):
         self.assertEqual((fired["criterion"], fired["subject"], fired["escalate"]), ("lgtm-blocked", "#1/ci", "always"))
         self.assertEqual([r["decision"] for r in self.records() if "decision" in r], ["escalated"])
 
-    def test_with_a_dispatcher_nobody_is_notified_by_the_script(self):
+    def test_with_a_dispatcher_the_stop_is_recorded_as_already_escalated(self):
         self.lander("1", prs=[plain(1)], answer=reply("#1 stopped ci: red"))
         self.assertFalse(self.fake.ran("osascript"))
-        self.assertEqual(self.records(), [])
+        [fired] = [r for r in self.records() if "criterion" in r]
+        [decision] = [r for r in self.records() if "decision" in r]
+        self.assertEqual((fired["subject"], fired["slug"]), ("#1/ci", "t1"))
+        self.assertEqual((decision["id"], decision["decision"], decision["reason"]),
+                         (fired["id"], "escalated", "reported by the lander run"))
+
+    def test_a_draft_is_given_on_the_humans_word_but_never_taken_on_an_approval(self):
+        draft = {**reviewed(1), "isDraft": True}
+        code, out, _ = self.lander(prs=[draft])
+        self.assertEqual((code, out), (0, "nothing approved\n"))
+        self.lander("1", prs=[draft], answer=reply("#1 merged u"))
+        self.assertIn("on the human's word", self.claude_runs()[0][-1])
+
+    def test_a_run_that_died_reports_what_is_no_longer_open_as_merged(self):
+        both = [plain(1), plain(2)]
+        answers, listed, slugs = self.world(both)
+        answers[LIST] = [(0, json.dumps(both), ""), (0, json.dumps([plain(2)]), "")]
+        answers[("claude", "-p")] = (124, "", "timed out")
+        code, out, _ = self.cli("lander", "1", "2", answers=answers, sessions=listed, entries=slugs)
+        self.assertEqual(code, 1)
+        self.assertIn("#1 merged https://x/pull/1\n", out)
+        self.assertIn("#2 stopped other: the lander gave no line for it (timed out)\n", out)
+        self.assertEqual(sorted(lander_state()["stopped"]), ["2"])
 
     def test_lander_json_keeps_what_was_noticed_and_drops_what_closed(self):
         repo = SimpleNamespace(root=ROOT)
@@ -311,10 +341,14 @@ class TickTests(SchedHarness, World):
 
     def test_a_stop_of_the_lander_fires_lgtm_blocked_in_the_health_run(self):
         self.tick([reviewed(1)], answer=reply("#1 stopped ci: red https://x/run/1"))
-        out = self.tick([reviewed(1)], at=NOW + 1800)[1]
-        self.assertIn("lgtm-blocked", out)
-        [record] = [r for r in self.records() if r.get("criterion") == "lgtm-blocked"]
-        self.assertEqual((record["subject"], record["slug"]), ("#1/ci", "t1"))
+        self.tick([reviewed(1)], at=NOW + 1800)
+        self.assertEqual([r for r in self.records() if "decision" in r][0]["decision"], "escalated")
+        self.assertEqual(len([r for r in self.records() if r.get("criterion") == "lgtm-blocked"]), 1)
+        self.assertEqual(self.claude_runs(), [])  # the lander told the dispatcher: no second send
+
+    def test_a_draft_is_not_noticed(self):
+        self.tick([{**reviewed(1), "isDraft": True}], answer=reply("#1 merged u"))
+        self.assertEqual(self.landers(), [])
 
 
 class EnvTests(unittest.TestCase):
