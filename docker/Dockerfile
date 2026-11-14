@@ -1,4 +1,4 @@
-# The factory's image: Claude Code, gh, git, Python, Go, tmux and a cron that needs no root.
+# The factory's image: Claude Code, gh, git, Python, Go, openssl, tmux and a cron that needs no root.
 # It holds tools only. Everything that changes lives in the volume mounted at /state:
 # see docs/container.md. Upgrade a tool by changing its version here (for the two images their digest,
 # for supercronic its checksums too) and rebuilding.
@@ -16,7 +16,7 @@ ARG UID=1000
 ARG GID=1000
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git less make procps python3 tmux \
+ && apt-get install -y --no-install-recommends ca-certificates curl git less make openssl procps python3 tmux \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=go /usr/local/go /usr/local/go

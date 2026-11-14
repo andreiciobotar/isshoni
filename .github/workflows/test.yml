@@ -78,18 +78,18 @@ jobs:
       - run: docker compose up -d
       - name: not root, read-only root, no Docker socket, no privileges, limits applied
         run: |
-          docker exec isshoni-factory sh -euc '
-            id
-            test "$(id -u)" != 0
-            awk '$2 == "/" { print $4 }' /proc/mounts | grep -q "^ro"
-            if [ -e /var/run/docker.sock ]; then echo "the Docker socket is visible"; exit 1; fi
-            grep -qx "NoNewPrivs:[[:space:]]*1" /proc/self/status
-            grep -qx "CapBnd:[[:space:]]*0*" /proc/self/status
-            test "$(cat /sys/fs/cgroup/memory.max)" = 4294967296
-            test "$(cat /sys/fs/cgroup/memory.swap.max)" = 0
-            test "$(cat /sys/fs/cgroup/cpu.max)" = "200000 100000"
-            test "$(cat /sys/fs/cgroup/pids.max)" = 1024
-            claude --version; gh --version; go version; python3 --version; tmux -V'
+          docker exec -i isshoni-factory sh -eux <<'EOF'
+          test "$(id -u)" != 0
+          awk '$2 == "/" { print $4 }' /proc/mounts | grep -q "^ro"
+          test ! -e /var/run/docker.sock
+          grep -qx "NoNewPrivs:[[:space:]]*1" /proc/self/status
+          grep -qx "CapBnd:[[:space:]]*0*" /proc/self/status
+          test "$(cat /sys/fs/cgroup/memory.max)" = 4294967296
+          test "$(cat /sys/fs/cgroup/memory.swap.max)" = 0
+          test "$(cat /sys/fs/cgroup/cpu.max)" = "200000 100000"
+          test "$(cat /sys/fs/cgroup/pids.max)" = 1024
+          claude --version; gh --version; go version; python3 --version; tmux -V; openssl version
+          EOF
       - run: docker exec isshoni-factory make -C /state/home/code/isshoni install
       - run: docker exec isshoni-factory make -C /state/home/code/isshoni test
       - run: docker exec isshoni-factory sh -c 'mkdir -p ~/.claude/projects && make -C ~/code/isshoni snapshot'

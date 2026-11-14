@@ -259,7 +259,7 @@ Headless machine: on Linux without `DISPLAY` or `WAYLAND_DISPLAY` the wizard doe
 Undo: uninstall the App (the installation URL the report prints), delete the App (`https://github.com/settings/apps/<slug>/advanced`, or `https://github.com/organizations/<owner>/settings/apps/<slug>/advanced`; no API deletes an App), and `rm -r ~/.claude/factory/identity`.
 
 ## In a container
-[container.md](container.md) runs the factory on an always-on Linux host: an image with Claude Code, `gh`, git, Python and Go (`docker/`), all state in one host directory, a non-root user, CPU and memory limits. The site manager's job uses the cron backend there, run by supercronic because a container has neither systemd nor a root cron; the rules above hold unchanged. The same page lists the first-run steps, what a lead in `auto` mode could damage, and what a separate GitHub identity for the factory needs.
+[container.md](container.md) runs the factory on an always-on Linux host: an image with Claude Code, `gh`, git, Python and Go (`docker/`), all state in one host directory, a non-root user, CPU and memory limits. The site manager's job uses the cron backend there, run by supercronic because a container has neither systemd nor a root cron; the rules above hold unchanged. The same page lists the first-run steps, what a lead in `auto` mode could damage, and how the factory's GitHub identity gets into the container.
 
 ## Known limits
 - Nothing caps what a lead spends; the time limit is checked by the lead between subagent runs.

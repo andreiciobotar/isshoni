@@ -2,7 +2,7 @@
 
 For a machine that is always on: the dispatcher, its leads and the site manager live in one container, and you reach them from a laptop or a phone. The host needs Docker and a user in the `docker` group; nothing else is installed or changed on it.
 
-The image ([docker/Dockerfile](../docker/Dockerfile)) holds tools only, each at a pinned version: Claude Code, `gh`, git, Python 3.13, Go, make, tmux and [supercronic](https://github.com/aptible/supercronic) on Debian 13 slim. It is IMAGE_SIZE (Claude Code 365 MB, Go 240 MB) and builds in BUILD_TIME on a GitHub runner. It has no Chromium, so `make screenshot` does not work there.
+The image ([docker/Dockerfile](../docker/Dockerfile)) holds tools only, each at a pinned version: Claude Code, `gh`, git, Python 3.13, Go, make, openssl, tmux and [supercronic](https://github.com/aptible/supercronic) on Debian 13 slim. It is IMAGE_SIZE (Claude Code 365 MB, Go 240 MB) and builds in BUILD_TIME on a GitHub runner. It has no Chromium, so `make screenshot` does not work there.
 
 ## Start it
 On the host:
@@ -80,20 +80,14 @@ Leads run unattended in `auto` permission mode as the container's only user. One
 - **cannot** write to the image or to Docker's storage on the system disk, apart from the capped log.
 
 ## GitHub identity
-With your own token the factory's pull requests are yours, and GitHub lets nobody approve their own: an `lgtm` comment stands in, and nothing technical tells yours from an agent's ([factory.md](factory.md#merging)). Give the factory its own identity and you approve its pull requests with GitHub's Approve, which `factory watch` already merges on.
+With your own token the factory's pull requests are yours, and GitHub lets nobody approve their own: an `lgtm` comment stands in, and nothing technical tells yours from an agent's ([factory.md](factory.md#merging)). With an identity of its own you approve its pull requests with GitHub's Approve, which `factory watch` merges on.
 
-**Recommended: a GitHub App** that you create and install on the repositories the factory works on.
-- Repository permissions: Contents, Pull requests: read and write; Checks, Commit statuses, Actions, Metadata: read; Workflows: read and write only if tasks may edit `.github/workflows`.
-- It acts with installation tokens that expire after one hour, made from the App's private key. The key goes in the state directory at `~/.config/factory/github-app.pem` (mode 600). `gh` reads a token from `GH_TOKEN`, and git gets it from `gh` (`gh auth setup-git`), so nothing else in the container changes.
-- Commits: `user.name` `<app-slug>[bot]`, `user.email` `<bot user id>+<app-slug>[bot]@users.noreply.github.com` (the id is in `gh api 'users/<app-slug>[bot]'`).
-- Per GitHub's documentation, a pull request opened with an installation token triggers Actions workflows (unlike a workflow's own `GITHUB_TOKEN`), and only a pull request's author is barred from approving it, so you can approve the App's.
-- The App is a bot to GitHub, so an `lgtm` or a review it posts never counts as approval: no setting needed.
-- **Not built**: making and refreshing those tokens (task `act-as-github-app`). Until it lands, use the fallback.
-
-**Fallback: a second GitHub account**, added to the repositories with write access, with a fine-grained token for those repositories only (Contents and Pull requests: read and write; Actions, Commit statuses, Metadata: read; Workflows as above) given to `gh auth login`, and its name and email in `git config --global`. It looks like a person to GitHub, so also set `"lgtm_from_author": false` in `~/.claude/factory/settings.json`: its own `lgtm` then stops counting.
+- **A GitHub App** is the way: `factory wizard` creates, installs and verifies one ([factory.md](factory.md#identity): its permissions, files and undo). It keeps the App's key in `~/.claude/factory/identity/`, which is in the state directory. The wizard cannot create the App from inside the container: GitHub sends your browser back to the wizard on `127.0.0.1`, and the container publishes no port. Run `factory wizard` on your laptop, copy `~/.claude/factory/identity` to `<FACTORY_STATE>/home/.claude/factory/identity`, and run `factory wizard` in the container: it verifies and prints the report.
+- **Not built yet**: the factory acting as that App. Until then every command, in the container too, uses the `gh` login of step 3.
+- **Fallback: a second GitHub account** with write access to the repositories and a fine-grained token for those only (Contents and Pull requests: read and write; Actions, Commit statuses, Metadata: read), given to `gh auth login`, its name and email in `git config --global`. GitHub takes it for a person, so set `"lgtm_from_author": false` in `~/.claude/factory/settings.json`: its own `lgtm` then stops counting.
 
 ## Not verified
 - Anything that needs a real Claude login: logging in from the container, background sessions and their supervisor there (`factory new`, `claude attach`), `auto` permission mode, the site manager's Sonnet run, Remote Control.
-- A real `gh` login, and every GitHub App statement above beyond what GitHub's documentation says.
+- A real `gh` login, the token permissions of the fallback account, and `factory wizard` verifying a copied identity inside the container (the image has the `openssl` it needs).
 - CI builds and runs the image on x86-64 only; an arm64 build passed the same steps (`make install`, `make test`, the walk with `WALK_DAEMON=1`) by hand, once, on a development machine.
 - Memory use of a working factory: the 4g default is a guess (Anthropic lists 4 GB as Claude Code's own requirement).
