@@ -288,14 +288,16 @@ class OwnerTests(Wizard):
 
     def test_forms(self):
         for url in ("https://github.com/octocat/repo.git", "git@github.com:octocat/repo.git", "ssh://git@github.com/octocat/repo",
-                    "https://github.com/octocat/repo/", "https://github.com/octocat/repo"):
+                    "https://github.com/octocat/repo/", "https://github.com/octocat/repo",
+                    "https://user@github.com/octocat/repo.git", "https://GitHub.com/octocat/repo"):
             self.assertEqual(self.owner(url), ("octocat", "repo"), url)
         self.assertEqual(self.owner("git@github.com:octocat/my.dotted-repo.git"), ("octocat", "my.dotted-repo"))
 
     def test_only_github_dot_com_is_a_host(self):
         for url in ("https://notgithub.com/octocat/repo", "https://evil.io/github.com/octocat/repo",
                     "https://gitlab.com/x/github.com/octocat/repo", "https://github.com.evil.io/octocat/repo",
-                    "git@notgithub.com:octocat/repo.git", "ssh://git@gitlab.com/github.com/octocat/repo"):
+                    "git@notgithub.com:octocat/repo.git", "ssh://git@gitlab.com/github.com/octocat/repo",
+                    "ssh://git@github.com:2222/octocat/repo", "https://user:pw@evil.io@github.com.evil.io/octocat/repo"):
             self.assertIsNone(self.owner(url), url)
 
     def test_none(self):

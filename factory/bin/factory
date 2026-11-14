@@ -65,6 +65,11 @@ class Fail(Exception):
         self.code = code
 
 
+def why(e):
+    """An exception for a message: a `Fail` says its own text, anything else is prefixed with its type."""
+    return str(e) or type(e).__name__ if isinstance(e, Fail) else f"{type(e).__name__}: {e}"
+
+
 def run(argv, cwd=None, timeout=None, input=None):
     """The only place a subprocess starts. Returns (returncode, stdout, stderr). `gh` acts as the App when an identity is installed."""
     env = None
@@ -73,7 +78,7 @@ def run(argv, cwd=None, timeout=None, input=None):
             if found := acting_identity(cwd):
                 env = {**os.environ, "GH_TOKEN": app_token(*found)}
         except Exception as e:  # fail closed: no token, and no `gh` run with the human's login
-            return 1, "", str(e) or type(e).__name__
+            return 1, "", why(e)
     try:
         p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, input=input, env=env)
     except subprocess.TimeoutExpired:
@@ -768,12 +773,14 @@ def cmd_status(args):
           f"worktrees outside .claude/worktrees {repo.outside}")
     if bot:
         print(f"acting on GitHub as {bot} (the factory's App)" + (
-            f"; installed on ALL repositories: narrow it at {stored['installation_url']}"
+            f"; installed on ALL repositories: narrow it at {stored.get('installation_url')}"
             if stored.get("repository_selection") == "all" else ""))
+    elif unreadable:
+        print(f"acting on GitHub: the stored App cannot be read: {why(unreadable)}; the factory's gh calls fail until it is "
+              "fixed (factory wizard)")
     else:
         print("acting on GitHub with your gh login (" + (
-            f"the stored App cannot be read: {unreadable or type(unreadable).__name__}" if unreadable else
-            f"this repository is not on GitHub under {stored['owner']}, the App's owner" if stored and stored.get("bot_login") else
+            f"this repository is not on GitHub under {stored.get('owner')}, the App's owner" if stored and stored.get("bot_login") else
             "the App is stored but not installed: factory wizard" if stored else "no App identity: factory wizard") + ")")
     for r in rows:
         if r["phase"] == "review":
@@ -2437,7 +2444,7 @@ def watch_lgtm(p):
 GITHUB = "https://api.github.com"
 TOKEN_MARGIN = 900
 REPO_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
-GITHUB_REMOTE_RE = re.compile(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/\s:]+)/([^/\s]+?)(?:\.git)?/?")
+GITHUB_REMOTE_RE = re.compile(r"(?:https://(?:[^/@\s]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)([^/\s:]+)/([^/\s]+?)(?:\.git)?/?", re.I)
 WIZARD_WAIT = 600
 INSTALL_POLL = 3
 PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read", "actions": "read"}
@@ -2546,6 +2553,7 @@ def app_token(identity, name):
     try:
         cached = json.loads(cache.read_text())
         cached_token, left = cached["token"], epoch(cached["expires_at"]) - time.time()
+        cached_token = cached_token if isinstance(cached_token, str) else None
     except (OSError, ValueError, KeyError, TypeError):
         pass
     if cached_token and left > TOKEN_MARGIN:
@@ -2569,26 +2577,30 @@ def app_token(identity, name):
 
 
 def cmd_env(args):
-    """Print the exports that make git and gh act as the App; nothing without an identity."""
-    identity, token, code = None, "unavailable", 1
+    """Print the exports that make git and gh act as the App; nothing when no identity applies. Whatever else happens the
+    lock-down is printed (exit 1): git must not reach the human's credentials."""
+    values = {"GH_TOKEN": "unavailable", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "4"}
+    credential, rewrite = "credential.https://github.com.helper", "url.https://github.com/.insteadOf"
+    helper = "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f"
+    for i, (key, value) in enumerate(((credential, ""), (credential, helper), (rewrite, "git@github.com:"),
+                                      (rewrite, "ssh://git@github.com/"))):
+        values[f"GIT_CONFIG_KEY_{i}"], values[f"GIT_CONFIG_VALUE_{i}"] = key, value
+    code = 1
     try:
         found = acting_identity()
         if not found:
             return 0
-        identity = found[0]
-        token, code = app_token(*found), 0
-    except Exception as e:  # fail closed: whatever went wrong, git must not reach the human's credentials
-        print(f"factory: no App token: {e or type(e).__name__}; git and gh will fail until one can be minted", file=sys.stderr)
-    helper = "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f"
-    credential = "credential.https://github.com.helper"
-    rewrite = "url.https://github.com/.insteadOf"
-    values = {"GH_TOKEN": token, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "4"}
-    if isinstance(identity, dict) and identity.get("bot_login") and identity.get("bot_email"):
+        login, email = found[0]["bot_login"], found[0]["bot_email"]
+        if not (isinstance(login, str) and isinstance(email, str) and login and email):
+            raise Fail("the stored App's bot_login and bot_email must be non-empty strings", 1)
         for who in ("AUTHOR", "COMMITTER"):
-            values[f"GIT_{who}_NAME"], values[f"GIT_{who}_EMAIL"] = identity["bot_login"], identity["bot_email"]
-    for i, (key, value) in enumerate(((credential, ""), (credential, helper), (rewrite, "git@github.com:"),
-                                      (rewrite, "ssh://git@github.com/"))):
-        values[f"GIT_CONFIG_KEY_{i}"], values[f"GIT_CONFIG_VALUE_{i}"] = key, value
+            values[f"GIT_{who}_NAME"], values[f"GIT_{who}_EMAIL"] = login, email
+        token = app_token(*found)
+        if not isinstance(token, str) or not token:
+            raise Fail("the token is not a string", 1)
+        values["GH_TOKEN"], code = token, 0
+    except Exception as e:
+        print(f"factory: no App token: {why(e)}; git and gh will fail until one can be minted", file=sys.stderr)
     for name, value in values.items():
         print(f"export {name}={shlex.quote(value)}")
     return code

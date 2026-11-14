@@ -35,7 +35,11 @@ class Identity(test_wizard.Wizard):
         self.addCleanup(patcher.stop)
         self.bodies = []
 
+        self.reached = []
+        self.addCleanup(lambda: self.assertEqual(self.reached, [], "a test reached GitHub"))
+
         def no_network(*args, **kw):
+            self.reached.append(args)  # recorded too, in case the code under test swallows the exception
             raise AssertionError(f"a test reached GitHub: {args}")
 
         patcher = mock.patch.object(factory, "github_api", no_network)
@@ -46,8 +50,9 @@ class Identity(test_wizard.Wizard):
         self.stored(installation_id=7654321, installation_url=INSTALL_URL, bot_login=BOT, bot_id=99999999, bot_email=EMAIL,
                     **over)
 
-    def github(self, status=201, lifetime=3600):
-        self.gh = FakeGitHub({MINT: (status, {"token": TOKEN, "expires_at": expiring(lifetime)})})
+    def github(self, status=201, lifetime=3600, message=None):
+        answer = {"token": TOKEN, "expires_at": expiring(lifetime), **({"message": message} if message else {})}
+        self.gh = FakeGitHub({MINT: (status, answer)})
 
         def stub(method, path, bearer=None, body=None):
             self.bodies.append(body)
@@ -99,6 +104,7 @@ class AppTokenTests(Identity):
             "under the margin": {"token": "old", "expires_at": expiring(600)},
             "expired": {"token": "old", "expires_at": expiring(-60)},
             "no expiry": {"token": "old"},
+            "a token that is not a string": {"token": 5, "expires_at": expiring(3000)},
             "corrupt": "{not json",
             "not an object": "[]",
         }
@@ -152,10 +158,11 @@ class AppTokenTests(Identity):
         self.assertEqual(self.token("two"), TOKEN)
 
     def test_a_repository_the_app_is_not_installed_on(self):
-        self.github(status=422)
+        self.github(status=422, message="Validation Failed")
         with self.assertRaises(factory.Fail) as caught:
             self.token()
-        self.assertEqual(str(caught.exception), f"the App is not installed on octocat/one: add it at {INSTALL_URL} (HTTP 422)")
+        self.assertEqual(str(caught.exception),
+                         f"the App is not installed on octocat/one: add it at {INSTALL_URL} (HTTP 422: Validation Failed)")
 
     def test_a_name_that_is_not_a_repository_name_is_refused(self):
         self.github()
@@ -287,10 +294,16 @@ class EnvTests(Identity):
                 self.assert_in_shell(out, "unavailable", author=True)
 
     def test_an_unreadable_or_malformed_app_json_still_locks_git_down(self):
-        cases = {"corrupt": "{", "a list": "[1]", "an empty list": "[]", "no owner": json.dumps({"bot_login": BOT}),
-                 "no key": json.dumps({"owner": "octocat", "bot_login": BOT, "installation_id": 7654321,
-                                       "client_id": "Iv23abc"})}
-        for name, content in cases.items():
+        ok = {"owner": "octocat", "bot_login": BOT, "bot_email": EMAIL, "client_id": "Iv23abc", "installation_id": 7654321}
+        cases = {"corrupt": ("{", False, "cannot be read as JSON"), "a list": ("[1]", False, "not a JSON object"),
+                 "an empty list": ("[]", False, "not a JSON object"),
+                 "no owner": (json.dumps({"bot_login": BOT}), False, "KeyError: 'owner'"),
+                 "an int bot_login": (json.dumps({**ok, "bot_login": 5}), False, "must be non-empty strings"),
+                 "a list bot_login": (json.dumps({**ok, "bot_login": [BOT]}), False, "must be non-empty strings"),
+                 "a null bot_email": (json.dumps({**ok, "bot_email": None}), False, "must be non-empty strings"),
+                 "no installation_id": (json.dumps({k: v for k, v in ok.items() if k != "installation_id"}), True,
+                                        "KeyError: 'installation_id'")}
+        for name, (content, author, reason) in cases.items():
             with self.subTest(name):
                 self.fresh()
                 self.installed()
@@ -300,7 +313,8 @@ class EnvTests(Identity):
                 self.assertEqual(err.count("\n"), 1)
                 self.assertTrue(err.startswith("factory: no App token: "))
                 self.assertNotIn("Traceback", err)
-                self.assert_locked_down(out, "unavailable", author=False)
+                self.assertIn(reason, err)
+                self.assert_locked_down(out, "unavailable", author=author)
 
     def test_a_corrupt_app_json_is_one_shell_session_with_no_credentials(self):
         self.installed()
@@ -427,8 +441,11 @@ class StatusTests(Identity):
         with mock.patch.object(factory, "load_identity", side_effect=broken):
             out = invoke(["status"], repo_answers([]))[1]
             doc = json.loads(invoke(["status", "--json"], repo_answers([]))[1])
-        self.assertIn("\nacting on GitHub with your gh login (the stored App cannot be read: app.json cannot be read as JSON)\n", out)
+        self.assertIn("\nacting on GitHub: the stored App cannot be read: app.json cannot be read as JSON; the factory's gh "
+                      "calls fail until it is fixed (factory wizard)\n", out)
+        self.assertNotIn("your gh login", out)
         self.assertIsNone(doc["identity"])
+        self.assertIn("cannot be read: KeyError: 'owner';", self.status({"bot_login": BOT}))
 
     def test_all_repositories_are_flagged(self):
         everything = {**self.INSTALLED, "repository_selection": "all"}
