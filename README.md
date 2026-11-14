@@ -60,59 +60,14 @@ Optional:
 
 ## Factory
 
-### Option M
-
-```mermaid
-flowchart LR
-    you([You]) -- brief --> disp[Dispatcher · Fable]
-    disp -- one lead per task --> lead
-    subgraph task [one task · its own worktree]
-        lead[Lead · Fable] --> ex[explorer · Haiku]
-        lead --> co[coder · Sonnet]
-        lead --> rv[reviewer · Opus]
-    end
-    ex & co & rv --> lander[Lander · Sonnet]
-    lander -- tests, pushes --> pr[Pull request<br>draft → ready]
-    pr -- review or lgtm --> you2([You])
-    you2 -- lander merges in about 2 min --> main[main]
-    pr -. your comments .-> courier[courier · Haiku] -.-> lead
-    watcher[watcher · script<br>draft → ready when green] -.-> pr
-    sm[site manager · Sonnet · every 30 min] -. escalates .-> disp
-    note[default models]
-    classDef yellow stroke:#FFD34E,stroke-width:2px
-    classDef teal stroke:#3FD8C4,stroke-width:2px
-    classDef blue stroke:#5E9BFF,stroke-width:2px
-    classDef pink stroke:#FF6FAE,stroke-width:2px
-    classDef lime stroke:#ACD56E,stroke-width:2px
-    classDef muted stroke:#8E8BA8,stroke-width:2px,stroke-dasharray:4
-    class disp,lead yellow
-    class ex teal
-    class co blue
-    class rv pink
-    class lander,main lime
-    class watcher,sm,courier,note muted
-```
-
-```mermaid
-flowchart LR
-    tasks[every task: feedback, decisions,<br>retrospective, cost] -.-> disp[Dispatcher]
-    disp -. proposes rule edits .-> you([You])
-    you -. decide .-> rules[rules for the next task]
-    rules -.-> next[next task]
-    classDef yellow stroke:#FFD34E,stroke-width:2px
-    class disp yellow
-```
-
-### Option S
-
 <p align="center">
   <picture>
     <source media="(max-width: 600px)" srcset="assets/diagrams/factory-narrow.svg">
-    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief. It starts one lead per task, in its own worktree; the lead dispatches an explorer, a coder and a reviewer until the reviewer approves. The lander tests and pushes a pull request that stays a draft until checks are green. A courier carries your comments to the lead. You approve with a review or a comment lgtm, and the lander merges it to main within about two minutes. Models shown are defaults. Every task leaves feedback, decisions, a retrospective and its cost; the dispatcher proposes rule edits, you decide, and the rules apply to the next task.">
+    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief; it starts one lead per task in its own worktree. The lead has an explorer, a coder and a reviewer work until the reviewer approves. The lander tests and pushes a pull request, a draft until checks are green; you approve and the lander merges to main. A courier carries your comments to the lead. Every task leaves feedback and a retrospective; the dispatcher proposes rule edits, you decide. Models are defaults.">
   </picture>
 </p>
 
-A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the lander merges it within a few minutes once checks are green. Your other comments on a pull request reach its lead on the next watch tick.
+A lead asks you only what it cannot decide itself. Nothing merges without you.
 
 <p align="center">
   <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap">
