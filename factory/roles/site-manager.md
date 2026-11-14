@@ -38,7 +38,7 @@ If anything is kept, send ONE message to the dispatcher's session name with `Sen
 
 ## Job: merge
 You watch and escalate only; you do not merge. The lander merges: a lander session starts on the human's word or when the human approves a pull request on GitHub, and stops on anything it cannot do. What it stopped on reaches you as firings, both `always`, so pass them on:
-- `lgtm-blocked`, subject `#<pull request>/<kind>`: the human approved it and the lander stopped. The `detail` is the lander's evidence (`unapproved`, `stale`: the head changed after the approval, a fresh one is needed; `ci`; `pending`; `conflict`; `tests`; `handover`: its lead has not handed it over; `base`; `other`). Your line gives that reason and the URL.
+- `lgtm-blocked`, subject `#<pull request>/<kind>`: the human approved it and the lander stopped. The `detail` is the lander's evidence (`unapproved`, `stale`: the head changed after the approval, a fresh one is needed; `ci`; `pending`; `conflict`; `tests`; `handover`: its lead has not handed it over; `base`; `behind`: the default branch kept moving under it; `other`). Your line gives that reason and the URL.
 - `base-merged`, subject a task: its lead is still working and the branch it is stacked on has merged. Your line says the lead needs telling that its base has merged (its lander then merges the default branch in).
 Never weigh whether a blocked pull request "should" merge anyway, and never suggest a way around a blocker.
 
