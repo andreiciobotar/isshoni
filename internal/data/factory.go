@@ -63,6 +63,21 @@ func (r *Runner) FactoryStatus(ctx context.Context, repoPath string) (*FactorySt
 	if _, err := os.Stat(script); err != nil {
 		return nil, fmt.Errorf("factory command not found: %s", script)
 	}
+	b, err := r.shared(ctx, "factory\x00"+repoPath, false, func(ctx context.Context) ([]byte, error) {
+		return r.factoryOutput(ctx, script, repoPath)
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out FactoryStatus
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("decode factory output: %w", err)
+	}
+	return &out, nil
+}
+
+// factoryOutput is one `factory status --json` process and what it printed.
+func (r *Runner) factoryOutput(ctx context.Context, script, repoPath string) ([]byte, error) {
 	if !r.begin() {
 		return nil, cmp.Or(ctx.Err(), context.Canceled)
 	}
@@ -92,11 +107,7 @@ func (r *Runner) FactoryStatus(ctx context.Context, repoPath string) (*FactorySt
 		}
 		return nil, errors.New(cmp.Or(strings.TrimPrefix(msg, "factory: "), err.Error()))
 	}
-	var out FactoryStatus
-	if err := json.Unmarshal(so.Bytes(), &out); err != nil {
-		return nil, fmt.Errorf("decode factory output: %w", err)
-	}
-	return &out, nil
+	return so.Bytes(), nil
 }
 
 // FactorySettingsPath is the factory's settings file.

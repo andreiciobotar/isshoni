@@ -21,7 +21,7 @@ docker compose up -d --build
 | `FACTORY_CPUS` | 2 | CPU limit |
 | `FACTORY_MEMORY` | 4g | memory limit, with no swap on top; at the limit the kernel kills a process inside the container, usually the largest; if that is supercronic, the container restarts |
 
-Also fixed in [docker/compose.yaml](../docker/compose.yaml): 1024 processes at most, a container log of 10 MB at most, restart unless stopped.
+Also fixed in [docker/compose.yaml](../docker/compose.yaml): 1024 processes at most, a container log of 10 MB at most, restart unless stopped. The dashboard's two settings are in its own section below.
 
 ## First run
 Only you can do these. In order:
@@ -37,7 +37,24 @@ Only you can do these. In order:
 ## Talking to the dispatcher
 - **Recommended: SSH to the host, then `docker exec -it isshoni-factory tmux attach`.** It needs nothing beyond the SSH access you already have, and works from any SSH client, a phone's included. A lead is `claude attach <slug>` from that shell.
 - **Claude Code's Remote Control** (`/remote-control` in the dispatcher session, then claude.ai or the mobile app): outbound HTTPS only, no port to open. It needs the subscription login of step 2. A good second door for a phone; documented by Anthropic, not tried here.
-- Not built: an SSH server inside the container. Port 2222 is reserved in the compose file for the dashboard served over SSH, which is not built.
+- **The dashboard over SSH**, read-only by default: see the next section. It is the dashboard only, not a shell.
+
+## The dashboard over SSH
+The container can serve `isshoni-tui` to any SSH client, for a phone or a laptop that has no `docker exec` ([isshoni.md](isshoni.md#over-ssh) has what it does). It needs the dashboard built (step 6) and a key:
+
+1. Put a public key in `<FACTORY_STATE>/home/.claude/factory/dashboard/authorized_keys`, one per line (`mkdir -p` the directory first). A line that starts with `write ` (`write ssh-ed25519 AAAA... laptop`) may also change the worktree cap; every other key is read-only.
+2. Restart the container: `docker compose restart`. The start script runs `isshoni-tui --serve 0.0.0.0:2222` when the file is not empty and `~/code/isshoni/bin/isshoni-tui` exists.
+3. Connect: `ssh -p 2222 HOST`, with `HOST` the machine the container runs on. The first time, `ssh` shows the server's fingerprint; compare it with the `serving ssh on ..., host key SHA256:...` line in `docker logs isshoni-factory`. The host key is created on that first start and kept in `<FACTORY_STATE>/home/.claude/factory/dashboard/host_key`.
+
+| `.env` key | Default | |
+|---|---|---|
+| `DASHBOARD_BIND` | `127.0.0.1` | the host address the port is published on |
+| `DASHBOARD_PORT` | 2222 | the host port |
+
+- **The key file is the only gate**: the container has no firewall and no other login. By default the port is open on the host's loopback only, so you reach it with an SSH tunnel to the host (`ssh -L 2222:127.0.0.1:2222 HOST`, then `ssh -p 2222 127.0.0.1`) or by putting the address of a LAN or VPN interface in `DASHBOARD_BIND`. `0.0.0.0` there publishes it to everyone who can reach the host. Keys can be added and removed while it runs.
+- **Off**: empty or remove the key file and restart the container.
+- The server is not supervised: if it crashes it stays down until the container restarts. On `docker compose stop` it is killed with the container, not signalled, and holds no state to lose.
+- It runs where the factory runs, as the container's user, so the Factory view's `factory status` sees the same tmux and processes; a `write` key changes `~/.claude/factory/settings.json` of that user.
 
 ## State
 Everything that must survive is under `FACTORY_STATE`, mounted at `/state`. The rest of the container is read-only, apart from 64 MB of `/tmp` in memory.
@@ -47,6 +64,7 @@ Everything that must survive is under `FACTORY_STATE`, mounted at `/state`. The 
   home/                      the user's home, /state/home
     .claude/                 Claude Code: login (.credentials.json), settings, transcripts (projects/), plugins/
       factory/               the factory's stores: logs, settings.json, specs/, watch.log
+        dashboard/           the dashboard over SSH: authorized_keys, host_key
     .claude.json             Claude Code: account and per-project trust
     .config/gh/              gh's token
     .gitconfig

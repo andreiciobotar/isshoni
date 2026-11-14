@@ -97,10 +97,25 @@ jobs:
         run: docker exec isshoni-factory sh -c 'cd ~/code/isshoni && (sleep 3; printf q) | script -qec "make up" /dev/null > /dev/null'
       - name: the watch's life, each tick fired by supercronic
         run: docker exec -e CI=true -e WALK_DAEMON=1 isshoni-factory /state/home/code/isshoni/tools/walk.sh
+      - name: a key for the dashboard over SSH, which the container starts serving when it is recreated
+        run: |
+          mkdir -p "$RUNNER_TEMP/state/home/.claude/factory/dashboard"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/viewer"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/stranger"
+          cp "$RUNNER_TEMP/viewer.pub" "$RUNNER_TEMP/state/home/.claude/factory/dashboard/authorized_keys"
       - name: a recreated container finds its state
         run: |
           docker compose up -d --force-recreate
           docker exec isshoni-factory sh -c 'test -x ~/code/isshoni/bin/isshoni-tui && test -d ~/go/pkg/mod && test -s ~/.claude/factory/watch.log'
+      - name: the dashboard over SSH, for the listed key and not for another
+        run: |
+          timeout 30 sh -c 'until docker logs isshoni-factory 2>&1 | grep -q "serving ssh on"; do sleep 1; done'
+          ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -o BatchMode=yes -p 2222"
+          (sleep 3; printf q) | ssh -tt $ssh_opts -i "$RUNNER_TEMP/viewer" 127.0.0.1 > "$RUNNER_TEMP/dashboard.txt"
+          grep -aq Sessions "$RUNNER_TEMP/dashboard.txt"
+          if (sleep 1; printf q) | ssh -tt $ssh_opts -i "$RUNNER_TEMP/stranger" 127.0.0.1 > /dev/null; then
+            echo "a key that is not listed got in"; exit 1
+          fi
       - if: always()
         run: docker logs isshoni-factory
 

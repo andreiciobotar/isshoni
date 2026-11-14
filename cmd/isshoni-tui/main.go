@@ -2,12 +2,17 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"log"
+	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"isshoni/internal/data"
 	"isshoni/internal/tui"
@@ -26,6 +31,9 @@ func main() {
 		fold     = flag.Bool("fold", false, "dashboard snapshot: collapse the repository the cursor is in")
 		noColor  = flag.Bool("no-color", false, "plain rendering (also honors NO_COLOR)")
 		follow   = flag.Bool("follow", false, "start in follow mode")
+		serveAt  = flag.String("serve", "", "serve the dashboard over SSH on ADDR (e.g. 127.0.0.1:2222) instead of on this terminal; public keys only")
+		keysFile = flag.String("authorized-keys", dashboardFile("authorized_keys"), "with --serve: the keys allowed in, one per line; `write ssh-ed25519 ...` may also change the worktree cap")
+		hostKey  = flag.String("host-key", dashboardFile("host_key"), "with --serve: the server's private key, created when missing")
 	)
 	flag.Parse()
 
@@ -35,6 +43,23 @@ func main() {
 	nc := *noColor || os.Getenv("NO_COLOR") != ""
 	o := tui.Options{Runner: r, Range: *rng, NoColor: nc, Follow: *follow}
 
+	if *serveAt != "" {
+		if *snapshot != "" {
+			fmt.Fprintln(os.Stderr, "isshoni-tui: --serve and --snapshot cannot be combined")
+			os.Exit(2)
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		ln, err := net.Listen("tcp", *serveAt)
+		if err == nil {
+			err = serve(ctx, ln, serveOptions{Runner: r, AuthorizedKeys: *keysFile, HostKey: *hostKey, Range: *rng, Follow: *follow, NoColor: *noColor, Log: log.New(os.Stderr, "isshoni-tui: ", log.LstdFlags)})
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "isshoni-tui:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *snapshot != "" {
 		w, h, err := parseSize(*size)
 		if err != nil {
@@ -59,6 +84,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "isshoni-tui:", err)
 		os.Exit(1)
 	}
+}
+
+// dashboardFile is a file in the dashboard's state directory.
+func dashboardFile(name string) string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude", "factory", "dashboard", name)
 }
 
 // absolute resolves a directory flag against the user's working directory, because

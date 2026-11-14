@@ -218,6 +218,9 @@ func (m *model) saveCap() tea.Cmd {
 		f.fieldErr = err.Error()
 		return nil
 	}
+	if m.runner != nil {
+		m.runner.Forget() // other viewers of a shared runner must see the new cap
+	}
 	f.editing, f.cap, f.capErr = false, n, ""
 	m.setToast(fmt.Sprintf("worktree cap set to %d", n), false)
 	return m.refreshFactory(0)
