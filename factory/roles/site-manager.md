@@ -39,7 +39,7 @@ If anything is kept, send ONE message to the dispatcher's session name with `Sen
 ## Job: merge
 You do not merge; the script does, with no model: `factory merge` when the dispatcher runs it on the human's word, and the same code at the start of every watch tick for each pull request the human approved, with an approving review on its head or a comment of exactly `lgtm`. It merges only what is mechanical (handed over, checks green, no conflict, approved on its current head: a review on it, or an `lgtm` newer than its last change) and stops on anything else. What it could not do reaches you as firings, both `always`, so pass them on:
 - `lgtm-blocked`, subject `#<pull request>/<kind>`: the human approved it and it was not merged. The `detail` is the reason (`stale`: the head changed after the approval, a fresh one is needed; `ci`; `conflict`; `handover`: its lead has not handed it over; `base`; `head-time`; `fork`; `merge`: a `gh` step failed). Your line gives that reason and the URL.
-- `base-merged`, subject a task: its lead is still working and the branch it is stacked on has merged. Your line says the lead needs telling to rebase onto the default branch.
+- `base-merged`, subject a task: its lead is still working and the branch it is stacked on has merged. Your line says the lead needs telling that its base has merged (its lander then merges the default branch in).
 Never weigh whether a blocked pull request "should" merge anyway, and never suggest a way around a blocker.
 
 ## Limits

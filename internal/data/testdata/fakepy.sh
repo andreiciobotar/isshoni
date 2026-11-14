@@ -1,22 +1,42 @@
 #!/bin/sh
 # Stand-in for `python3 -m isshoni <cmd> [id] --json ...` and for `python3 <root>/factory/bin/factory status --json`.
-# Logs each call to $STUBDIR/calls; a file named fail or hang in $STUBDIR makes every call fail or never return.
-# $STUBDIR/sessions.json and $STUBDIR/status.json, when present, are what the sessions and factory calls print.
+# Logs each call to $STUBDIR/calls; a factory or kaizen call without --cached (the pass that may ask GitHub) is also
+# logged to $STUBDIR/fetches. A file named fail or hang in $STUBDIR makes every call fail or never return; fetch-fail
+# and fetch-hang do so only for calls without --cached. $STUBDIR/sessions.json, status.json and kaizen.json, when
+# present, are what the sessions, factory and kaizen calls print; status-fetch.json and kaizen-fetch.json replace
+# them for calls without --cached.
+factory=; [ "$2" = status ] && factory=1
+fetch=1
+for a; do [ "$a" = --cached ] && fetch=; done
+hang() { # the factory runs in its own process group, so its child is killed with it
+	if [ -n "$factory" ]; then sleep 30 & echo $! > "$STUBDIR/child"; wait; exit 1; fi
+	exec sleep 30
+}
+stop() { # $1 is the failure message, $2 its exit code
+	[ -e "$STUBDIR/fail" ] && { echo "$1" >&2; exit "${2:-1}"; }
+	[ -e "$STUBDIR/hang" ] && hang
+	[ -n "$fetch" ] && [ -e "$STUBDIR/fetch-fail" ] && { echo "$1" >&2; exit "${2:-1}"; }
+	[ -n "$fetch" ] && [ -e "$STUBDIR/fetch-hang" ] && hang
+}
+printjson() { # $1 is the file for a call without --cached, $2 the file for any call
+	[ -n "$fetch" ] && [ -e "$STUBDIR/$1" ] && exec cat "$STUBDIR/$1"
+	[ -e "$STUBDIR/$2" ] && exec cat "$STUBDIR/$2"
+}
 echo $$ >> "$STUBDIR/pids" # one line per call, so a test can check no call outlived it
-if [ "$2" = status ]; then
+if [ -n "$factory" ]; then
 	echo "factory $PWD" >> "$STUBDIR/calls"
-	[ -e "$STUBDIR/fail" ] && { echo "factory: not inside a git repository" >&2; exit 2; }
-	[ -e "$STUBDIR/hang" ] && { sleep 30 & echo $! > "$STUBDIR/child"; wait; }
-	[ -e "$STUBDIR/status.json" ] && exec cat "$STUBDIR/status.json"
+	[ -n "$fetch" ] && echo "factory $PWD" >> "$STUBDIR/fetches"
+	stop "factory: not inside a git repository" 2
+	printjson status-fetch.json status.json
 	echo '{"rows":[],"cap":5,"open":0,"in_motion":0,"blocked":0,"in_review":0,"merged":0,"settled":0}'
 	exit
 fi
 echo "$3 $4" >> "$STUBDIR/calls"
-[ -e "$STUBDIR/fail" ] && { echo "boom" >&2; exit 1; }
-[ -e "$STUBDIR/hang" ] && exec sleep 30
+[ "$3" = kaizen ] && [ -n "$fetch" ] && echo "$3 $4" >> "$STUBDIR/fetches"
+if [ "$3" = kaizen ]; then stop boom; else fetch=; stop boom; fi
 case "$3" in
 session) printf '{"id":"%s","project":"p","tokens":{"total":10},"dispatches":[]}' "$4" ;;
-kaizen) [ -e "$STUBDIR/kaizen.json" ] && exec cat "$STUBDIR/kaizen.json"; echo "{}" ;;
+kaizen) printjson kaizen-fetch.json kaizen.json; echo "{}" ;;
 agents) echo '{"agents":[],"by_model":{},"sessions":0}' ;;
-*) [ -e "$STUBDIR/sessions.json" ] && exec cat "$STUBDIR/sessions.json"; echo '{"sessions":[],"malformed":0}' ;;
+*) printjson sessions.json sessions.json; echo '{"sessions":[],"malformed":0}' ;;
 esac

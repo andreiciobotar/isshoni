@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime, timezone
 
 from tests.support import AGENTS, ROOT  # noqa: F401  (puts the repository on sys.path)
-from isshoni import anatomy, cli, metrics, prices as price_file, transcript
+from isshoni import anatomy, authoring, cli, metrics, prices as price_file, transcript
 
 REPO = "/r/alpha"
 RATES = {"input": 1, "output": 2, "cache_write_5m": 3, "cache_write_1h": 4, "cache_read": 5}
@@ -136,6 +136,50 @@ class Anatomy(unittest.TestCase):
         r = self.role(doc)
         self.assertEqual(r["tools"], {"Bash:git": 2, "Bash": 1, "Bash:ls": 1, "Bash:abcd": 1, "Bash:make": 1, "Read": 1, "SendMessage": 1})
         self.assertEqual(r["dispatches"], 2)
+
+    def written(self, doc, role="lead"):
+        return {k: (w["calls"], w["lines"]) for k, w in self.role(doc, role)["written"].items() if w["calls"]}
+
+    def test_written_by_role_and_kind(self):
+        wt = REPO + "/.claude/worktrees/t1/"
+        lead = [call("m1", usage(), [tool("w1", "Write", file_path=wt + "isshoni/a.py", content="a\nb\nc"),
+                                     tool("w2", "Write", file_path="/tmp/s.py", content="x\n"),
+                                     tool("w3", "Edit", file_path=wt + "docs/a.md", old_string="a", new_string="a\nb"),
+                                     tool("w4", "Edit", file_path=wt + "tests/test_a.py", old_string="x", new_string="y")]),
+                call("m2", usage(), [tool("w5", "Write", file_path=wt + "isshoni/a.py", content="a\n")])]
+        coder = [call("c1", usage(), [tool("v1", "Write", file_path=wt + "tests/test_a.py", content="t\n" * 4),
+                                      tool("v2", "Edit", file_path=wt + "isshoni/a.py", old_string="a\nb", new_string="a\nb\nc\nd")])]
+        doc = self.build(self.session("t1", lead, subs=[("coder", coder)]))
+        self.assertEqual(self.written(doc), {"product": (2, 4), "tests": (1, 1), "docs": (1, 1), "scratch": (1, 1)})
+        self.assertEqual(self.written(doc, "coder"), {"product": (1, 2), "tests": (1, 4)})
+        self.assertEqual(list(self.role(doc)["written"]), list(authoring.KINDS))
+        self.assertEqual(self.role(doc)["written"]["rules"], {"calls": 0, "lines": 0})
+
+    def test_edit_lines_are_the_new_ones_by_multiset_and_odd_calls_count_as_path_empty(self):
+        edit = lambda i, old, new: tool("e%d" % i, "Edit", file_path="/r/a.xyz", old_string=old, new_string=new)  # noqa: E731
+        lines = [call("m1", usage(), [edit(1, "a\nb\n", "a\nb\nb\nc\n"), edit(2, "x", ""), edit(3, "", "p\n\nq"),
+                                      tool("e4", "Edit", file_path=7, old_string=None, new_string="z"),
+                                      tool("e5", "Write", content=5)])]
+        doc = self.build(self.session("t1", lines))
+        self.assertEqual(self.written(doc), {"other": (5, 6)})  # 2 + 0 + 3 + 1 + 0
+        self.assertEqual(doc["unmatched"], [{"path": "/r/a.xyz", "calls": 3, "lines": 5}, {"path": "", "calls": 2, "lines": 1}])
+
+    def test_unmatched_over_all_tasks_most_calls_first(self):
+        w = lambda i, path: tool("w%d" % i, "Write", file_path=path, content="a\nb")  # noqa: E731
+        a = self.session("t1", [call("m1", usage(), [w(1, "/h/m.xyz"), w(2, "/h/n.xyz"), w(3, "/h/n.xyz"), w(4, "/h/p.py")])])
+        b = self.session("t2", [call("m2", usage(), [w(1, "/h/m.xyz")])], subs=[("coder", [call("c1", usage(), [w(2, "/h/z.xyz")])])])
+        self.assertEqual(self.build(a, b)["unmatched"], [{"path": "/h/m.xyz", "calls": 2, "lines": 4},
+                                                          {"path": "/h/n.xyz", "calls": 2, "lines": 4},
+                                                          {"path": "/h/p.py", "calls": 1, "lines": 2},  # outside a worktree: other
+                                                          {"path": "/h/z.xyz", "calls": 1, "lines": 2}])
+        self.assertEqual(self.build()["unmatched"], [])
+
+    def test_a_forks_copied_message_does_not_write_twice(self):
+        spawn = call("m1", usage(i=10), [tool("t1", "Agent", subagent_type="fork"), tool("w1", "Write", file_path="/h/a.xyz", content="a\nb\nc")])
+        doc = self.build(self.session("t1", [spawn], subs=[("fork", [dict(spawn), call("f1", usage(i=20))])]))
+        self.assertEqual(self.written(doc), {"other": (1, 3)})
+        self.assertEqual(self.written(doc, "fork"), {})
+        self.assertEqual(doc["unmatched"], [{"path": "/h/a.xyz", "calls": 1, "lines": 3}])
 
     def fill(self, *lines):
         return self.role(self.build(self.session("t1", list(lines))))["fill"]
@@ -276,9 +320,10 @@ class Anatomy(unittest.TestCase):
         lines = out.splitlines()
         self.assertEqual(rc, 0)
         self.assertEqual(lines[0].split(), ["task", "version", "role", "runs", "calls", "ctx", "first", "ctx", "median", "ctx", "max",
-                                            "cost", "in%", "out%", "cw%", "cr%", "tools", "disp"])
+                                            "cost", "in%", "out%", "cw%", "cr%", "tools", "disp", "written", "(calls/lines)"])
         row = lines[1].split()
-        self.assertEqual(row[:8] + row[9:], ["t1", "-", "lead", "1", "2", "950", "1.5k", "2.0k", "33%", "2%", "6%", "59%", "1", "0"])
+        self.assertEqual(row[:8] + row[9:], ["t1", "-", "lead", "1", "2", "950", "1.5k", "2.0k", "33%", "2%", "6%", "59%", "1", "0", "-"])
+        self.assertEqual(lines[-2], "0 written calls matched no kind (--json lists them as unmatched)")
         self.assertTrue(lines[-1].startswith("prices: USD as of 2026-01-01"))
         rc, js = self.cli("--json")
         doc = json.loads(js)
