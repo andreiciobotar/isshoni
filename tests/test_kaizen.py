@@ -1,15 +1,18 @@
 import contextlib
+import glob
+import hashlib
 import io
 import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from tests.support import AGENTS, PRICES_PATH, ROOT
-from isshoni import cli, kaizen, metrics, prices as price_file, transcript
+from isshoni import authoring, cli, kaizen, metrics, prices as price_file, transcript
 
 GROUPING = os.path.join(ROOT, "tests", "fixtures", "grouping")
 PRICES_TOML = """currency = "USD"
@@ -46,14 +49,22 @@ def assistant(ts, mid, model="claude-fable-5-2", tokens=0, content=None, cwd="/x
     return {"type": "assistant", "uuid": "u-" + mid, "timestamp": ts, "requestId": "r-" + mid, "message": m, "cwd": cwd}
 
 
-def session(projects, repo, slug, start, lead_tokens, dispatches=()):
-    """A transcript in worktree `slug`; dispatches are (agent_type, model, tokens, start, end[, no_file]) on DAY."""
+def writes(who, calls):
+    """tool_use blocks for the (tool, input) pairs `calls` of `who`."""
+    return [{"type": "tool_use", "id": "w-%s-%d" % (who, i), "name": n, "input": inp} for i, (n, inp) in enumerate(calls)]
+
+
+def session(projects, repo, slug, start, lead_tokens, dispatches=(), written=None):
+    """A transcript in worktree `slug`; dispatches are (agent_type, model, tokens, start, end[, no_file]) on DAY.
+    `written`: "lead" or an agent type -> the (Edit or Write, input) pairs its first call makes."""
+    written = written or {}
     wt = "%s/.claude/worktrees/%s" % (repo, slug)
     sid = "s-" + slug
     path = os.path.join(projects, "p-" + slug, sid + ".jsonl")
     lines = [{"type": "worktree-state", "sessionId": sid, "worktreeSession": {
         "originalCwd": wt, "worktreePath": wt, "worktreeName": slug, "worktreeBranch": "worktree-" + slug}},
-        assistant(start, "lead-" + slug, tokens=lead_tokens, cwd=wt)]
+        assistant(start, "lead-" + slug, tokens=lead_tokens, cwd=wt,
+                  content=[{"type": "text", "text": "x"}, *writes("%s-lead" % slug, written.get("lead", ()))])]
     for i, (agent, model, tokens, t0, t1, *no_file) in enumerate(dispatches):
         tid, aid = "toolu-%s-%d" % (slug, i), "a%d" % i
         lines.append(assistant("%sT%s:00.000Z" % (DAY, t0), "d-%s-%d" % (slug, i), cwd=wt, content=[
@@ -61,10 +72,28 @@ def session(projects, repo, slug, start, lead_tokens, dispatches=()):
              "input": {"description": "d%d" % i, "prompt": "p%d" % i, "subagent_type": agent}}]))
         if not no_file:
             base = os.path.join(projects, "p-" + slug, sid, "subagents", "agent-" + aid)
-            write(base + ".jsonl", [assistant("%sT%s:01.000Z" % (DAY, t0), "s-%s-%d" % (slug, i), model, tokens, cwd=wt),
+            write(base + ".jsonl", [assistant("%sT%s:01.000Z" % (DAY, t0), "s-%s-%d" % (slug, i), model, tokens, cwd=wt, content=[
+                {"type": "text", "text": "x"}, *writes("%s-%d" % (slug, i), written.get(agent, ()))]),
                                     assistant("%sT%s:00.000Z" % (DAY, t1), "e-%s-%d" % (slug, i), model, 0, cwd=wt)])
             write(base + ".meta.json", [{"agentType": agent, "toolUseId": tid, "spawnDepth": 1}])
     write(path, lines)
+
+
+def loose(projects, name, repo, calls, title=None, prompt=None, subagent=()):
+    """A transcript outside any task, in `repo`; calls are (timestamp, model, tokens). Named by `title`, started by `prompt`.
+    `subagent`: the calls (same triple) of one subagent the first call dispatches."""
+    lines = [{"type": "custom-title", "customTitle": title}] if title else []
+    lines += [{"type": "user", "timestamp": calls[0][0], "cwd": repo, "message": {"content": prompt}}] if prompt else []
+    lines += [assistant(ts, "%s-%d" % (name, i), model, tokens, cwd=repo) for i, (ts, model, tokens) in enumerate(calls)]
+    base = os.path.join(projects, "p-" + name)
+    if subagent:
+        tool = [{"type": "tool_use", "id": "toolu-" + name, "name": "Agent", "input": {"description": "d", "prompt": "p", "subagent_type": "explorer"}}]
+        first = next(l for l in lines if l["type"] == "assistant")
+        first["message"]["content"] = first["message"]["content"] + tool
+        sub = os.path.join(base, name, "subagents", "agent-a0")
+        write(sub + ".jsonl", [assistant(ts, "%s-sub-%d" % (name, i), model, tokens, cwd=repo) for i, (ts, model, tokens) in enumerate(subagent)])
+        write(sub + ".meta.json", [{"agentType": "explorer", "toolUseId": "toolu-" + name, "spawnDepth": 1}])
+    write(os.path.join(base, name + ".jsonl"), lines)
 
 
 def pr(number, branch, opened, merged=None, state="MERGED"):
@@ -99,7 +128,7 @@ class Store(unittest.TestCase):
                 loaded.append(s)
             return loaded
 
-        with mock.patch.object(kaizen, "gh_prs", side_effect=gh):
+        with mock.patch.object(kaizen, "gh_prs", side_effect=fresh(gh)):
             return kaizen.build(self.factory, sessions or load, self.prices, cutoff,
                                 now=datetime(2026, 11, 14, 1, 2, 3, tzinfo=timezone.utc))
 
@@ -166,8 +195,16 @@ class FixtureStore(Store):
             ("coder", "claude-haiku-5-5", 2000000, "10:30", "10:35"),
             ("coder", "claude-sonnet-5-5", 1000000, "10:40", "10:41"),
             ("reviewer", "claude-opus-5-5", 0, "10:45", "10:45", "no file"),
-            ("factory:lander", "claude-haiku-5-5", 1000000, "10:46", "10:47")])  # after the last review: no rework
+            ("factory:lander", "claude-haiku-5-5", 1000000, "10:46", "10:47")],  # after the last review: no rework
+            written={"lead": [("Write", {"file_path": ALPHA + "/.claude/worktrees/a1/isshoni/x.py", "content": "a\nb\nc\n"}),
+                              ("Edit", {"file_path": ALPHA + "/.claude/worktrees/a1/docs/y.md", "old_string": "x", "new_string": "x\ny"})],
+                     "factory:coder": [("Write", {"file_path": ALPHA + "/.claude/worktrees/a1/tests/test_x.py", "content": "t\n" * 10}),
+                                       ("Edit", {"file_path": ALPHA + "/.claude/worktrees/a1/isshoni/x.py",
+                                                 "old_string": "a\nb", "new_string": "a\nb\nc\nd"})]})
         session(self.projects, ALPHA, "c1", "%sT12:30:00.000Z" % DAY, 500000)
+        loose(self.projects, "disp", ALPHA, [("%sT10:00:00.000Z" % DAY, "claude-fable-5-2", 100000)], title="dispatcher-alpha")
+        loose(self.projects, "site", ALPHA, [("%sT10:30:00.000Z" % DAY, "claude-haiku-5-5", 1000000)],
+              prompt="Job: watch. Repo: %s. The dispatcher's session name is dispatcher-alpha." % ALPHA)
         self.doc = self.build(gh_alpha_only)
         self.by_slug = {t["slug"]: t for t in self.doc["tasks"]}
 
@@ -183,6 +220,13 @@ class TaskTests(FixtureStore):
         self.assertEqual((a0["version"], a0["started"], a0["state"]), ("0.1.0", None, None))  # earliest record's version
         self.assertEqual((b1["repo"], b1["version"], b1["started"], b1["state"]), ("beta", None, None, "acknowledged"))
         self.assertEqual((c1["version"], c1["started"]), ("0.2.0", "%sT12:30:00Z" % DAY))  # from its session
+
+    def test_authoring_counts_product_and_tests_by_role(self):
+        zero = dict.fromkeys(kaizen.ROLES, 0)
+        self.assertEqual(self.by_slug["a1"]["authoring"], {
+            "lines": {**zero, "lead": 3, "coder": 12},  # the lead's docs line and the Edit's repeated context are not counted
+            "calls": {**zero, "lead": 1, "coder": 2}, "lead_share": 0.2})
+        self.assertEqual(self.by_slug["c1"]["authoring"], {"lines": zero, "calls": zero, "lead_share": None})
 
     def test_pull_request_and_times(self):
         a1 = self.by_slug["a1"]
@@ -240,8 +284,9 @@ class DocumentTests(FixtureStore):
         d = self.doc
         self.assertEqual((d["generated"], d["factory_dir"], d["store_found"]), ("2026-11-14T01:02:03Z", self.factory, True))
         self.assertEqual(d["prices"], self.prices.to_dict())
-        self.assertEqual(d["repos"], [{"repo": "alpha", "repo_path": ALPHA, "prs": "ok"},
-                                      {"repo": "beta", "repo_path": BETA, "prs": "not a GitHub repository"}])
+        self.assertEqual(d["repos"], [{"repo": "alpha", "repo_path": ALPHA, "prs": "ok", "prs_as_of": AS_OF_ISO, "prs_error": None},
+                                      {"repo": "beta", "repo_path": BETA, "prs": "not a GitHub repository", "prs_as_of": None,
+                                       "prs_error": "not a GitHub repository"}])
 
     def test_the_document_carries_no_private_key(self):
         self.assertNotIn("_roles", json.dumps(self.doc))
@@ -259,7 +304,9 @@ class DocumentTests(FixtureStore):
             "mix": {"window": 5, "points": []},
             "time": {"building_s": 2880, "stopped_s": 120, "merge_wait_s": 600},
             "defects": {"tests": 1, "reviewer": 2, "lead": 1, "ci": 0, "human": 0, "other": 2},
-            "trend_min": 10, "trend": None})
+            "trend_min": 10, "trend": None,
+            "overhead": {"dispatcher": 1.0, "site_manager": 1.0, "sessions": 2, "unpriced_tokens": 0, "landed": 1,
+                         "per_landed": 2.0}})
         self.assertEqual(self.doc["rewards"], [])
 
     def test_outbox_folds_entries_and_topics(self):
@@ -284,7 +331,7 @@ class DocumentTests(FixtureStore):
     def test_since_keeps_tasks_started_at_or_after(self):
         d = self.build(gh_alpha_only, cutoff=datetime(2026, 11, 10, 12, 30, 0, tzinfo=timezone.utc))
         self.assertEqual([t["slug"] for t in d["tasks"]], ["c1"])  # at the cutoff is kept; null starts are not
-        self.assertEqual((d["stops"], d["slowed"], d["repos"]), ([], [], [{"repo": "alpha", "repo_path": ALPHA, "prs": "ok"}]))
+        self.assertEqual((d["stops"], d["slowed"], d["repos"]), ([], [], [{"repo": "alpha", "repo_path": ALPHA, "prs": "ok", "prs_as_of": AS_OF_ISO, "prs_error": None}]))
         self.assertEqual(d["summary"]["tasks"], 1)
         d = self.build(gh_alpha_only, cutoff=datetime(2026, 11, 10, 12, 30, 1, tzinfo=timezone.utc))
         self.assertEqual((d["tasks"], d["repos"]), ([], []))
@@ -327,6 +374,11 @@ def shapes(d):
     add("stop", d["stops"]), add("slowed", d["slowed"]), add("reward", d["rewards"])
     add("outbox", [o]), add("counts", [o["issues"], o["decisions"]]), add("topic", o["topics"]), add("entry", o["entries"])
     add("site_manager", [d["site_manager"]])
+    add("authoring", [t["authoring"] for t in tasks]), add("authoring_roles", [t["authoring"][k] for t in tasks for k in ("lines", "calls")])
+    add("pooled", [x["authoring"] for x in a["points"] + a["versions"]])
+    add("pooled_roles", [x["authoring"]["lines"] for x in a["points"] + a["versions"]])
+    add("pooled_share", [x["authoring"]["share"] for x in a["points"] + a["versions"]])
+    add("overhead", [s["overhead"]])
     return out
 
 
@@ -341,7 +393,8 @@ class DashboardFixtureTests(FixtureStore):
         self.assertEqual({n for n, v in fixture.items() if len(v) != 1}, set())
         self.assertLessEqual({"doc", "repo", "version", "task", "pr", "cost", "by_role", "defects", "summary", "time",
                               "first_pass", "median", "stop", "slowed", "outbox", "counts", "topic", "entry",
-                              "site_manager", "mix"}, set(ours))
+                              "site_manager", "mix", "authoring", "authoring_roles", "pooled", "pooled_roles", "pooled_share",
+                              "overhead"}, set(ours))
         for name in ours:
             self.assertEqual(fixture[name], ours[name], name)
         landed = [t for t in fixture_doc["tasks"] if t["landed"]]
@@ -573,15 +626,23 @@ class MixTests(unittest.TestCase):
 
 
 def facts(calls, peak, tools, dispatches, **cost):
-    return {"calls": calls, "peak": peak, "tools": tools, "dispatches": dispatches,
+    return {"calls": calls, "peak": peak, "tools": tools, "dispatches": dispatches, "written": written(),
             "cost": {"input": 0.0, "output": 0.0, "cache_write_5m": 0.0, "cache_write_1h": 0.0, "cache_read": 0.0, **cost}}
 
 
-def at(slug, version, lead, other=None, total=10.0, **roles):
-    """A landed task costing `total`; the lead has the share and the facts given. `roles`: name -> facts."""
+def written(**kinds):
+    """A role's `written` block: kind -> (calls, lines), the other kinds empty."""
+    return {k: dict(zip(("calls", "lines"), kinds.get(k, (0, 0)))) for k in authoring.KINDS}
+
+
+def at(slug, version, lead, other=None, total=10.0, code=None):
+    """A landed task costing `total`; the lead has the share and the facts given. `code`: role -> (calls, lines) of product code."""
     by_role = {**dict.fromkeys(kaizen.ROLES, 0.0), "lead": total * lead[0], **{r: total * x[0] for r, x in (other or {}).items()}}
+    roles = {"lead": lead[1], **{r: x[1] for r, x in (other or {}).items()}}
+    for r, (calls, lines) in (code or {}).items():
+        roles[r] = {**roles.get(r, facts(0, 0, 0, 0)), "written": written(product=(calls, lines))}
     return {"slug": slug, "version": version, "landed": True, "cost": {"total": total, "by_role": by_role},
-            "_roles": {"lead": lead[1], **{r: x[1] for r, x in (other or {}).items()}}}
+            "_roles": roles, "authoring": kaizen._authoring(roles)}
 
 
 class AnatomyTests(unittest.TestCase):
@@ -601,7 +662,7 @@ class AnatomyTests(unittest.TestCase):
         self.assertEqual(first["lead"], {"calls": 30.0, "peak": 100002.0, "tools": 8.0})  # medians of the five
         self.assertEqual(first["coder"], {"calls": 3.0, "peak": 5000.0, "tools": 7.0})  # in 3 of 5: counts, of those 3
         self.assertIsNone(second["coder"])  # in 2 of 5: not enough
-        self.assertEqual(list(out["points"][0]), ["slug", "version", "roles"])
+        self.assertEqual(list(out["points"][0]), ["slug", "version", "roles", "authoring"])
         self.assertEqual(list(first), list(kaizen.ROLES))
         self.assertIsNone(first["lander"])
 
@@ -645,6 +706,90 @@ class AnatomyTests(unittest.TestCase):
         out = kaizen._summary([no_cost, free, running, *old], ["0.1.0", "0.2.0"])["anatomy"]
         self.assertEqual([p["slug"] for p in out["points"]], ["o4", "o5", "n0", "n1"])
         self.assertEqual([v["tasks"] for v in out["versions"]], [6, 2])
+
+
+class AuthoringTests(unittest.TestCase):
+    def zero(self, **kw):
+        return {**dict.fromkeys(kaizen.ROLES, 0), **kw}
+
+    def test_a_task_counts_product_and_tests_of_every_role_and_nothing_else(self):
+        roles = {"lead": {"written": written(product=(1, 10), tests=(2, 20), docs=(5, 500), scratch=(9, 900))},
+                 "coder": {"written": written(tests=(1, 30))}, "lander": {"written": written()}}
+        self.assertEqual(kaizen._authoring(roles), {"lines": self.zero(lead=30, coder=30), "calls": self.zero(lead=3, coder=1),
+                                                    "lead_share": 0.5})
+        self.assertEqual(kaizen._authoring({}), {"lines": self.zero(), "calls": self.zero(), "lead_share": None})
+
+    def tasks(self, *by_task):
+        """Landed tasks from [{role: (calls, lines)}]."""
+        return [at("t%d" % i, "0.1.0", (0.5, facts(1, 1, 1, 0)), code=code) for i, code in enumerate(by_task)]
+
+    def test_a_version_pools_lines_not_shares(self):
+        got = kaizen._pooled(self.tasks({"lead": (1, 100)}, {"coder": (3, 300)}, {"lead": (0, 0), "coder": (1, 100)}, {}))
+        self.assertEqual(got, {"tasks": 3, "lead_tasks": 1, "lines": self.zero(lead=100, coder=400),
+                               "share": {**dict.fromkeys(kaizen.ROLES, 0.0), "lead": 0.2, "coder": 0.8}})
+
+    def test_nobody_wrote_a_line_has_no_share(self):
+        self.assertEqual(kaizen._pooled(self.tasks({}, {"lead": (2, 0)})), {
+            "tasks": 0, "lead_tasks": 0, "lines": self.zero(), "share": None})
+        self.assertEqual(kaizen._pooled([])["share"], None)
+
+    def test_the_summary_pools_each_version_and_each_window(self):
+        old = [at("o%d" % i, "0.1.0", (0.8, facts(1, 1, 1, 0)), code={"lead": (1, 80), "coder": (1, 20)}) for i in range(5)]
+        new = [at("n%d" % i, "0.2.0", (0.4, facts(1, 1, 1, 0)), code={"coder": (1, 100)}) for i in range(5)]
+        out = kaizen._anatomy(old + new, ["0.1.0", "0.2.0"])
+        self.assertEqual([v["authoring"]["share"]["lead"] for v in out["versions"]], [0.8, 0.0])
+        self.assertEqual([p["authoring"]["share"]["lead"] for p in out["points"]], [0.8, 0.64, 0.48, 0.32, 0.16, 0.0])
+        self.assertEqual(out["versions"][0]["authoring"]["lead_tasks"], 5)
+
+
+class OverheadTests(Store):
+    def setUp(self):
+        super().setUp()
+        self.log("events.jsonl", [ev("%sT10:00:00Z" % DAY, "TaskStarted")])
+        self.merged = [pr(1, "worktree-a1", "%sT10:50:00Z" % DAY, "%sT11:00:00Z" % DAY)]
+
+    def overhead(self, cutoff=None, prs=None):
+        return self.build(lambda p: self.merged if prs is None else prs, cutoff)["summary"]["overhead"]
+
+    def at(self, hhmm):
+        return "%sT%s:00.000Z" % (DAY, hhmm)
+
+    def test_the_dispatcher_by_name_and_the_site_manager_by_prompt(self):
+        fable, haiku = "claude-fable-5-2", "claude-haiku-5-5"
+        loose(self.projects, "disp", ALPHA, [(self.at("10:00"), fable, 100000), (self.at("10:05"), fable, 50000)], title="dispatcher-alpha")
+        loose(self.projects, "site", ALPHA, [(self.at("10:30"), haiku, 1000000)],
+              prompt="Job: digest. Repo: %s. The dispatcher's session name is dispatcher-alpha." % ALPHA)
+        loose(self.projects, "other", ALPHA, [(self.at("10:40"), fable, 100000)], title="notes")  # task-less, neither
+        loose(self.projects, "plain", ALPHA, [(self.at("10:41"), fable, 100000)], prompt="Job: watching. Repo: x")
+        loose(self.projects, "beta", BETA, [(self.at("10:42"), fable, 100000)], title="dispatcher-beta")  # no task of beta's in the document
+        loose(self.projects, "wrong", ALPHA, [(self.at("10:43"), fable, 100000)], title="dispatcher-beta")
+        self.assertEqual(self.overhead(), {"dispatcher": 1.5, "site_manager": 1.0, "sessions": 2, "unpriced_tokens": 0,
+                                           "landed": 1, "per_landed": 2.5})
+
+    def test_unpriced_tokens_are_reported(self):
+        loose(self.projects, "disp", ALPHA, [(self.at("10:00"), "claude-sonnet-5-5", 7000)], title="dispatcher-alpha")
+        self.assertEqual(self.overhead()["unpriced_tokens"], 7000)
+
+    def test_the_cutoff_cuts_the_calls_of_one_long_session(self):
+        fable = "claude-fable-5-2"
+        loose(self.projects, "disp", ALPHA, [("%sT08:00:00.000Z" % DAY, fable, 100000), (None, fable, 100000),
+                                             (self.at("10:00"), fable, 100000), (self.at("11:00"), fable, 200000)], title="dispatcher-alpha")
+        cutoff = datetime(2026, 11, 10, 10, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(self.overhead(cutoff)["dispatcher"], 3.0)  # the 10:00 and 11:00 calls, at the cutoff included
+        self.assertEqual(self.overhead()["dispatcher"], 5.0)  # no cutoff: every call, one without a time too
+
+    def test_a_subagent_of_the_dispatcher_is_cut_at_the_cutoff_too(self):
+        fable = "claude-fable-5-2"
+        loose(self.projects, "disp", ALPHA, [(self.at("10:00"), fable, 100000)], title="dispatcher-alpha",
+              subagent=[("%sT09:00:00.000Z" % DAY, fable, 400000), (self.at("10:30"), fable, 200000)])
+        cutoff = datetime(2026, 11, 10, 10, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(self.overhead(cutoff)["dispatcher"], 3.0)  # its own 10:00 call and the subagent's 10:30 one, not the 09:00 one
+        self.assertEqual(self.overhead()["dispatcher"], 7.0)
+
+    def test_nothing_landed_has_no_per_landed(self):
+        loose(self.projects, "disp", ALPHA, [(self.at("10:00"), "claude-fable-5-2", 100000)], title="dispatcher-alpha")
+        self.assertEqual(self.overhead(prs=[]), {"dispatcher": 1.0, "site_manager": 0.0, "sessions": 1, "unpriced_tokens": 0,
+                                                 "landed": 0, "per_landed": None})
 
 
 class RewardTests(unittest.TestCase):
@@ -694,36 +839,148 @@ class RewardTests(unittest.TestCase):
         self.assertEqual(kaizen._rewards([]), [])
 
 
+def rest(number, head, updated, merged=None, state="closed"):
+    return {"number": number, "html_url": "https://x/pull/%d" % number, "state": state, "merged_at": merged,
+            "created_at": "2026-11-01T00:00:00Z", "updated_at": updated, "head": {"ref": head}}
+
+
+def reply(rows=(), rc=0, err=""):
+    return subprocess.CompletedProcess([], rc, json.dumps(list(rows)) if rc == 0 else "", err)
+
+
+def full_page(first, updated):
+    return [rest(i, "b%d" % i, updated) for i in range(first, first + 100)]
+
+
+AS_OF, AS_OF_ISO = 1794668400.0, "2026-11-14T15:00:00Z"
+WATERMARK = "2026-11-10T00:00:00Z"
+CACHED = {"number": 1, "url": "u", "state": "OPEN", "headRefName": "worktree-a", "createdAt": "c", "mergedAt": None}
+
+
+def fresh(gh):
+    """A stand-in for kaizen.gh_prs that answers from a `path -> pull requests` function."""
+    return lambda path, factory_dir, cached=False: (gh(path), AS_OF, None)
+
+
 class GhTests(unittest.TestCase):
-    def run_gh(self, **kw):
-        with mock.patch.object(kaizen.subprocess, "run", **kw) as run:
-            return kaizen.gh_prs(ROOT), run
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.factory = tmp.name
+        self.cache = os.path.join(self.factory, "cache", "kaizen-prs-%s.json" % hashlib.sha256(os.path.realpath(ROOT).encode()).hexdigest()[:16])
 
-    def test_lists_pull_requests_in_the_repository(self):
-        prs, run = self.run_gh(return_value=subprocess.CompletedProcess([], 0, '[{"number": 1}]', ""))
-        self.assertEqual(prs, [{"number": 1}])
-        argv, kw = run.call_args
-        self.assertEqual(argv[0], ["gh", "pr", "list", "--state", "all", "--limit", "1000", "--json", kaizen.GH_FIELDS])
-        self.assertEqual((kw["cwd"], kw["timeout"]), (ROOT, 20))
+    def gh(self, *results, **kw):
+        """gh_prs on ROOT with gh answering `results` in turn (an exception is raised, a reply is returned)."""
+        with mock.patch.object(kaizen.subprocess, "run", side_effect=list(results)) as self.run:
+            return kaizen.gh_prs(ROOT, self.factory, **kw)
 
-    def test_a_missing_repository_path_is_not_blamed_on_gh(self):
-        with mock.patch.object(kaizen.subprocess, "run") as run, self.assertRaises(kaizen.GhError) as cm:
-            kaizen.gh_prs(os.path.join(ROOT, "no-such-dir"))
-        self.assertEqual((str(cm.exception), run.called), ("no such repository path", False))
+    def seed(self, age):
+        kaizen._write_cache(self.cache, {"as_of": time.time() - age, "watermark": WATERMARK, "prs": {"1": CACHED}})
 
-    def test_failures_become_one_line_reasons(self):
-        cases = (({"side_effect": FileNotFoundError(2, "No such file or directory: 'gh'")}, "gh unavailable: [Errno 2]"),
-                 ({"side_effect": subprocess.TimeoutExpired("gh", 20)}, "gh unavailable: Command 'gh' timed out after 20 seconds"),
-                 ({"return_value": subprocess.CompletedProcess([], 1, "", "none of the git remotes\nsecond line")},
-                  "none of the git remotes"),
-                 ({"return_value": subprocess.CompletedProcess([], 4, "", "")}, "gh exited 4"),
-                 ({"return_value": subprocess.CompletedProcess([], 0, "not json", "")}, "gh printed no JSON"),
-                 ({"return_value": subprocess.CompletedProcess([], 0, "{}", "")}, "gh printed an unexpected document"))
-        for kw, reason in cases:
+    def logged(self):
+        return [json.loads(line) for p in glob.glob(os.path.join(self.factory, "gh-*.jsonl")) for line in open(p)]
+
+    def test_cold_fetch_pages_until_a_short_page_and_maps_the_fields(self):
+        short = [rest(7, "worktree-x", "2026-11-09T00:00:00Z", merged="2026-11-09T01:00:00Z"),
+                 rest(8, "worktree-y", "2026-11-09T00:00:00Z", state="open")]
+        prs, as_of, err = self.gh(reply(full_page(100, "2026-11-10T00:00:00Z")), reply(short))
+        argv = [c.args[0] for c in self.run.call_args_list]
+        self.assertEqual([a[:2] for a in argv], [["gh", "api"]] * 2)
+        self.assertEqual([a[2] for a in argv], ["repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=%d" % n
+                                                 for n in (1, 2)])
+        self.assertEqual({(c.kwargs["cwd"], c.kwargs["timeout"]) for c in self.run.call_args_list}, {(ROOT, 10)})
+        by = {p["number"]: p for p in prs}
+        self.assertEqual(len(prs), 102)
+        self.assertEqual(by[7], {"number": 7, "url": "https://x/pull/7", "state": "MERGED", "headRefName": "worktree-x",
+                                 "createdAt": "2026-11-01T00:00:00Z", "mergedAt": "2026-11-09T01:00:00Z"})
+        self.assertEqual((by[8]["state"], by[100]["state"], err), ("OPEN", "CLOSED", None))
+        cached = kaizen._read_cache(self.cache)
+        self.assertEqual((cached["watermark"], cached["as_of"] == as_of, len(cached["prs"])), (WATERMARK, True, 102))
+
+    def test_incremental_stops_at_the_watermark_and_merges_an_updated_pull_request(self):
+        self.seed(age=700)
+        page1 = full_page(100, "2026-11-12T00:00:00Z")[:99] + [rest(1, "worktree-a", "2026-11-12T00:00:00Z", merged="2026-11-12T01:00:00Z")]
+        page2 = full_page(300, "2026-11-11T00:00:00Z")[:98] + [rest(2, "z", WATERMARK), rest(3, "y", WATERMARK)]
+        prs, _, err = self.gh(reply(page1), reply(page2))  # a full page, but not newer than the watermark
+        self.assertEqual(self.run.call_count, 2)
+        by = {p["number"]: p for p in prs}
+        self.assertEqual((by[1]["state"], by[1]["mergedAt"], len(prs), err), ("MERGED", "2026-11-12T01:00:00Z", 200, None))
+        self.assertEqual(kaizen._read_cache(self.cache)["watermark"], "2026-11-12T00:00:00Z")
+
+    def test_a_cold_fetch_stops_after_ten_pages(self):
+        self.gh(*[reply(full_page(100 * n, "2026-11-10T00:00:00Z")) for n in range(1, 12)])
+        self.assertEqual(self.run.call_count, 10)
+
+    def test_a_young_cache_makes_no_call(self):
+        self.seed(age=100)
+        prs, as_of, err = self.gh()
+        self.assertEqual((prs, err, self.run.called), ([CACHED], None, False))
+        self.assertAlmostEqual(as_of, time.time() - 100, delta=5)
+
+    def test_cached_makes_no_call_even_when_the_cache_is_old(self):
+        self.seed(age=99999)
+        prs, _, err = self.gh(cached=True)
+        self.assertEqual((prs, err, self.run.called), ([CACHED], None, False))
+
+    def test_cached_without_a_cache_is_not_fetched_yet(self):
+        with self.assertRaises(kaizen.GhError) as cm:
+            self.gh(cached=True)
+        self.assertEqual((str(cm.exception), self.run.called), ("not fetched yet", False))
+
+    def test_a_failed_refresh_keeps_and_uses_the_cache(self):
+        self.seed(age=700)
+        for failure, reason in ((reply(rc=1, err="HTTP 403: rate limited\nmore"), "HTTP 403: rate limited"),
+                                (subprocess.TimeoutExpired("gh", 10), "gh unavailable: Command 'gh' timed out after 10 seconds")):
+            prs, as_of, err = self.gh(failure)
+            self.assertEqual((prs, err), ([CACHED], reason))
+            self.assertAlmostEqual(as_of, time.time() - 700, delta=5)
+        self.assertEqual(kaizen._read_cache(self.cache)["watermark"], WATERMARK)
+
+    def test_a_partial_refresh_is_discarded(self):
+        self.seed(age=700)
+        prs, _, err = self.gh(reply(full_page(100, "2026-11-12T00:00:00Z")), reply(rc=1, err="HTTP 502"))
+        self.assertEqual((prs, err), ([CACHED], "HTTP 502"))
+        self.assertEqual(len(kaizen._read_cache(self.cache)["prs"]), 1)
+
+    def test_recovery_clears_the_error(self):
+        self.seed(age=700)
+        self.assertIsNotNone(self.gh(reply(rc=1, err="HTTP 502"))[2])
+        self.assertIsNone(self.gh(reply([rest(1, "worktree-a", "2026-11-12T00:00:00Z")]))[2])
+
+    def test_failures_without_a_cache_become_one_line_reasons(self):
+        cases = ((FileNotFoundError(2, "No such file or directory: 'gh'"), "gh unavailable: [Errno 2]"),
+                 (subprocess.TimeoutExpired("gh", 10), "gh unavailable: Command 'gh' timed out after 10 seconds"),
+                 (reply(rc=1, err="none of the git remotes\nsecond line"), "none of the git remotes"),
+                 (reply(rc=4), "gh exited 4"),
+                 (subprocess.CompletedProcess([], 0, "not json", ""), "gh printed no JSON"),
+                 (subprocess.CompletedProcess([], 0, "{}", ""), "gh printed an unexpected document"))
+        for result, reason in cases:
             with self.assertRaises(kaizen.GhError) as cm:
-                self.run_gh(**kw)
+                self.gh(result)
             self.assertTrue(str(cm.exception).startswith(reason), (str(cm.exception), reason))
             self.assertNotIn("\n", str(cm.exception))
+        self.assertFalse(os.path.exists(self.cache))
+
+    def test_a_missing_repository_path_is_not_asked(self):
+        with mock.patch.object(kaizen.subprocess, "run") as run, self.assertRaises(kaizen.GhError) as cm:
+            kaizen.gh_prs(os.path.join(ROOT, "no-such-dir"), self.factory)
+        self.assertEqual((str(cm.exception), run.called), ("no such repository path", False))
+
+    @mock.patch.object(kaizen, "PR_CACHE_TTL", 0)
+    def test_slow_and_failed_calls_are_logged_and_fast_ones_are_not(self):
+        self.gh(reply())
+        self.assertEqual(self.logged(), [])
+        with mock.patch.object(kaizen.time, "monotonic", side_effect=[0, 3.5]):
+            self.gh(reply())
+        (slow,) = self.logged()
+        self.assertEqual((slow["rc"], slow["seconds"], slow["error"], slow["cwd"], slow["argv"][:2]), (0, 3.5, "", ROOT, ["gh", "api"]))
+        self.assertEqual(sorted(slow), ["argv", "cwd", "error", "rc", "seconds", "ts"])
+        self.gh(reply(rc=1, err="HTTP 403"))
+        self.assertEqual([(r["rc"], r["error"]) for r in self.logged()], [(0, ""), (1, "HTTP 403")])
+        (path,) = glob.glob(os.path.join(self.factory, "gh-*.jsonl"))
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        self.gh(kaizen.subprocess.TimeoutExpired("gh", 10))  # the cache answers; logged as the factory logs a timeout
+        self.assertEqual(self.logged()[-1]["rc"], 124)
 
 
 def run_cli(*argv):
@@ -746,7 +1003,7 @@ class CliTests(Store):
         return [pr(1, "worktree-ci", "2026-01-06T09:30:00Z", "2026-01-06T09:40:00Z")]
 
     def test_json_end_to_end(self):
-        with mock.patch.object(kaizen, "gh_prs", side_effect=self.gh):
+        with mock.patch.object(kaizen, "gh_prs", side_effect=fresh(self.gh)):
             rc, out, _ = run_cli("kaizen", "--json", *self.args)
         self.assertEqual(rc, 0)
         d = json.loads(out)
@@ -761,7 +1018,7 @@ class CliTests(Store):
         self.assertEqual(d["summary"]["landed"], 1)
 
     def test_since_and_plain_summary(self):
-        with mock.patch.object(kaizen, "gh_prs", side_effect=self.gh):
+        with mock.patch.object(kaizen, "gh_prs", side_effect=fresh(self.gh)):
             rc, out, _ = run_cli("kaizen", "--json", "--since", "1h", *self.args)
             self.assertEqual((rc, json.loads(out)["tasks"]), (0, []))
             rc, out, _ = run_cli("kaizen", "--json", "--since", "2026-01-06T08:59:00", *self.args)
@@ -770,6 +1027,31 @@ class CliTests(Store):
         self.assertEqual(rc, 0)
         self.assertIn("tasks 1, landed 1, in flight 0", out)
         self.assertRegex(out, r"ci +0\.2\.0 +landed +31m00s +10m00s +\$0\.0044\* +1 +0")
+
+    def test_repos_say_how_old_their_pull_requests_are_and_why_they_could_not_refresh(self):
+        with mock.patch.object(kaizen, "gh_prs", side_effect=fresh(self.gh)):
+            _, out, _ = run_cli("kaizen", "--json", *self.args)
+        self.assertEqual(json.loads(out)["repos"], [{"repo": "alpha", "repo_path": ALPHA, "prs": "ok",
+                                                     "prs_as_of": AS_OF_ISO, "prs_error": None}])
+        stale = lambda path, factory_dir, cached=False: (self.gh(path), time.time() - 720, "HTTP 403")  # noqa: E731
+        with mock.patch.object(kaizen, "gh_prs", side_effect=stale):
+            _, out, _ = run_cli("kaizen", "--json", *self.args)
+            repo = json.loads(out)["repos"][0]
+            self.assertEqual((repo["prs"], repo["prs_error"]), ("ok", "HTTP 403"))
+            _, out, _ = run_cli("kaizen", *self.args)
+        self.assertRegex(out, r"pull requests for alpha as of 12m0\ds ago: HTTP 403\n")
+
+    def test_cached_never_asks_gh_and_without_a_cache_says_not_fetched_yet(self):
+        def no_cache(path, factory_dir, cached=False):
+            self.assertTrue(cached)
+            raise kaizen.GhError("not fetched yet")
+        with mock.patch.object(kaizen, "gh_prs", side_effect=no_cache), mock.patch.object(kaizen.subprocess, "run") as run:
+            _, out, _ = run_cli("kaizen", "--json", "--cached", *self.args)
+            self.assertEqual(json.loads(out)["repos"], [{"repo": "alpha", "repo_path": ALPHA, "prs": "not fetched yet",
+                                                         "prs_as_of": None, "prs_error": None}])
+            _, out, _ = run_cli("kaizen", "--cached", *self.args)
+        self.assertIn("pull requests unavailable for alpha: not fetched yet", out)
+        self.assertFalse(run.called)
 
     def test_missing_directory_exits_zero_with_empty_lists(self):
         rc, out, _ = run_cli("kaizen", "--json", "--factory-dir", "/nonexistent-factory", "--projects-dir", GROUPING,
@@ -780,19 +1062,19 @@ class CliTests(Store):
         self.assertEqual((rc, out), (0, "no factory tasks in /nonexistent-factory\n"))
 
     def test_document_keys(self):
-        with mock.patch.object(kaizen, "gh_prs", side_effect=self.gh):
+        with mock.patch.object(kaizen, "gh_prs", side_effect=fresh(self.gh)):
             _, out, _ = run_cli("kaizen", "--json", *self.args)
         d = json.loads(out)
         self.assertEqual(list(d), ["generated", "factory_dir", "store_found", "prices", "roles", "repos", "versions", "tasks", "summary",
                                    "stops", "slowed", "rewards", "outbox", "site_manager"])
         self.assertEqual(d["site_manager"], SiteManagerTests.EMPTY)
         self.assertEqual(list(d["tasks"][0]), ["repo", "repo_path", "slug", "version", "started", "state", "pr", "landed",
-                                               "brief_to_pr_s", "pr_to_merge_s", "cost", "review_rounds", "first_pass", "stops",
+                                               "brief_to_pr_s", "pr_to_merge_s", "cost", "review_rounds", "first_pass", "authoring", "stops",
                                                "stopped_s", "defects"])
         self.assertEqual(list(d["summary"]), ["tasks", "landed", "in_flight", "cost", "brief_to_pr_s", "pr_to_merge_s",
                                               "review_rounds", "first_pass", "rework_share", "by_role", "mix", "anatomy", "time",
                                               "defects",
-                                              "trend_min", "trend"])
+                                              "trend_min", "trend", "overhead"])
         self.assertEqual(list(d["outbox"]), ["issues", "decisions", "topics", "entries"])
 
 

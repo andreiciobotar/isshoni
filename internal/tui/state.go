@@ -1074,10 +1074,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.agentsDirty = false
 
 	case factoryMsg:
-		cmds = append(cmds, m.applyFactory(msg))
+		cmds = append(cmds, m.applyFactory(msg), m.startFetches())
+
+	case factoryFetchMsg:
+		m.applyFetch(msg)
 
 	case kaizenMsg:
-		m.applyKaizen(msg)
+		cmds = append(cmds, m.applyKaizen(msg))
 
 	case hanamiEventsMsg, hanamiEndMsg, hanamiHistoryMsg:
 		cmds = append(cmds, m.hanamiUpdate(msg))

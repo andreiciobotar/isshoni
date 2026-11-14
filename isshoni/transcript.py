@@ -5,6 +5,7 @@ import glob
 import json
 import os
 import re
+from collections import Counter
 from datetime import datetime, timezone
 
 TOKEN_CLASSES = ("input", "output", "cache_write", "cache_read")
@@ -92,10 +93,11 @@ def sum_usage(by_model):
 
 class Call:
     """One priced model call: its usage, its context, and the characters that arrived since the previous call."""
-    __slots__ = ("model", "raw", "context", "output", "thinking", "inbound")
+    __slots__ = ("model", "raw", "context", "output", "thinking", "inbound", "ts")
 
-    def __init__(self, model, raw, inbound):
+    def __init__(self, model, raw, inbound, ts=None):
         self.model = model
+        self.ts = ts
         self.raw = raw if isinstance(raw, dict) else {}
         u = usage_from(self.raw)
         self.context = u.input + u.cache_write + u.cache_read
@@ -106,11 +108,12 @@ class Call:
 
 
 class Run:
-    """What one transcript did: its calls, its own tool calls by kind, its Agent dispatches."""
+    """What one transcript did: its calls, its own tool calls by kind, its Agent dispatches, its own writes."""
 
     def __init__(self):
         self.calls = []
         self.tools = {}
+        self.writes = {}  # file path -> [Edit and Write calls, lines written]; "" when the call had no path
         self.dispatches = 0
 
 
@@ -162,6 +165,8 @@ class Session:
         self.id = os.path.splitext(os.path.basename(path))[0]
         self.project_dir = os.path.basename(os.path.dirname(path))
         self.cwd = None
+        self.name = None  # the last customTitle or agentName record of the main transcript
+        self.first_prompt = ""  # the first 200 characters of the first user text message
         self.dispatches = []
         self.main_usage_by_model = {}
         self.run = None
@@ -248,6 +253,8 @@ class _Scan:
         self.malformed = 0
         self.cwd = None
         self.worktree_states = []
+        self.name = None
+        self.first_prompt = None
 
 
 _NOTE_RE = {
@@ -320,6 +327,11 @@ def _scan(path, seen, depth, agent_id, prices):
                     for r in obj["rendered"]:
                         _arrive(inbound, "attachment:" + kind, r.get("content") if isinstance(r, dict) else None)
             continue
+        if typ in ("custom-title", "agent-name"):
+            name = obj.get("customTitle" if typ == "custom-title" else "agentName")
+            if isinstance(name, str) and name:
+                sc.name = name
+            continue
         if typ not in ("assistant", "user"):
             continue
         msg = obj.get("message")
@@ -348,7 +360,7 @@ def _scan(path, seen, depth, agent_id, prices):
                         seen.add(key)
                         sc.owned.add(key)
                     add_usage(sc.usage, model, usage_from(msg.get("usage"), model, prices))
-                    sc.run.calls.append(Call(model, msg.get("usage"), inbound))
+                    sc.run.calls.append(Call(model, msg.get("usage"), inbound, ts))
                     inbound = {}
             own = not isinstance(key, str) or key in sc.owned  # a fork's copy of its parent's message is not its own
             texts = []
@@ -383,6 +395,11 @@ def _scan(path, seen, depth, agent_id, prices):
                     ent[2] = True
                     ent[0] = ts or ent[0]
         else:  # user
+            if sc.first_prompt is None and agent_id is None:
+                first = content if isinstance(content, str) else next(
+                    (b.get("text") for b in content if isinstance(b, dict) and b.get("type") == "text"), None) if isinstance(content, list) else None
+                if isinstance(first, str):
+                    sc.first_prompt = first[:200]
             origin = obj.get("origin")
             if isinstance(origin, dict) and origin.get("handback") and isinstance(origin.get("from"), str):
                 htext = next((v for v in (origin.get("handbackReportText"), origin.get("body"), content)
@@ -442,6 +459,14 @@ def _tool_kind(name, inp):
     return "Bash:" + os.path.basename(words[0]) if words else "Bash"
 
 
+def _written_lines(name, inp):
+    """The lines a Write puts in a file; for an Edit, the lines of new_string not in old_string (its repeated context is not new)."""
+    text = lambda k: inp[k].splitlines() if isinstance(inp.get(k), str) else []  # noqa: E731
+    if name == "Write":
+        return len(text("content"))
+    return sum((Counter(text("new_string")) - Counter(text("old_string"))).values())
+
+
 def _tool_use(sc, b, ts, depth, agent_id, own):
     name = b.get("name")
     inp = b.get("input")
@@ -455,6 +480,11 @@ def _tool_use(sc, b, ts, depth, agent_id, own):
         else:
             kind = _tool_kind(name, inp)
             sc.run.tools[kind] = sc.run.tools.get(kind, 0) + 1
+            if name in ("Edit", "Write"):
+                path = inp.get("file_path")
+                w = sc.run.writes.setdefault(path if isinstance(path, str) else "", [0, 0])
+                w[0] += 1
+                w[1] += _written_lines(name, inp)
     if name == "Agent":
         tid = b.get("id")
         if not isinstance(tid, str):
@@ -494,6 +524,7 @@ def load_session(path, prices):
     seen = set()
     main = _scan(path, seen, 1, None, prices)
     s.cwd = main.cwd
+    s.name, s.first_prompt = main.name, main.first_prompt or ""
     s.malformed = main.malformed
     s.main_usage_by_model = main.usage
     s.run = main.run

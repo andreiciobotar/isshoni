@@ -642,7 +642,7 @@ class BaseMergedTests(unittest.TestCase):
         for phase in ("motion", "blocked"):
             with self.subTest(phase):
                 self.assertEqual(self.found(phase), [(
-                    "x", "x", "its base worktree-base merged (https://x/pull/5): tell its lead to rebase onto "
+                    "x", "x", "its base worktree-base merged (https://x/pull/5): tell its lead to merge "
                     "origin/main and to open or retarget its pull request against main")])
         self.assertIn(["git", "merge-base", "--is-ancestor", "abc", "HEAD"], self.fake.calls)
 
