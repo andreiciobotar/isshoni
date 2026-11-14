@@ -14,7 +14,11 @@ import (
 
 // A stub records its pid and its start in a file under $STUBS once its TERM trap is in
 // place, and a received TERM in another. It runs until it is told to end.
+// It ignores USR2: the real supercronic takes it as "read the crontab again", and the container's
+// own crontab sends it to every process named supercronic, these stubs included, whenever a
+// schedule changes beside the tests (CI's container job).
 const stub = `#!/bin/sh
+trap '' USR2
 trap 'echo term >> "$STUBS/%[1]s.term"; exit 0' TERM
 echo $$ >> "$STUBS/%[1]s.pids"
 %[2]s
@@ -178,6 +182,8 @@ func (r *run) noStubLeft() {
 func TestServerIsRestartedWhenItDies(t *testing.T) {
 	r := start(t, true)
 	r.started("server", 1)
+	r.started("cron", 1)
+	syscall.Kill(r.pids("cron.pids")[0], syscall.SIGUSR2) // what the container's crontab sends every supercronic
 	if err := syscall.Kill(r.pids("server.pids")[0], syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
