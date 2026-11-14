@@ -136,7 +136,7 @@ Leads run unattended in `auto` permission mode as the container's only user. One
 Pull requests come from the App's bot, so you approve them with GitHub's Approve and `factory watch` merges on that ([factory.md](factory.md#identity)). `host add` copies the identity `make wizard` made: leads, their subagents and the script's own `gh` calls then act as the App in repositories of its owner, with a token scoped to the repository they run in ([factory.md](factory.md#how-the-identity-is-used)). There is no `gh` login in the container unless you make one yourself (`docker exec -it`); in repositories of other owners the factory falls back to it.
 
 ## Not verified
-- Anything that needs a real Claude login: background sessions and their supervisor in the container (`factory new`, `claude attach`), `auto` permission mode, the site manager's Sonnet run.
+- Anything that needs a real Claude login: background sessions and their supervisor in the container (`factory new`, `claude attach`), `auto` permission mode, the site manager's run (`models.site_manager`).
 - A real `gh` login, and the App's tokens minted from inside the container (the image has the `openssl` they need).
 - An x86-64 server by hand: the end-to-end test passed locally on an arm64 Docker host, and x86-64 is what CI runs.
 - Memory use of a working factory: the 4g default is a guess (Anthropic lists 4 GB as Claude Code's own requirement).
