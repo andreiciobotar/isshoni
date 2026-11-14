@@ -82,7 +82,7 @@ The lander is given the task's base, the head the lead vouches for (the reviewed
 | `LANDED, LOOK` | pushed, but a conflict was resolved mechanically, or the base changed files the task changes, or a commit differs, or goldens were regenerated | nothing declared; the lead reads the flagged hunks, has them reviewed when needed, then files and declares itself |
 | `STOPPED` (`dirty`, `conflict`, `golden`, `tests`, `denied`, `other`) | a decision is needed; nothing pushed (`denied` can follow a push). After `conflict` the rebase is aborted; after `golden` or `tests` the worktree stays on the rebased commits | the lead decides, then dispatches the lander again |
 
-The lander refuses to start unless the worktree is clean and its head is the reviewed head, and refuses to push over commits on the remote branch that the reviewed head does not contain. When a stacked task's base has merged, the lead says so and the lander rebases onto the default branch and retargets the pull request.
+The lander refuses to start unless the worktree is clean and its head is the reviewed head, and refuses to push over commits on the remote branch that the reviewed head does not contain, unless the lead names that remote head as the one last pushed. When a stacked task's base has merged, the lead says so and the lander rebases onto the default branch and retargets the pull request.
 
 `factory state` and `factory retro` take the task from the working directory, so a lander's declaration is the lead's (`role: lead`).
 
