@@ -634,11 +634,17 @@ class AnatomyTests(unittest.TestCase):
                     self.assertAlmostEqual(sum(r["classes"].values()), 1.0, places=5)
 
     def test_tasks_without_a_cost_or_landing_take_no_part(self):
-        tasks = self.tasks()
-        tasks.insert(0, {**at("free", "0.1.0", (1.0, facts(1, 1, 1, 1)), total=0.0)})
-        out = kaizen._anatomy(tasks, ["0.1.0"])
-        self.assertEqual(out["versions"][0]["tasks"], 6)
-
+        def whole(t, landed=True):
+            cost = t["cost"] and {**t["cost"], "rework": 0.0}
+            return {**t, "cost": cost, "landed": landed, "state": "done", "stopped_s": 0, "defects": None, "first_pass": True,
+                    "review_rounds": 1, "brief_to_pr_s": 60, "pr_to_merge_s": 60, "pr": {"merged": "2026-11-01T00:00:00Z"}}
+        no_cost = whole({**at("none", "0.1.0", (1.0, facts(1, 1, 1, 1))), "cost": None})
+        free = whole(at("free", "0.1.0", (1.0, facts(1, 1, 1, 1)), total=0.0))
+        running = whole(at("running", "0.1.0", (0.5, facts(1, 1, 1, 1))), landed=False)
+        old = [whole(t) for t in self.tasks()]
+        out = kaizen._summary([no_cost, free, running, *old], ["0.1.0", "0.2.0"])["anatomy"]
+        self.assertEqual([p["slug"] for p in out["points"]], ["o4", "o5", "n0", "n1"])
+        self.assertEqual([v["tasks"] for v in out["versions"]], [6, 2])
 
 
 class RewardTests(unittest.TestCase):

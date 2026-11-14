@@ -332,11 +332,15 @@ VIEW=... SIZE=...` turns it into a PNG under `shots/` (needs Chrome).
   from `summary.anatomy`, landed tasks with a cost only: a table of the lead's share of task
   cost, own tool calls, peak context, model calls, dispatches, own tool calls per dispatch, cost per task
   and the share of its cost in each token class, one column per plugin version (the most
-  recent that fit, headed with its landed-task count `n`, the newest version too when it has no
-  landed task yet) and a change column, the latest version with landed tasks against the one
-  before. The change shows only when both have at least `min` (5) landed tasks; below that
-  the column is left out and a line says which version has how many, and the figures of a
-  version under `min` are dimmed. Under the table, a pointer to Pulse, where first-pass rate
+  recent that fit, always the latest version with landed tasks and the one before it, up to
+  the newest version; headed with its landed-task count `n`, and `-` with `n=0` for a version
+  with no landed task) and a change column headed with the pair it compares, such as
+  `0.2.0 → 0.3.0`: the latest version with landed tasks against the one before, in percent or,
+  for the shares, in points. It is coloured (green down, orange up) where lower is what the
+  change aimed at (share of cost, own tool calls, peak context, model calls, tool calls per
+  dispatch, cost per task) and grey elsewhere. The change shows only when both have at least `min`
+  (5) landed tasks; below that the column is left out and a line says which version has how
+  many, and the figures of a version under `min` are dimmed. Under the table, a pointer to Pulse, where first-pass rate
   and review rounds, what must not move, are; then three line charts, one line per role, of
   model calls, peak context and own tool calls per task, each point the median of the
   window's tasks, with the plugin versions marked under them, a gap where a role ran in too few

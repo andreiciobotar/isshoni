@@ -890,12 +890,12 @@ func TestSnapshotKaizen(t *testing.T) {
 
 func TestAnatomyChangeColumnNeedsTheMinimumOnBothSides(t *testing.T) {
 	out := plain(kaizenModel(t, true, 140, 100, pageAnatomy))
-	for _, want := range []string{"did v0.3.0 move the lead", "0.2.0 n=8", "0.3.0 n=5", "0.4.0 n=0", "change", "↓ 17 pts", "↓ 62%", "↑ 56%", "are on Pulse"} {
+	for _, want := range []string{"did v0.3.0 move the lead", "n=8", "n=5", "0.4.0", "n=0", "0.2.0 → 0.3.0", "↓ 17 pts", "↓ 62%", "↑ 56%", "↑ 1 pt", "are on Pulse"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("%q is missing:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "too few tasks") {
+	if strings.Contains(out, "1 pts") || strings.Contains(out, "too few tasks") {
 		t.Fatalf("both versions have the minimum:\n%s", out)
 	}
 	for name, c := range map[string]struct {
@@ -949,10 +949,11 @@ func TestLineChartLeavesAGapForNaN(t *testing.T) {
 		{name: "gap", color: p.th.Blue, vals: []float64{5, 5, nan, nan, nan, nan, nan, nan, 5, 5}},
 		{name: "never", color: p.th.Teal, vals: slices.Repeat([]float64{nan}, 10)},
 		{name: "late", color: p.th.Pink, vals: []float64{nan, nan, nan, nan, nan, nan, nan, nan, 3, 4}},
+		{name: "ended", color: p.th.Orange, vals: []float64{2, 2, 2, nan, nan, nan, nan, nan, nan, nan}},
 	}}
 	out := p.lineChart(o, 60)
 	all := ansi.Strip(strings.Join(out.lines, "\n"))
-	if strings.Contains(all, "NaN") || strings.Contains(all, "never") {
+	if strings.Contains(all, "NaN") || strings.Contains(all, "never") || strings.Contains(all, "ended") {
 		t.Fatalf("a series without a value draws nothing:\n%s", all)
 	}
 	if !strings.Contains(all, "gap 5") || !strings.Contains(all, "late 4") {
@@ -964,5 +965,47 @@ func TestLineChartLeavesAGapForNaN(t *testing.T) {
 		if r := []rune(plot); len(r) > 2 && r[0] >= 0x2800 && r[len(r)-1] >= 0x2800 && !strings.Contains(plot, " ") {
 			t.Fatalf("a line crosses the gap in %q", plot)
 		}
+	}
+}
+
+func TestAnatomyFaintFiguresBelowTheMinimum(t *testing.T) {
+	m := fakeModel(false, 140, 100)
+	setKaizen(m, fewAnatomyDoc(t), pageAnatomy)
+	p := m.th.on(m.th.Bg)
+	seq := func(c color.Color) string { s := p.t("X", c); return s[:strings.Index(s, "X")] }
+	var row string
+	for _, l := range strings.Split(m.Render(), "\n") {
+		if strings.Contains(ansi.Strip(l), "share of task cost") {
+			row = l
+			break
+		}
+	}
+	if !strings.Contains(row, seq(m.th.Faint)+"10%") || !strings.Contains(row, seq(m.th.Text)+"15%") {
+		t.Fatalf("a version below the minimum (0.4.0, 2 tasks) is faint, one at it (0.3.0, 5) is not: %q", row)
+	}
+}
+
+func TestAnatomyChangeColumnSurvivesLongVersionNames(t *testing.T) {
+	doc := kaizenDoc(t)
+	for i := range doc.Summary.Anatomy.Versions {
+		doc.Summary.Anatomy.Versions[i].Version = fmt.Sprintf("%d.2.3-beta.20261114", i)
+	}
+	m := fakeModel(true, 60, 100)
+	setKaizen(m, doc, pageAnatomy)
+	out := plain(m)
+	if !strings.Contains(out, "change") || !strings.Contains(out, "↓ 17 pts") {
+		t.Fatalf("the change column is cut:\n%s", out)
+	}
+	checkFrame(t, "long versions", m, true)
+}
+
+func TestAnatomyShowsAVersionWithoutTasksBetweenOthers(t *testing.T) {
+	doc := kaizenDoc(t)
+	vs := doc.Summary.Anatomy.Versions
+	vs[1].Tasks, vs[1].Roles = 0, map[string]*data.AnatomyRole{}
+	m := fakeModel(true, 140, 100)
+	setKaizen(m, doc, pageAnatomy)
+	if out := plain(m); !strings.Contains(out, "0.2.0") || !strings.Contains(out, "n=0") {
+		t.Fatalf("the empty version in the middle shows as -, n=0:\n%s", out)
 	}
 }

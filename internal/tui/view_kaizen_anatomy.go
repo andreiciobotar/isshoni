@@ -14,59 +14,63 @@ import (
 // ---- Anatomy ----------------------------------------------------------------------
 
 // anatomyMeasure is one measure of a role in a version: how it is read from the version's
-// role and shown. A share's change is told in percentage points, the others' as a percentage.
+// role (nil when it has no value) and shown. A share's change is told in percentage points,
+// the others' as a percentage. lower says a smaller value is what the lander change aimed at:
+// the others have no good direction and their change is not coloured.
 type anatomyMeasure struct {
 	name   string
-	get    func(*data.AnatomyRole) (float64, bool)
+	get    func(*data.AnatomyRole) *float64
 	show   func(float64) string
 	points bool
+	lower  bool
+}
+
+// cell is the measure of role r in a version, "-" when there is none, and whether the figure is
+// faint: the role ran in fewer than min of the version's landed tasks.
+func (ms anatomyMeasure) cell(r *data.AnatomyRole, min int) (string, bool) {
+	if r == nil {
+		return "-", true
+	}
+	x := ms.get(r)
+	if x == nil {
+		return "-", true
+	}
+	return ms.show(*x), r.N < min
 }
 
 func (m *model) anatomyMeasures() []anatomyMeasure {
-	num := func(f func(*data.AnatomyRole) float64) func(*data.AnatomyRole) (float64, bool) {
-		return func(r *data.AnatomyRole) (float64, bool) { return f(r), true }
-	}
-	opt := func(f func(*data.AnatomyRole) *float64) func(*data.AnatomyRole) (float64, bool) {
-		return func(r *data.AnatomyRole) (float64, bool) {
-			if x := f(r); x != nil {
-				return *x, true
-			}
-			return 0, false
-		}
-	}
-	class := func(f func(*data.AnatomyClasses) float64) func(*data.AnatomyRole) (float64, bool) {
-		return func(r *data.AnatomyRole) (float64, bool) {
+	class := func(f func(*data.AnatomyClasses) *float64) func(*data.AnatomyRole) *float64 {
+		return func(r *data.AnatomyRole) *float64 {
 			if r.Classes == nil {
-				return 0, false
+				return nil
 			}
-			return f(r.Classes), true
+			return f(r.Classes)
 		}
 	}
 	share := func(v float64) string { return pct(v * 100) }
 	return []anatomyMeasure{
-		{"share of task cost", num(func(r *data.AnatomyRole) float64 { return r.Share }), share, true},
-		{"own tool calls", num(func(r *data.AnatomyRole) float64 { return r.Tools }), Human, false},
-		{"peak context", opt(func(r *data.AnatomyRole) *float64 { return r.Peak }), Human, false},
-		{"model calls", num(func(r *data.AnatomyRole) float64 { return r.Calls }), Human, false},
-		{"dispatches", num(func(r *data.AnatomyRole) float64 { return r.Dispatches }), Human, false},
-		{"own tool calls / dispatch", opt(func(r *data.AnatomyRole) *float64 { return r.ToolsPerDispatch }), func(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) }, false},
-		{"cost per task", num(func(r *data.AnatomyRole) float64 { return r.Cost }), m.kzMoney, false},
-		{"cost: input", class(func(c *data.AnatomyClasses) float64 { return c.Input }), share, true},
-		{"cost: output", class(func(c *data.AnatomyClasses) float64 { return c.Output }), share, true},
-		{"cost: cache write", class(func(c *data.AnatomyClasses) float64 { return c.CacheWrite }), share, true},
-		{"cost: cache read", class(func(c *data.AnatomyClasses) float64 { return c.CacheRead }), share, true},
+		{"share of task cost", func(r *data.AnatomyRole) *float64 { return &r.Share }, share, true, true},
+		{"own tool calls", func(r *data.AnatomyRole) *float64 { return &r.Tools }, Human, false, true},
+		{"peak context", func(r *data.AnatomyRole) *float64 { return r.Peak }, Human, false, true},
+		{"model calls", func(r *data.AnatomyRole) *float64 { return &r.Calls }, Human, false, true},
+		{"dispatches", func(r *data.AnatomyRole) *float64 { return &r.Dispatches }, Human, false, false},
+		{"own tool calls / dispatch", func(r *data.AnatomyRole) *float64 { return r.ToolsPerDispatch }, func(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) }, false, true},
+		{"cost per task", func(r *data.AnatomyRole) *float64 { return &r.Cost }, m.kzMoney, false, true},
+		{"cost: input", class(func(c *data.AnatomyClasses) *float64 { return &c.Input }), share, true, false},
+		{"cost: output", class(func(c *data.AnatomyClasses) *float64 { return &c.Output }), share, true, false},
+		{"cost: cache write", class(func(c *data.AnatomyClasses) *float64 { return &c.CacheWrite }), share, true, false},
+		{"cost: cache read", class(func(c *data.AnatomyClasses) *float64 { return &c.CacheRead }), share, true, false},
 	}
 }
 
-// anatomySplit is the versions with landed tasks, and the newest version when it has none.
-func anatomySplit(a data.KaizenAnatomy) (with []data.AnatomyVersion, empty *data.AnatomyVersion) {
-	for _, v := range a.Versions {
+// anatomyLatest is the indexes in a.Versions of the latest version with landed tasks and the
+// one with landed tasks before it; -1 when there is none.
+func anatomyLatest(a data.KaizenAnatomy) (before, latest int) {
+	before, latest = -1, -1
+	for i, v := range a.Versions {
 		if v.Tasks > 0 {
-			with = append(with, v)
+			before, latest = latest, i
 		}
-	}
-	if n := len(a.Versions); n > 0 && a.Versions[n-1].Tasks == 0 {
-		empty = &a.Versions[n-1]
 	}
 	return
 }
@@ -121,72 +125,81 @@ func (m *model) anatomyChart(p paint, w int, title string, a data.KaizenAnatomy,
 	return m.pointsChart(p, w, title, fmt.Sprintf("median of %d tasks", a.Window), a.Window, o, vers)
 }
 
+// anatomyVerdictVersionW caps a version's column: a longer name is cut.
+const anatomyVerdictVersionW = 12
+
 // anatomyVerdict is the lead's measures per version and how the latest version with landed
 // tasks moved them against the one before; the change column shows only when both have the minimum.
 func (m *model) anatomyVerdict(p paint, w int) block {
 	th := m.th
 	a := m.kz.doc.Summary.Anatomy
-	with, empty := anatomySplit(a)
-	if len(with) == 0 {
+	beforeAt, latestAt := anatomyLatest(a)
+	if latestAt < 0 {
 		return block{m.heading(p, w, "did the latest version move the lead", "landed tasks only"), p.sp(1) + p.t("no landed task with a cost yet", th.Faint)}
 	}
-	latest := with[len(with)-1]
-	compare := len(with) >= 2
+	latest := a.Versions[latestAt]
 	var before data.AnatomyVersion
-	if compare {
-		before = with[len(with)-2]
+	if beforeAt >= 0 {
+		before = a.Versions[beforeAt]
 	}
-	enough := compare && roleN(before, "lead") >= a.Min && roleN(latest, "lead") >= a.Min
+	enough := beforeAt >= 0 && roleN(before, "lead") >= a.Min && roleN(latest, "lead") >= a.Min
 	measures := m.anatomyMeasures()
 
-	text := func(v data.AnatomyVersion, ms anatomyMeasure) (string, bool) {
-		r := v.Roles["lead"]
-		if r == nil {
-			return "-", true
-		}
-		x, ok := ms.get(r)
-		if !ok {
-			return "-", true
-		}
-		return ms.show(x), r.N < a.Min
-	}
 	change := func(ms anatomyMeasure) string {
-		r0, r1 := before.Roles["lead"], latest.Roles["lead"]
-		x0, ok0 := ms.get(r0)
-		x1, ok1 := ms.get(r1)
-		if !ok0 || !ok1 {
+		x0, x1 := ms.get(before.Roles["lead"]), ms.get(latest.Roles["lead"])
+		if x0 == nil || x1 == nil {
 			return p.t("-", th.Faint)
 		}
-		arrow, rel, col := m.trendLook(x1, x0)
+		arrow, rel, col := m.trendLook(*x1, *x0)
+		text := fmt.Sprintf("%s %d%%", arrow, rel)
 		if ms.points {
-			return p.t(fmt.Sprintf("%s %d pts", arrow, int(math.Round(math.Abs(x1-x0)*100))), col)
+			d := int(math.Round((*x1 - *x0) * 100))
+			arrow, col = "≈", th.Muted
+			switch {
+			case d < 0:
+				arrow, col = "↓", th.Green
+			case d > 0:
+				arrow, col = "↑", th.Orange
+			}
+			text = fmt.Sprintf("%s %d pts", arrow, max(d, -d))
+			if max(d, -d) == 1 {
+				text = fmt.Sprintf("%s 1 pt", arrow)
+			}
 		}
-		return p.t(fmt.Sprintf("%s %d%%", arrow, rel), col)
+		if !ms.lower {
+			col = th.Muted
+		}
+		return p.t(text, col)
 	}
 
 	labelW := 0
 	for _, ms := range measures {
 		labelW = max(labelW, width(ms.name))
 	}
-	headOf := func(v data.AnatomyVersion) string {
-		return fmt.Sprintf("%s n=%d", v.Version, roleN(v, "lead"))
-	}
 	colW := func(v data.AnatomyVersion) int {
-		cw := width(headOf(v))
+		cw := max(width(trunc(v.Version, anatomyVerdictVersionW)), width(fmt.Sprintf("n=%d", roleN(v, "lead"))))
 		for _, ms := range measures {
-			s, _ := text(v, ms)
+			s, _ := ms.cell(v.Roles["lead"], a.Min)
 			cw = max(cw, width(s))
 		}
 		return cw
 	}
-	changeW := 0
+	valW := 0
 	if enough {
-		changeW = width("change")
 		for _, ms := range measures {
-			changeW = max(changeW, width(change(ms)))
+			valW = max(valW, width(change(ms)))
 		}
 	}
-	fits := func(cols []data.AnatomyVersion) bool {
+	changeHead, changeW := "", 0
+	useHead := func(h string) {
+		changeHead, changeW = h, 0
+		if enough {
+			changeHead, changeW = h, max(valW, width(h))
+		}
+	}
+	useHead(before.Version + " → " + latest.Version)
+	// the width the table needs for these columns, the label column and the change column
+	need := func(cols []data.AnatomyVersion) int {
 		used := 1 + labelW
 		for _, v := range cols {
 			used += 2 + colW(v)
@@ -194,35 +207,39 @@ func (m *model) anatomyVerdict(p paint, w int) block {
 		if enough {
 			used += 2 + changeW
 		}
-		return used <= w
+		return used
 	}
-	cands := slices.Clone(with)
-	if empty != nil {
-		cands = append(cands, *empty)
+	// as many of the most recent versions as fit, always before and latest
+	floor := latestAt
+	if beforeAt >= 0 {
+		floor = beforeAt
 	}
-	startMax := len(with) - min(2, len(with))
 	var cols []data.AnatomyVersion
-	for start := 0; ; start++ {
-		cols = cands[start:]
-		if start == startMax || fits(cols) {
+	for start := 0; start <= floor; start++ {
+		if cols = a.Versions[start:]; need(cols) <= w {
 			break
 		}
 	}
-	if !fits(cols) && empty != nil {
-		cols = with[startMax:]
+	if need(cols) > w {
+		cols = a.Versions[floor : latestAt+1]
+		if need(cols) > w {
+			useHead("change")
+		}
 	}
+	// a label column that does not fit is cut, never the change column
+	labelW = max(12, labelW-max(0, need(cols)-w))
 
 	lines := block{m.heading(p, w, "did "+kzVersion(latest.Version)+" move the lead", "medians per landed task")}
 	rpad := func(s string, cw int) string { return p.sp(cw-width(s)) + s }
-	head := p.sp(1) + p.sp(labelW)
+	head, counts := p.sp(1)+p.sp(labelW), p.sp(1)+p.sp(labelW)
 	for _, v := range cols {
-		h := p.b(v.Version, th.Purple) + p.t(fmt.Sprintf(" n=%d", roleN(v, "lead")), th.Faint)
-		head += p.sp(2) + p.sp(colW(v)-width(headOf(v))) + h
+		head += p.sp(2) + rpad(p.b(trunc(v.Version, anatomyVerdictVersionW), th.Purple), colW(v))
+		counts += p.sp(2) + rpad(p.t(fmt.Sprintf("n=%d", roleN(v, "lead")), th.Faint), colW(v))
 	}
 	if enough {
-		head += p.sp(2) + p.t("change", th.Faint)
+		head += p.sp(2) + p.t(trunc(changeHead, changeW), th.Faint)
 	}
-	lines = append(lines, fit(head, w, p))
+	lines = append(lines, fit(head, w, p), fit(counts, w, p))
 	for i, ms := range measures {
 		name := th.Muted
 		if i < 3 {
@@ -230,7 +247,7 @@ func (m *model) anatomyVerdict(p paint, w int) block {
 		}
 		line := p.sp(1) + p.t(cell(ms.name, labelW, false), name)
 		for _, v := range cols {
-			s, faint := text(v, ms)
+			s, faint := ms.cell(v.Roles["lead"], a.Min)
 			col := th.Text
 			if faint {
 				col = th.Faint
@@ -244,7 +261,7 @@ func (m *model) anatomyVerdict(p paint, w int) block {
 	}
 	lines = append(lines, "")
 	switch {
-	case !compare:
+	case beforeAt < 0:
 		lines = append(lines, p.sp(1)+p.t("nothing to compare yet: only "+latest.Version+" has landed tasks", th.Faint))
 	case !enough:
 		var few []string
@@ -253,7 +270,9 @@ func (m *model) anatomyVerdict(p paint, w int) block {
 				few = append(few, fmt.Sprintf("%s has %d of %d", v.Version, n, a.Min))
 			}
 		}
-		lines = append(lines, p.sp(1)+p.t("too few tasks to compare: "+strings.Join(few, ", "), th.Faint))
+		for _, l := range wrapPlain("too few tasks to compare: "+strings.Join(few, ", "), w-2) {
+			lines = append(lines, p.sp(1)+p.t(l, th.Faint))
+		}
 	}
 	for _, l := range wrapPlain("first-pass rate and review rounds, what must not move, are on Pulse (← ←)", w-2) {
 		lines = append(lines, p.sp(1)+p.t(l, th.Faint))
@@ -267,11 +286,11 @@ func (m *model) anatomyVerdict(p paint, w int) block {
 func (m *model) anatomyRoles(p paint, w int) block {
 	th := m.th
 	a := m.kz.doc.Summary.Anatomy
-	with, _ := anatomySplit(a)
-	if len(with) < 2 {
+	beforeAt, latestAt := anatomyLatest(a)
+	if beforeAt < 0 {
 		return block{m.heading(p, w, "the other roles", "latest against before"), p.sp(1) + p.t("nothing to compare yet", th.Faint)}
 	}
-	before, latest := with[len(with)-2], with[len(with)-1]
+	before, latest := a.Versions[beforeAt], a.Versions[latestAt]
 	all := m.anatomyMeasures()
 	byName := func(name string) anatomyMeasure {
 		return all[slices.IndexFunc(all, func(ms anatomyMeasure) bool { return ms.name == name })]
@@ -288,20 +307,9 @@ func (m *model) anatomyRoles(p paint, w int) block {
 	}
 	pw := func(pr pair) int { return width(pr.a) + 3 + width(pr.b) }
 	pairOf := func(role string, ms anatomyMeasure) pair {
-		side := func(v data.AnatomyVersion) (string, bool) {
-			r := v.Roles[role]
-			if r == nil {
-				return "-", true
-			}
-			x, ok := ms.get(r)
-			if !ok {
-				return "-", true
-			}
-			return ms.show(x), r.N < a.Min
-		}
 		var pr pair
-		pr.a, pr.aFaint = side(before)
-		pr.b, pr.bFaint = side(latest)
+		pr.a, pr.aFaint = ms.cell(before.Roles[role], a.Min)
+		pr.b, pr.bFaint = ms.cell(latest.Roles[role], a.Min)
 		return pr
 	}
 	var roles []string

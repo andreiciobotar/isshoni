@@ -85,7 +85,7 @@ func TestGoldenKaizen(t *testing.T) {
 		{"kaizen-flow-140x100", 140, 100, pageFlow, doc, true},
 		{"kaizen-board-140x100", 140, 100, pageBoard, doc, true},
 		{"kaizen-anatomy-140x40", 140, 40, pageAnatomy, doc, true},
-		{"kaizen-anatomy-140x62", 140, 62, pageAnatomy, doc, true},
+		{"kaizen-anatomy-140x64", 140, 64, pageAnatomy, doc, true},
 		{"kaizen-anatomy-80x24", 80, 24, pageAnatomy, doc, true},
 		{"kaizen-anatomy-few-100x30", 100, 30, pageAnatomy, func(t *testing.T) *data.Kaizen { return fewAnatomyDoc(t) }, true},
 		{"kaizen-flow-80x24", 80, 24, pageFlow, doc, true},
