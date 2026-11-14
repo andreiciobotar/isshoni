@@ -334,6 +334,21 @@ class TickTests(SchedHarness, World):
         self.tick([reviewed(1)], at=NOW + 360)
         self.assertEqual(self.landers(), [])
 
+    def test_a_failed_session_listing_keeps_the_key_busy_and_starts_no_run(self):
+        failing = {("claude", "agents"): (1, "", "boom")}
+        self.tick([reviewed(1)], answer=reply("#1 stopped handover: busy"), sessions=self.busy_lead())
+        self.tick([reviewed(1)], at=NOW + 120, extra=failing)
+        self.assertEqual(self.landers(), [])
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:busy"})
+        self.tick([reviewed(1)], at=NOW + 240, answer=reply("#1 stopped ci: red"))  # free now
+        self.assertEqual(len(self.landers()), 1)
+
+    def test_a_lead_that_frees_during_the_run_keeps_its_retry(self):
+        busy, free = (0, json.dumps(self.busy_lead()), ""), (0, json.dumps(self.busy_lead()[:1]), "")
+        # listings: the draft sync's, the run's before and after it
+        self.tick([reviewed(1)], answer=reply("#1 stopped handover: busy"), extra={("claude", "agents"): [busy, busy, free]})
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:busy"})
+
     def test_a_free_pull_request_with_an_unchanged_key_starts_no_run(self):
         self.tick([reviewed(1)], answer=reply("#1 stopped ci: red"))
         self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:free"})

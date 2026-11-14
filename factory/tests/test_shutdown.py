@@ -326,6 +326,33 @@ class BusyEveryTickTests(Harness):
         self.tick(at=NOW + 120, sessions=[self.busy[0], lead("x", pid=100, status="idle")])
         self.assertTrue(any(r.get("id") == fid and r.get("cleared") for r in self.records()))
 
+    def test_no_dispatcher_session_means_no_site_manager_run_on_any_tick(self):
+        self.hand_over(7)
+        for later in (0, 120):
+            self.tick(at=NOW + later, sessions=[self.busy[1]])
+            self.assertEqual(self.claude_runs(), [])
+        self.assertEqual(len([r for r in self.records() if r.get("criterion")]), 1)  # logged once, never sent
+
+    def test_a_failed_session_listing_neither_clears_nor_fires(self):
+        failing = {("claude", "agents"): (1, "", "boom")}
+        self.hand_over(7)
+        self.tick(answers=failing)
+        self.assertEqual((self.records(), self.claude_runs()), ([], []))
+        self.tick(at=NOW + 120)
+        fid = self.records()[0]["id"]
+        self.tick(at=NOW + 240, answers=failing)
+        self.assertEqual([r for r in self.records() if r.get("id") == fid and r.get("cleared")], [])
+        self.assertEqual(len([r for r in self.records() if r.get("criterion")]), 1)
+
+    def test_a_finding_without_a_row_still_carries_the_transcript_tail(self):
+        entries = [{"timestamp": "T0", "message": {"role": "user", "content": "start"}}]
+        self.transcript("{sid}.jsonl", NOW - 60).write_text("".join(json.dumps(e) + "\n" for e in entries))
+        self.hand_over(7)
+        self.tick()
+        [sent] = json.loads(self.claude_runs()[0][-1].partition("\n\n")[2])
+        self.assertNotIn("task", sent)
+        self.assertEqual(sent["transcript_tail"], ["T0 user: start"])
+
     def test_the_other_criteria_are_left_alone_between_health_passes(self):
         self.seed("firings", [fired("a", criterion="past-limit")])  # open, and not evaluated on this tick
         self.hand_over(5)

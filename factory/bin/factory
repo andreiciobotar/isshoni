@@ -2039,6 +2039,7 @@ def firing_for_run(p, f):
     """A firing as the site manager is given it: its fields, and for a task its status row and transcript tail."""
     out = {k: f[k] for k in ("id", *FIRED_KEYS, "what")}
     row = next((r for r in p["rows"] or [] if r["slug"] == f["slug"]), None)
+    path = row["path"] if row else p["repo"].worktree_path(f["slug"]) if f.get("slug") and p.get("sessions") else None
     if row:
         n = p["now"]
         out["task"] = {"phase": row["phase"], "state": row["state"], "session": row["session"],
@@ -2046,7 +2047,8 @@ def firing_for_run(p, f):
                        "last_commit": age(row["last_commit"], n), "dirty": row["dirty"], "ahead": row["ahead"],
                        "behind": row["behind"], "pr_state": row["pr_state"], "pr_url": row["pr_url"],
                        "overtime": row["overtime"]}
-        session = task_session(p, row["path"])
+    if path:
+        session = task_session(p, path)
         sid = session.get("sessionId") if session else None
         main = next((t for t in transcripts(session) if t.name == f"{sid}.jsonl"), None)
         tail = transcript_tail(main) if main else None
@@ -2194,7 +2196,7 @@ def watch_tick(args, repo):
     else:
         criteria = [c for c in criteria if c["name"] in EVERY_TICK]
         p = tick_picture(repo, name, criteria)
-    orphaned = full and p["sessions"] is not None and not live_dispatchers(p["sessions"], repo.root, p["dispatcher"])
+    orphaned = p["sessions"] is not None and not live_dispatchers(p["sessions"], repo.root, p["dispatcher"])
     current, skipped = evaluate(p, criteria)
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
@@ -4288,8 +4290,11 @@ def approved_at(pr):
 
 
 def lead_state(repo, sessions, pr):
-    """`busy` while the lead session of the task of `pr` is not finished, else `free` (also with no session): the last
-    part of a `noticed` key, so a pull request noticed while its lead was busy is run once more when it is free."""
+    """`busy` while the lead session of the task of `pr` is not finished, or when sessions could not be listed
+    (None), else `free` (also with no session): the last part of a `noticed` key, so a pull request noticed while
+    its lead was busy is run once more when it is free."""
+    if sessions is None:
+        return "busy"
     slug = task_slug(repo, pr)
     s = slug and sessions and task_session({"sessions": sessions, "repo": repo}, repo.worktree_path(slug))
     return "busy" if s and not finished(s) else "free"
@@ -4362,11 +4367,15 @@ def run_lander(repo, snap, given, word, name):
                 results[n] = ("other", "the lander said merged but it is still open")
             elif kind != "merged" and n not in shown and rc:
                 results[n] = ("merged", pr["url"])
-    state, heads, sessions = read_lander(repo), {pr["number"]: pr["headRefOid"] for pr in snap}, list_sessions()
+    before, sessions = sessions, list_sessions()
+    state, heads = read_lander(repo), {pr["number"]: pr["headRefOid"] for pr in snap}
+
+    def lead(pr):  # busy when it was before the run or is after it: a lead that frees during the run keeps its retry
+        return "busy" if "busy" in (lead_state(repo, before, pr), lead_state(repo, sessions, pr)) else "free"
     # Only this run's pull requests get a new key, with the stamp read before the run: an approval that came
     # during it, or on another pull request, starts the next run. Its last part says whether the lead is busy.
     state["noticed"] = {**{n: k for n, k in state["noticed"].items() if int(n) in heads},
-                        **{str(pr["number"]): f"{heads[pr['number']]}:{at}:{lead_state(repo, sessions, pr)}" for pr in given
+                        **{str(pr["number"]): f"{heads[pr['number']]}:{at}:{lead(pr)}" for pr in given
                            if (at := approved_at(pr)) and pr["number"] in heads}}
     state["stopped"] = {n: s for n, s in state["stopped"].items() if int(n) in heads}
     for n, (kind, text) in results.items():
