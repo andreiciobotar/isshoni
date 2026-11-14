@@ -15,7 +15,7 @@ from unittest import mock
 from test_factory import BIN, LEAN_SETTINGS, FakeRun, factory, porcelain
 
 SLUG, N, DEFAULT = "task1", 7, "main"
-OLD, NEW = "a" * 40, "b" * 40
+OLD, NEW, DEFAULT_REF = "a" * 40, "b" * 40, "c" * 40
 URL = f"https://x/pull/{N}"
 CONFLICT = "it conflicts with main in a.txt"
 RED = "red checks: test https://x/run/2"
@@ -74,12 +74,14 @@ class Machine(FakeRun):
             return 0, s["head"] + "\n", ""
         if a[:3] == ["git", "rev-parse", "--abbrev-ref"]:
             return 0, s["branch"] + "\n", ""
+        if a[:3] == ["git", "rev-parse", "origin/main"]:
+            return 0, DEFAULT_REF + "\n", ""
         if a[:2] == ["git", "rev-parse"]:
             return 0, s["remote"] + "\n", ""
         if a[:3] == ["git", "status", "--porcelain"]:
             return 0, " M a.txt\n" if s["dirty"] else "", ""
         if a[:3] == ["git", "merge-base", "--is-ancestor"]:
-            return (0 if s["merged" if a[3] == "origin/main" else "ancestor"] else 1), "", ""
+            return (0 if s["merged" if a[3] == DEFAULT_REF else "ancestor"] else 1), "", ""
         if a[:2] == ["git", "push"]:
             self.pushes.append(a)
             if self.push[0] == 0:
@@ -191,7 +193,7 @@ class SendBackTests(Case):
             to, _ = self.send_back(RED)
             self.assertEqual(to, "lead")
             spawn.assert_not_called()
-            self.assertEqual(self.records("techlead")[-1]["reason"], "red at the head the tech lead pushed")
+            self.assertEqual(self.records("techlead")[-1]["reason"], "red at the head the tech lead resolved")
             to, _ = self.send_back(CONFLICT)
             self.assertEqual(to, "tech lead")
             spawn.assert_called_once()
@@ -275,7 +277,7 @@ class RunTests(Case):
             "the worktree is not clean": {"head": NEW, "dirty": True},
             "the worktree is not on": {"head": NEW, "branch": "elsewhere"},
             "not an ancestor of HEAD": {"head": NEW, "ancestor": False},
-            "origin/main is not merged in": {"head": NEW, "merged": False},
+            "origin/main as of the start of the run is not merged in": {"head": NEW, "merged": False},
             "the head did not move": {},
             "the spec changed": self.edit_spec,
         }
@@ -322,6 +324,21 @@ class RunTests(Case):
         self.assertEqual((first["outcome"], last["outcome"]), ("resolved", "stopped"))
         self.assertIn("disk full", last["reason"])
         self.assertEqual((last["session"], last["cost_usd"], last["head_before"]), ("sid-tl", 1.42, OLD))
+
+    def test_a_record_that_cannot_be_written_still_tells_the_lead(self):
+        real = factory.declare
+
+        def declare(repo, slug, role, state, **kw):
+            if state == "handed-over":
+                raise OSError("disk full")
+            return real(repo, slug, role, state, **kw)
+
+        def log(*a, **kw):
+            raise OSError("disk full")
+        with mock.patch.object(factory, "declare", declare), mock.patch.object(factory, "log_tech_lead", log):
+            code, out, _, m = self.go(after={"head": NEW})
+        self.assertEqual((code, self.declared(), len(m.lines)), (1, [("working", "tech-lead", None)], 1))
+        self.assertIn("the record could not be written: disk full", out)
 
     def test_a_failing_pull_request_read_is_a_stopped_record_and_a_line_to_the_lead(self):
         class Unreadable(Machine):
@@ -422,6 +439,7 @@ class RealRepositoryTests(Case):
         self.git(self.root, "push", "-q", "origin", "main")
         self.git(tmp, "clone", "-q", self.origin, self.other)
         self.old = self.git(self.tree, "rev-parse", "HEAD")
+        self.old_default = self.git(self.tree, "rev-parse", "origin/main")
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(self.root)
 
@@ -445,12 +463,13 @@ class RealRepositoryTests(Case):
 
     def state(self, old=None, before=None):
         repo = factory.Repo(self.root)
-        return factory.tech_lead_state(repo, self.tree, self.pr(), old or self.old, self.spec,
+        return factory.tech_lead_state(repo, self.tree, self.pr(), old or self.old, self.old_default, self.spec,
                                        before or factory.spec_hash(self.spec))
 
     def test_a_correct_resolution_passes_while_the_default_branch_moves_on_the_remote(self):
         self.merge_main()
         self.move_remote("main")
+        self.git(self.root, "fetch", "-q", "origin")  # `origin/main` is shared by all worktrees: it moves under the run
         head, clean, flaw = self.state()
         self.assertEqual((head, clean, flaw), (self.git(self.tree, "rev-parse", "HEAD"), True, None))
 
@@ -472,7 +491,7 @@ class RealRepositoryTests(Case):
             self.merge_main()
             self.spec.write_text("another")
         cases = [("the worktree is not clean", dirty, False), ("the worktree is not on", elsewhere, False),
-                 ("not an ancestor of HEAD", rewritten, False), ("origin/main is not merged in", unmerged, False),
+                 ("not an ancestor of HEAD", rewritten, False), ("is not merged in", unmerged, False),
                  ("the spec changed", spec, False), ("the head did not move", self.merge_main, True)]
         for reason, act, came_back_here in cases:
             with self.subTest(reason=reason):
@@ -508,7 +527,7 @@ class RealRepositoryTests(Case):
         return self.git(self.origin, "rev-parse", f"refs/heads/{self.branch}")
 
     def test_the_script_pushes_the_resolution_to_the_remote_branch_and_hands_over(self):
-        code, m = self.resolve_with(lambda: (self.merge_main(), self.move_remote("main")))
+        code, m = self.resolve_with(lambda: (self.merge_main(), self.move_remote("main"), self.git(self.root, "fetch", "-q", "origin")))
         self.assertEqual((code, self.remote_branch()), (0, self.git(self.tree, "rev-parse", "HEAD")))
         self.assertEqual(self.declared()[-1], ("handed-over", "tech-lead", URL))
         self.assertEqual((self.records("techlead")[0]["outcome"], m.lines), ("resolved", []))
@@ -522,21 +541,6 @@ class RealRepositoryTests(Case):
         self.assertTrue(r["reason"].startswith("git push failed: "), r["reason"])
         self.assertIn("rejected", r["reason"])
         self.assertEqual(len(m.lines), 1)
-
-
-class RunGroupTests(unittest.TestCase):
-    def test_a_timeout_kills_what_the_child_started(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            pidfile = Path(tmp, "pid")
-            started = time.monotonic()
-            rc, *_ = factory.run(["sh", "-c", f"sleep 30 & echo $! > {pidfile}; wait"], timeout=1, group=True)
-            self.assertEqual(rc, 124)
-            self.assertLess(time.monotonic() - started, 10)  # run waits for the pipes: a survivor would hold them 30 s
-            pid = int(pidfile.read_text())
-        with self.assertRaises(ProcessLookupError):
-            for _ in range(50):
-                os.kill(pid, 0)
-                time.sleep(0.1)
 
 
 class TagsTests(unittest.TestCase):

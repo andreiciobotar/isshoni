@@ -4868,7 +4868,7 @@ def tech_lead_records(repo, slug):
 
 def tech_lead_start(repo, fallback, pr, slug, evidence):
     """Start a tech lead run for `pr` without waiting: True. False, after logging an `unstarted` record with the reason,
-    when there is no spec or worktree, a run is going, the pull request is red at the head the last run pushed, or the
+    when there is no spec or worktree, a run is going, the pull request is red at the head the last run resolved, or the
     process cannot be started."""
     reason, records = tech_lead_missing(repo, slug), tech_lead_records(repo, slug)
     if reason is None:
@@ -4877,7 +4877,7 @@ def tech_lead_start(repo, fallback, pr, slug, evidence):
     last = records[-1] if records else {}
     if reason is None and evidence.startswith("red checks") and last.get("outcome") == "resolved" \
             and last.get("head_after") == pr["headRefOid"]:
-        reason = "red at the head the tech lead pushed"
+        reason = "red at the head the tech lead resolved"
     if reason is None:
         argv = [sys.executable, str(Path(__file__).resolve()), "tech-lead", slug, str(pr["number"]), evidence,
                 *(["--dispatcher", fallback] if fallback else [])]
@@ -4917,16 +4917,17 @@ def spec_hash(spec):
         return None
 
 
-def tech_lead_state(repo, worktree, pr, old_head, spec, before):
-    """The worktree after the run: (head, clean, the first script check that fails, or None). Nothing is fetched:
-    `<remote>/<default>` is the ref as the session left it. `before` is the spec's hash when the run began."""
+def tech_lead_state(repo, worktree, pr, old_head, old_default, spec, before):
+    """The worktree after the run: (head, clean, the first script check that fails, or None). `old_default` is
+    `<remote>/<default>` as of the start of the run, the ref the lander judged the conflict against: the ref itself
+    moves under the run when anything fetches. `before` is the spec's hash when the run began."""
     git, remote, branch = (lambda *a: repo.git(*a, path=worktree)), repo.remote, pr["headRefName"]
     head, clean = git("rev-parse", "HEAD")[1].strip(), not git("status", "--porcelain")[1].strip()
     checks = [(clean, "the worktree is not clean"),
               (git("rev-parse", "--abbrev-ref", "HEAD")[1].strip() == branch, f"the worktree is not on {branch}"),
               (git("merge-base", "--is-ancestor", old_head, "HEAD")[0] == 0, "the head it came back at is not an ancestor of HEAD"),
-              (git("merge-base", "--is-ancestor", f"{remote}/{repo.default}", "HEAD")[0] == 0,
-               f"{remote}/{repo.default} is not merged in"),
+              (git("merge-base", "--is-ancestor", old_default, "HEAD")[0] == 0,
+               f"{remote}/{repo.default} as of the start of the run is not merged in"),
               (head != old_head, "the head did not move: a resolution commits something"),
               (spec_hash(spec) == before, "the spec changed")]
     return head, clean, next((why for ok, why in checks if not ok), None)
@@ -4957,8 +4958,11 @@ def cmd_tech_lead(args):
             return tech_lead_run(repo, settings, args, learned)
         except Exception as e:
             reason = f"the run failed: {why(e)}"
-            log_tech_lead(repo, settings, slug, n, evidence, "stopped", reason=reason, **learned)
             tell_tech_lead(repo, args, slug, n, evidence, reason, "")
+            try:
+                log_tech_lead(repo, settings, slug, n, evidence, "stopped", reason=reason, **learned)
+            except OSError as err:
+                print(f"#{n} tech lead: the record could not be written: {err}")
             print(f"#{n} tech lead stopped: {reason.splitlines()[0]}")
             return 1
 
@@ -4972,7 +4976,8 @@ def tech_lead_run(repo, settings, args, learned):
     worktree, spec, branch = *tech_lead_paths(repo, slug), pr["headRefName"]
     declare(repo, slug, "tech-lead", "working")
     to_draft(repo, branch)
-    old_head, before, started = repo.git("rev-parse", "HEAD", path=worktree)[1].strip(), spec_hash(spec), time.monotonic()
+    old_head, old_default = (repo.git("rev-parse", ref, path=worktree)[1].strip() for ref in ("HEAD", f"{repo.remote}/{repo.default}"))
+    before, started = spec_hash(spec), time.monotonic()
     argv = tech_lead_argv(repo, slug, pr, evidence, spec, settings)
     rc, out, _ = run(argv, cwd=worktree, timeout=TECH_LEAD_TIMEOUT, env={**os.environ, "FACTORY_ROLE": "tech-lead"}, group=True)
     try:
@@ -4990,7 +4995,7 @@ def tech_lead_run(repo, settings, args, learned):
     reason = (f"reached {TECH_LEAD_TIMEOUT // 60} minutes" if rc == 124
               else f"reached {float(TECH_LEAD_BUDGET):g} USD" if doc.get("subtype") == "error_max_budget_usd"
               else None if rc == 0 and answered else "ended without an answer")
-    head, clean, flaw = tech_lead_state(repo, worktree, pr, old_head, spec, before)
+    head, clean, flaw = tech_lead_state(repo, worktree, pr, old_head, old_default, spec, before)
     reason = reason or (flaw if verdict == "resolved" else None)
     if verdict == "resolved" and not reason:
         rc, out, err = act_git(worktree, "push", repo.remote, f"HEAD:refs/heads/{branch}", timeout=GH_TIMEOUT)
