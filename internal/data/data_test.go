@@ -312,21 +312,29 @@ func TestSessionsGroupingFields(t *testing.T) {
 	}
 }
 
-// requireChildGone waits for the stub's child (its pid is in $STUBDIR/child) to end; a survivor is killed.
-func requireChildGone(t *testing.T, dir string) {
+// stubChild waits up to 5 s for the stub to record its child's pid in $STUBDIR/child and returns it; a survivor is killed at cleanup.
+func stubChild(t *testing.T, dir string) int {
 	t.Helper()
 	var pid int
-	for i := 0; i < 100 && pid == 0; i++ {
+	for i := 0; i < 500 && pid == 0; i++ {
 		b, _ := os.ReadFile(filepath.Join(dir, "child"))
 		pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
-		time.Sleep(10 * time.Millisecond)
+		if pid == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 	if pid == 0 {
 		t.Fatal("the stub did not start a child")
 	}
+	t.Cleanup(func() { syscall.Kill(pid, syscall.SIGKILL) })
+	return pid
+}
+
+// requireChildGone waits for the child `pid` to end.
+func requireChildGone(t *testing.T, pid int) {
+	t.Helper()
 	for i := 0; syscall.Kill(pid, 0) == nil; i++ {
 		if i == 100 {
-			syscall.Kill(pid, syscall.SIGKILL)
 			t.Fatalf("child %d survived", pid)
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -335,12 +343,13 @@ func requireChildGone(t *testing.T, dir string) {
 
 func TestMonitorTimeoutKillsTheChildren(t *testing.T) {
 	r := stubRunner(t)
+	r.Timeout = 3 * time.Second
 	dir := os.Getenv("STUBDIR")
 	os.WriteFile(filepath.Join(dir, "hang"), nil, 0o644)
 	if _, err := r.Agents(context.Background(), ""); err == nil {
 		t.Fatal("a hung call must time out")
 	}
-	requireChildGone(t, dir)
+	requireChildGone(t, stubChild(t, dir))
 }
 
 func TestMonitorCancelKillsTheChildren(t *testing.T) {
@@ -351,8 +360,8 @@ func TestMonitorCancelKillsTheChildren(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { _, err := r.Agents(ctx, ""); done <- err }()
-	time.Sleep(200 * time.Millisecond)
+	child := stubChild(t, dir)
 	cancel()
 	<-done
-	requireChildGone(t, dir)
+	requireChildGone(t, child)
 }

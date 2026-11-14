@@ -79,6 +79,28 @@ class NoLeftTests(unittest.TestCase):
         time.sleep(0.2)
         self.assertFalse(alive(self.pid(pidfile)))
 
+    def test_a_first_signal_after_the_command_ended_still_reports_and_kills(self):
+        d = self.enterContext(tempfile.TemporaryDirectory())
+        pidfile = os.path.join(d, "pid")
+        # The pid file is written last, after the wrapper had polls to see the sleep; the command then ends at once.
+        leak = ("import subprocess, sys, time\n"
+                "p = subprocess.Popen(['sleep', '63.25'], start_new_session=True)\n"
+                "time.sleep(0.5)\n"
+                "open(sys.argv[1], 'w').write(str(p.pid))\n")
+        out = open(os.path.join(d, "out"), "w+")
+        self.addCleanup(out.close)
+        wrapper = subprocess.Popen([sys.executable, NOLEFT, sys.executable, "-c", leak, pidfile], stdout=out, start_new_session=True)
+        self.addCleanup(self.kill_group, wrapper)
+        self.addCleanup(lambda: alive(self.pid(pidfile)) and os.kill(self.pid(pidfile), signal.SIGKILL))
+        while not self.pid(pidfile):
+            time.sleep(0.005)
+        os.kill(wrapper.pid, signal.SIGTERM)  # the command ends at once: the wrapper is in its join or its 1 s sweep
+        self.assertEqual(wrapper.wait(timeout=10), 1)
+        out.seek(0)
+        self.assertIn("left behind: 1", out.read())
+        time.sleep(0.2)
+        self.assertFalse(alive(self.pid(pidfile)))
+
     def test_a_signal_gives_exit_code_128_plus_its_number(self):
         wrapper = subprocess.Popen([sys.executable, NOLEFT, "sleep", "30"], stdout=subprocess.DEVNULL, start_new_session=True)
         self.addCleanup(self.kill_group, wrapper)

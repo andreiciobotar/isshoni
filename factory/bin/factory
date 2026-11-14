@@ -4582,6 +4582,8 @@ def main(argv=None):
 def stop_on_signal(signum, _frame):
     """Kill the children that run in groups of their own, then leave with 128+signal; `finally` blocks and context
     managers run, and the kernel releases the locks."""
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):  # a second signal must not cut the unwind short
+        signal.signal(sig, signal.SIG_IGN)
     for pgid in list(GROUPS):
         kill_group(pgid)
     sys.exit(128 + signum)

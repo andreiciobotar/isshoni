@@ -158,11 +158,12 @@ class RunLifetimeTests(Fakes):
         self.assertEqual(p.wait(timeout=10), 143)
         self.assertTrue(gone(pid))
 
-    def script_gets(self, signum):
+    def script_gets(self, signum, *more):
         """The script `lander 1` with the fake `claude` and `gh`, signalled during the claude run."""
         p = self.run_script({})
         pid = self.started()
-        os.kill(p.pid, signum)
+        for s in (signum, *more):
+            os.kill(p.pid, s)
         self.assertEqual(p.wait(timeout=10), 128 + signum)
         self.assertTrue(gone(pid))
 
@@ -171,6 +172,9 @@ class RunLifetimeTests(Fakes):
 
     def test_the_script_on_sighup_ends_its_group_children(self):
         self.script_gets(signal.SIGHUP)
+
+    def test_a_second_signal_does_not_change_the_exit_code(self):
+        self.script_gets(signal.SIGTERM, signal.SIGTERM)
 
 
 class TickLockTests(Harness):

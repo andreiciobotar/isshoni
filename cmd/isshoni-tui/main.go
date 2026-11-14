@@ -97,6 +97,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "isshoni-tui:", err)
 			os.Exit(1)
 		}
+		if ctx.Err() != nil { // a signal cut the render short: no partial frame
+			fmt.Fprintln(os.Stderr, "isshoni-tui:", ctx.Err())
+			os.Exit(1)
+		}
 		fmt.Println(out)
 		return
 	}

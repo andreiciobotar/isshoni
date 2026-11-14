@@ -66,7 +66,7 @@ def main(command):
         signal.signal(sig, on_signal)
     p = subprocess.Popen(command)
     mine, stop = {}, threading.Event()
-    tracker = threading.Thread(target=track, args=(p.pid, mine, stop))
+    tracker = threading.Thread(target=track, args=(p.pid, mine, stop), daemon=True)
     tracker.start()
     try:
         rc = p.wait()
@@ -79,6 +79,8 @@ def main(command):
             p.kill()
             p.wait()
     finally:
+        for sig in SIGNALS:  # the join and the sweep must not be cut short by a first signal
+            signal.signal(sig, signal.SIG_IGN)
         stop.set()
     tracker.join()
     deadline = time.monotonic() + GRACE

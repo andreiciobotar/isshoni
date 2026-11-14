@@ -360,6 +360,7 @@ func TestRunHangupEndsAndKillsTheChildren(t *testing.T) {
 	if child == 0 {
 		t.Fatal("the load never started")
 	}
+	t.Cleanup(func() { syscall.Kill(child, syscall.SIGKILL) })
 	syscall.Kill(os.Getpid(), syscall.SIGHUP) // Run installed its handler before the stub could start
 	select {
 	case err := <-done:
