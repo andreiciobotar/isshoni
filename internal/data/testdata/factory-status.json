@@ -46,6 +46,6 @@
       "phase": "blocked", "stale": false
     }
   ],
-  "cap": 7, "reserve": 1, "open": 4, "in_motion": 3, "blocked": 2, "in_review": 1, "merged": 0, "settled": 1,
+  "cap": 7, "reserve": 1, "open": 5, "in_motion": 3, "blocked": 2, "in_review": 1, "merged": 0, "settled": 1,
   "leftover_agent_worktrees": 0, "outside_worktrees": 0
 }
