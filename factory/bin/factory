@@ -221,14 +221,51 @@ def lean_flags():
     return ["--strict-mcp-config", "--settings", json.dumps(settings)]
 
 
-def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now):
+SIZE_LIMIT_MINUTES = {"small": 45, "medium": 90, "large": 120}
+
+
+def brief_size(brief):
+    """small, medium or large: the first of them on the brief's first `Expected size:` line; None when there is none."""
+    for line in brief.splitlines():
+        if line.lower().startswith("expected size:"):
+            found = re.search(r"\b(small|medium|large)\b", line, re.I)
+            return found.group(1).lower() if found else None
+    return None
+
+
+def task_limit(size, limit_hours):
+    """The one place a task's time limit, in seconds, is computed: the size's, never above the setting."""
+    ceiling = limit_hours * 3600
+    return int(min(SIZE_LIMIT_MINUTES[size] * 60, ceiling) if size in SIZE_LIMIT_MINUTES else ceiling)
+
+
+def nearing_percent():
+    """The threshold of the `nearing-limit` criterion, None when criteria.json cannot say."""
+    try:
+        criteria = json.loads(CRITERIA_PATH.read_text())
+        for c in criteria if isinstance(criteria, list) else []:
+            if c.get("name") == "nearing-limit":
+                t = c.get("threshold")
+                return t if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0 else None
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def span(secs):
+    """41m, 1h30m, 2h: minutes resolution."""
+    h, m = divmod(int(secs) // 60, 60)
+    return f"{h}h" * (h > 0) + f"{m}m" * (m > 0 or h == 0)
+
+
+def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limit):
     """The lead's launch command: the one place another runner would plug in."""
     lead_rules = (PLUGIN_ROOT / "roles" / "lead.md").read_text()
     prompt = (
         f"Your task slug is {slug}. Before each message to the dispatcher run `factory dispatcher`: "
         f"it prints its current session name (now {dispatcher}). "
         f"Your base branch is {base} (remote {remote}). You started at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))}. "
-        f"Your time limit is {settings['task_time_limit_hours']} hours. "
+        f"Your time limit is {limit // 60} minutes. "
         f"Your brief follows.\n\n{brief}"
     )
     lean = [*lean_flags(), f"--tools={LEAD_TOOLS}"] if settings["lean_start"] else []
@@ -536,6 +573,7 @@ def collect(repo, sessions, limit_hours, prs=None):
     if prs is None:  # not through the cache: what GitHub says now, 'unknown' when it cannot say
         needed = needed_branches(repo)
         prs = (ask_pull_requests(repo, needed)[0] if needed else {}) or {b: UNKNOWN_PR for b in needed}
+    percent = nearing_percent()
     rows = []
     for wt in repo.tasks:
         path, branch = wt["path"], wt["branch"]
@@ -554,7 +592,14 @@ def collect(repo, sessions, limit_hours, prs=None):
         started = session.get("startedAt") if session else None
         row["elapsed"] = int(now - started / 1000) if started else None
         running = bool(session) and not finished(session)
-        row["overtime"] = running and row["elapsed"] is not None and row["elapsed"] > limit_hours * 3600
+        size = repo.git("config", "--get", f"branch.{branch}.factorySize")[1].strip() if branch else ""
+        row["size"] = size if size in SIZE_LIMIT_MINUTES else None
+        row["limit"] = task_limit(row["size"], limit_hours)
+        row["state"] = declared.get(slug, {}).get("state")
+        timed = running and row["elapsed"] is not None
+        row["overtime"] = timed and row["elapsed"] > row["limit"]
+        row["nearing"] = bool(timed and not row["overtime"] and row["state"] == "working" and percent is not None
+                              and row["elapsed"] * 100 > row["limit"] * percent)
         rc, out, _ = repo.git("status", "--porcelain", path=path)
         row["dirty"] = bool(out.strip()) if rc == 0 else None
         rc, out, _ = repo.git("rev-list", "--left-right", "--count", f"{row['base']}...HEAD", path=path)
@@ -564,7 +609,6 @@ def collect(repo, sessions, limit_hours, prs=None):
         ts, _, row["head"] = out.strip().partition(" ")
         row["last_commit"] = int(ts) if rc == 0 and ts.isdigit() else None
         row["pr_state"], row["pr_url"], row["pr_head"], row["pr_base"], row["pr_draft"] = prs.get(branch, UNKNOWN_PR)
-        row["state"] = declared.get(slug, {}).get("state")
         row["deliverable"] = declared.get(slug, {}).get("deliverable")
         row["waits_on"] = (declared[slug].get("waits_on") or "human") if row["state"] == "blocked" else None
         since = epoch(declared.get(slug, {}).get("ts"))
@@ -868,6 +912,7 @@ def cmd_new(args):
     if not brief.strip():
         raise Fail("the brief is empty")
     settings = load_settings()
+    size = brief_size(brief)
     repo = Repo()
     branch = f"worktree-{args.slug}"
     path = repo.worktree_path(args.slug)
@@ -935,7 +980,8 @@ def cmd_new(args):
                 if argv[0] == "config":
                     remove_stacked(repo, path, branch)
                 raise Fail(f"git {' '.join(argv)} failed: {err.strip()}", code=1)
-    rc, out, err = run(build_launch_argv(args.slug, dispatcher, brief, settings, base, repo.remote, time.time()),
+    rc, out, err = run(build_launch_argv(args.slug, dispatcher, brief, settings, base, repo.remote, time.time(),
+                                         task_limit(size, settings["task_time_limit_hours"])),
                        cwd=repo.root)
     match = BACKGROUNDED_RE.search(f"{out}\n{err}")
     if rc != 0 and not match:
@@ -948,7 +994,12 @@ def cmd_new(args):
         what = "without a `backgrounded` line" if not match else "after printing a `backgrounded` line"
         raise Fail(f"claude exited {rc} {what}; the session may be running, nothing was removed", code=1)
     print(f"started {match.group(2).strip()} (session {match.group(1)})")
-    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["lead_model"])
+    if size:
+        rc, _, err = repo.git("config", f"branch.{branch}.factorySize", size)
+        if rc != 0:
+            sys.stderr.write(f"factory: warning: cannot record the size of {branch}: {err.strip()}\n")
+    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["lead_model"],
+               **({"size": size} if size else {}))
     try:
         declare(repo, args.slug, "dispatcher", "working")
     except (OSError, ValueError, KeyError):
@@ -998,14 +1049,15 @@ def cmd_status(args):
         print(json.dumps(doc, indent=2))
         return 0
     now = time.time()
-    table = [["SLUG", "PHASE", "STATE", "BRANCH", "BASE", "SESSION", "ID", "ELAPSED", "CHANGES", "AHEAD/BEHIND", "LAST COMMIT", "PR", "FLAGS"]]
+    table = [["SLUG", "PHASE", "STATE", "BRANCH", "BASE", "SESSION", "ID", "ELAPSED", "SIZE", "CHANGES", "AHEAD/BEHIND", "LAST COMMIT", "PR", "FLAGS"]]
     for r in rows:
         ab = "?" if r["ahead"] is None else f"+{r['ahead']}/-{r['behind']}"
         changes = "?" if r["dirty"] is None else ("dirty" if r["dirty"] else "clean")
         pr = r["pr_state"] + (f" {r['pr_url']}" if r["pr_url"] else "")
-        flags = " ".join(f for f in ("overtime" if r["overtime"] else "", "stale" if r["stale"] else "") if f)
-        elapsed = "-" if r["elapsed"] is None else age(now - r["elapsed"], now)
-        table.append([r["slug"], r["phase"], r["state"] or "-", r["branch"] or "(detached)", r["base"], r["session"], r["session_id"] or "-", elapsed, changes, ab,
+        flags = " ".join(f for f in ("overtime" if r["overtime"] else "", "nearing" if r["nearing"] else "", "stale" if r["stale"] else "") if f)
+        elapsed = "-" if r["elapsed"] is None else (
+            f"{span(r['elapsed'])} / {span(r['limit'])}" if r["phase"] == "motion" else age(now - r["elapsed"], now))
+        table.append([r["slug"], r["phase"], r["state"] or "-", r["branch"] or "(detached)", r["base"], r["session"], r["session_id"] or "-", elapsed, r["size"] or "-", changes, ab,
                       age(r["last_commit"], now), pr, flags])
     widths = [max(len(row[i]) for row in table) for i in range(len(table[0]))]
     if rows:
@@ -1528,7 +1580,7 @@ def gather(repo, fallback):
     return {"now": time.time(), "repo": repo, "dispatcher": found and found["name"], "dispatcher_why": why,
             "sessions": sessions,
             "monitor": settings["monitor"], "lgtm_from_author": settings["lgtm_from_author"],
-            "lean_start": settings["lean_start"], "limit_hours": settings["task_time_limit_hours"],
+            "lean_start": settings["lean_start"],
             "rows": None if sessions is None else collect(repo, sessions, settings["task_time_limit_hours"]),
             "declared": read_tasks(repo.root), "events": repo_log("events", repo.root), "models": pinned_models(),
             "gh": lambda *args: gh_json(repo, *args)}
@@ -1603,15 +1655,10 @@ def c_past_limit(p, _):
             for r in tasks(p) if r["overtime"]]
 
 
-def c_nearing_limit(p, threshold):
-    found = []
-    for r in unfinished(phased(p)):
-        s = task_session(p, r["path"])
-        pct = 100 * (r["elapsed"] or 0) / (p["limit_hours"] * 3600)
-        if r["state"] == "working" and s and not finished(s) and not r["overtime"] and pct > threshold:
-            found.append((r["slug"], r["slug"], f"working for {age(p['now'] - r['elapsed'], p['now'])}, "
-                          f"{pct:.0f}% of the {p['limit_hours']}h limit"))
-    return found
+def c_nearing_limit(p, _):
+    return [(r["slug"], r["slug"], f"working for {age(p['now'] - r['elapsed'], p['now'])}, "
+                                   f"{100 * r['elapsed'] / r['limit']:.0f}% of the {span(r['limit'])} limit")
+            for r in tasks(p) if r["nearing"]]
 
 
 def c_ci_red_default(p, _):
@@ -2242,6 +2289,7 @@ def firing_for_run(p, f):
                        "elapsed": None if row["elapsed"] is None else age(n - row["elapsed"], n),
                        "last_commit": age(row["last_commit"], n), "dirty": row["dirty"], "ahead": row["ahead"],
                        "behind": row["behind"], "pr_state": row["pr_state"], "pr_url": row["pr_url"],
+                       "limit": span(row["limit"]), "size": row["size"], "nearing": row["nearing"],
                        "overtime": row["overtime"], "worktree": path, "branch": row["branch"], "lead": lead, "pid": pid}
     elif path:
         out["task"] = {"worktree": path, "lead": lead, "pid": pid}

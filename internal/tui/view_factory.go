@@ -485,43 +485,90 @@ func flagPills(p paint, t data.FactoryTask) string {
 	return strings.Join(ps, p.sp(1))
 }
 
-// factoryCols are the column widths shared by every table; 0 is a dropped column.
-type factoryCols struct{ slug, phase, elapsed, pr, base, flags int }
+// elapsedLeast is the ELAPSED width of the bare elapsed time (FmtDuration).
+const elapsedLeast = 7
 
-// factoryCols sizes the columns to the widest cell of any task and drops BASE, then PR,
-// then ELAPSED when the slug would get less than slugLeast cells.
+// factoryCols are the column widths shared by every table; 0 is a dropped column. span says
+// ELAPSED shows the elapsed time against the limit rather than the elapsed time alone.
+type factoryCols struct {
+	slug, phase, elapsed, size, pr, base, flags int
+	span                                        bool
+}
+
+// elapsedText is the ELAPSED cell: elapsed against the limit (41m / 45m) for a task in
+// motion that has one and when span, else the elapsed time alone.
+func elapsedText(t data.FactoryTask, span bool) string {
+	switch {
+	case t.Elapsed == nil:
+		return "-"
+	case span && t.Phase == "motion" && t.Limit != nil:
+		return limitSpan(*t.Elapsed) + " / " + limitSpan(*t.Limit)
+	}
+	return FmtDuration(time.Duration(*t.Elapsed) * time.Second)
+}
+
+// limitSpan renders seconds to the minute: 41m, 1h30m, 2h.
+func limitSpan(secs int64) string {
+	h, m := secs/3600, secs/60%60
+	s := ""
+	if h > 0 {
+		s = fmt.Sprintf("%dh", h)
+	}
+	if m > 0 || h == 0 {
+		s += fmt.Sprintf("%dm", m)
+	}
+	return s
+}
+
+// factoryCols sizes the columns to the widest cell of any task; SIZE shows only when some
+// task has a size. When the slug would get
+// less than slugLeast cells it drops SIZE, then shows ELAPSED as the elapsed time alone,
+// then drops BASE, PR and ELAPSED in that order.
 func (m *model) factoryCols(p paint, w int, tasks []data.FactoryTask) factoryCols {
-	c := factoryCols{slug: 4, phase: 5, elapsed: 7, pr: 2, base: 4, flags: 5}
+	c := factoryCols{slug: 4, phase: 5, elapsed: elapsedLeast, pr: 2, base: 4, flags: 5, span: true}
 	for _, t := range tasks {
 		_, label, _ := m.phaseLook(t, m.w >= 100)
 		base, _ := baseText(t.Base)
 		c.slug = max(c.slug, width(t.Slug))
 		c.phase = max(c.phase, 2+width(label))
+		c.elapsed = max(c.elapsed, width(elapsedText(t, true)))
+		if t.Size != "" {
+			c.size = max(c.size, 4, width(t.Size))
+		}
 		c.pr = max(c.pr, min(width(prText(t)), prMax))
 		c.base = max(c.base, min(width(base), baseMax))
 		c.flags = max(c.flags, width(flagPills(p, t)))
 	}
-	if free := w - (2 + c.phase + c.flags + 4 + 2*3 + c.elapsed + c.pr + c.base); free < c.slug {
+	used := func(cc factoryCols) int {
+		n := 2 + cc.phase + cc.flags + 4 // indent, and the gaps before PHASE and FLAGS
+		for _, x := range []int{cc.elapsed, cc.size, cc.pr, cc.base} {
+			if x > 0 {
+				n += x + 2
+			}
+		}
+		return n
+	}
+	if today := (factoryCols{phase: c.phase, flags: c.flags, elapsed: elapsedLeast, pr: c.pr, base: c.base}); w-used(today) < c.slug {
 		c.phase = min(c.phase, phaseMax)
 	}
 	for step := 0; ; step++ {
 		cc := c
 		if step >= 1 {
-			cc.base = 0
+			cc.size = 0
 		}
 		if step >= 2 {
-			cc.pr = 0
+			cc.span, cc.elapsed = false, elapsedLeast
 		}
 		if step >= 3 {
+			cc.base = 0
+		}
+		if step >= 4 {
+			cc.pr = 0
+		}
+		if step >= 5 {
 			cc.elapsed = 0
 		}
-		used := 2 + cc.phase + cc.flags + 4 // indent, and the gaps before PHASE and FLAGS
-		for _, n := range []int{cc.elapsed, cc.pr, cc.base} {
-			if n > 0 {
-				used += n + 2
-			}
-		}
-		if free := w - used; free >= min(c.slug, slugLeast) || step == 3 {
+		if free := w - used(cc); free >= min(c.slug, slugLeast) || step == 5 {
 			cc.slug = max(1, min(c.slug, free))
 			return cc
 		}
@@ -529,12 +576,12 @@ func (m *model) factoryCols(p paint, w int, tasks []data.FactoryTask) factoryCol
 }
 
 // join lays out one table line from its painted cells, each already padded to its column.
-func (c factoryCols) join(p paint, slug, phase, elapsed, pr, base, flags string) string {
+func (c factoryCols) join(p paint, slug, phase, elapsed, size, pr, base, flags string) string {
 	parts := []string{slug, phase}
 	for _, x := range []struct {
 		w    int
 		cell string
-	}{{c.elapsed, elapsed}, {c.pr, pr}, {c.base, base}} {
+	}{{c.elapsed, elapsed}, {c.size, size}, {c.pr, pr}, {c.base, base}} {
 		if x.w > 0 {
 			parts = append(parts, x.cell)
 		}
@@ -544,7 +591,7 @@ func (c factoryCols) join(p paint, slug, phase, elapsed, pr, base, flags string)
 
 func (c factoryCols) header(p paint) string {
 	f := func(s string, w int, right bool) string { return p.t(cell(s, w, right), p.th.Faint) }
-	return c.join(p, f("SLUG", c.slug, false), f("PHASE", c.phase, false), f("ELAPSED", c.elapsed, true), f("PR", c.pr, false), f("BASE", c.base, false), f("FLAGS", c.flags, false))
+	return c.join(p, f("SLUG", c.slug, false), f("PHASE", c.phase, false), f("ELAPSED", c.elapsed, true), f("SIZE", c.size, false), f("PR", c.pr, false), f("BASE", c.base, false), f("FLAGS", c.flags, false))
 }
 
 // taskRow is a task's table line, and under a task blocked on someone else the reason it
@@ -552,9 +599,13 @@ func (c factoryCols) header(p paint) string {
 func (m *model) taskRow(p paint, c factoryCols, t data.FactoryTask, w int) block {
 	th := m.th
 	glyph, label, col := m.phaseLook(t, m.w >= 100)
-	elapsed, pr := "-", prText(t)
-	if t.Elapsed != nil {
-		elapsed = FmtDuration(time.Duration(*t.Elapsed) * time.Second)
+	pr := prText(t)
+	elapsedCol := th.Muted
+	switch {
+	case t.Overtime:
+		elapsedCol = th.Red
+	case t.Nearing:
+		elapsedCol = th.Yellow
 	}
 	prCol := th.Text
 	if pr == "-" || pr == "?" {
@@ -572,7 +623,8 @@ func (m *model) taskRow(p paint, c factoryCols, t data.FactoryTask, w int) block
 	row := block{c.join(p,
 		p.t(cell(t.Slug, c.slug, false), th.Text),
 		fit(phase(glyph+" ", col)+phase(label, col), c.phase, p),
-		p.t(cell(elapsed, c.elapsed, true), th.Muted),
+		p.t(cell(elapsedText(t, c.span), c.elapsed, true), elapsedCol),
+		p.t(cell(cmp.Or(t.Size, "-"), c.size, false), th.Faint),
 		p.t(cell(pr, c.pr, false), prCol),
 		p.t(cell(base, c.base, false), baseCol),
 		fit(flagPills(p, t), c.flags, p))}
