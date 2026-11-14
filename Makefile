@@ -1,10 +1,14 @@
-.PHONY: install up build test fmt-check test-factory wizard uninstall snapshot screenshot clean FORCE
+.PHONY: install up build test fmt-check test-factory wizard uninstall snapshot screenshot strip clean FORCE
 
 BIN := bin/isshoni-tui
 VIEW ?= dashboard
 SIZE ?= 140x40
 CHROME ?= $(shell for c in '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' google-chrome google-chrome-stable chromium chromium-browser; do if [ -x "$$c" ]; then echo "$$c"; break; elif p=$$(command -v "$$c"); then echo "$$p"; break; fi; done)
 SHOT := shots/$(VIEW)-$(SIZE)
+SCENE ?= replay
+AT ?= 12s
+FRAMES ?= 8
+STEP ?= 400ms
 # FIXTURE=<name> renders tests/fixtures/<name> as the golden tests do: every file at 2026-01-01T10:30:00Z, times in UTC, all ranges, the fixture agents and prices.
 FIXDIR := $(if $(FIXTURE),shots/fixture-$(FIXTURE))
 FIXENV := $(if $(FIXTURE),TZ=UTC )
@@ -65,6 +69,12 @@ screenshot: build $(FIXDIR)
 		--window-size=$$(( $(firstword $(subst x, ,$(SIZE))) * 9 + 16 )),$$(( $(lastword $(subst x, ,$(SIZE))) * 17 + 16 )) \
 		--screenshot="$(CURDIR)/$(SHOT).png" "file://$(CURDIR)/$(SHOT).html" >/dev/null 2>&1
 	@echo $(SHOT).png
+
+# Frames of the Hanami scene as a contact strip and a GIF: shots/hanami-<scene>-<size>.png and .gif, e.g. make strip SCENE=spring REPLAY=events.jsonl AT=30s FRAMES=12 STEP=500ms SIZE=100x30
+strip: build
+	@[ -n "$(REPLAY)" ] || { echo "isshoni: set REPLAY=<events file>." >&2; exit 1; }
+	@[ -n "$(CHROME)" ] || { echo "isshoni: Chrome or Chromium is missing. Install one, or set CHROME=/path/to/chrome." >&2; exit 1; }
+	$(BIN) --snapshot hanami --replay $(REPLAY) --at $(AT) --frames $(FRAMES) --frame-step $(STEP) --size $(SIZE) $(ARGS) | python3 tools/strip.py --out shots/hanami-$(SCENE)-$(SIZE) --size $(SIZE) --chrome "$(CHROME)"
 
 clean:
 	rm -rf $(BIN) shots

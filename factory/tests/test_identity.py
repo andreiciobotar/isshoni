@@ -483,17 +483,17 @@ class RetroTests(Identity):
     def test_reads_a_file(self):
         path = self.home / "retro.json"
         path.write_text(json.dumps(RETRO))
-        self.assertEqual(self.retro(str(path), stdin="not json"), (0, "", ""))
+        self.assertEqual(self.retro(str(path), stdin="not json"), (0, "retro: stored for my-task\n", ""))
         (record,) = list(factory.read_log("retros"))
         self.assertEqual({k: record[k] for k in RETRO}, RETRO)
 
     def test_stdin_is_still_the_default(self):
-        self.assertEqual(self.retro(stdin=json.dumps(RETRO)), (0, "", ""))
+        self.assertEqual(self.retro(stdin=json.dumps(RETRO)), (0, "retro: stored for my-task\n", ""))
         self.assertEqual(len(list(factory.read_log("retros"))), 1)
 
     def test_an_unreadable_file_is_refused(self):
-        rc, _, err = self.retro(str(self.home / "missing.json"))
-        self.assertEqual(rc, 2)
+        rc, out, err = self.retro(str(self.home / "missing.json"))
+        self.assertEqual((rc, out), (2, ""))
         self.assertIn("retro: cannot read", err)
         self.assertEqual(list(factory.read_log("retros")), [])
 

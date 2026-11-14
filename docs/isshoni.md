@@ -231,7 +231,7 @@ terminal of at least 60x16.
 ```
 bin/isshoni-tui [--range 24h|7d|30d|all] [--follow] [--no-color]
                 [--projects-dir DIR] [--agents-dir DIR] [--prices PATH]
-bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-flow|kaizen-anatomy|kaizen-board|help [--size 140x40] [--session ID] [--row N] [--fold]
+bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-flow|kaizen-anatomy|kaizen-board|hanami|help [--size 140x40] [--session ID] [--row N] [--fold]
 ```
 `--range` defaults to `7d`. `NO_COLOR` gives the plain rendering too. `--snapshot`
 prints one settled frame and exits, non-zero when the load fails; `--row N` puts the
@@ -359,3 +359,71 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 
 A session is live when its transcript changed in the last 30 seconds or so. Agents keep
 one colour and one order everywhere: main, coder, reviewer, explorer, lander, then the rest.
+
+### Over SSH
+```
+bin/isshoni-tui --serve ADDR [--authorized-keys FILE] [--host-key FILE]
+```
+`--serve 127.0.0.1:2222` serves the dashboard to whoever connects with `ssh -p 2222 HOST`, each connection with a dashboard of its own (its own range, view, cursor and terminal size) over one shared set of `isshoni` calls. `ADDR` is used as given: there is no default port, and `--serve` cannot be combined with `--snapshot`.
+
+| Flag | Default | |
+|---|---|---|
+| `--authorized-keys` | `~/.claude/factory/dashboard/authorized_keys` | OpenSSH's format, one public key per line. Required: the server does not start without the file. Read again on every connection, so a key added or removed applies at once |
+| `--host-key` | `~/.claude/factory/dashboard/host_key` | the server's private key; an ed25519 key is created on the first start (directory 0700, file 0600). The start line, on stderr, prints its SHA256 fingerprint: check it against what `ssh` asks you to accept the first time |
+
+- **The key file is the only gate.** Public keys only: no password, no keyboard-interactive login, no banner. A key that is listed sees everything the dashboard shows (session titles, repositories, costs). Put `write` before a key (`write ssh-ed25519 AAAA... laptop`) and that key may also change the worktree cap with `c` on the Factory view, which writes `~/.claude/factory/settings.json` of the account the server runs as; every other key is read-only (`c` says so). Any other option on a line is ignored.
+- **Shared calls.** Viewers who ask for the same thing at the same time share one `isshoni` or `factory status` process. A result is used for up to 10 seconds, and not once a transcript has changed since it was started (sessions) or the cap was saved (everything), so the periodic data (agents, kaizen, factory status) can be up to 10 seconds older than on a local dashboard. Viewers on different ranges, or on different sessions, each cost their own call. Two further limits: a transcript that is deleted does not invalidate a shared `sessions` result, so a deleted session can stay listed for a viewer until the next transcript change, or until the 10 seconds lapse and a viewer refetches; and freshness compares the time a run started with file modification times, so on a filesystem with coarse (one-second) times a shared result can miss a write made in the same second until the next change.
+- **Colour** follows what each client's `TERM` promises (`xterm-256color`: 256 colours; `dumb`: none). Most SSH clients do not forward `COLORTERM`, so truecolor needs it asked for: `ssh -o SetEnv=COLORTERM=truecolor -p 2222 HOST` (the server takes any variable the client sets; a test covers it). The server's own `NO_COLOR` is not consulted; `--no-color` makes every viewer plain.
+- `q` or a dropped connection ends that viewer only. SIGINT and SIGTERM close every connection and every `isshoni` process before the server exits; it waits at most 5 seconds for the viewers. A connection has 30 seconds to finish its handshake.
+- Known limit: a window too small for the Factory view to lay out (width 0, for one) panics that viewer's program in `internal/tui`; serve mode guards only the 0x0 size that wish sends at disconnect and that `ssh -tt` without a local terminal reports. The panic is recovered by Bubble Tea and ends that viewer only.
+- A client that reports no terminal size (`ssh -tt` without a local terminal) gets 80x24. A connection without a terminal (`ssh HOST command`) is refused.
+- One line per session start and end (remote address, key fingerprint, read-only or write) and one per refused key go to stderr. Nothing else about a client is logged.
+- Outside the container ([container.md](container.md)), run it under whatever keeps your processes alive (systemd, tmux); it does not detach. Bind it to a loopback or VPN address, or reach it through an SSH tunnel to the host.
+
+## Events (`isshoni events`)
+
+`isshoni events [--since 24h] [--follow] [--no-gh]` prints what happened as JSON lines, one event per line, sorted by time. It reads the transcripts, `~/.claude/factory` (`--factory-dir`) and `gh pr list`, and never writes. With `--follow` it prints the history since `--since` (default `2m`) plus every pull request still open and every question still unanswered, then a `live` line, then what is appended; it polls `gh` every 60 s, and a slow `gh` pauses the stream for up to its 20 s timeout. `--since` also takes `Nm` minutes. Absent fields are omitted.
+
+| kind | meaning | fields |
+|---|---|---|
+| `tool` | a tool call: `shell`, `read`, `edit`, `write`, `dispatch`, `message` or `other` | `session`, `agent`, `role`, `tool` |
+| `tokens` | one assistant message's usage | `session`, `agent`, `role`, `in`, `out`, `cache_read`, `cache_write` |
+| `spawn`, `return` | a subagent starts, hands back or ends its turn; a reviewer's return has `verdict` `changes` or `approve` | `session`, `agent`, `parent`, `role`, `verdict` |
+| `pr`, `merge` | a pull request opened (`state` `open`) or closed unmerged (`closed`); one merged | `repo`, `pr`, `slug`, `state` |
+| `ci` | a pull request's checks changed to `running`, `green` or `red` (`--follow` only) | `repo`, `pr`, `state` |
+| `question`, `answer` | a task blocked on you, and the next record that unblocks it | `slug` |
+| `watch` | a site manager tick | none |
+| `live` | `--follow` only, once: everything before it had happened when the stream started | none |
+
+## Hanami (花見), the work as something to watch
+
+The fifth view (`5`) draws the same work as motion, for a second screen: the mark come alive. Nothing in it is decoration posing as data: every moving thing is one event from `isshoni events`, and `l` shows the legend.
+
+| you see | it is |
+|---|---|
+| the disc, a solid body that swells, brightens and takes a returning agent's colour | all the work; the rate of events; a return |
+| a branch growing out of the disc, its tip glowing; dimmer | a session; a call; at rest (3 minutes of silence). The tree has twelve places: a new session takes the place of the one at rest longest, sessions at work beyond twelve share places, and a session that bore no blossom goes when it rests |
+| a blossom opening on a branch (`✿` coder, `❀` reviewer, `✾` explorer, `✽` other, in the role's colour), growing | a subagent dispatched; its work so far (tool calls, output tokens) |
+| petals flying to the disc, the blossom closing to an outline | a subagent returned; what it did stays on the tree for 2 hours. An outline without petals: its session went silent for 3 minutes before it returned. It opens again if the agent is resumed |
+| petals turned back at the disc in red, with a red ring | a reviewer asked for changes |
+| wind in two layers; bright streaks off an agent | cache reads; output tokens |
+| notes on the staff (`●` shell, `○` read, `◆` edit, `■` write, `▲` dispatch, `◇` message, `·` anything else), each with a tail | a tool call, in the caller's colour; the tail lasts until that agent's next call, 12 seconds at most (of event time, in a replay) |
+| the bars at the right of the staff | calls per second on that voice |
+| a lantern rising to the sky; flickering; green; red; going out | an open pull request; checks running; passed; failed; closed without a merge |
+| a firework that lights the whole stage, then a star `✶` near where the lantern was | a merge; the star stays 6 hours (the 64 latest) |
+| a ripple, then a still ringed star above the disc | a task asked you a question; the star stays until it is answered |
+| a ripple from the disc across the field | the site manager's tick |
+
+Ambient, and not data: the disc's slow breath, the sway of lanterns, the slowest breeze. With nothing running, that is all there is: quiet looks quiet, and the tree at four in the afternoon looks like the afternoon's work.
+
+Colour is always the agent's role, as everywhere in the dashboard. Keys: `l` legend, `z` hides the header and footer, `p` replays the last 24 hours (again: back to live). A replay runs at a minute a second and skips stretches where nothing happened, so a day takes as many seconds as it had busy minutes; its clock is in the sub-header, and its rates (the disc, the wind, the bars) are per event second, so they read as they would have live. Below 110 columns the tab is a blossom, `5 ✿`.
+
+It runs at 20 frames a second and only while it is shown: the view starts `isshoni events --follow` when you open it and stops it when you leave. Measured on a 140x40 terminal it takes 6% of one core idle and 10 to 12% in a busy hour (the glow is a background colour per cell, which the terminal layer pays for; the scene itself draws in a millisecond), plus about 1% for the event stream. What had happened before you opened it sets the scene without animation: the last 2 hours of sessions and agents, every open pull request and every unanswered question. An agent whose transcript was last written more than 2 hours earlier and that is still running has no blossom until it next writes. Pull requests come from `gh`, polled once a minute, so a lantern or a firework can be up to a minute late; check states are known live only, so a replay's lanterns do not flicker. Without colour (`--no-color`) there is no glow: shapes and motion carry it; a terminal without truecolor gets the nearest colours it has.
+
+```sh
+bin/isshoni-tui --replay events.jsonl              # replay a recording (python3 -m isshoni events --since 24h > events.jsonl), looping
+bin/isshoni-tui --replay events.jsonl --replay-speed 300  # event seconds per second; the default is 60
+make strip REPLAY=internal/tui/testdata/hanami-replay.jsonl SCENE=merge AT=89s FRAMES=12 STEP=200ms ARGS="--replay-speed 3"
+```
+
+`make strip` renders consecutive frames (`--snapshot hanami --replay FILE --at D --frames N --frame-step D`, add `--legend` for the legend) to `shots/hanami-<scene>-<size>.png`, a contact strip, and `.gif`, an animation (the GIF needs Pillow; the PNG needs Chrome, as `make screenshot` does). `make snapshot VIEW=hanami` without a replay is the idle scene.
