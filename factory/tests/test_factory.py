@@ -351,10 +351,16 @@ class NewTests(unittest.TestCase):
         self.assertEqual(fake.calls[-1], want)
 
     def test_lean_start_off_launches_the_old_argv_without_listing_plugins(self):
-        _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), '{"lean_start": false}')
-        argv = fake.calls[-1]
-        self.assertEqual(argv[argv.index("--plugin-dir") + 2], "--append-system-prompt")
-        self.assertFalse(any(a.startswith("--tools") or a.startswith("--strict") for a in argv))
+        with mock.patch.object(factory.time, "time", return_value=1794610677):
+            _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), '{"lean_start": false}')
+        plugin = str(BIN.resolve().parent.parent)
+        lead = (BIN.resolve().parent.parent / "roles" / "lead.md").read_text()
+        self.assertEqual(fake.calls[-1], [
+            "claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
+            "--permission-mode", "auto", "--plugin-dir", plugin, "--append-system-prompt", lead,
+            "Your task slug is demo-task. The dispatcher's session name is d1. "
+            "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
+            "Your time limit is 2 hours. Your brief follows.\n\ndo it"])
         self.assertFalse(fake.ran("claude", "plugin"))
 
     def test_a_failing_plugin_list_still_launches_without_enabled_plugins(self):

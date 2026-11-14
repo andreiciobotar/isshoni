@@ -663,9 +663,8 @@ class WatchTests(Harness):
         self.assertIn(f"{record['id']}  past-limit  x  undecided", out)
 
     def test_lean_start_off_keeps_the_old_site_manager_argv(self):
-        p = {"repo": mock.Mock(root=ROOT), "dispatcher": "d"}
-        with mock.patch.object(factory, "load_settings", return_value={"lean_start": False}), \
-                mock.patch.object(factory, "run", side_effect=AssertionError("no plugin list")):
+        p = {"repo": mock.Mock(root=ROOT), "dispatcher": "d", "lean_start": False}
+        with mock.patch.object(factory, "run", side_effect=AssertionError("no plugin list")):
             argv = factory.site_manager_argv(p, [])
         self.assertEqual(argv[:6], ["claude", "-p", "--model", "sonnet", "--permission-mode", "dontAsk"])
         self.assertEqual(argv[6:9], ["--allowedTools", "SendMessage", "ToolSearch"])

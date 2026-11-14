@@ -231,6 +231,15 @@ class LandTests(unittest.TestCase):
         (call,) = self.claude_calls()
         self.assertFalse(any(a.startswith("--strict") or a == "--settings" for a in call["argv"]))
 
+    def test_a_broken_settings_file_stops_the_land_before_anything_is_declared(self):
+        (self.home / ".claude" / "factory").mkdir(parents=True)
+        (self.home / ".claude" / "factory" / "settings.json").write_text('{"lean_start": "no"}')
+        self.conflict()
+        p = self.land("t1")
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("lean_start", p.stderr)
+        self.assertEqual((self.last_state(), self.claude_calls()), ("handed-over", []))
+
     def test_a_conflict_goes_to_the_lander_in_the_worktree(self):
         wt, old = self.conflict()
         p = self.land("t1", FAKE_LANDER="push")
