@@ -76,7 +76,7 @@ In Claude Code, in the repository you want work done in:
 /factory:dispatch
 ```
 
-Optionally, give the factory its own GitHub identity: `make wizard` (or `factory wizard`) creates a GitHub App for your account after one confirmation in the browser, has you install it on the repositories you choose, and checks that it works. It needs `openssl`; see [Identity](docs/factory.md#identity).
+Optionally, give the factory its own GitHub identity: `make wizard` (or `factory wizard`) creates a GitHub App for your account after one confirmation in the browser, has you install it on the repositories you choose, and checks that it works. From then on leads and their subagents push, open pull requests and commit as the App's bot instead of with your login (without it, they use yours), and your approval of a pull request is yours alone, since the pull request's author is not you. This is a default, not a boundary: the dispatcher session still acts with your login, and a lead's shell can still reach it, so no agent ever posts `lgtm` or approves. It needs `openssl`; see [Identity](docs/factory.md#identity).
 
 Describe a task, then ask for progress whenever you like: the dispatcher answers from `factory status`, which lists every task with its phase and pull request. To try it for one session without installing, start `claude --plugin-dir <clone>/factory`.
 

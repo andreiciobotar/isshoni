@@ -692,7 +692,7 @@ class StatusTests(unittest.TestCase):
             self.assertTrue(line[lines[0].index("STATE"):].startswith(state), line)
         self.assertEqual(lines[5:], [
             "in motion 2/5 (1 blocked); waiting for review 2; merged, not cleaned 0; settled, not cleaned 0; "
-            "leftover agent worktrees 0; worktrees outside .claude/worktrees 0",
+            "leftover agent worktrees 0; worktrees outside .claude/worktrees 0", "acting on GitHub with your gh login (no App identity: factory wizard)",
             "waiting on the human: handed /out/video.mp4", "waiting on the human: pr-only http://pr/7"])
 
     def test_a_review_task_without_deliverable_or_pull_request_waits_with_a_dash(self):
@@ -914,15 +914,15 @@ class StatusTests(unittest.TestCase):
         self.assertTrue(lines[1].startswith("alpha"))
         self.assertEqual(lines[1].index("worktree-alpha"), lines[0].index("BRANCH"))
         self.assertEqual(lines[1].index("origin/main"), lines[0].index("BASE"))
-        self.assertEqual(lines[-1], "in motion 1/5 (0 blocked); waiting for review 0; merged, not cleaned 0; "
-                                    "settled, not cleaned 0; leftover agent worktrees 1; "
-                                    "worktrees outside .claude/worktrees 1")
+        self.assertEqual(lines[-2:], ["in motion 1/5 (0 blocked); waiting for review 0; merged, not cleaned 0; "
+                                      "settled, not cleaned 0; leftover agent worktrees 1; "
+                                      "worktrees outside .claude/worktrees 1", "acting on GitHub with your gh login (no App identity: factory wizard)"])
 
     def test_empty_table(self):
         out, _ = self.status([], as_json=False)
-        self.assertEqual(out.strip(), "in motion 0/5 (0 blocked); waiting for review 0; merged, not cleaned 0; "
-                                      "settled, not cleaned 0; leftover agent worktrees 0; "
-                                      "worktrees outside .claude/worktrees 0")
+        self.assertEqual(out.strip().splitlines(), ["in motion 0/5 (0 blocked); waiting for review 0; merged, not cleaned 0; "
+                                                    "settled, not cleaned 0; leftover agent worktrees 0; "
+                                                    "worktrees outside .claude/worktrees 0", "acting on GitHub with your gh login (no App identity: factory wizard)"])
 
 
 class MalformedGhTests(unittest.TestCase):

@@ -24,7 +24,7 @@ TOKEN = "ghs_THROWAWAY_TOKEN"
 INSTALL_URL = "https://github.com/settings/installations/7654321"
 APP = {"id": 123456, "slug": "factory-octocat", "client_id": "Iv23abc", "html_url": "https://github.com/apps/factory-octocat",
        "owner": {"login": "octocat", "type": "User"}, "webhook_secret": "whsec-1", "client_secret": "csec-1"}
-INSTALLATION = {"id": 7654321, "html_url": INSTALL_URL, "account": {"login": "Octocat"}}
+INSTALLATION = {"id": 7654321, "html_url": INSTALL_URL, "account": {"login": "Octocat"}, "repository_selection": "selected"}
 BOT = "factory-octocat%5Bbot%5D"
 
 
@@ -197,7 +197,7 @@ class FirstRunTests(Wizard):
         self.assertEqual((self.identity / "key.pem").read_text(), self.pem)
         self.assertEqual(self.app_json(), {
             "app_id": 123456, "slug": "factory-octocat", "client_id": "Iv23abc", "html_url": APP["html_url"],
-            "owner": "octocat", "owner_type": "User", "installation_id": 7654321, "installation_url": INSTALL_URL,
+            "owner": "octocat", "owner_type": "User", "installation_id": 7654321, "installation_url": INSTALL_URL, "repository_selection": "selected",
             "bot_login": "factory-octocat[bot]", "bot_id": 99999999,
             "bot_email": "99999999+factory-octocat[bot]@users.noreply.github.com"})
         for line in ("octocat/one", "octocat/two", "factory-octocat[bot]", str(factory.IDENTITY),
@@ -284,17 +284,27 @@ class OwnerTests(Wizard):
     def owner(self, url):
         git = repo_answers([], (), {("git", "remote", "get-url"): (0, url + "\n", "")})
         with mock.patch.object(factory, "run", FakeRun(git)):
-            return factory.remote_owner()
+            return factory.remote_repo()
 
     def test_forms(self):
-        self.assertEqual(self.owner("https://github.com/octocat/repo.git"), "octocat")
-        self.assertEqual(self.owner("git@github.com:octocat/repo.git"), "octocat")
-        self.assertEqual(self.owner("ssh://git@github.com/octocat/repo"), "octocat")
+        for url in ("https://github.com/octocat/repo.git", "git@github.com:octocat/repo.git", "ssh://git@github.com/octocat/repo",
+                    "https://github.com/octocat/repo/", "https://github.com/octocat/repo",
+                    "https://user@github.com/octocat/repo.git", "https://GitHub.com/octocat/repo"):
+            self.assertEqual(self.owner(url), ("octocat", "repo"), url)
+        self.assertEqual(self.owner("git@github.com:octocat/my.dotted-repo.git"), ("octocat", "my.dotted-repo"))
+
+    def test_only_github_dot_com_is_a_host(self):
+        for url in ("https://notgithub.com/octocat/repo", "https://evil.io/github.com/octocat/repo",
+                    "https://gitlab.com/x/github.com/octocat/repo", "https://github.com.evil.io/octocat/repo",
+                    "git@notgithub.com:octocat/repo.git", "ssh://git@gitlab.com/github.com/octocat/repo",
+                    "ssh://git@github.com:2222/octocat/repo", "https://user:pw@evil.io@github.com.evil.io/octocat/repo"):
+            self.assertIsNone(self.owner(url), url)
 
     def test_none(self):
         self.assertIsNone(self.owner("https://example.com/octocat/repo"))
+        self.assertIsNone(self.owner("https://github.com/octocat"))
         with mock.patch.object(factory, "run", FakeRun({})):
-            self.assertIsNone(factory.remote_owner())
+            self.assertIsNone(factory.remote_repo())
 
     def test_no_owner_asks_for_the_flag(self):
         self.assertEqual(self.wizard(git={}), 1)
@@ -371,6 +381,34 @@ class RerunTests(Wizard):
         self.assertNotIn("installation_id", self.app_json())
         self.assertEqual(self.wizard(), 0, self.err)
         self.assertEqual(self.app_json()["installation_id"], 7654321)
+
+    def test_the_advice_comes_before_the_install_page(self):
+        self.stored()
+        empty = routes(self.pem, {("GET", "/app/installations"): (200, [])})
+        self.wizard(github=empty, wait=0)
+        advice = 'On GitHub choose "Only select repositories" and pick the ones the factory works in: with "All repositories" ' \
+                 "the bot can write to every repository of octocat."
+        self.assertIn(advice, self.out)
+        self.assertLess(self.out.index(advice), self.out.index("Install the App on octocat"))
+
+    def test_the_selection_is_stored_and_all_is_warned_about(self):
+        everything = {"repository_selection": "all"}
+        self.stored()
+        github = routes(self.pem, {("GET", "/app/installations"): (200, [{**INSTALLATION, **everything}])})
+        self.assertEqual(self.wizard(github=github), 0, self.err)
+        self.assertEqual(self.app_json()["repository_selection"], "all")
+        self.assertIn(f"WARNING: the App is installed on ALL repositories of octocat (2). Narrow it to the ones the factory "
+                      f"works in: {INSTALL_URL}", self.out)
+        self.assertIn("reach only the repository a task runs in", self.out)
+        self.assertNotIn("octocat/two", self.out)
+
+    def test_a_narrow_installation_is_not_warned_about(self):
+        self.stored()
+        github = routes(self.pem, {("GET", "/app/installations"): (200, [{**INSTALLATION, "repository_selection": "selected"}])})
+        self.assertEqual(self.wizard(github=github), 0, self.err)
+        self.assertEqual(self.app_json()["repository_selection"], "selected")
+        self.assertNotIn("WARNING", self.out)
+        self.assertIn("octocat/two", self.out)
 
     def test_install_is_polled_until_it_shows_up(self):
         self.stored()

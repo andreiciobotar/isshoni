@@ -65,10 +65,22 @@ class Fail(Exception):
         self.code = code
 
 
+def why(e):
+    """An exception for a message: a `Fail` says its own text, anything else is prefixed with its type."""
+    return str(e) or type(e).__name__ if isinstance(e, Fail) else f"{type(e).__name__}: {e}"
+
+
 def run(argv, cwd=None, timeout=None, input=None):
-    """The only place a subprocess starts. Returns (returncode, stdout, stderr)."""
+    """The only place a subprocess starts. Returns (returncode, stdout, stderr). `gh` acts as the App when an identity is installed."""
+    env = None
+    if argv[0] == "gh":
+        try:
+            if found := acting_identity(cwd):
+                env = {**os.environ, "GH_TOKEN": app_token(*found)}
+        except Exception as e:  # fail closed: no token, and no `gh` run with the human's login
+            return 1, "", why(e)
     try:
-        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, input=input)
+        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, input=input, env=env)
     except subprocess.TimeoutExpired:
         return 124, "", "timed out"
     except OSError as e:
@@ -728,9 +740,17 @@ def cmd_status(args):
               for key, p in (("blocked", "blocked"), ("in_review", "review"), ("merged", "merged"),
                              ("settled", "settled"))}
     counts["in_motion"] = sum(r["phase"] in ("motion", "blocked") for r in rows)
+    unreadable = None
+    try:
+        stored = load_identity()
+        acting = stored and stored.get("bot_login") and acting_identity()
+    except Exception as e:  # a corrupt app.json must not take `status` down
+        stored, acting, unreadable = None, None, e
+    bot = acting and stored["bot_login"]
     if args.json:
         doc = {"rows": rows, "cap": cap, "open": len(rows), **counts,
-               "leftover_agent_worktrees": repo.leftover, "outside_worktrees": repo.outside}
+               "leftover_agent_worktrees": repo.leftover, "outside_worktrees": repo.outside, "identity": bot or None,
+               "repository_selection": stored and stored.get("repository_selection")}
         print(json.dumps(doc, indent=2))
         return 0
     now = time.time()
@@ -751,6 +771,17 @@ def cmd_status(args):
           f"waiting for review {counts['in_review']}; merged, not cleaned {counts['merged']}; "
           f"settled, not cleaned {counts['settled']}; leftover agent worktrees {repo.leftover}; "
           f"worktrees outside .claude/worktrees {repo.outside}")
+    if bot:
+        print(f"acting on GitHub as {bot} (the factory's App)" + (
+            f"; installed on ALL repositories: narrow it at {stored.get('installation_url')}"
+            if stored.get("repository_selection") == "all" else ""))
+    elif unreadable:
+        print(f"acting on GitHub: the stored App cannot be read: {why(unreadable)}; the factory's gh calls fail until it is "
+              "fixed (factory wizard)")
+    else:
+        print("acting on GitHub with your gh login (" + (
+            f"this repository is not on GitHub under {stored.get('owner')}, the App's owner" if stored and stored.get("bot_login") else
+            "the App is stored but not installed: factory wizard" if stored else "no App identity: factory wizard") + ")")
     for r in rows:
         if r["phase"] == "review":
             print(f"waiting on the human: {r['slug']} {r['deliverable'] or r['pr_url'] or '-'}")
@@ -900,6 +931,15 @@ def cmd_hook(args):
         message = message if isinstance(message, str) else ""
         fields = {k: p[k] for k in COPIED.get(event, ()) if k in p}
         text, tag = None, tags(p)
+        try:
+            if event == "SessionStart" and tag["slug"] and not p.get("agent_id") and os.environ.get("CLAUDE_ENV_FILE"):
+                line = f'eval "$({shlex.quote(str(FACTORY))} env)"'
+                env_file = Path(os.environ["CLAUDE_ENV_FILE"])
+                have = env_file.read_text() if env_file.exists() else ""
+                if line not in have.splitlines():
+                    env_file.write_text(have + ("\n" if have and not have.endswith("\n") else "") + line + "\n")
+        except Exception:
+            pass
         if event == "UserPromptSubmit":
             fields["from"] = next((v for start, v in PROMPT_FROM if str(p.get("prompt")).startswith(start)), "human")
         elif event == "Stop" and isinstance(p.get("background_tasks"), list):
@@ -956,9 +996,13 @@ def cmd_retro(args):
     if not tag["slug"]:
         raise Fail("retro: run it from inside a task worktree")
     try:
-        doc = json.loads(sys.stdin.read())
+        source = Path(args.file).read_text() if args.file else sys.stdin.read()
+    except OSError as e:
+        raise Fail(f"retro: cannot read {args.file}: {e}")
+    try:
+        doc = json.loads(source)
     except ValueError as e:
-        raise Fail(f"retro: stdin is not JSON: {e}")
+        raise Fail(f"retro: {args.file or 'stdin'} is not JSON: {e}")
     if not isinstance(doc, dict) or set(doc) != {"defects", *RETRO_LISTS}:
         raise Fail(f"retro: the object needs exactly the keys defects, {', '.join(RETRO_LISTS)}")
     for key in RETRO_LISTS:
@@ -2398,6 +2442,9 @@ def watch_lgtm(p):
 # ---- identity ---------------------------------------------------------------
 
 GITHUB = "https://api.github.com"
+TOKEN_MARGIN = 900
+REPO_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
+GITHUB_REMOTE_RE = re.compile(r"(?:https://(?:[^/@\s]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)([^/\s:]+)/([^/\s]+?)(?:\.git)?/?", re.I)
 WIZARD_WAIT = 600
 INSTALL_POLL = 3
 PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read", "actions": "read"}
@@ -2405,12 +2452,16 @@ CALLBACK_DONE = "<!doctype html><meta charset=utf-8><p>Done. Go back to the term
 
 
 def load_identity():
+    path = IDENTITY.expanduser() / "app.json"
     try:
-        return json.loads((IDENTITY.expanduser() / "app.json").read_text())
+        identity = json.loads(path.read_text())
     except FileNotFoundError:
         return None
     except ValueError as e:
-        raise Fail(f"{IDENTITY.expanduser() / 'app.json'} cannot be read as JSON: {e}", 1)
+        raise Fail(f"{path} cannot be read as JSON: {e}", 1)
+    if not isinstance(identity, dict):
+        raise Fail(f"{path} is not a JSON object", 1)
+    return identity
 
 
 def write_identity(identity):
@@ -2471,17 +2522,95 @@ def api(method, path, want, bearer=None):
     return body
 
 
-def installation_token(identity):
-    """(token, expires_at) of a fresh installation token."""
+def installation_token(identity, repository=None):
+    """(token, expires_at) of a fresh installation token, reaching only `repository` when one is named."""
     path = f"/app/installations/{identity['installation_id']}/access_tokens"
-    body = api("POST", path, 201, app_jwt(identity))
+    status, body = github_api("POST", path, app_jwt(identity), {"repositories": [repository]} if repository else None)
+    if status == 422 and repository:
+        raise Fail(f"the App is not installed on {identity['owner']}/{repository}: add it at {identity.get('installation_url')} ({reason(status, body)})", 1)
+    if status != 201:
+        raise Fail(f"GitHub POST {path} failed: {reason(status, body)}", 1)
     return body["token"], body["expires_at"]
 
 
-def remote_owner():
-    rc, out, _ = run(["git", "remote", "get-url", "origin"])
-    m = re.search(r"github\.com[:/]+([^/\s]+)/", out) if rc == 0 else None
-    return m and m.group(1)
+def acting_identity(cwd=None):
+    """(identity, repository name) once the wizard has installed the App (it writes bot_login last) and `cwd` is in a
+    repository of the App's owner, else None."""
+    identity = load_identity()
+    if not (identity and identity.get("bot_login")):
+        return None
+    repo = remote_repo(cwd)
+    return (identity, repo[1]) if repo and repo[0].lower() == identity["owner"].lower() else None
+
+
+def app_token(identity, name):
+    """An installation token for repository `name` with at least TOKEN_MARGIN seconds left: the cached one, else a
+    fresh one (cached, 0600)."""
+    if not REPO_NAME_RE.fullmatch(name):
+        raise Fail(f"{name!r} is not a repository name", 1)
+    cache = IDENTITY.expanduser() / f"token-{name}.json"
+    cached_token, left = None, 0
+    try:
+        cached = json.loads(cache.read_text())
+        cached_token, left = cached["token"], epoch(cached["expires_at"]) - time.time()
+        cached_token = cached_token if isinstance(cached_token, str) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    if cached_token and left > TOKEN_MARGIN:
+        return cached_token
+    try:
+        token, expires_at = installation_token(identity, name)
+    except Fail:
+        if cached_token and left > 0:
+            return cached_token
+        raise
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=cache.parent)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"token": token, "expires_at": expires_at}, f)
+        os.replace(tmp, cache)
+    except OSError:  # the cache only saves mints
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
+    return token
+
+
+def cmd_env(args):
+    """Print the exports that make git and gh act as the App; nothing when no identity applies. Whatever else happens the
+    lock-down is printed (exit 1): git must not reach the human's credentials."""
+    values = {"GH_TOKEN": "unavailable", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "4"}
+    credential, rewrite = "credential.https://github.com.helper", "url.https://github.com/.insteadOf"
+    helper = "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f"
+    for i, (key, value) in enumerate(((credential, ""), (credential, helper), (rewrite, "git@github.com:"),
+                                      (rewrite, "ssh://git@github.com/"))):
+        values[f"GIT_CONFIG_KEY_{i}"], values[f"GIT_CONFIG_VALUE_{i}"] = key, value
+    code = 1
+    try:
+        found = acting_identity()
+        if not found:
+            return 0
+        login, email = found[0]["bot_login"], found[0]["bot_email"]
+        if not (isinstance(login, str) and isinstance(email, str) and login and email):
+            raise Fail("the stored App's bot_login and bot_email must be non-empty strings", 1)
+        for who in ("AUTHOR", "COMMITTER"):
+            values[f"GIT_{who}_NAME"], values[f"GIT_{who}_EMAIL"] = login, email
+        token = app_token(*found)
+        if not isinstance(token, str) or not token:
+            raise Fail("the token is not a string", 1)
+        values["GH_TOKEN"], code = token, 0
+    except Exception as e:
+        print(f"factory: no App token: {why(e)}; git and gh will fail until one can be minted", file=sys.stderr)
+    for name, value in values.items():
+        print(f"export {name}={shlex.quote(value)}")
+    return code
+
+
+def remote_repo(cwd=None):
+    """(owner, name) of the GitHub repository `origin` points to (https or ssh form), or None."""
+    rc, out, _ = run(["git", "remote", "get-url", "origin"], cwd=cwd)
+    m = GITHUB_REMOTE_RE.fullmatch(out.strip()) if rc == 0 else None
+    return m and m.groups()
 
 
 def manifest_page(owner, org, name, port, state):
@@ -2566,7 +2695,7 @@ def store_identity(identity, pem):
 
 
 def create_app(owner):
-    owner = owner or remote_owner()
+    owner = owner or (remote_repo() or (None,))[0]
     if not owner:
         raise Fail("no owner: run inside a clone whose origin is on GitHub, or pass --owner NAME", 1)
     org = api("GET", f"/users/{urllib.parse.quote(owner)}", 200).get("type") == "Organization"
@@ -2620,6 +2749,8 @@ def installation_for(identity):
     if found:
         return found
     url = f"{identity['html_url']}/installations/new"
+    print(f'On GitHub choose "Only select repositories" and pick the ones the factory works in: with "All repositories" '
+          f"the bot can write to every repository of {identity['owner']}.")
     print(f"Install the App on {identity['owner']} and choose its repositories: {url}")
     open_browser(url)
     deadline = time.monotonic() + WIZARD_WAIT
@@ -2661,12 +2792,18 @@ def verify_app(identity):
     bot = f"{identity['slug']}[bot]"
     bot_id = api("GET", f"/users/{urllib.parse.quote(bot, safe='')}", 200)["id"]
     identity = {**identity, "installation_id": installation["id"], "installation_url": installation["html_url"],
-                "bot_login": bot, "bot_id": bot_id, "bot_email": f"{bot_id}+{bot}@users.noreply.github.com"}
+                "repository_selection": installation.get("repository_selection"), "bot_login": bot, "bot_id": bot_id, "bot_email": f"{bot_id}+{bot}@users.noreply.github.com"}
     write_identity(identity)
     print(f"App {identity['slug']}: {identity['html_url']}")
-    print(f"Acts as {bot}; reads and writes {len(repos)} repositories:")
-    for name in repos:
-        print(f"  {name}")
+    if identity["repository_selection"] == "all":
+        print(f"Acts as {bot}; reads and writes all {len(repos)} repositories of {identity['owner']}.")
+        print(f"WARNING: the App is installed on ALL repositories of {identity['owner']} ({len(repos)}). "
+              f"Narrow it to the ones the factory works in: {identity['installation_url']}")
+        print("The tokens the factory hands out reach only the repository a task runs in, either way.")
+    else:
+        print(f"Acts as {bot}; reads and writes {len(repos)} repositories:")
+        for name in repos:
+            print(f"  {name}")
     print(f"Its private key is in {IDENTITY}. To undo:")
     print("\n".join(undo_lines(identity)))
 
@@ -2707,7 +2844,9 @@ def parse_args(argv):
     ack.add_argument("slug")
     ack.add_argument("state", choices=SETTLED)
     sub.add_parser("hook", help="record one hook payload read from stdin (run by the plugin's hooks)")
-    sub.add_parser("retro", help="store a lead retrospective (a JSON object on stdin)")
+    retro = sub.add_parser("retro", help="store a lead retrospective (a JSON object on stdin, or in a file)")
+    retro.add_argument("file", nargs="?", help="read the JSON from this file instead of stdin")
+    sub.add_parser("env", help="print shell exports that make git and gh act as the factory's App (nothing without one)")
     feedback = sub.add_parser("feedback", help="list or change the factory outbox: issues and decisions")
     feedback.add_argument("--json", action="store_true")
     feedback.add_argument("--status", choices=STATUSES)
@@ -2762,7 +2901,7 @@ def main(argv=None):
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "schedule": cmd_schedule, "wizard": cmd_wizard}[args.cmd](args)
+                "schedule": cmd_schedule, "wizard": cmd_wizard, "env": cmd_env}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)
         return e.code
