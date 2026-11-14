@@ -10,6 +10,8 @@ from test_factory import ROOT, factory
 from test_health import NOW, SchedHarness, iso
 from test_merge import SESSION, SHA, World, pr
 
+DECLARED = iso(NOW - 3600)  # when World declares its tasks handed-over
+
 LIST = ("gh", "pr", "list", "--state", "open")
 GAVE = "#1 merged https://x/pull/1\n#2 stopped ci: check test failed https://x/run/2"
 
@@ -254,7 +256,7 @@ class StarterTests(World):
         state = lander_state()
         self.assertEqual(sorted(state["stopped"]), ["1"])
         self.assertEqual(state["stopped"]["1"]["head"], SHA)
-        self.assertEqual(state["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}"})
+        self.assertEqual(state["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:{DECLARED}"})
 
     def test_the_file_is_written_whole_and_leaves_no_temporary(self):
         self.lander("1", prs=[plain(1)], answer=reply("#1 merged u"))
@@ -331,7 +333,7 @@ class TickTests(SchedHarness, World):
         answers[LIST] = [(0, json.dumps(before), ""), (0, json.dumps(after), "")]
         answers[("claude", "-p")] = reply("#1 stopped ci: red")
         self.cli("watch", answers=answers, sessions=listed, entries=slugs)
-        self.assertEqual(lander_state()["noticed"], {"1": f"pushed-by-the-lander:{iso(NOW - 60)}"})
+        self.assertEqual(lander_state()["noticed"], {"1": f"pushed-by-the-lander:{iso(NOW - 60)}:{DECLARED}"})
         self.assertEqual(lander_state()["stopped"]["1"]["head"], "pushed-by-the-lander")
         self.tick(after, at=NOW + 120)
         self.assertEqual(self.landers(), [])
@@ -343,7 +345,7 @@ class TickTests(SchedHarness, World):
         answers[LIST] = [(0, json.dumps(before), ""), (0, json.dumps(after), "")]
         answers[("claude", "-p")] = reply("#1 stopped ci: red")
         self.cli("watch", answers=answers, sessions=listed, entries=slugs)
-        self.assertEqual(lander_state()["noticed"], {"1": f"pushed-by-the-lander:{iso(NOW - 60)}"})
+        self.assertEqual(lander_state()["noticed"], {"1": f"pushed-by-the-lander:{iso(NOW - 60)}:{DECLARED}"})
         self.tick(after, at=NOW + 120, answer=reply("#2 stopped ci: red"))
         [argv] = self.landers()
         self.assertIn("- #2:", argv[-1])
@@ -361,11 +363,11 @@ class TickTests(SchedHarness, World):
     def test_a_pull_request_not_in_the_run_keeps_its_noticed_key(self):
         repo = SimpleNamespace(root=ROOT)
         state = factory.read_lander(repo)
-        state["noticed"] = {"2": f"{SHA}:{iso(NOW - 500)}"}
+        state["noticed"] = {"2": f"{SHA}:{iso(NOW - 500)}:{DECLARED}"}
         factory.write_lander(repo, state)
         self.tick([reviewed(1), reviewed(2, at=NOW - 500)], answer=reply("#1 stopped ci: red"))
         noticed = lander_state()["noticed"]
-        self.assertEqual(noticed["2"], f"{SHA}:{iso(NOW - 500)}")
+        self.assertEqual(noticed["2"], f"{SHA}:{iso(NOW - 500)}:{DECLARED}")
         self.assertEqual(sorted(noticed), ["1", "2"])
         [argv] = self.landers()
         self.assertNotIn("- #2:", argv[-1])

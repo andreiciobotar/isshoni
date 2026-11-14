@@ -896,6 +896,18 @@ class SyncDraftTests(World):
         code, out, _ = self.tick([{**pr(1), **approved}], at=NOW + 120)
         self.assertEqual(len([c for c in self.claude_runs() if "--agent" in c]), 1)
 
+    def test_a_new_hand_over_after_a_stop_starts_the_lander_again(self):
+        approved = {**pr(1), "latestReviews": [{"state": "APPROVED", "submittedAt": iso(NOW - 60)}], "comments": []}
+
+        def started(at):  # lander runs of one tick; each tick has its own fake
+            self.tick([approved], at=at)
+            return len([c for c in self.claude_runs() if "--agent" in c])
+        self.assertEqual(started(NOW + 120), 1)
+        self.assertEqual(started(NOW + 240), 0)  # same head, same approval, no new declaration
+        self.seed("tasks", [{"repo": ROOT, "slug": "t1", "state": "handed-over", "ts": iso(NOW + 300)}])
+        self.assertEqual(started(NOW + 360), 1)
+        self.assertEqual(started(NOW + 480), 0)
+
     def test_an_orphaned_tick_still_syncs_the_drafts(self):
         code, out, _ = self.tick([pr(1, draft=True)], orphaned=True)
         self.assertEqual(self.flips(), [["pr", "ready", "1"]])
