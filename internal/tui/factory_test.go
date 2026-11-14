@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -189,7 +190,7 @@ func TestFactoryRenderVariants(t *testing.T) {
 		},
 		"cap error": func(m *model) {
 			setFactory(m, fakeFactoryRepos()...)
-			m.fac.capErr = "~/.claude/factory/settings.json is not a JSON object"
+			m.fac.capErr = "~/.claude/factory/settings.toml line 3: the list is not closed"
 		},
 		"empty":   func(m *model) { setFactory(m) },
 		"waiting": func(m *model) { m.view = viewFactory },
@@ -811,7 +812,7 @@ func TestFactoryCells(t *testing.T) {
 func TestFactoryEmptyAndFirstResult(t *testing.T) {
 	m := factoryModel(true, 100, 30)
 	out := plain(m)
-	for _, want := range []string{"No factory tasks here yet", "/factory:dispatch", "worktree cap", "c edit", "~/.claude/factory/settings.json"} {
+	for _, want := range []string{"No factory tasks here yet", "/factory:dispatch", "worktree cap", "c edit", "~/.claude/factory/settings.toml"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("empty state lacks %q:\n%s", want, out)
 		}
@@ -835,8 +836,8 @@ func TestFactorySubheaderAndSettingsLine(t *testing.T) {
 	if out := plain(m); !strings.Contains(out, "refreshing") || strings.Contains(out, "as of") {
 		t.Errorf("a refresh in flight shows refreshing:\n%s", out)
 	}
-	m.fac.capErr = "~/settings.json is not a JSON object"
-	if out := plain(m); !strings.Contains(out, "worktree cap  ~/settings.json is not a JSON object") {
+	m.fac.capErr = "~/settings.toml line 3: the list is not closed"
+	if out := plain(m); !strings.Contains(out, "worktree cap  ~/settings.toml line 3: the list is not closed") {
 		t.Errorf("a broken settings file shows its error instead of a number:\n%s", out)
 	}
 	m.fac.capErr, m.fac.editing, m.fac.field = "", true, "12"
@@ -1042,6 +1043,7 @@ func factoryStubModel(t *testing.T) (*model, string, *time.Time) {
 	t.Helper()
 	m, dir := stubModel(t)
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FACTORY_HOME", filepath.Dir(data.FactorySettingsPath()))
 	for id, name := range map[string]string{sidA: "one", sidB: "two", "cccccccc-0003": "three"} {
 		repo := filepath.Join(t.TempDir(), name)
 		if name != "three" {
@@ -1210,6 +1212,7 @@ func settingsFile(t *testing.T, content string) string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	path := data.FactorySettingsPath()
+	t.Setenv("FACTORY_HOME", filepath.Dir(path)) // the script and the dashboard read the same file
 	if content != "" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -1221,6 +1224,23 @@ func settingsFile(t *testing.T, content string) string {
 	return path
 }
 
+// realFactory puts the repository's factory script first on PATH, with its store where the dashboard looks.
+func realFactory(t *testing.T) {
+	t.Helper()
+	if h := os.Getenv("HOME"); h == realHome || h == "" {
+		t.Fatalf("HOME=%q is the real home: make the test's temporary home first", h)
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is missing")
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ISSHONI_ROOT", root)
+	requireTempFactoryHome(t) // after the test has made its temporary HOME and FACTORY_HOME
+}
+
 func capModel(t *testing.T, content string) (*model, string) {
 	path := settingsFile(t, content)
 	m := factoryModel(true, 100, 30, alpha())
@@ -1228,7 +1248,7 @@ func capModel(t *testing.T, content string) (*model, string) {
 }
 
 func TestCapFieldOpensWithTheFileValue(t *testing.T) {
-	m, _ := capModel(t, `{"worktree_cap": 12}`)
+	m, _ := capModel(t, "[limits]\nworktree_cap = 12\n")
 	send(m, "c")
 	if !m.fac.editing || m.fac.field != "12" {
 		t.Fatalf("editing=%v field=%q", m.fac.editing, m.fac.field)
@@ -1270,7 +1290,7 @@ func TestCapFieldTyping(t *testing.T) {
 }
 
 func TestCapFieldBounds(t *testing.T) {
-	m, _ := capModel(t, `{"worktree_cap": 2}`)
+	m, _ := capModel(t, "[limits]\nworktree_cap = 2\n")
 	send(m, "c", "down", "down", "down")
 	if m.fac.field != "1" {
 		t.Fatalf("never below 1: %q", m.fac.field)
@@ -1308,12 +1328,12 @@ func TestCapFieldRefusesInvalidAndKeepsOpen(t *testing.T) {
 }
 
 func TestCapFieldEscLeavesTheFileUntouched(t *testing.T) {
-	m, path := capModel(t, `{"worktree_cap": 3}`)
+	m, path := capModel(t, "[limits]\nworktree_cap = 3\n")
 	send(m, "c", "9", "esc")
 	if m.fac.editing {
 		t.Fatal("esc closes the field")
 	}
-	if b, _ := os.ReadFile(path); string(b) != `{"worktree_cap": 3}` {
+	if b, _ := os.ReadFile(path); string(b) != "[limits]\nworktree_cap = 3\n" {
 		t.Fatalf("file: %q", b)
 	}
 }
@@ -1334,16 +1354,17 @@ func TestCapFieldSwallowsOtherKeys(t *testing.T) {
 	}
 }
 
-func TestCapFieldRefusesANonObjectFile(t *testing.T) {
-	for content, kind := range map[string]string{`[1, 2]`: "not a JSON object", `{"a":`: "not valid JSON"} {
+func TestCapFieldRefusesAFileItCannotRead(t *testing.T) {
+	for _, content := range []string{"[limits]\nworktree_cap = [1\n"} {
 		m, path := capModel(t, content)
+		realFactory(t)
 		send(m, "c")
-		if want := data.ShortPath(path) + " is " + kind; m.fac.editing || m.fac.capErr != want || !strings.Contains(plain(m), want) {
-			t.Fatalf("%s: reported by path and not opened: editing=%v capErr=%q", content, m.fac.editing, m.fac.capErr)
+		if want := data.ShortPath(path) + " line 2: the list holds something other than basic strings"; m.fac.editing || m.fac.capErr != want || !strings.Contains(plain(m), data.ShortPath(path)+" line 2") {
+			t.Fatalf("%s: reported by path and line and not opened: editing=%v capErr=%q", content, m.fac.editing, m.fac.capErr)
 		}
 		m.fac.editing, m.fac.field = true, "4"
 		send(m, "enter")
-		if !m.fac.editing || !strings.Contains(m.fac.fieldErr, data.ShortPath(path)) {
+		if !m.fac.editing || !strings.Contains(m.fac.fieldErr, "settings.toml") {
 			t.Fatalf("saving reports it too: %+v", m.fac)
 		}
 		if b, _ := os.ReadFile(path); string(b) != content {
@@ -1354,7 +1375,8 @@ func TestCapFieldRefusesANonObjectFile(t *testing.T) {
 
 func TestCapFieldRepairsAnInvalidValue(t *testing.T) {
 	for _, bad := range []string{`0`, `"3"`, `true`} {
-		m, path := capModel(t, `{"lead_model": "x", "worktree_cap": `+bad+`}`)
+		m, path := capModel(t, "[models]\nlead = \"x\"\n[limits]\nworktree_cap = "+bad+"\n")
+		realFactory(t)
 		send(m, "c")
 		if !m.fac.editing || m.fac.field != "5" {
 			t.Fatalf("worktree_cap %s: the field opens prefilled with 5: editing=%v field=%q", bad, m.fac.editing, m.fac.field)
@@ -1368,18 +1390,19 @@ func TestCapFieldRepairsAnInvalidValue(t *testing.T) {
 
 func TestCapSaveWritesTheFileAndRefreshes(t *testing.T) {
 	m, dir, _ := factoryStubModel(t)
+	realFactory(t)
 	path := data.FactorySettingsPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"lead_model": "fable", "worktree_cap": 3}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("# mine\n[limits]\nworktree_cap = 3 # three\n[models]\nlead = \"fable\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	m.view = viewFactory
 	send(m, "c", "backspace", "backspace", "8")
 	got := only[factoryMsg](upd(m, press("enter")))
 	b, _ := os.ReadFile(path)
-	if string(b) != "{\n  \"lead_model\": \"fable\",\n  \"worktree_cap\": 8\n}\n" {
+	if string(b) != "# mine\n[limits]\nworktree_cap = 8 # three\n[models]\nlead = \"fable\"\n" {
 		t.Fatalf("file: %q", b)
 	}
 	if m.fac.editing || m.fac.cap != 8 || len(got) != 1 || factoryCalls(t, dir) != 2 || m.toast.text == "" {
@@ -1392,6 +1415,7 @@ func TestCapSaveWritesTheFileAndRefreshes(t *testing.T) {
 
 func TestCapSaveDuringARefreshFollowsIt(t *testing.T) {
 	m, dir, _ := factoryStubModel(t)
+	realFactory(t)
 	first := only[factoryMsg](upd(m, press("3")))
 	send(m, "c", "6")
 	if got := only[factoryMsg](upd(m, press("enter"))); len(got) != 0 {

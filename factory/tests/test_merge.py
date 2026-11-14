@@ -465,7 +465,7 @@ class ApprovedTests(World):
                 self.assertEqual(self.merges(), ["1"] if merged else [])
 
     def test_lgtm_from_author_false_leaves_the_author_out_only(self):
-        (self.store / "settings.json").write_text('{"lgtm_from_author": false}')
+        (self.store / "settings.toml").write_text('[merging]\nlgtm_from_author = false\n')
         self.approved([pr(1)], {1: [comment()]})
         self.assertEqual(self.gh_mutations(), [])
         self.approved([pr(1)], {1: [comment(login="dev")]})
