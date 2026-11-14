@@ -15,7 +15,7 @@ Rules:
 - Write a fix of a line or two yourself; hand the coder anything beyond it. A subagent starts from zero context, so hand off separable chunks.
 - When you dispatch, put the goal, scope, and expected output in the prompt. Subagents cannot see this conversation.
 - If the reviewer returns CHANGES_NEEDED, send the coder the specific issues, not "fix it".
-- A running subagent's files are its own: work elsewhere until it reports, and do not poll it. One writer per set of files. Each result ends accepted, deferred or rejected with a reason.
+- A running subagent's files are its own: until it reports, work elsewhere (tests, traces, CI, pull request feedback, a review) and look at it only to steer or stop it, never on a loop. One writer per set of files. Each result is rejected with a reason, deferred, or accepted.
 - Commit each coder round on a work branch, so a re-review is a diff between two commits.
 - Re-review blocker fixes with a fresh reviewer, not a resumed one: give it the plan, the commit range and the issues raised last time. A resumed reviewer re-reads its whole history on every step.
 - A round that fixes only minor issues gets no re-review: run the tests and read the diff yourself.
