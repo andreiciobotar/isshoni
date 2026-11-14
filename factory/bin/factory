@@ -2296,6 +2296,14 @@ def merge_one(p, pr, merged, dry, permission=None):
             return "pending", f"cannot read the pull request of its base {base}"
         if (state, into) != ("merged", repo.default):
             return "base", f"its base {base} is not {repo.default} nor the head of a pull request merged into it"
+    if not fetched(p):
+        return "pending", f"git fetch {repo.remote} failed: cannot tell whether its base has moved"
+    ahead = repo.git("merge-base", "--is-ancestor", f"{repo.remote}/{repo.default}", pr["headRefOid"])[0]
+    if ahead == 1:
+        return "behind", (f"its base has moved since its head: bring it up to date (factory land "
+                          f"{task_of(p, pr)['slug']}) so its checks run on the combination")
+    if ahead != 0:
+        return "pending", "cannot tell whether its base has moved: git merge-base failed"
     try:
         checks = p["gh"](list, "pr", "checks", n, "--json", "name,bucket")
     except NotEvaluated as e:
@@ -2368,10 +2376,13 @@ def cmd_merge(args):
     if not selected:
         print("nothing to merge")
     selected, merged, failed = bottom_up(selected), set(), False
-    permission = {} if args.approved else None
+    permission, skipped = {} if args.approved else None, set()
     for i, pr in enumerate(selected):
-        stop = merge_one(p, pr, merged, args.dry_run, permission)
-        if stop and stop[0] in ("unapproved", "stale", "head-time") and pr["number"] not in args.prs:
+        named = pr["number"] in args.prs
+        stop = ("skipped", f"its base {pr['baseRefName']} was skipped") if pr["baseRefName"] in skipped and not named \
+            else merge_one(p, pr, merged, args.dry_run, permission)
+        if stop and (stop[0] == "skipped" or stop[0] in ("unapproved", "stale", "head-time") and not named):
+            skipped.add(pr["headRefName"])
             print(f"#{pr['number']} skipped: {stop[1]}")
             continue
         if stop:
@@ -2419,17 +2430,23 @@ def approver(p, pr, x, permission, author=False):
     return login if permission[login] in ("admin", "write") else None
 
 
-def approved_heads(repo, pr):
-    """The heads of `pr` an approval may sit on: its head, and, while a head is a merge of the base that git would
-    have made itself, the first parent of it. Any other commit on top makes an approval stale. If git cannot
-    answer, just the head."""
-    heads = [pr["headRefOid"]]
-    if act_git(repo.root, "fetch", repo.remote)[0] != 0:
+def fetched(p):
+    """Whether `git fetch` of the remote worked; asked once per command."""
+    if "fetched" not in p:
+        p["fetched"] = act_git(p["repo"].root, "fetch", p["repo"].remote)[0] == 0
+    return p["fetched"]
+
+
+def approved_heads(p, pr):
+    """The heads of `pr` an approval may sit on: its head, and, while a head is a merge of the default branch that
+    git would have made itself, the first parent of it. Any other commit on top makes an approval stale. If git
+    cannot answer, just the head."""
+    repo, heads = p["repo"], [pr["headRefOid"]]
+    if not fetched(p):
         return heads
-    bases = [f"{repo.remote}/{b}" for b in dict.fromkeys((repo.default, pr["baseRefName"]))]
     while True:
         parents = repo.git("rev-list", "--parents", "-n", "1", heads[-1])[1].split()
-        if len(parents) != 3 or not any(repo.git("merge-base", "--is-ancestor", parents[2], b)[0] == 0 for b in bases):
+        if len(parents) != 3 or repo.git("merge-base", "--is-ancestor", parents[2], f"{repo.remote}/{repo.default}")[0] != 0:
             return heads
         rc, merged, _ = repo.git("merge-tree", "--write-tree", parents[1], parents[2])
         if rc != 0 or merged.split("\n")[0].strip() != repo.git("rev-parse", f"{heads[-1]}^{{tree}}")[1].strip():
@@ -2479,7 +2496,7 @@ def approval_stop(p, pr, permission):
         return "unapproved", ("not approved on GitHub: it is a draft, and only a pull request that is ready "
                               "for review is merged on an approval")
     try:
-        heads = approved_heads(p["repo"], pr)
+        heads = approved_heads(p, pr)
         review = approving_review(p, pr, permission, heads)
         if review and review.get("commit_id") in heads:
             return None
@@ -3202,9 +3219,10 @@ def cmd_land(args):
 MERGE_TIMEOUT = 3600
 MERGE_BASH_MS = "2400000"
 NOTICE_TIMEOUT = 20
-NOTICE_FIELDS = "number,url,isDraft,headRefOid,headRefName,baseRefName,author,isCrossRepository,latestReviews,comments"
+NOTICE_FIELDS = ("number,url,isDraft,headRefOid,headRefName,baseRefName,author,isCrossRepository,"
+                 "latestReviews,reviews,comments")
 MERGE_TOOLS = ("Read", "Grep", "Glob", "SendMessage", "ToolSearch", "Bash(factory merge --approved *)",
-               "Bash(factory land *)", "Bash(factory status*)", "Bash(gh pr view *)", "Bash(gh pr checks *)",
+               "Bash(factory land *)", "Bash(factory status *)", "Bash(factory status)", "Bash(gh pr view *)", "Bash(gh pr checks *)",
                "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(sleep *)")
 MERGE_KINDS = ("unapproved", "stale", "ci", "pending", "conflict", "tests", "handover", "base", "other")
 MERGE_LINE_RE = re.compile(r"#(\d+) (?:merged (\S.*)|stopped (\w+): (\S.*))")
@@ -3262,12 +3280,20 @@ def snapshot(repo):
 
 def approved_at(pr):
     """The newest time an approving review or an `lgtm` comment was left on `pr`, or None. Only a prefilter: the
-    gate of `factory merge --approved` decides. A draft is never one."""
+    gate of `factory merge --approved` decides. A draft is never one, and only a comment of an owner, member or
+    collaborator counts as an `lgtm`."""
     if pr.get("isDraft"):
         return None
     times = [r.get("submittedAt") for r in pr.get("latestReviews") or [] if r.get("state") == "APPROVED"]
-    times += [c.get("createdAt") for c in pr.get("comments") or [] if str(c.get("body")).strip().lower() == "lgtm"]
+    times += [c.get("createdAt") for c in pr.get("comments") or [] if str(c.get("body")).strip().lower() == "lgtm"
+              and c.get("authorAssociation") in ("OWNER", "MEMBER", "COLLABORATOR")]
     return max((t for t in times if t), default=None)
+
+
+def candidates(repo, snap):
+    """The pull requests of `snap` that carry an approval and belong to a task declared handed-over."""
+    declared = read_tasks(repo.root)
+    return [pr for pr in snap if approved_at(pr) and declared.get(task_slug(repo, pr), {}).get("state") == "handed-over"]
 
 
 def task_slug(repo, pr):
@@ -3287,9 +3313,9 @@ def merge_brief(repo, given, word, dispatcher):
         lines.append(f"- #{n}: head {pr['headRefName']}, base {pr['baseRefName']} "
                      f"({'its base has moved: bring it up to date first' if moved else 'its base has not moved'}), "
                      f"{f'task {slug} (its lead is the session {slug})' if slug else 'no task'}; {how}")
-    return "\n".join([*lines, "The dispatcher started this run: do not message it." if word
-                      else f"The dispatcher's session name is {dispatcher}." if dispatcher
-                      else "No dispatcher session is alive."])
+    return "\n".join([*lines, "No dispatcher session is alive." if not dispatcher
+                      else "The dispatcher started this run: do not message it." if word
+                      else f"The dispatcher's session name is {dispatcher}."])
 
 
 def lander_results(rc, out, numbers):
@@ -3321,18 +3347,30 @@ def run_lander(repo, snap, given, word, name):
     argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", "sonnet",
             "--permission-mode", "dontAsk", "--allowedTools", *tools, "--output-format", "json",
             merge_brief(repo, given, word, name if alive else None)]
-    env = {**os.environ, "BASH_DEFAULT_TIMEOUT_MS": MERGE_BASH_MS, "BASH_MAX_TIMEOUT_MS": MERGE_BASH_MS}
+    # `factory` first on the PATH (the schedule's PATH holds only git, gh, claude and Python), so a nested
+    # `factory land` finds this script and, as the job's PATH has them, `claude`, `git` and `gh`.
+    env = {**os.environ, "PATH": f"{FACTORY.parent}{os.pathsep}{os.environ.get('PATH', '')}",
+           "BASH_DEFAULT_TIMEOUT_MS": MERGE_BASH_MS, "BASH_MAX_TIMEOUT_MS": MERGE_BASH_MS}
     rc, out, _ = run(argv, cwd=repo.root, timeout=MERGE_TIMEOUT, env=env)
     results, reply = lander_results(rc, out, [pr["number"] for pr in given])
     try:
         snap, opened = snapshot(repo), True  # the heads and approvals as the run left them
     except NotEvaluated:
         opened = False
-    if rc and opened:  # a run that died may have merged first: what is no longer open merged
+    if opened:  # what is no longer open merged, even when the run died; what is still open did not
         shown = {pr["number"] for pr in snap}
-        results.update({pr["number"]: ("merged", pr["url"]) for pr in given if pr["number"] not in shown})
+        for pr in given:
+            n, (kind, _) = pr["number"], results[pr["number"]]
+            if kind == "merged" and n in shown:
+                results[n] = ("other", "the lander said merged but it is still open")
+            elif kind != "merged" and n not in shown and rc:
+                results[n] = ("merged", pr["url"])
     state, heads = read_lander(repo), {pr["number"]: pr["headRefOid"] for pr in snap}
-    state["noticed"] = {str(pr["number"]): f"{pr['headRefOid']}:{at}" for pr in snap if (at := approved_at(pr))}
+    # Only this run's pull requests get a new key, with the stamp read before the run: an approval that came
+    # during it, or on another pull request, starts the next run.
+    state["noticed"] = {**{n: k for n, k in state["noticed"].items() if int(n) in heads},
+                        **{str(pr["number"]): f"{heads[pr['number']]}:{at}" for pr in given
+                           if (at := approved_at(pr)) and pr["number"] in heads}}
     state["stopped"] = {n: s for n, s in state["stopped"].items() if int(n) in heads}
     for n, (kind, text) in results.items():
         if kind == "merged":
@@ -3351,8 +3389,10 @@ def run_lander(repo, snap, given, word, name):
             notify(repo, firing)
     write_lander(repo, state)
     if "num_turns" in reply:
-        print(f"lander: {reply['num_turns']} turns, ${reply.get('total_cost_usd', 0):.2f}, "
-              f"{reply.get('duration_ms', 0) / 1000:.0f} s")
+        cost, ms = reply.get("total_cost_usd"), reply.get("duration_ms")
+        print(f"lander: {reply['num_turns']} turns, "
+              f"{f'${cost:.2f}' if isinstance(cost, (int, float)) else '$?'}, "
+              f"{f'{ms / 1000:.0f}' if isinstance(ms, (int, float)) else '?'} s")
     return all(kind == "merged" for kind, _ in results.values())
 
 
@@ -3367,7 +3407,7 @@ def notice(repo, name):
         print(f"notice: {e}")
         return
     noticed = read_lander(repo)["noticed"]
-    new = [pr for pr in snap if (at := approved_at(pr)) and noticed.get(str(pr["number"])) != f"{pr['headRefOid']}:{at}"]
+    new = [pr for pr in candidates(repo, snap) if noticed.get(str(pr["number"])) != f"{pr['headRefOid']}:{approved_at(pr)}"]
     if new:
         with lander_lock(repo) as free:
             if free:
@@ -3385,7 +3425,7 @@ def cmd_lander(args):
     if unknown:
         raise Fail(f"lander: #{unknown[0]} is not an open pull request; nothing done")
     word = set(args.prs)
-    given = [by_number[n] for n in dict.fromkeys(args.prs)] or [pr for pr in snap if approved_at(pr)]
+    given = [by_number[n] for n in dict.fromkeys(args.prs)] or candidates(repo, snap)
     if not given:
         print("nothing approved")
         return 0

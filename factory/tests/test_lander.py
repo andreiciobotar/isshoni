@@ -18,8 +18,9 @@ def reviewed(n, at=NOW - 60, state="APPROVED", **kw):
     return {**pr(n, **kw), "latestReviews": [{"state": state, "submittedAt": iso(at)}], "comments": []}
 
 
-def said(n, at=NOW - 60, body=" LGTM\n", **kw):
-    return {**pr(n, **kw), "latestReviews": [], "comments": [{"body": body, "createdAt": iso(at)}]}
+def said(n, at=NOW - 60, body=" LGTM\n", association="OWNER", **kw):
+    return {**pr(n, **kw), "latestReviews": [],
+            "comments": [{"body": body, "createdAt": iso(at), "authorAssociation": association}]}
 
 
 def plain(n, **kw):
@@ -28,6 +29,12 @@ def plain(n, **kw):
 
 def reply(text, rc=0):
     return rc, json.dumps({"result": text, "num_turns": 7, "total_cost_usd": 0.42, "duration_ms": 91000}), ""
+
+
+def left_open(prs, answer):
+    """The pull requests still open after a run whose reply is `answer`: those it does not say it merged."""
+    text = json.loads(answer[1]).get("result", "") if answer and answer[0] == 0 and answer[1].startswith("{") else ""
+    return [p for p in prs if f"#{p['number']} merged" not in str(text)]
 
 
 def lander_state():
@@ -39,7 +46,7 @@ class StarterTests(World):
         answers, listed, slugs = self.world(prs, **kw)
         if answer is not None:
             answers[("claude", "-p")] = answer
-        answers[LIST] = (0, json.dumps(prs), "")
+        answers[LIST] = [(0, json.dumps(prs), ""), (0, json.dumps(left_open(prs, answer)), "")]
         return self.cli("lander", *argv, answers=answers, sessions=listed if sessions is None else sessions,
                         entries=slugs)
 
@@ -62,14 +69,43 @@ class StarterTests(World):
         self.assertEqual((env["BASH_DEFAULT_TIMEOUT_MS"], env["BASH_MAX_TIMEOUT_MS"]), ("2400000", "2400000"))
         brief = argv[-1]
         self.assertTrue(brief.startswith("Merge run.\nRepository: /repo\n"))
-        self.assertIn("- #12: head worktree-t12, base main (its base has moved: bring it up to date first), "
+        self.assertIn("- #12: head worktree-t12, base main (its base has not moved), "
                       "task t12 (its lead is the session t12); on the human's word: merge with `factory merge 12`", brief)
         self.assertNotIn("#14", brief)
         self.assertTrue(brief.endswith("The dispatcher started this run: do not message it."))
 
+    def test_without_a_live_dispatcher_the_brief_never_says_it_started_the_run(self):
+        self.lander("1", prs=[plain(1)], answer=reply("#1 merged u"), sessions=[])
+        self.assertTrue(self.claude_runs()[0][-1].endswith("No dispatcher session is alive."))
+
+    def test_the_run_has_this_factory_first_on_its_path(self):
+        self.lander("1", prs=[plain(1)], answer=reply("#1 merged u"))
+        at = self.fake.calls.index(self.claude_runs()[0])
+        path = self.fake.envs[at]["PATH"].split(":")
+        self.assertEqual(path[0], str(factory.FACTORY.parent))
+        self.assertIn("/usr/bin", path)
+
+    def test_a_merged_line_for_a_pull_request_that_is_still_open_is_a_stop(self):
+        answers, listed, slugs = self.world([plain(1)])
+        answers[LIST] = (0, json.dumps([plain(1)]), "")  # still open after the run
+        answers[("claude", "-p")] = reply("#1 merged https://x/pull/1")
+        code, out, _ = self.cli("lander", "1", answers=answers, sessions=listed, entries=slugs)
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped other: the lander said merged but it is still open\n", out)
+
+    def test_numbers_that_are_null_in_the_reply_do_not_raise(self):
+        null = (0, json.dumps({"result": "#1 merged u", "num_turns": None, "total_cost_usd": None,
+                               "duration_ms": None}), "")
+        code, out, _ = self.lander("1", prs=[plain(1)], answer=null)
+        self.assertEqual(code, 0)
+        self.assertIn("lander: None turns, $?, ? s\n", out)
+
     def test_the_brief_says_whether_the_base_has_moved(self):
         self.lander(prs=[reviewed(1)], answer=reply("#1 merged u"),
-                    extra={("git", "merge-base", "--is-ancestor"): (0, "", "")})
+                    extra={("git", "merge-base", "--is-ancestor"): (1, "", "")})
+        self.assertIn("(its base has moved: bring it up to date first)", self.claude_runs()[0][-1])
+        self.setUp()
+        self.lander(prs=[reviewed(1)], answer=reply("#1 merged u"))
         self.assertIn("(its base has not moved)", self.claude_runs()[0][-1])
         self.assertIn(["git", "merge-base", "--is-ancestor", "origin/main", SHA], self.fake.calls)
         self.assertTrue(self.fake.ran("git", "fetch", "origin"))
@@ -213,9 +249,10 @@ class StarterTests(World):
                             "9": {"head": "old", "kind": "ci", "text": "t", "ts": "x"}}
         state["noticed"] = {"9": "old:x"}
         factory.write_lander(repo, state)
-        self.lander("1", prs=[reviewed(1), plain(2)], answer=reply("#1 merged u"))
+        self.lander("1", prs=[reviewed(1), plain(2)], answer=reply("#1 stopped ci: red"))
         state = lander_state()
-        self.assertEqual(state["stopped"], {})
+        self.assertEqual(sorted(state["stopped"]), ["1"])
+        self.assertEqual(state["stopped"]["1"]["head"], SHA)
         self.assertEqual(state["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}"})
 
     def test_the_file_is_written_whole_and_leaves_no_temporary(self):
@@ -231,7 +268,7 @@ class TickTests(SchedHarness, World):
 
     def tick(self, prs, *, answer=None, at=None, sessions=None, snapshot=None, **kw):
         answers, listed, slugs = self.world(prs, **kw)
-        answers[LIST] = snapshot or (0, json.dumps(prs), "")
+        answers[LIST] = [snapshot or (0, json.dumps(prs), ""), (0, json.dumps(left_open(prs, answer)), "")]
         if answer is not None:
             answers[("claude", "-p")] = answer
         return self.cli("watch", answers=answers, sessions=listed if sessions is None else sessions,
@@ -296,6 +333,36 @@ class TickTests(SchedHarness, World):
         self.assertEqual(lander_state()["stopped"]["1"]["head"], "pushed-by-the-lander")
         self.tick(after, at=NOW + 120)
         self.assertEqual(self.landers(), [])
+
+    def test_an_approval_that_arrives_during_a_run_starts_the_next_one(self):
+        before = [reviewed(1)]
+        after = [reviewed(1, sha="pushed-by-the-lander"), reviewed(2)]  # #2 was approved while the run went on
+        answers, listed, slugs = self.world([reviewed(1), reviewed(2)])
+        answers[LIST] = [(0, json.dumps(before), ""), (0, json.dumps(after), "")]
+        answers[("claude", "-p")] = reply("#1 stopped ci: red")
+        self.cli("watch", answers=answers, sessions=listed, entries=slugs)
+        self.assertEqual(lander_state()["noticed"], {"1": f"pushed-by-the-lander:{iso(NOW - 60)}"})
+        self.tick(after, at=NOW + 120, answer=reply("#2 stopped ci: red"))
+        [argv] = self.landers()
+        self.assertIn("- #2:", argv[-1])
+        self.assertNotIn("- #1:", argv[-1])
+
+    def test_a_newer_approval_on_a_given_pull_request_during_the_run_starts_the_next_one(self):
+        answers, listed, slugs = self.world([reviewed(1)])
+        newer = [reviewed(1, at=NOW + 30)]
+        answers[LIST] = [(0, json.dumps([reviewed(1)]), ""), (0, json.dumps(newer), "")]
+        answers[("claude", "-p")] = reply("#1 stopped ci: red")
+        self.cli("watch", answers=answers, sessions=listed, entries=slugs)
+        self.tick(newer, at=NOW + 120, answer=reply("#1 stopped ci: red"))
+        self.assertEqual(len(self.landers()), 1)
+
+    def test_a_pull_request_without_a_handed_over_task_or_with_a_stranger_lgtm_is_not_noticed(self):
+        self.tick([reviewed(1), reviewed(2), said(3, association="NONE")], tasks=["t1", "t3"],
+                  answer=reply("#1 merged u"))
+        [argv] = self.landers()
+        self.assertIn("- #1:", argv[-1])
+        self.assertNotIn("- #2:", argv[-1])
+        self.assertNotIn("- #3:", argv[-1])
 
     def test_a_held_lock_skips_the_tick_silently_and_records_nothing(self):
         with factory.lander_lock(SimpleNamespace(root=ROOT)):

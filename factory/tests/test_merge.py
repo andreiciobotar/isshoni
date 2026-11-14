@@ -52,7 +52,8 @@ class World(Harness):
         states = {s: (state[s] if isinstance(state, dict) else state) for s in slugs}
         self.seed("tasks", [{"repo": ROOT, "slug": s, "state": st, "ts": iso(NOW - 3600)} for s, st in states.items()])
         answers = {
-            ("git", "status"): (0, "", ""), ("git", "rev-list"): (0, "0\t1\n", ""),
+            ("git", "status"): (0, "", ""), ("git", "rev-list"): (0, "0\t1\n", ""), ("git", "fetch"): (0, "", ""),
+            ("git", "merge-base", "--is-ancestor"): (0, "", ""),
             ("git", "log"): (0, f"{NOW} {local}\n", ""),
             ("gh", "pr", "list", "--state", "open"): (0, json.dumps(prs), ""),
             ("gh", "pr", "edit"): (0, "", ""), ("gh", "pr", "ready"): (0, "", ""), ("gh", "pr", "merge"): (0, "", ""),
@@ -482,13 +483,61 @@ class ApprovedTests(World):
         self.assertIn("#1 stopped: not approved on GitHub", out)
         self.assertIn("#2 not attempted", out)
 
+    def test_a_head_behind_its_base_is_refused_in_both_modes(self):
+        behind = {("git", "merge-base", "--is-ancestor"): (1, "", "")}
+        why = ("#1 stopped: its base has moved since its head: bring it up to date (factory land t1) so its checks "
+               "run on the combination")
+        code, out, _ = self.approved([pr(1)], {1: [comment()]}, extra=behind)
+        self.assertEqual(code, 1)
+        self.assertIn(why, out)
+        self.assertEqual(self.gh_mutations(), [])
+        code, out, _ = self.merge("1", prs=[pr(1)], extra=behind)
+        self.assertEqual(code, 1)
+        self.assertIn(why, out)
+        self.assertEqual(self.gh_mutations(), [])
+        self.assertEqual(self.pr_calls(), [])
+
+    def test_behind_is_a_stop_not_a_skip_with_all_and_the_rest_is_not_attempted(self):
+        code, out, _ = self.approved([pr(1), pr(2)], {1: [comment()], 2: [comment(n=2)]}, "--all",
+                                     extra={("git", "merge-base", "--is-ancestor"): (1, "", "")})
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped: its base has moved", out)
+        self.assertIn("#2 not attempted", out)
+
+    def test_the_default_branch_is_the_one_compared_when_the_base_has_merged(self):
+        merged = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
+        self.merge("2", prs=[pr(2, base="worktree-t1")], extra={("gh", "pr", "list", "--head", "worktree-t1"): merged})
+        self.assertIn(["git", "merge-base", "--is-ancestor", "origin/main", SHA], self.fake.calls)
+
+    def test_git_that_cannot_answer_is_pending(self):
+        for label, extra in {"fetch": {("git", "fetch"): (1, "", "no network")},
+                             "merge-base": {("git", "merge-base", "--is-ancestor"): (128, "", "bad object")}}.items():
+            with self.subTest(label):
+                self.setUp()
+                code, out, _ = self.merge("1", prs=[pr(1)], extra=extra)
+                self.assertEqual(code, 1)
+                self.assertIn("#1 stopped: ", out)
+                self.assertEqual(self.gh_mutations(), [])
+
+    def test_one_fetch_serves_the_whole_command(self):
+        self.approved([pr(1), pr(2)], {1: [comment()], 2: [comment(n=2)]})
+        self.assertEqual(sum(c[:2] == ["git", "fetch"] for c in self.fake.calls), 1)
+
+    def test_all_skips_a_pull_request_stacked_on_a_skipped_one(self):
+        code, out, _ = self.approved([pr(1), pr(2, base="worktree-t1"), pr(3)], {3: [comment(n=3)]}, "--all",
+                                     reviews={2: [review(n=2)]})
+        self.assertEqual(code, 0)
+        self.assertIn("#1 skipped: not approved on GitHub", out)
+        self.assertIn("#2 skipped: its base worktree-t1 was skipped", out)
+        self.assertEqual(self.merges(), ["3"])
+
     def test_a_dry_run_reads_the_approval_too(self):
         code, out, _ = self.approved([pr(1)], {}, "--dry-run", "1")
         self.assertEqual(code, 1)
         self.assertIn("#1 would stop: not approved on GitHub", out)
 
     def test_the_heads_of_a_clean_merge_of_the_base_carry_the_approval(self):
-        heads = mock.patch.object(factory, "approved_heads", lambda repo, pr: [SHA, "before"])
+        heads = mock.patch.object(factory, "approved_heads", lambda p, pr: [SHA, "before"])
         with heads:
             code, out, _ = self.approved([pr(1)], reviews={1: [review(sha="before")]})
         self.assertEqual((code, self.merges()), (0, ["1"]))
@@ -567,7 +616,7 @@ class HeadsTests(unittest.TestCase):
         return self.git("rev-parse", "HEAD")
 
     def heads(self, base="main"):
-        return factory.approved_heads(self.repo, {"headRefOid": self.head(), "baseRefName": base})
+        return factory.approved_heads({"repo": self.repo}, {"headRefOid": self.head(), "baseRefName": base})
 
     def test_a_head_that_is_no_merge_is_the_only_head(self):
         self.assertEqual(self.heads(), [self.head()])
@@ -600,11 +649,13 @@ class HeadsTests(unittest.TestCase):
         self.git("commit", "-m", "merge with a change")
         self.assertEqual(self.heads(), [self.head()])
 
-    def test_a_second_parent_that_is_not_on_the_base_is_not_stepped_back_through(self):
+    def test_a_second_parent_that_is_not_on_the_default_branch_is_not_stepped_back_through(self):
         self.git("checkout", "-b", "other")
         self.commit("o.txt", "o\n")
         self.git("checkout", "feature")
-        self.git("merge", "--no-edit", "other")
+        self.commit("g.txt", "g\n")
+        self.git("merge", "--no-ff", "--no-edit", "other")
+        self.assertEqual(len(self.git("rev-list", "--parents", "-n", "1", "HEAD").split()), 3)
         self.assertEqual(self.heads(), [self.head()])
 
     def test_a_resolved_conflict_is_not_stepped_back_through(self):
@@ -619,7 +670,7 @@ class HeadsTests(unittest.TestCase):
         self.git("commit", "-m", "resolve")
         self.assertEqual(self.heads(), [self.head()])
 
-    def test_the_branch_of_the_base_pull_request_counts_as_the_base(self):
+    def test_the_branch_of_the_base_pull_request_does_not_count_as_the_base(self):
         self.git("checkout", "-b", "stack")
         self.commit("s.txt", "s\n")
         self.git("push", "origin", "stack")
@@ -627,14 +678,14 @@ class HeadsTests(unittest.TestCase):
         self.commit("f2.txt", "f2\n")
         self.git("push", "origin", "feature")
         self.git("checkout", "stack")
-        before = self.head()
-        self.git("merge", "--no-edit", "feature")
-        self.assertEqual(self.heads(base="feature"), [self.head(), before])
+        self.git("merge", "--no-ff", "--no-edit", "feature")
+        self.assertEqual(self.heads(base="feature"), [self.head()])
 
     def test_a_failing_fetch_leaves_just_the_head(self):
         self.git("merge", "--no-edit", "origin/main")
-        self.repo.remote = "nowhere"
-        self.assertEqual(self.heads(), [self.head()])
+        self.assertEqual(len(self.heads()), 2)
+        with mock.patch.object(factory, "act_git", lambda *a: (1, "", "no network")):
+            self.assertEqual(self.heads(), [self.head()])
 
 
 class LanderBlockedTests(World):
