@@ -1688,7 +1688,7 @@ def cmd_state(args):
     declare(repo, slug, "lead", args.state, deliverable, waits_on, args.paused)
     if args.paused:
         task_event("TaskPaused", repo, slug, waits_on=waits_on)
-    stated =args.state == "handed-over" and task["branch"] and config_value(repo, f"branch.{task['branch']}.factoryTest")
+    stated = args.state == "handed-over" and task["branch"] and config_value(repo, f"branch.{task['branch']}.factoryTest")
     if stated and stated != "none":
         repo.git("config", "factory.lastTest", stated)
     if args.state in ("working", "blocked"):
