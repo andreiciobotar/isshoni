@@ -100,11 +100,38 @@ func (r *run) pids(name string) (pids []int) {
 	return pids
 }
 
+// dump logs what a failing wait needs: the script's stderr, the stub files, whether the script
+// still runs, the process table and, on Linux, the cgroup's pids counters.
+func (r *run) dump() {
+	r.t.Helper()
+	b, _ := os.ReadFile(r.stderr)
+	r.t.Logf("script stderr:\n%s", b)
+	files, _ := os.ReadDir(r.stubs)
+	for _, f := range files {
+		r.t.Logf("stubs/%s:\n%s", f.Name(), r.read(f.Name()))
+	}
+	select {
+	case err := <-r.done:
+		r.done <- err
+		r.t.Logf("script ended: %v", err)
+	default:
+		r.t.Logf("script still running, pid %d", r.cmd.Process.Pid)
+	}
+	ps, _ := exec.Command("ps", "-axo", "pid,ppid,pgid,stat,etime,command").CombinedOutput()
+	r.t.Logf("ps:\n%s", ps)
+	for _, f := range []string{"pids.current", "pids.peak", "pids.max", "pids.events"} {
+		if b, err := os.ReadFile("/sys/fs/cgroup/" + f); err == nil {
+			r.t.Logf("%s: %s", f, strings.TrimSpace(string(b)))
+		}
+	}
+}
+
 func (r *run) waitFor(what string, ok func() bool) {
 	r.t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for !ok() {
 		if time.Now().After(deadline) {
+			r.dump()
 			r.t.Fatalf("timed out waiting for %s", what)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -130,6 +157,7 @@ func (r *run) exit() int {
 		}
 		return 0
 	case <-time.After(15 * time.Second):
+		r.dump()
 		r.t.Fatal("the script did not end")
 		return -1
 	}
