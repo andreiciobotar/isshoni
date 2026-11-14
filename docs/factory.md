@@ -390,7 +390,7 @@ Proven as the App: `gh pr create`, `gh pr ready` and `gh pr ready --undo` (both 
 Undo: `factory uninstall` uninstalls the App and removes `identity/`; you delete the App itself (`https://github.com/settings/apps/<slug>/advanced`, or `https://github.com/organizations/<owner>/settings/apps/<slug>/advanced`; no API deletes an App).
 
 ## In a container
-[container.md](container.md) runs the factory on an always-on Linux host: an image with Claude Code, `gh`, git, Python and Go (`docker/`), all state in one host directory, a non-root user, CPU and memory limits. The site manager's job uses the cron backend there, run by supercronic because a container has neither systemd nor a root cron; the rules above hold unchanged. The same page lists the first-run steps, what a lead in `auto` mode could damage, and how the factory's GitHub identity gets into the container.
+[container.md](container.md) runs the factory on an always-on Linux host: an image with Claude Code, `gh`, git, Python and Go (`docker/`), all state in one host directory, a non-root user, CPU and memory limits. The site manager's job uses the cron backend there, run by supercronic because a container has neither systemd nor a root cron; the rules above hold unchanged. `isshoni host add` sets it up from a laptop over SSH (the tooling lives in `~/.isshoni` in the container). The same page lists the command's steps, what a lead in `auto` mode could damage, and how the factory's GitHub identity gets into the container.
 
 ## Known limits
 - Nothing caps what a lead spends; the time limit is checked by the lead between subagent runs.
