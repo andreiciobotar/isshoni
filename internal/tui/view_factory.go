@@ -486,7 +486,7 @@ func (m *model) factoryCols(p paint, w int, tasks []data.FactoryTask) factoryCol
 		c.base = max(c.base, min(width(base), baseMax))
 		c.flags = max(c.flags, width(flagPills(p, t)))
 	}
-	if free := w - (2 + c.phase + c.flags + 4 + 2*3 + c.elapsed + c.pr + c.base); free < min(c.slug, slugLeast) {
+	if free := w - (2 + c.phase + c.flags + 4 + 2*3 + c.elapsed + c.pr + c.base); free < c.slug {
 		c.phase = min(c.phase, phaseMax)
 	}
 	for step := 0; ; step++ {

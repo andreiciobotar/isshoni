@@ -450,6 +450,12 @@ func TestFactoryColsKeepTheTableWhenAWhomIsLong(t *testing.T) {
 	if c := cols(140, "design-review-of-docs"); c.phase != 2+len("blocked on design-review-of-docs") {
 		t.Errorf("140 columns: PHASE is %d cells, the 21-character slug is cut", c.phase)
 	}
+	wide := onTask()
+	wide.Slug, wide.WaitsOn, wide.Overtime, wide.Stale = strings.Repeat("s", 40), long, true, true
+	m := factoryModel(true, 130, 40, factoryRepo{name: "m", st: fstatus(5, wide)})
+	if c := m.factoryCols(m.th.on(m.th.Bg), 130, m.fac.repos[0].st.Rows); c.slug != 40 || c.phase != phaseMax {
+		t.Errorf("130 columns: a long whom may not cut a long slug: %+v", c)
+	}
 }
 
 func TestFactoryWaitingLeavesOutADraftInReview(t *testing.T) {
