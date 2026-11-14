@@ -5361,7 +5361,7 @@ def conflicting_files(repo, pr):
 
 CHURN_SEND_BACKS = 1
 CHURN_PATIENCE = 300
-RELEASE_HOLD_MINUTES = 30
+RELEASE_HOLD_MINUTES = 24
 OPEN = ("working", "handed-over")
 
 

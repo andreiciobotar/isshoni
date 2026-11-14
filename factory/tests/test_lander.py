@@ -820,7 +820,7 @@ class ChurnTests(ScratchRepoBase):
                 self.assertNotIn(slug, self.lander()["prioritized"])
                 self.assertEqual(self.events("TaskPrioritizedEnd")[-1]["reason"], reason)
         self.assertEqual(len(told), 1)
-        self.assertEqual(told[0][4], "t1 (handed-over) was served first for 30 minutes and has not merged; the queue treats every pull request alike again")
+        self.assertEqual(told[0][4], "t1 (handed-over) was served first for 24 minutes and has not merged; the queue treats every pull request alike again")
 
     def test_a_merge_and_a_send_back_for_another_stop_end_the_priority_but_a_conflict_does_not(self):
         self.prioritize()
