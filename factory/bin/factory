@@ -4430,13 +4430,16 @@ def conflicting_files(repo, pr):
 
 def level(repo, task):
     """Fast-forward the worktree of `task` to its own remote branch (someone pressed "Update branch" on GitHub, or pushed
-    from elsewhere); nothing is pushed. None, or why not: the lead may be running, the worktree is dirty, or the two have
-    diverged."""
+    from elsewhere); nothing is pushed. None, or why not: the lead may be running, the worktree is dirty or cannot be
+    read, or the two have diverged."""
     path, branch, remote = task["path"], task["branch"], repo.remote
     busy = land_busy(repo, path)
-    if busy or repo.git("status", "--porcelain", path=path)[1].strip():
-        return busy or "the worktree has uncommitted changes"
-    rc, out, err = act_git(path, "fetch", remote)
+    if busy:
+        return busy
+    rc, status, _ = repo.git("status", "--porcelain", path=path)
+    if rc != 0 or status.strip():
+        return "the worktree has uncommitted changes" if rc == 0 else "git status failed in the worktree"
+    rc, out, err = act_git(path, "fetch", remote, timeout=GH_TIMEOUT)
     if rc != 0:
         return f"git fetch {remote} failed: {' '.join((err or out).split())}"
     if act_git(path, "merge", "--ff-only", f"{remote}/{branch}")[0] != 0:
@@ -4446,11 +4449,14 @@ def level(repo, task):
 
 def attempt(repo, p, pr, permission):
     """`merge_one`, asked again once when its only fault is a worktree that is not on the head of its pull request and
-    `level` can fix that."""
+    `level` can fix that. When the worktree then holds a head GitHub does not show yet (a push of ours, a stale
+    `gh pr list`) the pull request is in flight, not stopped."""
     stop, row = merge_one(p, pr, False, False, permission), task_of(p, pr)
     if stop and stop[0] == "handover" and row and row["phase"] == "review" and row["head"] != pr["headRefOid"] \
             and level(repo, row) is None:
         row["head"] = repo.git("rev-parse", "HEAD", path=row["path"])[1].strip()
+        if row["head"] != pr["headRefOid"]:
+            return "pending", f"GitHub does not show the pushed head {row['head']} yet"
         stop = merge_one(p, pr, False, False, permission)
     return stop
 
@@ -4465,19 +4471,20 @@ def update_branch(repo, task):
     rc, out, err = act_git(path, "merge", "--no-edit", f"{remote}/{repo.default}")
     if rc != 0:
         files = repo.git("diff", "--name-only", "--diff-filter=U", path=path)[1].split()
-        repo.git("merge", "--abort", path=path)
-        return ("conflict", f"conflicts with {repo.default} in {', '.join(files)}") if files else \
-            ("other", f"git merge failed: {one(err or out)}")
-    rc, out, err = act_git(path, "push", remote, f"HEAD:{branch}")
+        left = "" if repo.git("merge", "--abort", path=path)[0] == 0 else "; `git merge --abort` failed: the worktree is left mid-merge"
+        return ("conflict", f"conflicts with {repo.default} in {', '.join(files)}{left}") if files else \
+            ("other", f"git merge failed: {one(err or out)}{left}")
+    rc, out, err = act_git(path, "push", remote, f"HEAD:{branch}", timeout=GH_TIMEOUT)
     if rc != 0:
         return "other", f"git push failed: {one(err or out)}; the merge commit is left in the worktree"
     return None
 
 
-def lander_pass(repo, fallback, p, line, updated):
+def lander_pass(repo, fallback, p, snap, line, updated):
     """One full pass over `line`: (whether a pull request merged, the stops {n: (pr, kind, line)}, the numbers in flight).
     At most one pull request is brought up to date, and none while another waits for its checks; `updated` keeps the
-    tip of the default branch each one was updated against."""
+    tip of the default branch each one was updated against. A handed-over pull request in no queue is only checked,
+    read-only, for a conflict."""
     stops, behind = {}, []
     for pr, permission in line:
         stop = attempt(repo, p, pr, permission)
@@ -4490,6 +4497,11 @@ def lander_pass(repo, fallback, p, line, updated):
             behind.append((pr, stop[0]))
         else:
             stops[pr["number"]] = (pr, *stop)
+    queued, declared = {pr["number"] for pr, _ in line}, read_tasks(repo.root)
+    for pr in snap:
+        if pr["number"] not in queued and declared.get(task_slug(repo, pr), {}).get("state") == "handed-over" and fetched(p, pr) \
+                and (files := conflicting_files(repo, pr)):
+            stops[pr["number"]] = (pr, "conflict", f"conflicts with {repo.default} in {', '.join(files)}")
     flight, tip = held(read_lander(repo), stops), lambda: repo.git("rev-parse", f"{repo.remote}/{repo.default}")[1].strip()
     for pr, kind in behind:
         n, files = pr["number"], conflicting_files(repo, pr)
@@ -4546,7 +4558,7 @@ def drain(repo, fallback, tick=False, deadline=None):
         line = lander_queue(repo, snap, read_word(repo))
         if not line and first and not tick:
             print("nothing ready")
-        merged, stops, flight = lander_pass(repo, fallback, p, line, updated)
+        merged, stops, flight = lander_pass(repo, fallback, p, snap, line, updated)
         stopped, first = stopped | set(stops), False
         if not (merged or flight):
             break
