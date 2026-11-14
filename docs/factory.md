@@ -230,6 +230,7 @@ All under `~/.claude/factory/`, JSON lines, append-only, mode 0600. Except where
 | task state | `tasks-YYYY-MM.jsonl` | `new`, `state`, `ack` | the current month and the 12 before it, and the newest record of every task that still has a worktree |
 | firings | `firings-YYYY-MM.jsonl` | `watch`, `firing`, `miss` | the current month and the 12 before it, and every miss and every firing that is still open or was escalated, with its records |
 | tech lead | `techlead-YYYY-MM.jsonl` | `factory tech-lead`; the lander's loop (an `unstarted` record) | the current month and the 12 before it |
+| queue | `queue-YYYY-MM.jsonl` | the merge queue (`merge`, the lander's loop); `factory land` | the current month and the 12 before it |
 | gh calls | `gh-YYYY-MM.jsonl` | every `gh` call that took over 2 s or failed: `ts`, `argv`, `cwd`, `seconds`, `rc`, `error` (the first stderr line; never the token). A `gh` call without a timeout is cut at 30 s. `isshoni kaizen` appends to the same file | pruned like the other logs: the current month and the 12 before it |
 
 Unsuffixed `events.jsonl`, `retros.jsonl`, `feedback.jsonl`, `tasks.jsonl` and `firings.jsonl` from older versions are still read, as the oldest. Old files are deleted when a log's first record of a new month is written; the lines still needed (the Kept column) are first carried, unchanged, into the current month's file. What goes after 12 months: a task's records once its worktree is gone, and firings that cleared and were suppressed or never decided. A task's state is its record with the newest `ts`, whichever file holds it.
@@ -256,9 +257,29 @@ Unsuffixed `events.jsonl`, `retros.jsonl`, `feedback.jsonl`, `tasks.jsonl` and `
 
 **Retros** add exactly these keys:
 ```json
-{"defects": [{"caught_by": "tests|reviewer|lead|ci|human", "what": "..."}],
+{"defects": [{"caught_by": "tests|reviewer|lead|ci|human", "what": "...", "cause": "spec|brief|conflict|scope|code"}],
  "slowed": ["..."], "rules_missing": ["..."], "rules_dead_weight": ["..."], "brief_questions": ["..."]}
 ```
+`cause` is optional (a lead on the old rule text omits it; any other key or value is refused): why the defect arose. `spec`: the spec was wrong or silent; `brief`: the brief was; `conflict`: a merge of the base; `scope`: the scope changed mid-task; `code`: the code missed what the spec said. It answers why a review round happened; bad: one cause over a third of the defects.
+
+**Queue** (`queue`, one record per thing the merge queue or `factory land` did to a pull request) carries only `ts`, `repo`, `slug` (`null` for a pull request of no task), `pr` (`null` for a `land-*` step before a pull request exists), `head` (full SHA of the head the step acted on) and `step`, with these fields:
+
+| `step` | When | Fields |
+|---|---|---|
+| `merged` | `merge`, and the lander's loop, after `gh pr merge` succeeded (never with `--dry-run`) | `approved_at`: ISO time of the approving review (`submitted_at`) or of the accepted `lgtm` comment, `null` when no approval was required or GitHub gave no time |
+| `updated` | the loop merged the default branch into the branch and pushed | `tip`: the default branch's SHA merged in |
+| `rerun` | the loop started a re-run of failed checks | `text`: the rerun line |
+| `sent-back` | the loop returned the pull request to its lead | `kind`, `text` (the stop line), `told` (`tech lead`, `lead`, `dispatcher` or `human`), `files` (only for `conflict`: the conflicting files, may be empty) |
+| `stopped` | the loop reported a stop to the dispatcher or the human | `kind`, `text`, `told` |
+| `land-updated` | `factory land` merged its base in | `base`: the target ref |
+| `land-conflict` | that merge left unmerged files (a merge that failed otherwise writes nothing) | `base`, `files`: the unmerged files |
+
+What each answers, and what a bad value looks like:
+- `merged.approved_at`: splits hand-over to merge into waiting for the human (hand-over to approval) and waiting for the queue (approval to merge). Bad: approval to merge p90 over 15 min.
+- `updated`, `rerun`, `stopped`, `sent-back`: what the queue attempted per pull request, not only what it merged. Bad: a `sent-back` whose next record for that pull request has the same `head` (it changed nothing).
+- `sent-back.files`, `land-conflict.files`, `land-updated`: late conflicts per task and per file. Bad: over 0.2 conflicted base merges per merged pull request; one file in most of them.
+
+All of these, and the retro `cause`, start on the day this merges: nothing earlier is backfilled (the old queue logged nothing; the gh log keeps only slow or failed calls). Pauses and prioritized landings are not in this log.
 
 **Tech lead** (`techlead`, one record per come-back or build run) adds `kind` (`merge` for a come-back, `build` for a `factory build` run; a record without it is `merge`), `role` (`tech-lead`), `model`, `version`, `session` (the run's Claude session id, `null` when unstarted or unparsed), `pr`, `evidence`, `outcome` (`resolved`, `escalated`, `stopped` or `unstarted`; `built`, `question` or `stopped` for a build run, whose `pr` is `null` and `evidence` is `build`), `reason` (why stopped or unstarted), `note` (the model's note), `noted` (whether the pull request comment was posted), `head_before`, `head_after` (full SHAs), `cost_usd` (`total_cost_usd` of the run, `null` when unpriced, never 0) and `seconds`.
 
