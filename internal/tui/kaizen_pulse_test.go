@@ -39,11 +39,12 @@ func TestPulseBandRowsAndFigures(t *testing.T) {
 		"TODAY AGAINST YESTERDAY", "today 11-14", "yesterday 11-13",
 		"all-in cost / merged PR", "$10.25 n=12", "$14.10* n=5",
 		"tasks + dispatcher + site manager", "$100 + $20.25 + $2.25",
-		"first pass small", "75% 3/4", "100% 2/2", "medium", "33% 1/3", "large", "0% 0/1", "no size stated", "50% 2/4",
+		"first pass small · medium", "75% 3/4 · 33% 1/3", "100% 2/2 · -",
+		"large · no size stated", "0% 0/1 · 50% 2/4", "- · 33% 1/3",
 		"hand-over → merge p90", "36m44s n=11", "10m00s n=5",
-		"hand-over → approval p90", "30m00s n=6 (2 backfilled)", "approval → merge p90", "4m00s n=6",
+		"to approval · approval to merge", "30m00s · 4m00s n=6 (2 backfilled)",
 		"send-backs that changed nothing", "1 of 3",
-		"conflicted base merges / merged PR", "0.36 4 in 11 PRs", "(from git history)",
+		"conflicted base merges / PR (git history)", "0.36 4 in 11 PRs",
 	} {
 		if !strings.Contains(squeezed, want) {
 			t.Errorf("the band lacks %q:\n%s", want, out)
@@ -66,11 +67,11 @@ func TestPulseUnknownsAreDashesNeverZero(t *testing.T) {
 	})
 	// today is a dash; yesterday's figure follows it
 	for row, tail := range map[string]string{
-		"all-in cost / merged PR":            "- $14.10* n=5",
-		"first pass small":                   "- 100% 2/2",
-		"hand-over → merge p90":              "- 10m00s n=5",
-		"send-backs that changed nothing":    "- -",
-		"conflicted base merges / merged PR": "- -",
+		"all-in cost / merged PR":         "- $14.10* n=5",
+		"first pass  small":               "- · 33% 1/3 100% 2/2 · -",
+		"hand-over → merge p90":           "- 10m00s n=5",
+		"send-backs that changed nothing": "- -",
+		"conflicted base merges / PR":     "- -",
 	} {
 		if got := strings.Join(strings.Fields(lineWith(t, out, row)), " "); !strings.HasSuffix(got, tail) {
 			t.Errorf("%s: want it to end in %q: %q", row, tail, got)
@@ -93,7 +94,7 @@ func TestPulseWithoutThePulseKeyRendersThePageAsBefore(t *testing.T) {
 	doc := kaizenDoc(t)
 	doc.Pulse = nil
 	out := pulseFrame(t, doc, 140)
-	if strings.Contains(out, "TODAY AGAINST") || strings.Contains(out, "from git history") {
+	if strings.Contains(out, "TODAY AGAINST") || strings.Contains(out, "git history") {
 		t.Fatalf("no pulse, no band:\n%s", out)
 	}
 	if lines := strings.Split(out, "\n"); !strings.Contains(lines[2], "LANDED") {
@@ -150,7 +151,7 @@ func TestPulseFitsNarrowWithoutWrapping(t *testing.T) {
 			t.Errorf("wider than the window: %q", l)
 		}
 	}
-	if strings.Contains(out, "tasks + dispatcher") || !strings.Contains(out, "unstated") || !strings.Contains(out, "(from git history)") {
+	if strings.Contains(out, "tasks + dispatcher") || !strings.Contains(out, "unstated") || !strings.Contains(out, "(git history)") {
 		t.Errorf("narrow drops the breakdown and shortens labels, keeps the mark:\n%s", out)
 	}
 }
