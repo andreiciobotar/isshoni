@@ -281,7 +281,7 @@ class TickTests(SchedHarness, World):
     def noticed(self):
         return [c for c in self.fake.calls if c[:5] == list(LIST) and factory.NOTICE_FIELDS in c]
 
-    def test_nothing_handed_over_makes_no_gh_call_and_starts_nothing(self):
+    def test_a_working_or_blocked_task_costs_one_list_call_and_starts_no_lander(self):
         for state in ("working", "blocked"):
             with self.subTest(state):
                 self.setUp()
@@ -296,9 +296,8 @@ class TickTests(SchedHarness, World):
 
     def test_a_task_whose_worktree_is_gone_is_not_handed_over(self):
         self.seed("tasks", [{"repo": ROOT, "slug": "gone", "state": "handed-over", "ts": iso(NOW - 3600)}])
-        answers = {LIST: (0, json.dumps([reviewed(1)]), "")}
-        self.cli("watch", entries=[], answers=answers)
-        self.assertEqual(self.landers(), [])
+        self.cli("watch", entries=[], answers={LIST: (0, json.dumps([reviewed(1)]), "")})
+        self.assertFalse(any(c[0] == "gh" for c in self.fake.calls))
 
     def test_an_approving_review_or_an_lgtm_starts_one_lander_for_all_of_them(self):
         code, out, _ = self.tick([reviewed(1), said(2), plain(3), reviewed(4, state="COMMENTED")],

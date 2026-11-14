@@ -2767,9 +2767,6 @@ def stale_approval(p, pr, approval, heads):
 
 def approval_stop(p, pr, permission):
     """(kind, reason) when GitHub's records hold no valid approval of the head of `pr`, else None."""
-    if pr["isDraft"]:
-        return "unapproved", ("not approved on GitHub: it is a draft, and only a pull request that is ready "
-                              "for review is merged on an approval")
     try:
         heads = approved_heads(p, pr)
         review = approving_review(p, pr, permission, heads)
@@ -4243,7 +4240,8 @@ def cheap_tick(repo, name):
     pull requests once and give them to the comment forwarder; with one handed over (or a task's pull request that is
     ready for review while its task is not: it goes back to draft), also set the draft flags; with one handed over,
     start a lander for what was approved since last noticed."""
-    if not any(r["state"] in STATES[:3] for r in read_tasks(repo.root).values()):
+    here = {os.path.basename(t["path"]) for t in repo.tasks}
+    if not any(r["state"] in STATES[:3] and slug in here for slug, r in read_tasks(repo.root).items()):
         return
     try:
         snap = snapshot(repo)

@@ -509,16 +509,17 @@ class ApprovedTests(World):
         self.assertIn("#3 stopped: its base has moved since its head: bring it up to date (factory land t3) so its checks run on the combination", out)
         self.assertEqual(self.merges(), ["1"])
 
-    def test_a_draft_is_not_merged_on_an_approval(self):
-        code, out, _ = self.approved([pr(1, draft=True)], {1: [comment()]}, reviews={1: [review()]})
-        self.assertEqual(code, 1)
-        self.assertIn("#1 stopped: not approved on GitHub: it is a draft, and only a pull request that is ready "
-                      "for review is merged on an approval", out)
-        self.assertEqual(self.gh_mutations(), [])
-        code, out, _ = self.approved([pr(1, draft=True), pr(2)], {}, "--all", reviews={1: [review()], 2: [review(n=2)]})
+    def test_an_approved_draft_that_is_handed_over_up_to_date_and_green_is_marked_ready_and_merged(self):
+        code, out, _ = self.approved([pr(1, draft=True)], {1: [comment()]})
         self.assertEqual(code, 0)
-        self.assertIn("#1 skipped: not approved on GitHub: it is a draft", out)
-        self.assertEqual(self.merges(), ["2"])
+        self.assertIn("#1 merged", out)
+        self.assertEqual([c[:2] for c in self.gh_mutations()], [["pr", "ready"], ["pr", "merge"]])
+
+    def test_an_approved_draft_whose_task_is_working_is_refused_for_the_handover(self):
+        code, out, _ = self.approved([pr(1, draft=True)], {1: [comment()]}, state="working")
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped: task t1 is in phase motion (declared working)", out)
+        self.assertEqual(self.gh_mutations(), [])
 
     def test_all_skips_a_stale_approval_and_goes_on(self):
         code, out, _ = self.approved([pr(1), pr(2)], {1: [comment(at=NOW - 7200)], 2: [comment(n=2)]}, "--all")
@@ -792,118 +793,6 @@ class PullMainTests(World):
         self.setUp()
         self.merged("main", (0, "", ""), checks=[])
         self.assertFalse(self.fake.ran("git", "pull"))
-
-
-PENDING = [{"name": "test", "bucket": "pending"}]
-FAILED = [{"name": "test", "bucket": "fail"}]
-
-
-class SyncDraftTests(World):
-    def tick(self, prs, comments=None, orphaned=False, **kw):
-        answers, sessions, slugs = LgtmTests.lgtm_world(self, prs, comments or {}, **kw)
-        if orphaned:
-            sessions = [s for s in sessions if s.get("name") != SESSION]
-        return self.cli("watch", answers=answers, sessions=sessions, entries=slugs)
-
-    def flips(self):
-        return [c[1:] for c in self.fake.calls if c[:3] == ["gh", "pr", "ready"]]
-
-    def test_each_transition_and_each_state_that_is_already_right(self):
-        cases = {
-            "handed over, green, draft": (dict(prs=[pr(1, draft=True)]), [["pr", "ready", "1"]], "#1 ready for review\n"),
-            "handed over, pending, draft": (dict(prs=[pr(1, draft=True)], checks=PENDING), [], ""),
-            "handed over, failed, ready": (dict(prs=[pr(1)], checks=FAILED), [["pr", "ready", "1", "--undo"]],
-                                           "#1 back to draft: failed or cancelled checks: test\n"),
-            "handed over, green, ready": (dict(prs=[pr(1)]), [], ""),
-            "working, ready": (dict(prs=[pr(1)], state="working"), [["pr", "ready", "1", "--undo"]],
-                               "#1 back to draft: task t1 is in phase motion (declared working)\n"),
-            "working, draft": (dict(prs=[pr(1, draft=True)], state="working"), [], ""),
-            "blocked, ready": (dict(prs=[pr(1)], state="blocked"), [["pr", "ready", "1", "--undo"]],
-                               "#1 back to draft: task t1 is in phase blocked (declared blocked)\n"),
-            "head moved, ready": (dict(prs=[pr(1)], local="other"), [["pr", "ready", "1", "--undo"]],
-                                  "#1 back to draft: task t1 has local commits that are not on the pull request\n"),
-            "no task worktree": (dict(prs=[pr(1)], tasks=[], checks=FAILED), [], ""),
-            "a fork": (dict(prs=[pr(1, fork=True)], tasks=["t1"], checks=FAILED), [], ""),
-            "settled": (dict(prs=[pr(1)], state="acknowledged", checks=FAILED), [], ""),
-        }
-        for label, (kw, flips, line) in cases.items():
-            with self.subTest(label):
-                self.setUp()
-                code, out, _ = self.tick(**kw)
-                self.assertEqual(code, 0)
-                self.assertEqual(self.flips(), flips)
-                self.assertEqual("".join(l + "\n" for l in out.splitlines() if l.startswith("#1 ")), line)
-
-    def test_status_agrees_with_what_the_sync_leaves_on_github(self):
-        cases = {
-            "working": (dict(state="working", prs=[pr(1)]), True, "motion", None),
-            "blocked": (dict(state="blocked", prs=[pr(1)]), True, "blocked", None),
-            "handed over, draft": (dict(prs=[pr(1, draft=True)], checks=PENDING), True, "review", "waiting on checks: "),
-            "handed over, ready": (dict(prs=[pr(1, draft=True)]), False, "review", "waiting on the human: "),
-        }
-        for label, (kw, draft, phase, line) in cases.items():
-            with self.subTest(label):
-                self.setUp()
-                self.tick(**kw)
-                flips = self.flips()
-                left = ("--undo" in flips[-1]) if flips else kw["prs"][0]["isDraft"]
-                self.assertEqual(left, draft)
-                answers, sessions, slugs = self.world([{**kw["prs"][0], "isDraft": left}], state=kw.get("state", "handed-over"))
-                _, out, _ = self.cli("status", "--json", answers=answers, sessions=sessions, entries=slugs)
-                (row,) = json.loads(out)["rows"]
-                self.assertEqual((row["phase"], row["pr_draft"]), (phase, draft))
-                _, out, _ = self.cli("status", answers=answers, sessions=sessions, entries=slugs)
-                self.assertEqual([l for l in out.splitlines() if l.startswith("waiting on")],
-                                 [] if line is None else [f"{line}t1 https://x/pull/1"])
-
-    def test_unlistable_sessions_change_nothing(self):
-        code, out, _ = self.tick([pr(1)], extra={("claude", "agents"): (1, "", "no claude")})
-        self.assertEqual(code, 0)
-        self.assertIn("drafts not synced: sessions cannot be listed", out)
-        self.assertEqual(self.flips(), [])
-
-    def test_unreadable_checks_leave_that_pull_request_and_the_others_are_handled(self):
-        code, out, _ = self.tick([pr(1), pr(2, draft=True)], checks={1: (1, "", "boom"), 2: GREEN})
-        self.assertEqual(code, 0)
-        self.assertIn("#1 draft flag not changed: gh pr checks failed: boom\n", out)
-        self.assertIn("#2 ready for review\n", out)
-        self.assertEqual(self.flips(), [["pr", "ready", "2"]])
-
-    def test_a_task_whose_head_cannot_be_read_leaves_its_pull_request(self):
-        code, out, _ = self.tick([pr(1)], extra={("git", "log"): (1, "", "bad")})
-        self.assertEqual(code, 0)
-        self.assertIn("#1 draft flag not changed: its task's head cannot be read\n", out)
-        self.assertEqual(self.flips(), [])
-
-    def test_an_unreadable_list_changes_nothing(self):
-        code, out, _ = self.tick([pr(1, draft=True)], extra={("gh", "pr", "list", "--state", "open"): (1, "", "down")})
-        self.assertIn("drafts not synced: gh pr list failed: down\n", out)
-        self.assertEqual(self.flips(), [])
-
-    def test_a_refusal_is_reported_and_does_not_stop_the_tick(self):
-        code, out, _ = self.tick([pr(1, draft=True), pr(2, draft=True)],
-                                 extra={("gh", "pr", "ready", "1"): (1, "", "refused")})
-        self.assertEqual(code, 0)
-        self.assertIn("#1 draft flag not changed: gh pr ready 1: refused\n", out)
-        self.assertIn("#2 ready for review\n", out)
-
-    def test_the_tick_syncs_before_the_lgtm_step_so_an_approved_green_draft_merges_in_one_tick(self):
-        code, out, _ = self.tick([pr(1, draft=True)], {1: [comment()]})
-        self.assertEqual(code, 0)
-        self.assertLess(out.index("#1 ready for review"), out.index("#1 merged on lgtm"))
-        self.assertEqual([c[:2] for c in self.gh_mutations()][0], ["pr", "ready"])
-        self.assertIn(["pr", "merge", "1", "--merge", "--match-head-commit", SHA], self.gh_mutations())
-
-    def test_an_orphaned_tick_runs_neither_step(self):
-        code, out, _ = self.tick([pr(1, draft=True)], {1: [comment()]}, orphaned=True)
-        self.assertEqual(self.gh_mutations(), [])
-        self.assertNotIn("#1 ", out)
-
-    def test_a_draft_whose_lead_went_back_to_work_is_not_merged_even_when_approved(self):
-        code, out, _ = self.merge("1", prs=[pr(1, draft=True)], state="working")
-        self.assertEqual(code, 1)
-        self.assertIn("#1 stopped: task t1 is in phase motion (declared working)", out)
-        self.assertEqual(self.gh_mutations(), [])
 
 
 PENDING = [{"name": "test", "bucket": "pending"}]
