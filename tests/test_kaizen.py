@@ -240,9 +240,10 @@ class TaskTests(FixtureStore):
         self.assertEqual(self.by_slug["a1"]["cost"], {
             "total": 22.0, "unpriced_tokens": 1000000,
             "by_role": {"lead": 10.0, "tech-lead": 0.0, "coder": 3.0, "reviewer": 5.0, "explorer": 2.0, "lander": 1.0, "other": 1.0},
-            "rework": 2.0})
+            "rework": 2.0, "after_review": 3.0})  # the coder's 2 and the lander's 1 after the review; the lead's call came before it
         self.assertEqual(self.by_slug["c1"]["cost"]["total"], 5.0)
         self.assertEqual(self.by_slug["c1"]["cost"]["rework"], 0.0)
+        self.assertIsNone(self.by_slug["c1"]["cost"]["after_review"])  # no review
         self.assertIsNone(self.by_slug["a0"]["cost"])
 
     def test_review_rounds_and_first_pass(self):
@@ -384,6 +385,11 @@ def shapes(d):
     add("pulse_sizes", [x["first_pass"] for x in days]), add("pulse_first_pass", [f for x in days for f in x["first_pass"].values()])
     add("pulse_handover", [x["handover"] for x in days]), add("pulse_p90", [h for x in days for h in list(x["handover"].values())[:3]])
     add("pulse_conflicts", [x["conflicts"] for x in days])
+    f = d["friction"]
+    add("friction", [f]), add("friction_dispatcher", [f["dispatcher"]]), add("friction_rework", [f["rework"]]), add("friction_causes", [f["causes"]])
+    add("friction_refusals", [f["refusals"]]), add("friction_role", f["refusals"]["roles"]), add("friction_wakeups", [f["wakeups"]])
+    add("friction_queue", [f["queue"]]), add("friction_held", f["held"]), add("friction_late", [f["late_conflicts"]])
+    add("friction_late_task", f["late_conflicts"]["tasks"]), add("friction_late_file", f["late_conflicts"]["files"])
     return out
 
 
@@ -1218,7 +1224,7 @@ class CliTests(Store):
         self.assertEqual((t["started"], t["landed"], t["brief_to_pr_s"], t["pr_to_merge_s"], t["review_rounds"], t["first_pass"]),
                          ("2026-01-06T08:59:00Z", True, 1860, 600, 1, True))
         self.assertEqual(t["cost"], {"total": 0.004366, "unpriced_tokens": 14, "rework": 0.0,
-                                     "by_role": {"lead": 0.004227, "tech-lead": 0.0, "coder": 0.0, "reviewer": 0.000133, "explorer": 6e-06,
+                                     "after_review": 0.0, "by_role": {"lead": 0.004227, "tech-lead": 0.0, "coder": 0.0, "reviewer": 0.000133, "explorer": 6e-06,
                                                  "lander": 0.0, "other": 0.0}})
         self.assertEqual(d["prices"], price_file.load(PRICES_PATH).to_dict())
         self.assertEqual(d["summary"]["landed"], 1)
@@ -1279,7 +1285,7 @@ class CliTests(Store):
             _, out, _ = run_cli("kaizen", "--json", *self.args)
         d = json.loads(out)
         self.assertEqual(list(d), ["generated", "factory_dir", "store_found", "prices", "roles", "repos", "versions", "tasks", "summary",
-                                   "stops", "slowed", "rewards", "outbox", "site_manager", "tech_lead", "pulse"])
+                                   "stops", "slowed", "rewards", "outbox", "site_manager", "tech_lead", "pulse", "friction"])
         self.assertEqual(d["site_manager"], SiteManagerTests.EMPTY)
         self.assertEqual(d["tech_lead"], {**TechLeadTests.EMPTY, "landed": 1})
         self.assertEqual(list(d["tasks"][0]), ["repo", "repo_path", "slug", "version", "started", "size", "state", "pr", "landed", "mode",

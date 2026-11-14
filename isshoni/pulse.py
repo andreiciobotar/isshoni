@@ -245,9 +245,9 @@ def _sent_back(queue, since, d, day):
     return len(sent), same
 
 
-def build(factory_dir, tasks, by_task, sessions, prices, now=None, cached=False):
-    """The `pulse` of the document. `tasks`: every task, with its pull request; `by_task`: its records by store.
-    `cached`: the caches only, no git and no gh."""
+def build(factory_dir, tasks, by_task, sessions, prices, queue, now=None, cached=False):
+    """The `pulse` of the document. `tasks`: every task, with its pull request; `by_task`: its records by store;
+    `queue`: `read_queue`'s records. `cached`: the caches only, no git and no gh."""
     today, tz = _zone(now)
     day = lambda ts: ts.astimezone(tz).date()  # noqa: E731
     dates = (today, today - timedelta(days=1))
@@ -257,7 +257,6 @@ def build(factory_dir, tasks, by_task, sessions, prices, now=None, cached=False)
         if at and day(at) in merged:
             merged[day(at)].append((t, at))
 
-    queue = read_queue(factory_dir)
     since = _ts(queue[0]) if queue else None
     queued = {(r.get("repo"), r.get("pr")): r.get("approved_at") for r in queue if r.get("step") == "merged"}
 
