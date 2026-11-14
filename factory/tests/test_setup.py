@@ -488,7 +488,7 @@ class UninstallFlow(Setup):
             self.assertFalse(self.github.called("DELETE", "/app/installations/7654321"))
             self.assertEqual(self.opened, [])
             self.assertTrue((self.store / "identity" / "key.pem").exists())
-            self.assertTrue((self.store / "settings.json").exists())
+            self.assertTrue((self.store / "settings.toml").exists())
 
     def test_list_shows_the_hosts(self):
         self.set_up()

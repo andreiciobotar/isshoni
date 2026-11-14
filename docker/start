@@ -8,14 +8,15 @@ touch "$HOME/.crontab"
 # revive starts the dispatchers recorded in the factory's settings that a restart left out. It runs in the
 # background and skips, with one line, what it cannot do; no settings file is no line.
 revive() {
-	settings="$HOME/.claude/factory/settings.json"
+	settings="$HOME/.claude/factory/settings.toml"
 	[ -r "$settings" ] || return 0
 	running=$(claude agents --json 2>/dev/null) || { echo "dispatchers not restarted: claude cannot list sessions" >&2; return 0; }
 	missing=$(printf '%s' "$running" | python3 -c '
-import json, sys
+import json, sys, tomllib
 try:
     have = {a.get("name") for a in json.load(sys.stdin)}
-    want = json.load(open(sys.argv[1])).get("dispatchers", [])
+    with open(sys.argv[1], "rb") as f:
+        want = tomllib.load(f).get("sessions", {}).get("dispatchers", [])
     print(*[n for n in want if isinstance(n, str) and n not in have], sep="\n")
 except (OSError, ValueError, TypeError, AttributeError):
     sys.exit(1)
