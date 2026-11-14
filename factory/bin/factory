@@ -100,7 +100,7 @@ def validate_slug(slug):
 
 def load_settings():
     settings = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True}
+                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "lean_start": True}
     path = SETTINGS_PATH.expanduser()
     try:
         data = json.loads(path.read_text())
@@ -128,9 +128,30 @@ def load_settings():
     from_author = data.get("lgtm_from_author", settings["lgtm_from_author"])
     if not isinstance(from_author, bool):
         raise Fail("settings: lgtm_from_author must be true or false")
+    lean = data.get("lean_start", settings["lean_start"])
+    if not isinstance(lean, bool):
+        raise Fail("settings: lean_start must be true or false")
     return {"worktree_cap": cap, "lead_model": model, "lead_permission_mode": mode,
             "task_time_limit_hours": hours, "monitor": monitor and os.path.expanduser(monitor),
-            "lgtm_from_author": from_author}
+            "lgtm_from_author": from_author, "lean_start": lean}
+
+
+LEAD_TOOLS = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch,SendMessage,WebFetch,WebSearch,TaskStop,Monitor"
+
+
+def lean_flags():
+    """The flags of a lean start: no MCP servers, no bundled skills, and every installed plugin but the factory off."""
+    rc, out, _ = run(["claude", "plugin", "list", "--json"], timeout=20)
+    try:
+        ids = sorted({e["id"] for e in json.loads(out) if e["id"].partition("@")[0] != "factory"}) if rc == 0 else None
+    except (ValueError, TypeError, KeyError, AttributeError):
+        ids = None
+    settings = {"disableBundledSkills": True}
+    if ids is None:
+        print("factory: claude plugin list gave no plugin list; other plugins stay on", file=sys.stderr)
+    else:
+        settings["enabledPlugins"] = {i: False for i in ids}
+    return ["--strict-mcp-config", "--settings", json.dumps(settings)]
 
 
 def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now):
@@ -142,11 +163,13 @@ def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now):
         f"Your time limit is {settings['task_time_limit_hours']} hours. "
         f"Your brief follows.\n\n{brief}"
     )
+    lean = [*lean_flags(), f"--tools={LEAD_TOOLS}"] if settings["lean_start"] else []
     return [
         "claude", "--bg", "--worktree", slug, "-n", slug,
         "--model", settings["lead_model"],
         "--permission-mode", settings["lead_permission_mode"],
         "--plugin-dir", str(PLUGIN_ROOT),
+        *lean,
         "--append-system-prompt", lead_rules,
         prompt,
     ]
@@ -1779,7 +1802,8 @@ def site_manager_argv(p, firings, job="watch"):
                            "since": last and last["ts"]}, "findings": body}
     prompt = (f"Job: {job}. Repo: {p['repo'].root}. The dispatcher's session name is {p['dispatcher']}.\n\n"
               f"{json.dumps(body, indent=2)}")
-    return ["claude", "-p", "--model", SITE_MANAGER_MODEL, "--permission-mode", "dontAsk",
+    lean = [*lean_flags(), "--disable-slash-commands", "--tools=SendMessage,ToolSearch"] if load_settings()["lean_start"] else []
+    return ["claude", "-p", "--model", SITE_MANAGER_MODEL, "--permission-mode", "dontAsk", *lean,
             "--allowedTools", "SendMessage", "ToolSearch", "--output-format", "json",
             "--json-schema", json.dumps(RUN_SCHEMA), "--append-system-prompt", ROLE_PATH.read_text(), prompt]
 
@@ -3074,8 +3098,9 @@ class Landing:
             "Edit files with the Edit tool; shell commands that write files, and `gh` other than `pr view` and `pr edit`, are denied.",
             f"The golden files this task means to change: {', '.join(task_files) or 'none'}. A generated file on this "
             "list may be regenerated with the repository's documented command; any other golden that changes is a stop."])
+        lean = lean_flags() if load_settings()["lean_start"] else []
         argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", "sonnet",
-                "--permission-mode", "dontAsk", "--allowedTools", *LAND_TOOLS, "--output-format", "json", brief]
+                "--permission-mode", "dontAsk", *lean, "--allowedTools", *LAND_TOOLS, "--output-format", "json", brief]
         rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT)
         try:
             text = json.loads(out).get("result")

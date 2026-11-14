@@ -48,7 +48,7 @@ class FakeRun:
         self.calls = []
         self.inputs = []
 
-    def __call__(self, argv, cwd=None, input=None):
+    def __call__(self, argv, cwd=None, input=None, timeout=None):
         self.calls.append(list(argv))
         self.inputs.append(input)
         best = max((p for p in self.answers if tuple(argv[:len(p)]) == p), key=len, default=None)
@@ -104,11 +104,17 @@ def invoke(argv, answers, settings=None, env=None, tasks=(), cwd=None, events=No
     return code, out.getvalue(), err.getvalue(), fake
 
 
+PLUGINS = [{"id": "zeta@m", "enabled": True}, {"id": "factory@factory", "enabled": True},
+           {"id": "alpha@m", "enabled": False}, {"id": "factory@inline", "enabled": True}]
+LEAN_SETTINGS = {"disableBundledSkills": True, "enabledPlugins": {"alpha@m": False, "zeta@m": False}}
+
+
 def repo_answers(entries, sessions=(), *extras):
     answers = {
         ("git", "worktree", "list"): (0, porcelain((ROOT, "main", False), *entries), ""),
         ("git", "symbolic-ref"): (0, "refs/remotes/origin/main\n", ""),
         ("claude", "agents"): (0, json.dumps(list(sessions)), ""),
+        ("claude", "plugin", "list"): (0, json.dumps(PLUGINS), ""),
     }
     for extra in extras:
         answers.update(extra)
@@ -288,7 +294,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_defaults(self):
         want = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True}
+                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "lean_start": True}
         self.assertEqual(self.load(), want)
         self.assertEqual(self.load("{}"), want)
 
@@ -299,9 +305,10 @@ class SettingsTests(unittest.TestCase):
 
     def test_overrides(self):
         got = self.load('{"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan", '
-                        '"task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": false}')
+                        '"task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": false, "lean_start": false}')
         self.assertEqual(got, {"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan",
-                               "task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": False})
+                               "task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": False,
+                               "lean_start": False})
         self.assertEqual(self.load('{"worktree_cap": 9}')["lead_model"], "fable")
 
     def test_invalid_values_name_the_key(self):
@@ -314,6 +321,7 @@ class SettingsTests(unittest.TestCase):
                           ('{"task_time_limit_hours": "2"}', "task_time_limit_hours"),
                           ('{"task_time_limit_hours": true}', "task_time_limit_hours"),
                           ('{"lgtm_from_author": "no"}', "lgtm_from_author"), ('{"lgtm_from_author": 0}', "lgtm_from_author"),
+                          ('{"lean_start": "yes"}', "lean_start"), ('{"lean_start": 1}', "lean_start"),
                           ('{"monitor": ""}', "monitor"), ('{"monitor": 3}', "monitor"), ('{"monitor": null}', "monitor")):
             with self.assertRaisesRegex(factory.Fail, key):
                 self.load(text)
@@ -335,11 +343,38 @@ class NewTests(unittest.TestCase):
         plugin = str(BIN.resolve().parent.parent)
         lead = (BIN.resolve().parent.parent / "roles" / "lead.md").read_text()
         want = ["claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
-                "--permission-mode", "auto", "--plugin-dir", plugin, "--append-system-prompt", lead,
+                "--permission-mode", "auto", "--plugin-dir", plugin, "--strict-mcp-config",
+                "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}", "--append-system-prompt", lead,
                 "Your task slug is demo-task. The dispatcher's session name is d1. "
                 "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
                 "Your time limit is 2 hours. Your brief follows.\n\ndo it"]
         self.assertEqual(fake.calls[-1], want)
+
+    def test_lean_start_off_launches_the_old_argv_without_listing_plugins(self):
+        _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), '{"lean_start": false}')
+        argv = fake.calls[-1]
+        self.assertEqual(argv[argv.index("--plugin-dir") + 2], "--append-system-prompt")
+        self.assertFalse(any(a.startswith("--tools") or a.startswith("--strict") for a in argv))
+        self.assertFalse(fake.ran("claude", "plugin"))
+
+    def test_a_failing_plugin_list_still_launches_without_enabled_plugins(self):
+        answers = self.answers([], (), self.OK)
+        for listing in ((1, "", "boom"), (0, "not json", ""), (0, '{"a": 1}', ""), (0, "[1]", ""), (124, "", "timed out")):
+            answers[("claude", "plugin", "list")] = listing
+            with self.subTest(listing=listing):
+                code, _, err, fake = invoke(self.ARGS, answers)
+                argv = fake.calls[-1]
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(argv[argv.index("--settings") + 1]), {"disableBundledSkills": True})
+                self.assertIn("plugin list", err)
+                self.assertTrue(argv[-1].endswith("do it"))
+
+    def test_the_lean_settings_never_name_the_factory(self):
+        _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK))
+        argv = fake.calls[-1]
+        off = json.loads(argv[argv.index("--settings") + 1])["enabledPlugins"]
+        self.assertEqual(list(off), ["alpha@m", "zeta@m"])
+        self.assertNotIn("factory", "".join(off))
 
     def test_launch_argv_uses_settings(self):
         settings = '{"lead_model": "opus", "lead_permission_mode": "plan"}'
@@ -1223,6 +1258,8 @@ class EndToEndTests(unittest.TestCase):
 import json, os, sys
 if sys.argv[1:2] == ["agents"]:
     print(os.environ["FAKE_AGENTS"])
+elif sys.argv[1:3] == ["plugin", "list"]:
+    print("[]")
 elif sys.argv[1:2] == ["--bg"]:
     json.dump(sys.argv, open(os.environ["FAKE_ARGV"], "w"))
     print("backgrounded · 96dc4869 · " + sys.argv[sys.argv.index("-n") + 1])
