@@ -199,6 +199,11 @@ func TestHanamiSceneFollowsEvents(t *testing.T) {
 	if len(s.lanterns) != 1 || s.lanterns[0].ci != "running" {
 		t.Fatalf("want the one open pull request's lantern, checks running: %+v", s.lanterns)
 	}
+	s.Apply(ev("merge", 16, func(e *data.Event) { e.PR, e.Repo = 7, "another" }), false) // the same number elsewhere: its own lantern
+	if len(s.lanterns) != 2 || len(s.fire) != 0 {
+		t.Fatal("a merge in another repository burst this repository's lantern")
+	}
+	s.lanterns = s.lanterns[:1]
 	s.Apply(ev("merge", 16, pr(7, "")), false)
 	if len(s.lanterns) != 0 || len(s.fire) == 0 {
 		t.Fatalf("a merge bursts its lantern: %d lanterns, %d sparks", len(s.lanterns), len(s.fire))

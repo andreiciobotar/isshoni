@@ -26,6 +26,7 @@ type Event struct {
 	Role       string    `json:"role"`
 	Tool       string    `json:"tool"`
 	Slug       string    `json:"slug"`
+	Repo       string    `json:"repo"` // of a pull request: its number alone repeats across repositories
 	State      string    `json:"state"`
 	Verdict    string    `json:"verdict"`
 	PR         int       `json:"pr"`

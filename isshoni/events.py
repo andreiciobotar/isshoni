@@ -274,11 +274,12 @@ class Feed:
         n, state = p["number"], p.get("state")
         slug = str(p.get("headRefName") or "").removeprefix("worktree-")
         opened, merged, closed = (transcript.parse_ts(p.get(k)) for k in ("createdAt", "mergedAt", "closedAt"))
-        wanted = [("open", opened, _ev(opened, "pr", pr=n, slug=slug, state="open") if opened else None)]
+        name = os.path.basename(repo.rstrip("/"))  # pull request numbers repeat across repositories
+        wanted = [("open", opened, _ev(opened, "pr", repo=name, pr=n, slug=slug, state="open") if opened else None)]
         if state == "MERGED" and merged:
-            wanted.append(("merge", merged, _ev(merged, "merge", pr=n)))
+            wanted.append(("merge", merged, _ev(merged, "merge", repo=name, pr=n)))
         elif state == "CLOSED" and closed:
-            wanted.append(("closed", closed, _ev(closed, "pr", pr=n, slug=slug, state="closed")))
+            wanted.append(("closed", closed, _ev(closed, "pr", repo=name, pr=n, slug=slug, state="closed")))
         out = []
         for what, ts, ev in wanted:
             if ev and (repo, n, what) not in self.sent and (ts >= self.cutoff or (self.follow and what == "open" and state == "OPEN")):
@@ -287,7 +288,7 @@ class Feed:
         ci = ci_state(p.get("statusCheckRollup")) if self.follow and state == "OPEN" else None
         if ci and self.ci.get((repo, n)) != ci:
             self.ci[(repo, n)] = ci
-            out.append(_ev(self.now(), "ci", pr=n, state=ci))
+            out.append(_ev(self.now(), "ci", repo=name, pr=n, state=ci))
         return out
 
 

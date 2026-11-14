@@ -150,6 +150,7 @@ type hNote struct {
 }
 
 type hLantern struct {
+	key    string // repository and number
 	pr     int
 	slot   int
 	x, y   sv
@@ -310,19 +311,25 @@ func (s *hanamiScene) origin(g hGeo, b *hBranch, agent string) (x, y float64) {
 	return b.point(g, s.t, b.grow.x)
 }
 
+func prKey(e data.Event) string { return e.Repo + "#" + strconv.Itoa(e.PR) }
+
+// lit is the index of the event's pull request's lantern if one hangs and is not going out, else -1.
+func (s *hanamiScene) lit(e data.Event) int {
+	key := prKey(e)
+	return slices.IndexFunc(s.lanterns, func(l *hLantern) bool { return l.key == key && l.gone == 0 })
+}
+
 // lantern is a pull request's lantern, lit if it was not. One that was already open when the viewer arrived
 // (settled) hangs in the sky at once; a new one rises from the disc.
-func (s *hanamiScene) lantern(g hGeo, pr int, settled bool) *hLantern {
-	for _, l := range s.lanterns {
-		if l.pr == pr && l.gone == 0 {
-			return l
-		}
+func (s *hanamiScene) lantern(g hGeo, e data.Event, settled bool) *hLantern {
+	if i := s.lit(e); i >= 0 {
+		return s.lanterns[i]
 	}
 	slot := 0
 	for slices.ContainsFunc(s.lanterns, func(l *hLantern) bool { return l.slot == slot }) {
 		slot++
 	}
-	l := &hLantern{pr: pr, slot: slot}
+	l := &hLantern{key: prKey(e), pr: e.PR, slot: slot}
 	if len(s.lanterns) >= maxLanterns {
 		return l // the sky is full: this one is not hung, and what the caller sets on it is dropped
 	}
@@ -403,20 +410,17 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 	case "pr":
 		switch {
 		case e.State != "closed":
-			s.lantern(g, e.PR, settled)
+			s.lantern(g, e, settled)
+		case s.lit(e) < 0:
 		case settled:
-			s.lanterns = slices.DeleteFunc(s.lanterns, func(l *hLantern) bool { return l.pr == e.PR })
+			s.lanterns = slices.Delete(s.lanterns, s.lit(e), s.lit(e)+1)
 		default: // closed without a merge: it goes out
-			for _, l := range s.lanterns {
-				if l.pr == e.PR && l.gone == 0 {
-					l.gone = hanamiSecond
-				}
-			}
+			s.lanterns[s.lit(e)].gone = hanamiSecond
 		}
 	case "ci":
-		s.lantern(g, e.PR, settled).ci = e.State
+		s.lantern(g, e, settled).ci = e.State
 	case "merge":
-		i := slices.IndexFunc(s.lanterns, func(l *hLantern) bool { return l.pr == e.PR && l.gone == 0 })
+		i := s.lit(e)
 		switch {
 		case settled && i >= 0:
 			s.lanterns = slices.Delete(s.lanterns, i, i+1)
@@ -426,7 +430,7 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 			s.lanterns = slices.Delete(s.lanterns, i, i+1)
 			s.hanabi(g, l.x.x, l.y.x)
 		default:
-			s.lantern(g, e.PR, false).burst = true // rises first, then bursts
+			s.lantern(g, e, false).burst = true // rises first, then bursts
 		}
 	case "question":
 		if slices.ContainsFunc(s.bells, func(b *hBell) bool { return b.slug == e.Slug }) {

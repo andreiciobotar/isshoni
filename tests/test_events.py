@@ -141,6 +141,8 @@ class TestHistory(Env):
             f.write('{"agentType":"coder"}')
         with open(os.path.join(sub, "agent-abc999.jsonl"), "w") as f:  # dispatched at 10:01, still working
             f.write('{"type":"user","timestamp":"2026-11-14T10:01:00.000Z","message":{}}\n')
+        for name in ("agent-abc999.jsonl", "agent-abc999.meta.json"):  # written, like the fixture's files, after the cutoff
+            os.utime(os.path.join(sub, name), (CUTOFF.timestamp() + 7200,) * 2)
         late = at("10:30:00")
         early = lambda **kw: [e["agent"] for e in self.history(cutoff=late, **kw) if e["kind"] == "spawn" and e["ts"] < late]  # noqa: E731
         returned = {e["agent"] for e in self.history() if e["kind"] == "return"}
@@ -151,8 +153,8 @@ class TestHistory(Env):
     def test_a_follower_sees_the_open_pull_request_of_a_repository_quiet_since_before_the_cutoff(self):
         gh = FakeGh({"/r/old": [{**pr(5, "worktree-zero", "OPEN", "09:00:00"), "createdAt": "2026-11-13T09:00:00Z"}]})
         self.assertEqual([e for e in self.history(gh=gh) if e["kind"] == "pr"], [])  # /r/old's only record is from 09:59
-        got = [(e["pr"], e["slug"], e["state"]) for e in self.history(gh=gh, follow=True) if e["kind"] == "pr"]
-        self.assertEqual(got, [(5, "zero", "open")])
+        got = [(e["repo"], e["pr"], e["slug"], e["state"]) for e in self.history(gh=gh, follow=True) if e["kind"] == "pr"]
+        self.assertEqual(got, [("old", 5, "zero", "open")])
 
     def test_watch_ticks_only(self):
         self.assertEqual([e["ts"].strftime("%H:%M:%S") for e in self.of("watch")], ["10:05:00", "10:35:00"])
