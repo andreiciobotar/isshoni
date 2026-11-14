@@ -448,6 +448,15 @@ func TestHanamiSettledEventsDoNotMove(t *testing.T) {
 	if closed != 10 || grown < 8 || len(s.stars) != 1 {
 		t.Fatalf("settled history left %d closed blossoms (%d grown) and %d stars", closed, grown, len(s.stars))
 	}
+	// a session that was working is there at full length, and stays while its last event is recent
+	last := hanamiFixture(t)[len(hanamiFixture(t))-1].TS
+	if len(s.branches) == 0 || s.branches[0].grow.x != 1 {
+		t.Fatal("settled work left no grown branch")
+	}
+	stepFor(s, last, time.Second)
+	if n := len(s.branches); n == 0 {
+		t.Fatal("a branch whose session worked a moment ago withdrew")
+	}
 }
 
 // The history of a long day leaves branches that are already over (their place went to a newer session, or
@@ -466,6 +475,8 @@ func TestHanamiArrivesAsItStands(t *testing.T) {
 		}
 		s.Apply(ev("tool", at(i)+30, who), true)
 	}
+	// and one that dispatched nobody but called a moment ago: bare, and at work
+	s.Apply(ev("tool", at(29)+50, func(e *data.Event) { e.Session, e.Tool = "bare", "shell" }), true)
 	now := goldenNow.Add(time.Duration(at(29)+70) * time.Second)
 	if len(s.branches) <= hanamiSlots {
 		t.Fatalf("the history should leave more branches than places for this test: %d", len(s.branches))
@@ -475,10 +486,15 @@ func TestHanamiArrivesAsItStands(t *testing.T) {
 	if n == 0 || n > hanamiSlots {
 		t.Fatalf("arrived with %d branches", n)
 	}
+	working := false
 	for _, b := range s.branches {
-		if b.leaving || b.grow.x != 1 || len(b.blossoms) == 0 && b.session != "s27" {
+		working = working || b.session == "bare"
+		if b.leaving || b.grow.x != 1 || len(b.blossoms) == 0 && b.session != "bare" {
 			t.Fatalf("branch %s arrives leaving, ungrown or bare", b.session)
 		}
+	}
+	if !working {
+		t.Fatal("arriving removed a session that is at work, because it has no blossom")
 	}
 	for f := 0; f < 3*hanamiFPS; f++ {
 		s.Step(now)
@@ -487,15 +503,6 @@ func TestHanamiArrivesAsItStands(t *testing.T) {
 				t.Fatalf("frame %d: a branch withdraws with no event behind it (%d of %d left)", f, len(s.branches), n)
 			}
 		}
-	}
-	// a session that was working is there at full length, and stays while its last event is recent
-	last := hanamiFixture(t)[len(hanamiFixture(t))-1].TS
-	if len(s.branches) == 0 || s.branches[0].grow.x != 1 {
-		t.Fatal("settled work left no grown branch")
-	}
-	stepFor(s, last, time.Second)
-	if n := len(s.branches); n == 0 {
-		t.Fatal("a branch whose session worked a moment ago withdrew")
 	}
 }
 
