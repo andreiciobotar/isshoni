@@ -300,6 +300,15 @@ class LandTests(unittest.TestCase):
         self.assertIn("nosuchref", p.stderr)
         self.assertNotIn("verdict", p.stdout)
 
+    def test_a_git_that_fails_in_the_overlap_rule_stops_other_and_merges_nothing(self):
+        wt = self.task("t1")
+        self.advance_main(1, "main line", "b.txt")
+        old = self.git("rev-parse", "HEAD", cwd=wt)
+        p = self.land("t1", GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="diff.renames", GIT_CONFIG_VALUE_0="bogus")
+        self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED other`"))
+        self.assertIn("git diff --no-renames --name-status", p.stdout)
+        self.assertEqual((self.remote_head(), self.git("rev-parse", "HEAD", cwd=wt)), (old, old))
+
     def test_a_prose_path_with_non_ascii_letters_is_judged_as_prose(self):
         (self.repo / "docs/café.md").write_text("\n".join(lines()) + "\n")
         self.git("add", ".")

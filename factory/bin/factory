@@ -4185,7 +4185,7 @@ def cmd_land(args):
 
 
 RUN_LINK_RE = re.compile(r"/actions/runs/(\d+)/")
-LOG_LINE_RE = re.compile(r"[^\t]*\t[^\t]*\t﻿?\S+Z (.*)")  # gh's prefix: job, step, timestamp
+LOG_LINE_RE = re.compile(r"[^\t]*\t[^\t]*\t\ufeff?\S+Z (.*)")  # gh's prefix: job, step, timestamp
 FAILED_TEST_RES = (re.compile(r"\s*--- FAIL: (Test[^\s/]+)"), re.compile(r"(?:FAIL|ERROR): (test\w+) \("))
 
 
@@ -4205,12 +4205,16 @@ def rerun_line(repo, n):
     """(whether a re-run started, the line to print after `#n `) for the failed checks of pull request `n`, as
     docs/factory.md defines it. NotEvaluated when GitHub cannot be read."""
     gh = lambda *args: gh_json(repo, *args)
+    git = lambda *args: repo.git("-c", "core.quotePath=false", *args)
     no = lambda why: (False, f"no rerun: {why}")
+    listed = gh(list, "pr", "checks", n, "--json", "name,bucket,link")
+    if any(c.get("bucket") == "pending" for c in listed):
+        return no("checks are still running")
     pr = gh(dict, "pr", "view", n, "--json", "state,headRefName,baseRefName")
     if pr.get("state") != "OPEN":
         return no("the pull request is not open")
     runs = {}  # run id -> names of its failed checks
-    for c in gh(list, "pr", "checks", n, "--json", "name,bucket,link"):
+    for c in listed:
         if c.get("bucket") == "fail":
             link = RUN_LINK_RE.search(str(c.get("link")))
             if not link:
@@ -4219,48 +4223,70 @@ def rerun_line(repo, n):
     if not runs:
         return no("no failed check")
     tests = {}  # run id -> names of its failing tests
-    for run_id, checks in runs.items():
-        tests[run_id] = failing_tests(run(["gh", "run", "view", run_id, "--log-failed"], cwd=repo.root)[1])
+    for run_id, names in runs.items():
+        rc, log, err = run(["gh", "run", "view", run_id, "--log-failed"], cwd=repo.root)
+        if rc != 0:
+            return no(f"gh run view failed: {err.strip() or rc}")
+        tests[run_id] = failing_tests(log)
         if not tests[run_id]:
-            return no(f"no failing test could be named in {', '.join(checks)}'s log")
+            return no(f"no failing test could be named in {', '.join(names)}'s log")
     base, head = pr["baseRefName"], f"{repo.remote}/{pr['headRefName']}"
     if act_git(repo.root, "fetch", repo.remote)[0] != 0:
         return no(f"git fetch {repo.remote} failed")
-    fork = repo.git("merge-base", f"{repo.remote}/{base}", head)[1].strip()
-    changed = repo.git("diff", "--name-only", fork, head)[1].split() if fork else []
+    rc, fork, err = git("merge-base", f"{repo.remote}/{base}", head)
+    if rc != 0:
+        return no(f"git merge-base failed: {err.strip()}")
+    rc, diff, err = git("diff", "--name-only", fork.strip(), head)
+    if rc != 0:
+        return no(f"git diff failed: {err.strip()}")
+    changed = diff.splitlines()
     where, own = {}, []
     for name in sorted({t for names in tests.values() for t in names}):
-        files = [l.partition(":")[2] for l in repo.git("grep", "-l", "-E", rf"func {name}\(|def {name}\(", head)[1].splitlines()]
+        rc, found, err = git("grep", "-l", "-E", rf"func {name}\(|def {name}\(", head)
+        files = [l.partition(":")[2] for l in found.splitlines()]
+        if rc > 1:
+            return no(f"git grep failed: {err.strip()}")
         if not files:
             return no(f"{name} was not found in the branch")
-        where[name] = f"{name} ({files[0]})"
-        if any(os.path.dirname(c) == os.path.dirname(f) for f in files for c in changed):
+        touched = [f for f in files if any(os.path.dirname(c) == os.path.dirname(f) for c in changed)]
+        where[name] = f"{name} ({(touched or files)[0]})"
+        if touched:
             own.append(where[name])
     if own:
         return no(f"{', '.join(own)} is in what the branch changes")
-    tip = repo.git("rev-parse", f"{repo.remote}/{base}")[1].strip()
+    rc, tip, err = repo.git("rev-parse", f"{repo.remote}/{base}")
+    if rc != 0:
+        return no(f"git rev-parse failed: {err.strip()}")
+    tip = tip.strip()
     green = {c["name"] for c in gh(dict, "api", f"repos/{{owner}}/{{repo}}/commits/{tip}/check-runs?per_page=100").get("check_runs", [])
              if c.get("conclusion") == "success"}
     for check in (c for checks in runs.values() for c in checks):
         if check not in green:
             return no(f"{check} is not green on {base}")
     for run_id, names in tests.items():
-        flake = ", ".join(where[t] for t in names)
-        if gh(dict, "run", "view", run_id, "--json", "attempt").get("attempt", 1) > 1:
-            return no(f"already re-run once; looks like a flake: {flake}")
+        attempt = gh(dict, "run", "view", run_id, "--json", "attempt").get("attempt")
+        if not isinstance(attempt, int):
+            return no("gh run view failed: no attempt in its answer")
+        if attempt > 1:
+            return no(f"already re-run once; looks like a flake: {', '.join(where[t] for t in names)}")
+    started, refusal = [], None
     for run_id, names in tests.items():
         rc, out, err = run(["gh", "run", "rerun", run_id, "--failed"], cwd=repo.root)
         if rc != 0:
-            return no(f"the App may not re-run checks; looks like a flake: {', '.join(where[t] for t in names)}. "
-                      f"From your own terminal: gh run rerun {run_id} --failed ({(err or out).strip() or rc})")
-    checks, flake = ", ".join(c for cs in runs.values() for c in cs), ", ".join(where[t] for ts in tests.values() for t in ts)
+            refusal = (f"the App may not re-run checks; looks like a flake: {', '.join(where[t] for t in names)}. "
+                       f"From your own terminal: gh run rerun {run_id} --failed ({(err or out).strip() or rc})")
+            break
+        started.append(run_id)
+    if not started:
+        return no(refusal)
+    checks, flake = ", ".join(c for r in started for c in runs[r]), ", ".join(where[t] for r in started for t in tests[r])
     with tempfile.NamedTemporaryFile("w", suffix=".md") as f:
         f.write(f"Re-ran the failed jobs of {checks} once (by factory rerun): {flake} is outside what this branch changes, "
                 f"and {checks} is green on {base} at {tip[:7]}.")
         f.flush()
         stop = gh_step(repo, "pr", "comment", n, "--body-file", f.name)
     return True, (f"rerun: {checks}: {flake} is outside what the branch changes and {checks} is green on {base}; attempt 2 started"
-                  + (f" ({stop[1]})" if stop else ""))
+                  + (f" ({stop[1]})" if stop else "") + (f"; {refusal}" if refusal else ""))
 
 
 def cmd_rerun(args):
