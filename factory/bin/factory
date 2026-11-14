@@ -272,7 +272,7 @@ class Repo:
         live = [e for e in entries[1:] if not e["prunable"]]
         under = [e for e in live if os.path.dirname(e["path"]) == base]
         self.tasks = [e for e in under if not os.path.basename(e["path"]).startswith("agent-")]
-        self.agents = [e["path"] for e in under if os.path.basename(e["path"]).startswith("agent-")]
+        self.agents = [e for e in under if os.path.basename(e["path"]).startswith("agent-")]
         self.leftover = len(self.agents)
         self.outside = len(live) - len(under)
         rc, out, _ = run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=self.root)
@@ -1132,7 +1132,117 @@ def cmd_clean(args):
             else:
                 print(f"removed {row['slug']}")
                 task_event("TaskRemoved", repo, row["slug"])
+    files = OpenFiles()
+    for agent in repo.agents:
+        clean_agent(repo, agent, sessions, files, args.dry_run)
+    for job in finished_jobs():
+        print(f"kept job {job.name}: belongs to Claude Code; " + job_users(files, os.path.realpath(job), job.name))
+    for stranger in strangers():
+        print(f"kept {stranger}: not a file the factory writes")
     return 1 if failed else 0
+
+
+class OpenFiles:
+    """The table of open files from one `lsof`, asked for once and only when first needed."""
+
+    def __init__(self):
+        self.table = None
+
+    def users(self, path):
+        """([(pid, command)] of the processes with a working directory or an open file in `path`, None), or
+        (None, why that cannot be told). A table with no row is no answer: lsof always lists its own process."""
+        if self.table is None:
+            rc, out, err = run(["lsof", "-w", "-F", "pcn"])
+            rows, pid, command = [], "", ""
+            for line in out.splitlines():
+                if line.startswith("p"):
+                    pid = line[1:]
+                elif line.startswith("c"):
+                    command = line[1:]
+                elif line.startswith("n"):
+                    rows.append((pid, command, line[1:]))
+            self.table = rows, None if rows else f"lsof printed nothing (exit {rc}) {err.strip()}".strip()
+        rows, error = self.table
+        return (None, error) if error else ([(pid, command) for pid, command, name in rows if inside(name, path)], None)
+
+
+def job_users(files, path, job_id):
+    """The end of the line about a finished job directory: who has files open in it, else what to try."""
+    users, error = files.users(path)
+    if error:
+        return f"cannot list open files: {error}"
+    if users:
+        return f"pid {users[0][0]} ({users[0][1]}) has files open in it"
+    return f"no process has files open in it, try: claude rm {job_id}"
+
+
+def merged_into(repo, branch, sha):
+    """(the first of the default base and the live task branches that already holds the content of `sha`, None), or
+    (None, why not). Merging `sha` into it would change nothing: `git merge-tree` exits 0 and names the tree it already has."""
+    error = None
+    for target in [repo.base, *(t["branch"] for t in repo.tasks if t["branch"])]:
+        rc, out, err = repo.git("merge-tree", "--write-tree", target, sha)
+        tree_rc, tree, tree_err = repo.git("rev-parse", f"{target}^{{tree}}")
+        if rc == 0 and tree_rc == 0 and out.split("\n")[0] == tree.strip():
+            return target, None
+        if rc > 1 or tree_rc != 0:
+            error = (err if rc > 1 else tree_err).strip() or f"exit {rc}"
+    if error:
+        return None, f"cannot tell whether {branch} is merged: {error}"
+    return None, f"branch {branch} has work that is in neither {repo.base} nor a live task branch"
+
+
+def agent_verdict(repo, agent, sessions, files):
+    """(None, target, sha) when the agent worktree is dead and its work is in `target` as of the commit `sha`, else
+    (why it stays, None, None). The first failing check decides."""
+    path, branch = agent["path"], agent["branch"]
+    fail = lambda why: (why, None, None)
+    if not older(path):
+        return fail(f"younger than {STALE_HOURS} h")
+    if not branch:
+        return fail("detached HEAD, no branch to judge")
+    if agent["locked"] is not None:
+        why = f" ({agent['locked']})" if agent["locked"] else ""
+        return fail(f"locked{why}; if nothing uses it, run: git worktree unlock {path}")
+    nested = [p for p in repo.worktree_paths if p.startswith(path + os.sep)]
+    if nested:
+        return fail(f"another worktree is registered inside it: {nested[0]}")
+    rc, out, _ = repo.git("status", "--porcelain", path=path)
+    if rc != 0 or out.strip():
+        return fail("cannot read git status" if rc != 0 else "uncommitted changes")
+    rc, sha, err = repo.git("rev-parse", f"refs/heads/{branch}")
+    if rc != 0:
+        return fail(f"cannot tell whether {branch} is merged: {err.strip()}")
+    target, why = merged_into(repo, branch, sha.strip())
+    if why:
+        return fail(why)
+    if mine := sessions_in(sessions, repo.root, path):
+        return fail(f"session {mine[0].get('id') or mine[0].get('sessionId')} works in it")
+    users, error = files.users(path)
+    if error:
+        return fail(f"cannot list open files: {error}")
+    if users:
+        return fail(f"pid {users[0][0]} ({users[0][1]}) uses it")
+    return None, target, sha.strip()
+
+
+def clean_agent(repo, agent, sessions, files, dry_run):
+    """Remove the worktree of a dead subagent and its branch when `agent_verdict` allows, else say why it stays.
+    `git worktree remove` without force refuses a worktree it finds changed; `update-ref -d` with the judged commit
+    deletes the branch only while it still points there."""
+    name = os.path.basename(agent["path"])
+    why, target, sha = agent_verdict(repo, agent, sessions, files)
+    if why:
+        return print(f"kept {name}: {why}")
+    if dry_run:
+        return print(f"would remove {name} (its work is in {target})")
+    rc, _, err = repo.git("worktree", "remove", agent["path"])
+    if rc != 0:
+        return print(f"kept {name}: git worktree remove: {err.strip()}")
+    print(f"removed {name} (its work is in {target})")
+    rc, _, err = repo.git("update-ref", "-d", f"refs/heads/{agent['branch']}", sha)
+    if rc != 0:
+        print(f"kept branch {agent['branch']}: {err.strip()}")
 
 
 def cmd_state(args):
@@ -2176,19 +2286,16 @@ def cmd_health(args):
     return 0
 
 
-def stale_lines(repo):
-    """Leftovers Claude Code does not remove, older than STALE_HOURS: subagent worktrees and finished job directories. Read-only."""
-    limit = time.time() - STALE_HOURS * 3600
-    def older(path):
-        try:
-            return path.stat().st_mtime < limit
-        except OSError:
-            return False
-    lines = []
-    agents = [Path(a) for a in repo.agents if older(Path(a))]
-    if agents:
-        lines.append(f"{len(agents)} subagent worktrees (agent-*) older than {STALE_HOURS} h: "
-                     f"{', '.join(a.name for a in agents[:5])}")
+def older(path):
+    """Whether the directory at `path` was last modified more than STALE_HOURS ago; False when it cannot be read."""
+    try:
+        return os.stat(path).st_mtime < time.time() - STALE_HOURS * 3600
+    except OSError:
+        return False
+
+
+def finished_jobs():
+    """The job directories under ~/.claude/jobs whose state.json says done or stopped and that are older than STALE_HOURS."""
     jobs = []
     for d in sorted(JOBS_DIR.expanduser().glob("*/")):
         try:
@@ -2197,12 +2304,32 @@ def stale_lines(repo):
             continue
         if state in ("done", "stopped") and older(d):
             jobs.append(d)
+    return jobs
+
+
+def strangers():
+    """The entries directly under the store that the factory does not write."""
+    home = STORE.expanduser()
+    return sorted(p for p in home.iterdir() if not (HOME_FILE_RE.fullmatch(p.name) or STORE_WRITTEN_RE.fullmatch(p.name))
+                  ) if home.is_dir() else []
+
+
+def stale_lines(repo):
+    """Leftovers Claude Code does not remove, older than STALE_HOURS: subagent worktrees and finished job directories. Read-only."""
+    lines = []
+    agents = [os.path.basename(a["path"]) for a in repo.agents if older(a["path"])]
+    if agents:
+        lines.append(f"{len(agents)} subagent worktrees (agent-*) older than {STALE_HOURS} h: {', '.join(agents[:5])}")
+    jobs = finished_jobs()
     if jobs:
         size = 0
         for f in (f for d in jobs for f in d.rglob("*")):
             with contextlib.suppress(OSError):
                 size += f.lstat().st_size if f.is_file() else 0
         lines.append(f"{len(jobs)} finished job directories older than {STALE_HOURS} h under ~/.claude/jobs ({size / 1e6:.1f} MB)")
+    if found := strangers():
+        lines.append(f"{len(found)} entries in {STORE.expanduser()} the factory does not write: "
+                     f"{', '.join(p.name for p in found[:5])}")
     return lines
 
 
@@ -3677,6 +3804,11 @@ SOURCE = "andreiciobotar/isshoni"
 # The names the factory writes at the top of its home; uninstall removes these and nothing else there.
 HOME_FILE_RE = re.compile(r"settings\.json|watch\.log|identity|specs|deliverables|dashboard|hosts\.json|\.settings-.*\.tmp"
                           r"|(events|tasks|feedback|firings|retros)(-\d{4}-\d\d)?\.jsonl")
+# The other names the factory writes there, which uninstall leaves: the cache, the courier's notes, the logs
+# written through `log` that HOME_FILE_RE does not list, and the per-repository files of `repo_state` with their
+# temporary files. `strangers` is what matches neither.
+STORE_WRITTEN_RE = re.compile(r"cache|comments|(gh|comments)-\d{4}-\d\d\.jsonl|hosts\.json\.tmp"
+                              r"|(dispatcher|comments|lander)-.+-[0-9a-f]{8}\.json(\.tmp)?|(watch|lander)-.+-[0-9a-f]{8}\.lock")
 Step = collections.namedtuple("Step", "name purpose optional state act recheck", defaults=(False,))
 
 
