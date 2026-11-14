@@ -5,10 +5,11 @@
 [ "$1" = attach ] && [ -n "$2" ] || { echo "stub: want attach NAME" >&2; exit 2; }
 echo "$2" >> "$STUBDIR/attached"
 echo "$$" >> "$STUBDIR/attach-pids"
-stty icrnl # the session's pty is raw (the dashboard's mode); a line client asks for its own
 tty=no
 [ -t 0 ] && tty=yes
-echo "STUB ATTACHED $2 tty=$tty size=$(stty size) term=$TERM colorterm=$COLORTERM"
+opost=no
+stty -a | grep -qE '(^| )opost' && opost=yes
+echo "STUB ATTACHED $2 tty=$tty opost=$opost size=$(stty size) term=$TERM colorterm=$COLORTERM"
 trap 'echo "STUB WINCH $(stty size)"' WINCH
 trap 'touch "$STUBDIR/hup"; exit 0' HUP
 while true; do

@@ -220,7 +220,7 @@ func (s *server) session(sess ssh.Session) {
 	s.o.Log.Printf("session start %s", who)
 	defer s.o.Log.Printf("session end %s", who)
 
-	req, ok := sess.Context().Value(ptyRequest{}).(ssh.Pty)
+	req, ok := sess.Context().Value(ptyRequest{sess}).(ssh.Pty)
 	if !ok {
 		wish.Println(sess, "Requires an active PTY")
 		_ = sess.Exit(1)
@@ -240,7 +240,7 @@ func (s *server) session(sess ssh.Session) {
 	o := tui.Options{Runner: s.o.Runner, Ctx: ctx, Range: s.o.Range, Follow: s.o.Follow, NoColor: s.o.NoColor, ReadOnly: !write}
 	if write {
 		o.Attach = func(name string) tea.ExecCommand {
-			return attachCommand{func() error { return s.attach(sess, req.Term, term.slave.Name(), name) }}
+			return attachCommand{func() error { return s.attach(sess, req.Term, term, name) }}
 		}
 	}
 	envs := append(sess.Environ(), "TERM="+req.Term)
@@ -249,13 +249,8 @@ func (s *server) session(sess ssh.Session) {
 		tea.WithEnvironment(envs), tea.WithColorProfile(colorprofile.Env(envs)),
 		// replaces wish's filter, which turns ctrl+z into a no-op instead of stopping the server's process
 		tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
-			switch msg := msg.(type) {
-			case tea.SuspendMsg:
+			if _, ok := msg.(tea.SuspendMsg); ok {
 				return tea.ResumeMsg{}
-			case tea.WindowSizeMsg:
-				if msg.Width <= 0 || msg.Height <= 0 { // the dashboard cannot lay out in no space
-					return nil
-				}
 			}
 			return msg
 		}))
@@ -267,14 +262,15 @@ func (s *server) session(sess ssh.Session) {
 	p.Kill() // restores the terminal if the dashboard crashed
 }
 
-// ptyRequest is the ssh context key of the session's pty request.
-type ptyRequest struct{}
+// ptyRequest is the ssh context key of one session's pty request: a second channel on the same
+// connection shares the context, not the key.
+type ptyRequest struct{ ssh.Session }
 
 // recordPty is the server's PtyHandler: it keeps the request for the session and allocates
 // nothing, so the library neither emulates a pty (which would turn every \n the session writes
 // into \r\n, under a real terminal's own output processing) nor reads the window changes.
-func recordPty(ctx ssh.Context, _ ssh.Session, pty ssh.Pty) (func() error, error) {
-	ctx.SetValue(ptyRequest{}, pty)
+func recordPty(ctx ssh.Context, sess ssh.Session, pty ssh.Pty) (func() error, error) {
+	ctx.SetValue(ptyRequest{sess}, pty)
 	return func() error { return nil }, nil
 }
 
@@ -285,6 +281,7 @@ func recordPty(ctx ssh.Context, _ ssh.Session, pty ssh.Pty) (func() error, error
 type terminal struct {
 	master *os.File
 	slave  ttyFile
+	cooked *xterm.State  // the slave's modes before MakeRaw: what a line client finds under sshd
 	copied chan struct{} // closed when everything the slave wrote has reached the client
 	stop   chan struct{} // closed by close: the window goroutines end
 	window sync.WaitGroup
@@ -313,12 +310,13 @@ func openTerminal(sess ssh.Session, size ssh.Window) (*terminal, error) {
 		return nil, err
 	}
 	// raw before the copies start, so nothing typed on connect is echoed or eaten by the line discipline
-	if _, err := xterm.MakeRaw(slave.Fd()); err != nil {
+	cooked, err := xterm.MakeRaw(slave.Fd())
+	if err != nil {
 		master.Close()
 		slave.Close()
 		return nil, err
 	}
-	t := &terminal{master: master, slave: ttyFile{slave, slave.Fd()}, copied: make(chan struct{}), stop: make(chan struct{})}
+	t := &terminal{master: master, slave: ttyFile{slave, slave.Fd()}, cooked: cooked, copied: make(chan struct{}), stop: make(chan struct{})}
 	go io.Copy(master, sess) // ends with the connection
 	go func() {
 		defer close(t.copied)
@@ -401,9 +399,9 @@ func (attachCommand) SetStderr(io.Writer) {}
 // exits, so the kernel signals it on every resize. It ends the attach client only: the
 // dispatcher's session belongs to its own supervisor. The client gets a SIGHUP when the
 // connection ends, and a kill 2 seconds later if it stays.
-func (s *server) attach(sess ssh.Session, term, tty, name string) (err error) {
+func (s *server) attach(sess ssh.Session, termType string, term *terminal, name string) (err error) {
 	cmd := exec.CommandContext(sess.Context(), cmp.Or(s.o.Claude, "claude"), "attach", name)
-	cmd.Env = append(os.Environ(), "TERM="+term)
+	cmd.Env = append(os.Environ(), "TERM="+termType)
 	for _, kv := range sess.Environ() {
 		if strings.HasPrefix(kv, "COLORTERM=") {
 			cmd.Env = append(cmd.Env, kv)
@@ -420,11 +418,15 @@ func (s *server) attach(sess ssh.Session, term, tty, name string) (err error) {
 		s.o.Log.Printf("attach end %s", who)
 	}()
 	// its own open file description of the slave, so what exec does to the flags stays with it
-	client, err := os.OpenFile(tty, os.O_RDWR|syscall.O_NOCTTY, 0)
+	client, err := os.OpenFile(term.slave.Name(), os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return err
 	}
 	defer client.Close()
+	// the modes belong to the pty, so this is the dashboard's raw mode too: Bubble Tea sets it again on return
+	if err := xterm.Restore(client.Fd(), term.cooked); err != nil {
+		return err
+	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = client, client, client
 	// Its own session with the pty as controlling terminal, so the kernel signals it on a resize.
 	// macOS revokes the pty when that session's leader exits, which would end the dashboard's

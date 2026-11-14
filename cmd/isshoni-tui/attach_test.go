@@ -71,7 +71,7 @@ func TestAttachGivesTheTerminalToTheDispatcherAndComesBack(t *testing.T) {
 	v := e.view(addr, viewOpts{signer: s, term: "xterm-256color", w: 120, h: 36, env: map[string]string{"COLORTERM": "truecolor", "SECRET": "client-only"}})
 	v.waitFor("zebrafish")
 	v.send("d")
-	v.waitFor("STUB ATTACHED dispatcher-a tty=yes size=36 120 term=xterm-256color colorterm=truecolor")
+	v.waitFor("STUB ATTACHED dispatcher-a tty=yes opost=yes size=36 120 term=xterm-256color colorterm=truecolor")
 	waitFor(t, "the attach start line", func() bool {
 		return strings.Contains(e.logs.String(), "attach start") && strings.Contains(e.logs.String(), "dispatcher-a")
 	})
@@ -124,7 +124,7 @@ func TestAttachFollowsEveryWindowChangeAndTheDashboardComesBackAtTheLastSize(t *
 		t.Fatalf("rules %d and %d do not tell the widths apart", narrowRule, wantRule)
 	}
 	v.send("d")
-	v.waitFor("STUB ATTACHED dispatcher-a tty=yes size=30 100")
+	v.waitFor("STUB ATTACHED dispatcher-a tty=yes opost=yes size=30 100")
 	if err := v.sess.WindowChange(40, 130); err != nil {
 		t.Fatal(err)
 	}
