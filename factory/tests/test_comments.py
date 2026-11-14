@@ -205,6 +205,14 @@ class WatchCommentsTests(Comments):
         self.assertEqual(self.tick([pr(), other]), "")
         self.assertEqual((self.logs(), self.couriers()), ([], []))
 
+    def test_the_pull_request_of_another_machines_task_is_ignored_though_the_store_holds_its_slug(self):
+        with open(self.store / "tasks.jsonl", "a") as f:
+            f.write(json.dumps({"repo": ROOT, "slug": "other", "state": "handed-over"}) + "\n")
+        theirs = lambda *comments: pr(comments=comments, n=2, branch="worktree-other")
+        self.tick([pr(), theirs()])
+        self.assertEqual(self.tick([pr(), theirs(comment("IC_1"))]), "")
+        self.assertEqual((self.logs(), self.couriers()), ([], []))
+
     def test_gh_failure_prints_and_keeps_the_state(self):
         self.prime()
         state = factory.repo_state(self.repo, "comments", "json")
