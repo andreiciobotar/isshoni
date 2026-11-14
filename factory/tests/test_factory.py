@@ -108,9 +108,10 @@ def written():
     return [r for _, path in factory.log_files("tasks") for r in factory.read_file(path)]
 
 
-def invoke(argv, answers, settings=None, env=None, tasks=(), cwd=None, events=None):
+def invoke(argv, answers, settings=None, env=None, tasks=(), cwd=None, events=None, registered=None):
     """`tasks` seeds tasks.jsonl (records, or raw lines); the records written are returned as `fake.tasks`.
-    `events` seeds the events log (records, each in the file of its ts's month); without it there is none."""
+    `events` seeds the events log (records, each in the file of its ts's month); without it there is none.
+    `registered` is the session id registered as the dispatcher of ROOT."""
     fake = FakeRun(answers)
     out, err = io.StringIO(), io.StringIO()
     environ = {"HOME": "", "CLAUDE_CODE_SESSION_ID": "sid-d", **(env or {})}
@@ -121,6 +122,8 @@ def invoke(argv, answers, settings=None, env=None, tasks=(), cwd=None, events=No
             (store / "settings.json").write_text(settings)
         (store / "tasks.jsonl").write_text("".join((t if isinstance(t, str) else json.dumps(t)) + "\n" for t in tasks))
         seeded = written()
+        if registered:
+            factory.repo_state(ROOT, "dispatcher", "json").write_text(json.dumps({"root": ROOT, "session": registered}))
         for e in events or ():
             month = e["ts"][:7] if isinstance(e.get("ts"), str) and e["ts"] else "2026-03"
             with open(store / f"events-{month}.jsonl", "a") as f:
@@ -417,7 +420,8 @@ class NewTests(unittest.TestCase):
         want = ["claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
                 "--permission-mode", "auto", "--plugin-dir", plugin, "--strict-mcp-config",
                 "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}", "--append-system-prompt", lead,
-                "Your task slug is demo-task. The dispatcher's session name is d1. "
+                "Your task slug is demo-task. Before each message to the dispatcher run `factory dispatcher`: "
+                "it prints its current session name (now d1). "
                 "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
                 "Your time limit is 2 hours. Your brief follows.\n\ndo it"]
         self.assertEqual(fake.calls[-1], want)
@@ -430,7 +434,8 @@ class NewTests(unittest.TestCase):
         self.assertEqual(fake.calls[-1], [
             "claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
             "--permission-mode", "auto", "--plugin-dir", plugin, "--append-system-prompt", lead,
-            "Your task slug is demo-task. The dispatcher's session name is d1. "
+            "Your task slug is demo-task. Before each message to the dispatcher run `factory dispatcher`: "
+                "it prints its current session name (now d1). "
             "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
             "Your time limit is 2 hours. Your brief follows.\n\ndo it"])
         self.assertFalse(fake.ran("claude", "plugin"))
@@ -474,7 +479,7 @@ class NewTests(unittest.TestCase):
         args = ["new", "demo-task", "--brief", "x"]
         code, _, err, fake = invoke(args, self.answers([], (), self.OK, dispatcher="dispatcher-repo"))
         self.assertEqual(code, 0, err)
-        self.assertIn("The dispatcher's session name is dispatcher-repo.", fake.calls[-1][-1])
+        self.assertIn("(now dispatcher-repo)", fake.calls[-1][-1])
 
     def test_precondition_errors_exit_2_and_start_nothing(self):
         cases = {
@@ -488,11 +493,11 @@ class NewTests(unittest.TestCase):
             "limit": (self.ARGS, self.answers([task_entry(s) for s in "abcde"], (), self.OK), "at the cap of 5.*a, b, c, d, e"),
             "no repo": (self.ARGS, {("git",): (128, "", "not a repo")}, "not inside a git repository"),
             "agents unlistable": (self.ARGS, self.answers([], (), self.OK, {("claude", "agents"): (1, "", "boom")}), "cannot list sessions"),
-            "wrong dispatcher name": (self.ARGS, self.answers([], (), self.OK, dispatcher="other"), "/rename d1"),
-            "unnamed dispatcher": (self.ARGS, repo_answers([], [{"sessionId": "sid-d"}], self.OK), "/rename d1"),
+            "wrong dispatcher name": (self.ARGS, self.answers([], (), self.OK, dispatcher="other"), "not the dispatcher of /repo"),
+            "unnamed dispatcher": (self.ARGS, repo_answers([], [{"sessionId": "sid-d"}], self.OK), "not the dispatcher of /repo"),
             "caller not listed": (self.ARGS, repo_answers([], [], self.OK), "not listed"),
             "second session with the dispatcher name": (
-                self.ARGS, self.answers([], [{"sessionId": "sid-2", "name": "d1"}], self.OK), "also named 'd1'"),
+                self.ARGS, self.answers([], [{"sessionId": "sid-2", "name": "d1", "cwd": ROOT}], self.OK), "2 sessions named d1"),
             "old merged pull request": (
                 self.ARGS, self.answers([], (), self.OK, {("gh",): (0, '[{"state": "MERGED"}]', "")}),
                 "merged pull request already exists"),
@@ -521,6 +526,22 @@ class NewTests(unittest.TestCase):
         gh = next(c for c in fake.calls if c[0] == "gh")
         self.assertEqual(gh[:6], ["gh", "pr", "list", "--head", "worktree-demo-task", "--state"])
         self.assertEqual(gh[6], "all")
+
+    def test_a_registered_dispatcher_of_any_name_starts_a_task(self):
+        me = {"sessionId": "sid-d", "name": "whatever", "cwd": ROOT, "kind": "interactive", "pid": 7}
+        code, _, err, fake = invoke(["new", "demo-task", "--brief", "x"], repo_answers([], [me], self.OK),
+                                    registered="sid-d")
+        self.assertEqual(code, 0, err)
+        self.assertIn("(now whatever)", fake.calls[-1][-1])
+
+    def test_a_session_that_is_not_the_registered_dispatcher_is_refused(self):
+        me = {"sessionId": "sid-d", "name": "dispatcher-repo", "cwd": ROOT, "kind": "interactive", "pid": 7}
+        boss = {"sessionId": "sid-2", "name": "boss", "cwd": ROOT, "kind": "interactive", "pid": 8}
+        code, _, err, fake = invoke(["new", "demo-task", "--brief", "x"], repo_answers([], [me, boss], self.OK),
+                                    registered="sid-2")
+        self.assertEqual(code, 2)
+        self.assertIn("it is boss", err)
+        self.assertFalse(fake.ran("claude", "--bg"))
 
     def test_dispatcher_session_id_unset_is_refused(self):
         for value in ("", "sid-other"):
@@ -1580,12 +1601,12 @@ print(os.environ["FAKE_PR"])
             last = self.declared()[-1]
             self.assertEqual(last["deliverable"], os.path.realpath(stored))
 
-    def test_default_dispatcher_name_comes_from_the_main_checkout_inside_a_worktree(self):
+    def test_the_dispatcher_is_found_from_the_main_checkout_inside_a_worktree(self):
         self.git("worktree", "add", "-q", "-b", "worktree-first", ".claude/worktrees/first")
         p = subprocess.run([sys.executable, str(BIN), "new", "second-task", "--brief", "x"],
                            cwd=self.repo / ".claude/worktrees/first", env=self.env, capture_output=True, text=True)
         self.assertEqual((p.returncode, p.stderr), (0, ""))
-        self.assertIn("The dispatcher's session name is dispatcher-repo.", json.loads(self.argv_file.read_text())[-1])
+        self.assertIn("(now dispatcher-repo)", json.loads(self.argv_file.read_text())[-1])
 
 
 def listed(**by_branch):

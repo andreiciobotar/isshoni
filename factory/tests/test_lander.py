@@ -29,9 +29,9 @@ class Sim:
         self.prs, self.merged, self.tip, self.log, self.lines, self.cwd_of = {}, [], 0, [], [], {}
 
     def add(self, n, behind=True, base="main", approved=True, draft=False, checks=None, after=None, conflicts=(),
-            update_conflict=(), local=None, diverged=False, mergeable=("MERGEABLE",)):
+            update_conflict=(), local=None, diverged=False, mergeable=("MERGEABLE",), lag=False, stays_behind=False, ahead=False):
         self.prs[n] = {"head": f"h{n}", "base": base, "behind": behind, "approved": approved, "draft": draft,
-                       "local": local, "diverged": diverged, "mergeable": list(mergeable),
+                       "local": local, "diverged": diverged, "lag": lag, "stale": 0, "shown": None, "stays_behind": stays_behind, "ahead": ahead, "mergeable": list(mergeable),
                        "checks": [GREEN] if checks is None else checks, "after": [GREEN] if after is None else after,
                        "conflicts": list(conflicts), "update_conflict": list(update_conflict)}
 
@@ -40,7 +40,9 @@ class Sim:
 
     def listed(self, n):
         p = self.prs[n]
-        return {**pr(n, base=p["base"], draft=p["draft"], sha=p["head"]), "comments": [],
+        head = p["shown"] if p["stale"] else p["head"]
+        p["stale"] = max(0, p["stale"] - 1)
+        return {**pr(n, base=p["base"], draft=p["draft"], sha=head), "comments": [],
                 "latestReviews": [{"state": "APPROVED", "submittedAt": iso(NOW - 60)}] if p["approved"] else []}
 
     def events(self, *kinds):
@@ -110,12 +112,15 @@ class Sim:
             p = self.prs[n]
             if a[:2] == ["git", "log"]:
                 return 0, f"{NOW} {p['local'] or p['head']}\n", ""
+            if a[:3] == ["git", "rev-parse", f"origin/worktree-t{n}"]:
+                return 0, f"{p['head']}\n", ""  # the branch as the remote has it
             if a[:3] == ["git", "rev-parse", "HEAD"]:
                 return 0, f"{p['local'] or p['head']}\n", ""
             if a[:3] == ["git", "merge", "--ff-only"]:
                 if p["diverged"]:
                     return 1, "", "not possible to fast-forward"
-                p["local"] = None
+                if not p["ahead"]:
+                    p["local"] = None
                 self.log.append(("ff", n))
                 return 0, "", ""
             if a[:3] == ["git", "merge", "--no-edit"]:
@@ -127,7 +132,8 @@ class Sim:
                 return 0, "", ""
             if a[:2] == ["git", "push"]:
                 self.log.append(("push", n))
-                p["head"], p["behind"], p["checks"] = f"h{n}.{len(self.pushes())}", False, list(p["after"])
+                p["shown"], p["stale"] = p["head"], 1 if p["lag"] else 0  # GitHub still lists the old head once
+                p["head"], p["behind"], p["checks"] = f"h{n}.{len(self.pushes())}", p["stays_behind"], list(p["after"])
                 return 0, "", ""
         if a[:2] == ["claude", "-p"]:
             self.lines.append(COURIER_LINE.search(a[-1])[1])
@@ -140,9 +146,9 @@ class LoopRun(FakeRun):
         super().__init__(answers)
         self.sim, self.cwd = sim, None
 
-    def __call__(self, argv, cwd=None, timeout=None, input=None, env=None):
+    def __call__(self, argv, cwd=None, input=None, timeout=None, env=None):
         self.cwd = cwd
-        return super().__call__(argv, cwd=cwd, timeout=timeout, input=input, env=env)
+        return super().__call__(argv, cwd, input, timeout, env)
 
     def resolve(self, argv):
         found = self.sim.handle(argv, self.cwd)
@@ -183,6 +189,46 @@ class MergeInOrderTests(Loop):
         self.assertEqual(self.sim.events("push", "merge"), [e for n in range(1, 6) for e in (("push", n), ("merge", n))])
         self.assertEqual([l for l in out.splitlines() if l.startswith("#") and " merged " in l], [f"#{n} merged https://x/pull/{n}" for n in range(1, 6)])
         self.assertEqual(out.count("brought up to date, waiting for its checks"), 5)
+
+    def test_a_stale_listing_after_a_push_keeps_the_pull_request_in_flight_and_starts_no_cascade(self):
+        for n in range(1, 4):
+            self.sim.add(n, lag=True)
+        code, out, _ = self.go("lander")
+        self.assertEqual((code, self.sim.merged), (0, [1, 2, 3]))
+        self.assertEqual(self.sim.events("push", "merge"), [e for n in range(1, 4) for e in (("push", n), ("merge", n))])
+        self.assertEqual(self.stopped(out), [])
+
+    def test_a_push_that_leaves_the_pull_request_behind_ends_with_that_stop_and_no_second_update(self):
+        self.sim.add(1, stays_behind=True)
+        code, out, _ = self.go("lander")
+        self.assertEqual((code, self.sim.pushes(), self.sim.merged), (1, [1], []))
+        self.assertIn("#1 stopped other: still behind after the update (told dispatcher)\n", out)
+
+    def test_a_handed_over_pull_request_in_no_queue_is_sent_back_when_it_conflicts_and_left_alone_otherwise(self):
+        self.sim.add(1, approved=False, conflicts=["a.txt"])
+        self.sim.add(2, approved=False)
+        code, out, _ = self.go("lander")
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped conflict: conflicts with main in a.txt (told lead)\n", out)
+        self.assertEqual(self.sim.events("undo"), [("undo", 1)])
+        self.assertTrue(self.sim.lead_lines()[0].startswith("LANDER: t1: #1 went back to you: it conflicts with main in a.txt."))
+        self.assertEqual([e for e in self.sim.log if e[0] in ("push", "merge", "checks")], [])
+        self.sim.lines.clear()
+        self.go("lander")
+        self.assertEqual(self.sim.lines, [])
+
+    def test_a_stacked_pull_request_in_no_queue_is_not_conflict_checked(self):
+        self.sim.add(1, approved=False, behind=False)
+        self.sim.add(2, approved=False, base="worktree-t1", conflicts=["a.txt"])
+        self.go("lander")
+        self.assertEqual((self.sim.lines, self.sim.events("undo")), ([], []))
+
+    def test_a_stop_is_reported_once_per_number_head_and_kind(self):
+        self.sim.add(1, base="elsewhere", behind=False)
+        self.go("lander")
+        self.go("lander", at=NOW + 120)
+        self.assertEqual(len(self.sim.lines), 1)
+        self.assertTrue(self.sim.lines[0].startswith("LANDER: #1 stopped base:"))
 
     def test_a_red_update_is_sent_back_and_the_next_one_is_updated(self):
         for n in range(1, 6):
@@ -264,6 +310,15 @@ class LevelTests(Loop):
         code, out, _ = self.go("lander")
         self.assertEqual((code, self.sim.merged, self.sim.events("ff", "push")), (0, [1], [("ff", 1)]))
         self.assertEqual(self.stopped(out), [])
+
+    def test_a_worktree_ahead_of_its_remote_is_a_handover_stop_not_lag_and_the_next_one_is_updated(self):
+        self.sim.add(1, behind=False, local="unpushed", ahead=True)
+        self.sim.add(2)
+        code, out, _ = self.go("lander")
+        self.assertEqual(self.sim.pushes(), [2])
+        self.assertEqual(self.sim.merged[0], 2)
+        self.assertEqual(self.lander_json()["waiting"]["1"]["kind"], "handover")
+        self.assertNotIn("pending", out)
 
     def test_a_diverged_worktree_is_a_quiet_handover_stop_and_nothing_is_pushed(self):
         self.sim.add(1, behind=False, local="old", diverged=True)
@@ -419,7 +474,7 @@ class TickTests(Loop):
         self.sim.add(1, behind=False)
         self.go("lander")
         self.assertEqual(sorted(p.name for p in self.store.glob("lander-*")),
-                         sorted(f"lander-repo-{factory.repo_state(SimpleNamespace(root=ROOT), 'lander', 'json').name[-13:-5]}.{e}"
+                         sorted(f"lander-repo-{factory.repo_state(ROOT, 'lander', 'json').name[-13:-5]}.{e}"
                                 for e in ("json", "lock")))
         self.assertEqual(sorted(self.lander_json()), ["health", "stopped", "waiting"])
 

@@ -869,7 +869,7 @@ class SyncDraftTests(World):
             self.seed("tasks", record)
             self.tick([theirs()], tasks=[], checks=FAILED)
             self.assertEqual(self.flips(), [])
-        with self.subTest("the noticing tick"):
+        with self.subTest("the lander loop"):
             self.setUp()
             self.seed("tasks", record)
             approved = {"latestReviews": [{"state": "APPROVED", "submittedAt": iso(NOW - 60)}], "comments": []}

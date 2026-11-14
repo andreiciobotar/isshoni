@@ -55,9 +55,12 @@ elif a[:2] == ["agents", "--json"] and os.path.exists(home + "/agents-broken"):
     print("supervisor unreachable")
     sys.exit(1)
 elif a[:2] == ["agents", "--json"]:
-    print(json.dumps([{"name": n, "kind": "background"} for n in s["agents"]]))
+    cwds = s.get("cwds", {})
+    print(json.dumps([{"name": n, "kind": "background", "status": "busy", "pid": 1, **({"cwd": cwds[n]} if n in cwds else {})}
+                      for n in s["agents"]]))
 elif "--bg" in a:
     s["agents"].append(a[a.index("-n") + 1])
+    s.setdefault("cwds", {})[a[a.index("-n") + 1]] = os.getcwd()
 elif a[:2] == ["plugin", "list"]:
     print(json.dumps([{"id": p} for p in s["plugins"]]))
 elif a[:3] == ["plugin", "marketplace", "list"]:
@@ -67,6 +70,23 @@ elif a[:3] == ["plugin", "marketplace", "add"]:
 elif a[:2] == ["plugin", "install"]:
     s["plugins"].append(a[2])
 json.dump(s, open(path, "w"))
+'''
+
+# Stands in for the factory script in the container: `dispatcher` answers from the agents of the claude stub.
+FACTORY_STUB = r'''#!/usr/bin/env python3
+import json, os, sys
+home = os.environ["HOME"]
+if sys.argv[1:] == ["dispatcher"]:
+    if os.path.exists(home + "/agents-broken"):
+        print("supervisor unreachable")
+        sys.exit(2)
+    agents = json.load(open(home + "/stub-state.json"))["agents"]
+    if os.path.exists(home + "/stub-crash"):
+        sys.exit(1)
+    if "dispatcher-" + os.path.basename(os.getcwd()) in agents:
+        sys.exit(0)
+    print("factory: no dispatcher session", file=sys.stderr)
+    sys.exit(1)
 '''
 
 FAKE_DOCKER = r"""#!/bin/sh
@@ -145,8 +165,9 @@ class HostTests(unittest.TestCase):
         (self.fh / "identity/key.pem").write_text(SECRET_KEY)
         (self.fh / "identity/app.json").write_text(json.dumps({"bot_login": "bot[bot]", "owner": "acme"}))
         for name, text in (("docker/Dockerfile", "FROM scratch\n"), ("docker/compose.yaml", "name: isshoni-factory\n"),
-                           ("docker/start", "#!/bin/sh\n"), ("factory/bin/factory", "#!/bin/sh\n"), ("Makefile", "install:\n")):
+                           ("docker/start", "#!/bin/sh\n"), ("factory/bin/factory", FACTORY_STUB), ("Makefile", "install:\n")):
             (self.repo / name).write_text(text)
+        (self.repo / "factory/bin/factory").chmod(0o755)
         sh(self.repo, "git", "init", "-q")
         self.commit("first")
         self.state = str(self.srv / "state")
@@ -249,6 +270,10 @@ class HostTests(unittest.TestCase):
             self.assertIn("dispatcher-widgets unknown", out)
             self.assertNotIn("missing", out)
             (self.srv / "home/agents-broken").unlink()
+            (self.srv / "home/stub-crash").touch()
+            rc, out, _ = self.run_host("status")
+            self.assertIn("dispatcher-widgets unknown", out)
+            (self.srv / "home/stub-crash").unlink()
         with self.subTest("list needs no network, status follows what runs"):
             n = len(self.calls())
             self.assertEqual(self.run_host("list"), (0, "nas  nas  %s  acme/widgets  factory\n" % self.state, ""))
