@@ -739,6 +739,7 @@ class StatusTests(unittest.TestCase):
             "waiting on the human: handed /out/video.mp4", "waiting on the human: pr-only http://pr/7"])
 
     def test_a_draft_pull_request_in_review_waits_on_checks_and_is_flagged(self):
+        self.assertIn("isDraft", factory.STATUS_PR_FIELDS.split(","))  # the fake gh answers whatever is asked
         for draft, line in ((True, "waiting on checks: handed http://pr/7"), (False, "waiting on the human: handed http://pr/7")):
             with self.subTest(draft=draft):
                 pr = [{"state": "OPEN", "url": "http://pr/7", "headRefOid": "sha-x", "isDraft": draft}]

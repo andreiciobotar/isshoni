@@ -370,7 +370,7 @@ Failure. When an identity applies (installed, and this repository on GitHub unde
 
 Checked with a real App, read-only: a token minted for one repository reaches that repository only although the installation covered all (another repository of the owner answers 404); `gh pr view --json statusCheckRollup,reviews`, `gh pr list`, `gh pr checks`, `gh run list`, the `collaborators/<login>/permission` and `activity` reads, and GraphQL `viewer` (the bot) all answer; the credential helper authenticates `git push --dry-run`.
 
-Not yet proven, the first real task will show: `gh pr create`, `gh pr edit --base`, `gh pr ready` and `gh pr merge --match-head-commit` as the App; a real push and the bot showing as author on GitHub; that the lander's later push of an already pushed head succeeds; branch protection that restricts who may push or merge (the App must be allowed there).
+Proven as the App: `gh pr create`, `gh pr ready` and `gh pr ready --undo` (both exit 0 when the flag already has that value). Not yet proven, the first real task will show: `gh pr edit --base` and `gh pr merge --match-head-commit` as the App; a real push and the bot showing as author on GitHub; that the lander's later push of an already pushed head succeeds; branch protection that restricts who may push or merge (the App must be allowed there).
 
 Undo: `factory uninstall` uninstalls the App and removes `identity/`; you delete the App itself (`https://github.com/settings/apps/<slug>/advanced`, or `https://github.com/organizations/<owner>/settings/apps/<slug>/advanced`; no API deletes an App).
 
