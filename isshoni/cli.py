@@ -267,6 +267,19 @@ def cmd_agents(args):
     return 0
 
 
+def _pulse_lines(pulse, cur):
+    """The pulse's four figures, one line each: today and yesterday, each with the number of pull requests behind it."""
+    dur = lambda p: fmt_duration(p["p90_s"] * 1000)  # noqa: E731
+    first_pass = lambda d: tuple(sum(f[k] for f in d["first_pass"].values()) for k in ("yes", "of"))  # noqa: E731
+    figures = (
+        ("all-in cost per merged PR", lambda d: (d["cost"]["per_merged"] is not None and money(d["cost"]["per_merged"], cur, d["cost"]["unpriced_tokens"]), d["merged"])),
+        ("first pass", lambda d: (first_pass(d)[1] and "%d%%" % round(100 * first_pass(d)[0] / first_pass(d)[1]), first_pass(d)[1])),
+        ("hand-over to merge p90", lambda d: (d["handover"]["to_merge"]["p90_s"] is not None and dur(d["handover"]["to_merge"]), d["handover"]["to_merge"]["n"])),
+        ("conflicted base merges per merged PR", lambda d: (d["conflicts"]["per_merged"] is not None and "%.2f" % d["conflicts"]["per_merged"], d["conflicts"]["prs"])))
+    return ["%s: %s" % (label, ", ".join("%s %s (n=%d)" % (day, shown or "-", n) for day in ("today", "yesterday") for shown, n in [f(pulse[day])]))
+            for label, f in figures]
+
+
 def cmd_kaizen(args):
     from . import kaizen  # kaizen imports this module's formatters
 
@@ -286,6 +299,8 @@ def cmd_kaizen(args):
         med("cost", lambda v: money(v, cur)), med("brief_to_pr_s", lambda v: fmt_duration(v * 1000)),
         med("pr_to_merge_s", lambda v: fmt_duration(v * 1000)), med("review_rounds", lambda v: "%g" % v),
         s["first_pass"]["yes"], s["first_pass"]["of"]))
+    for line in _pulse_lines(doc["pulse"], cur):
+        print(line)
     for r in doc["repos"]:
         if r["prs"] != "ok":
             print("pull requests unavailable for %s: %s" % (r["repo"], r["prs"]))
