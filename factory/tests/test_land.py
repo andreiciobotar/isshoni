@@ -86,7 +86,6 @@ def load_factory():
 
 
 FACTORY = load_factory()
-LOOK_NOTE = FACTORY.LOOK_NOTE
 
 
 def lines(n=30):
@@ -224,50 +223,10 @@ class LandTests(unittest.TestCase):
         p = self.land("t1")
         self.assertEqual((p.returncode, self.result(p)), (1, "`LANDED, LOOK https://x/pull/t1`"))
         self.assertEqual(self.remote_head(), self.git("rev-parse", "HEAD", cwd=wt))
-        self.assertIn("overlap: a.txt (code)", p.stdout)
-        needs = p.stdout.partition("## Needs the lead\n")[2]
-        self.assertTrue(needs.startswith("a.txt: code\nthe base changed:\ndiff --git"), needs)
-        self.assertIn("+main line", needs)
-        self.assertIn("the task changed:\ndiff --git", needs)
-        self.assertIn("+task line", needs)
-        self.assertTrue(needs.endswith(LOOK_NOTE.format(url="https://x/pull/t1") + "\n"), needs)
+        self.assertIn("overlap: a.txt", p.stdout)
+        self.assertIn("the base changed files the task also changes: a.txt", p.stdout)
         self.assertEqual(self.last_state(), "working")
         self.assertIn("Result: LANDED, LOOK (the lead has been asked to look).", self.gh_calls()[0]["body"])
-
-    def test_far_apart_edits_in_prose_land_without_a_look(self):
-        self.task("t1", line=20, name="README.md")
-        self.advance_main(2, "main line", "README.md")
-        p = self.land("t1")
-        self.assertEqual((p.returncode, self.result(p)), (0, "`LANDED https://x/pull/t1`"))
-        fact = "overlap: README.md (prose, 17 lines apart, not looked at)"
-        self.assertIn(fact, p.stdout)
-        self.assertIn("## Needs the lead\nnone", p.stdout)
-        self.assertEqual(self.last_state(), "handed-over")
-        (comment,) = self.gh_calls()
-        self.assertIn("Overlap with the base: README.md (prose, 17 lines apart, not looked at).", comment["body"])
-        self.assertIn("Result: LANDED.", comment["body"])
-
-    def test_near_edits_in_prose_land_with_a_look(self):
-        self.task("t1", line=4, name="docs/a.md")
-        self.advance_main(2, "main line", "docs/a.md")
-        p = self.land("t1")
-        self.assertEqual((p.returncode, self.result(p)), (1, "`LANDED, LOOK https://x/pull/t1`"))
-        needs = p.stdout.partition("## Needs the lead\n")[2]
-        self.assertTrue(needs.startswith("docs/a.md: prose, 1 lines apart\nthe base changed:\n"), needs)
-        self.assertIn("+main line", needs)
-        self.assertIn("the task changed:", needs)
-        self.assertIn("+task line", needs)
-        self.assertEqual(self.last_state(), "working")
-
-    def test_a_prose_file_renamed_on_the_base_and_edited_by_the_task_is_a_look(self):
-        self.task("t1", line=20, name="docs/a.md")
-        self.git("pull", "-q", "--ff-only", cwd=self.other)
-        self.git("mv", "docs/a.md", "docs/b.md", cwd=self.other)
-        self.git("commit", "-q", "-m", "rename", cwd=self.other)
-        self.git("push", "-q", "origin", "main", cwd=self.other)
-        p = self.land("t1")
-        self.assertEqual((p.returncode, self.result(p)), (1, "`LANDED, LOOK https://x/pull/t1`"))
-        self.assertIn("docs/a.md: added, deleted or renamed on one side", p.stdout)
 
     def test_overlap_prints_none_safe_and_look(self):
         wt = self.task("t1", line=20, name="README.md")
@@ -300,25 +259,58 @@ class LandTests(unittest.TestCase):
         self.assertIn("nosuchref", p.stderr)
         self.assertNotIn("verdict", p.stdout)
 
-    def test_a_git_that_fails_in_the_overlap_rule_stops_other_and_merges_nothing(self):
-        wt = self.task("t1")
-        self.advance_main(1, "main line", "b.txt")
-        old = self.git("rev-parse", "HEAD", cwd=wt)
-        p = self.land("t1", GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="diff.renames", GIT_CONFIG_VALUE_0="bogus")
-        self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED other`"))
-        self.assertIn("git diff --no-renames --name-status", p.stdout)
-        self.assertEqual((self.remote_head(), self.git("rev-parse", "HEAD", cwd=wt)), (old, old))
+    def overlap(self, wt, base=None):
+        """`factory overlap` of the task's head against origin/main, run in the task worktree."""
+        self.git("fetch", "-q", "origin", cwd=wt)
+        base = base or self.git("merge-base", "HEAD", "origin/main", cwd=wt)
+        return self.factory("overlap", base, self.git("rev-parse", "HEAD", cwd=wt), "origin/main", cwd=wt)
+
+    def test_overlap_far_apart_in_prose_is_safe(self):
+        wt = self.task("t1", line=20, name="README.md")
+        self.advance_main(2, "main line", "README.md")
+        p = self.overlap(wt)
+        self.assertEqual(p.stdout, "overlap: README.md (prose, 17 lines apart, not looked at)\nverdict: safe\n")
+
+    def test_overlap_far_apart_in_code_is_a_look(self):
+        wt = self.task("t1", line=20)
+        self.advance_main(2, "main line")
+        p = self.overlap(wt)
+        self.assertEqual(p.stdout.splitlines()[:3], ["overlap: a.txt (code)", "verdict: look", "a.txt: code"])
+        self.assertIn("+main line", p.stdout)
+        self.assertIn("+task line", p.stdout)
+
+    def test_overlap_near_in_prose_is_a_look(self):
+        wt = self.task("t1", line=4, name="docs/a.md")
+        self.advance_main(2, "main line", "docs/a.md")
+        p = self.overlap(wt)
+        self.assertEqual(p.stdout.splitlines()[:3],
+                         ["overlap: docs/a.md (prose, 1 lines apart)", "verdict: look", "docs/a.md: prose, 1 lines apart"])
+
+    def test_overlap_of_the_same_line_in_prose_is_a_look_0_lines_apart(self):
+        wt = self.task("t1", line=5, name="README.md")
+        self.advance_main(5, "main line", "README.md")
+        p = self.overlap(wt)
+        self.assertEqual(p.stdout.splitlines()[:2], ["overlap: README.md (prose, 0 lines apart)", "verdict: look"])
+
+    def test_overlap_of_a_prose_file_renamed_on_one_side_is_a_look(self):
+        wt = self.task("t1", line=20, name="docs/a.md")
+        self.git("pull", "-q", "--ff-only", cwd=self.other)
+        self.git("mv", "docs/a.md", "docs/b.md", cwd=self.other)
+        self.git("commit", "-q", "-m", "rename", cwd=self.other)
+        self.git("push", "-q", "origin", "main", cwd=self.other)
+        p = self.overlap(wt)
+        self.assertEqual(p.stdout.splitlines()[:3], ["overlap: docs/a.md (added, deleted or renamed on one side)",
+                                                     "verdict: look", "docs/a.md: added, deleted or renamed on one side"])
 
     def test_a_prose_path_with_non_ascii_letters_is_judged_as_prose(self):
         (self.repo / "docs/café.md").write_text("\n".join(lines()) + "\n")
         self.git("add", ".")
         self.git("commit", "-q", "-m", "add café")
         self.git("push", "-q", "origin", "main")
-        self.task("t1", line=20, name="docs/café.md")
+        wt = self.task("t1", line=20, name="docs/café.md")
         self.advance_main(2, "main line", "docs/café.md")
-        p = self.land("t1")
-        self.assertEqual((p.returncode, self.result(p)), (0, "`LANDED https://x/pull/t1`"))
-        self.assertIn("overlap: docs/café.md (prose, 17 lines apart, not looked at)", p.stdout)
+        p = self.overlap(wt)
+        self.assertEqual(p.stdout, "overlap: docs/café.md (prose, 17 lines apart, not looked at)\nverdict: safe\n")
 
     def test_a_long_diff_is_cut_with_the_count_of_the_rest(self):
         wt = self.task("t1", line=20)
@@ -387,7 +379,6 @@ class LandTests(unittest.TestCase):
         self.assertNotEqual(self.remote_head(), old)
         self.assertIn("- conflicts: a.txt - merged by hand", p.stdout)
         self.assertIn(f"the conflict resolution: `git show --remerge-diff {self.remote_head()}`", p.stdout)
-        self.assertTrue(p.stdout.endswith(LOOK_NOTE.format(url="https://x/pull/t1") + "\n"), p.stdout)
         self.assertNotIn("Factory feedback", p.stdout)
         self.assertNotIn("the brief was fine", p.stdout)
         self.assertEqual(self.last_state(), "working")

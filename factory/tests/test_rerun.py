@@ -147,6 +147,12 @@ class Stops(Rerun):
     def test_a_failing_diff_is_no_evidence(self):
         self.assertNoRerun(self.rerun({(*Q, "diff", "--name-only"): (128, "", "boom")}), "git diff failed: boom")
 
+    def test_a_git_grep_that_errors_is_not_a_missing_test(self):
+        self.assertNoRerun(self.rerun({(*Q, "grep"): (2, "", "")}), "git grep failed: 2")
+
+    def test_a_failing_rev_parse_is_no_evidence(self):
+        self.assertNoRerun(self.rerun({("git", "rev-parse", "origin/main"): (128, "", "")}), "git rev-parse failed: 128")
+
     def test_a_failing_log_read_is_not_a_missing_test_name(self):
         self.assertNoRerun(self.rerun({("gh", "run", "view", RUN, "--log-failed"): (1, "", "boom")}), "gh run view failed: boom")
 
@@ -192,6 +198,9 @@ class Cli(unittest.TestCase):
 class LogFormats(unittest.TestCase):
     def test_go(self):
         self.assertEqual(factory.failing_tests(GO_LOG), ["TestAttachFollows"])
+
+    def test_a_fail_line_that_is_the_first_of_the_log_carries_the_bom(self):
+        self.assertEqual(factory.failing_tests("test\tRun go test\t﻿2026-11-14T16:27:48.8671256Z --- FAIL: TestFirst (1s)\n"), ["TestFirst"])
 
     def test_a_go_subtest_names_its_parent(self):
         self.assertEqual(factory.failing_tests(f"{PREFIX}    --- FAIL: TestA/sub_1 (0.00s)\n{PREFIX}--- FAIL: TestA (0.00s)\n"), ["TestA"])
