@@ -1,24 +1,24 @@
  Isshoni 1 Dash 2 Agents 3 Factory 4 Kaizen [5 ✿]       24h [7d] 30d all ○ idle 
  Hanami 花見  replay ×3 · Nov 14 10:03 UTC                                      
-                                    ⢀⣀     ⠒⠒ ⢀                                 
-                          ⢀•        ⣿◉⡇ ⠄                                       
-                        ⢀⡴⠋         •⠛⡡⠔⠂   ⣀⢀⠊⠁⠁                               
- ╭─ legend ──────────────────────────────────────────────────────────────────╮  
- │ ◯       the disc: all the work. Its rim swells with the rate of events    │  
- │ ─•      a branch: one session at work. Its tip glows at each tool call    │  
- │ ✿❀✾✽    a blossom: an agent (coder, reviewer, explorer, other)            │  
- │ ⠶       petals: an agent returns to the disc. Turned back: changes needed │  
- │ ⠐⠂      wind: cache reads (faint). Bright streaks: output tokens          │  
- │ ●○◆■▲◇  notes: shell, read, edit, write, dispatch, message                │ ⡀
- │ ◉       a lantern: an open pull request. Flicker, green, red: its checks  │  
- │ ⠿*      hanabi: a merge                                                   │  
- │ ✦       a bell: a question waiting for the human                          │  
- │ ◌       a ripple from the disc: the site manager's tick                   │  
- │         colour: the agent's role, on blossoms, notes, streaks and petals  │  
- │         ambient, not data: the breath, the sway, the slowest breeze       │  
- ╰───────────────────────────────────────────────────────────────────────────╯  
- ■ ─────────■───────────────────────■────────────────────────────────────────╴  
- ◆ ◆───────────────────────────────◆────────────────────◆────────────────────╴  
- ○ ───○────────────────────────────○─────○────────────○────○─────────────────╴  
- ● ─●──────────●───────────●─●─────●────●───●────────●●───●──────────────────╴  
+            ⢀ ⡀⢰⠉⡇  ⢀ ⡀⢸ ⠇   ⢀  ⣈⡀  ⡀      ⡠⠊⡑✿⠋⡉                               
+            ⠈⠠⠠⠞✾⡔⠒⢲•⠠⢠⡎❀⣎⣉⠹   ⣼◉⣿⡄ ⢀      ⠑⠊ ⠈⡯⣍⣠⠤⠔•               ⠠⠤⠄         
+╭─ legend ─────────────────────────────────────────────────────────────────────╮
+│ ●       the disc: all the work. It swells and brightens with the rate of ev… │
+│ ─•      a branch: one session. Its tip glows at each call; at rest it dims   │
+│ ✿❀✾✽    a blossom: an agent (coder, reviewer, explorer, other), as large as… │
+│ ⠶       petals: it returns to the disc and its blossom closes to an outline… │
+│ ⠶       petals turned back in red, with a red ring: a reviewer asked for ch… │
+│ ⠐⠂      wind: cache reads. Bright streaks off an agent: output tokens        │
+│ ●○◆■▲◇  notes: shell, read, edit, write, dispatch, message. Each sounds unt… │
+│ ━▃      agent's next call (12 s at most); the bars at the right: calls per … │
+│ ◉       a lantern: an open pull request. Flicker, green, red: its checks     │
+│ *✶      hanabi: a merge lights the stage, and leaves a star for 6 h          │
+│ ✦       a ringed star above the disc: a question waiting for the human       │
+│ ◌       a ripple from the disc: the site manager's tick                      │
+│         colour: the agent's role, on blossoms, notes, streaks and petals     │
+│         ambient, not data: the breath, the sway, the slowest breeze          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ ◆ ━━━━━━━━━━━━━━━━━━━━━━━━━──────◆────────────────────◆━━━━━━━━━━━━━━━━━━━┃    
+ ○ ──○━━━━────────────────────────○━━━━━━○━━━━━━━━━━━○━━━━○━━━━━━━━━━━━━━━━┃    
+ ● ●━━━━━━━───●━━━━━━━━━━━━●●━━━━━●━━━━●━━━●━━━━━━━━●●━━━●━━━━━━━━━━━━━━━━━┃    
  l legend  ·  z full screen  ·  p replay 24h · live  ·  ? help  ·  q quit       

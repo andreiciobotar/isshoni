@@ -7,7 +7,7 @@ BG='#12111C'
 
 def one_cell(c):
     # characters the fallback font draws wider than one cell: braille, block elements and the scene's glyphs
-    return '⠀'<=c<='⣿' or '▀'<=c<='▟' or c in '✿❀✾✽∘•◉✦◇◆○●■▲'
+    return '⠀'<=c<='⣿' or '▀'<=c<='▟' or c in '✿❀✾✽∘•◉✦✶◇◆○●■▲'
 
 def cell(c):
     # pinned to a fixed box so the line keeps one height and the next cell starts where the grid says
@@ -29,7 +29,11 @@ def to_html(data):
         if st.get('f'): css.append('opacity:.6')
         if st.get('i'): css.append('font-style:italic')
         if st.get('u'): css.append('text-decoration:underline')
-        out.append('<span style="%s">%s</span>'%(';'.join(css),''.join(cell(c) for c in t)))
+        if 'bg' in st:  # a background fills its whole cell row, not just the font's box: no seams between lines
+            css.append('display:inline-block;vertical-align:top;height:%dpx'%LINE_PX)
+        # one span per line, so a block-level span never holds a line break
+        out.append('\n'.join('<span style="%s">%s</span>'%(';'.join(css),''.join(cell(c) for c in part)) if part else ''
+                             for part in t.split('\n')))
     pos=0
     for m in re.finditer(r'\x1b\[([0-9;]*)m',data):
         span(data[pos:m.start()]); pos=m.end()

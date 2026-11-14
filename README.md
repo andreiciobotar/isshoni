@@ -78,26 +78,28 @@ make up         # run it; ? shows the keys
 
 ### Hanami (花見), the work as something to watch
 
-The fifth view (`5`) draws the same work as motion, for a second screen. Nothing in it is decoration posing as data: every moving thing is one event from `isshoni events`, and `l` shows the legend.
+The fifth view (`5`) draws the same work as motion, for a second screen: the mark come alive. Nothing in it is decoration posing as data: every moving thing is one event from `isshoni events`, and `l` shows the legend.
 
 | you see | it is |
 |---|---|
-| the disc, its rim swelling | all the work; the rate of events |
-| a branch growing out of the disc, its tip glowing | a session, while it works (it withdraws after 3 minutes of silence); a tool call |
-| a blossom opening on a branch (`✿` coder, `❀` reviewer, `✾` explorer, `✽` other, in the role's colour) | a subagent dispatched |
-| petals flying to the disc; turned back at the disc in red, with a red ring | a subagent returned; a reviewer asked for changes |
-| faint wind; bright streaks off an agent | cache reads; output tokens |
-| notes on the staff (`●` shell, `○` read, `◆` edit, `■` write, `▲` dispatch, `◇` message, `·` anything else) | tool calls, in the caller's colour, newest at the right |
+| the disc, a solid body that swells, brightens and takes a returning agent's colour | all the work; the rate of events; a return |
+| a branch growing out of the disc, its tip glowing; dimmer | a session; a call; at rest (3 minutes of silence) |
+| a blossom opening on a branch (`✿` coder, `❀` reviewer, `✾` explorer, `✽` other, in the role's colour), growing | a subagent dispatched; its work so far (tool calls, output tokens) |
+| petals flying to the disc, the blossom closing to an outline | a subagent returned; what it did stays on the tree for 2 hours |
+| petals turned back at the disc in red, with a red ring | a reviewer asked for changes |
+| wind in two layers; bright streaks off an agent | cache reads; output tokens |
+| notes on the staff (`●` shell, `○` read, `◆` edit, `■` write, `▲` dispatch, `◇` message, `·` anything else), each with a tail | a tool call, in the caller's colour; the tail lasts until that agent's next call, 12 seconds at most |
+| the bars at the right of the staff | calls per second on that voice |
 | a lantern rising to the sky; flickering; green; red; going out | an open pull request; checks running; passed; failed; closed without a merge |
-| a firework where a lantern was | a merge |
+| a firework that lights the whole stage, then a star `✶` where the lantern was | a merge; the star stays 6 hours |
 | a ripple, then a still ringed star above the disc | a task asked you a question; the star stays until it is answered |
 | a ripple from the disc across the field | the site manager's tick |
 
-Ambient, and not data: the disc's slow breath, the sway of branches and lanterns, the slowest breeze. With nothing running, that is all there is.
+Ambient, and not data: the disc's slow breath, the sway of lanterns, the slowest breeze. With nothing running, that is all there is: quiet looks quiet, and the tree at four in the afternoon looks like the afternoon's work.
 
-Colour is always the agent's role, as everywhere in the dashboard. Keys: `l` legend, `z` hides the header and footer, `p` replays the last 24 hours (again: back to live). A replay runs at a minute a second and skips stretches where nothing happened, so a day takes as many seconds as it had busy minutes; its clock is in the sub-header, and its rates (the disc, the wind) are per event second, so they read as they would have live. Below 110 columns the tab is a blossom, `5 ✿`.
+Colour is always the agent's role, as everywhere in the dashboard. Keys: `l` legend, `z` hides the header and footer, `p` replays the last 24 hours (again: back to live). A replay runs at a minute a second and skips stretches where nothing happened, so a day takes as many seconds as it had busy minutes; its clock is in the sub-header, and its rates (the disc, the wind, the bars) are per event second, so they read as they would have live. Below 110 columns the tab is a blossom, `5 ✿`.
 
-It runs at 30 frames a second (springs need about that to look like springs; measured on a 140x40 terminal it takes 6 to 9% of one core, idle or busy) and only while it is shown: the view starts `isshoni events --follow` when you open it and stops it when you leave. What had happened before you opened it sets the scene without animation: the last 30 minutes of sessions and agents, every open pull request and every unanswered question. An agent whose transcript was last written more than 30 minutes earlier and that is still running has no blossom until it next writes. Pull requests come from `gh`, polled once a minute, so a lantern or a firework can be up to a minute late; check states are known live only, so a replay's lanterns do not flicker. Without colour (`--no-color`) shapes and motion carry it; a terminal without truecolor gets the nearest colours it has.
+It runs at 20 frames a second and only while it is shown: the view starts `isshoni events --follow` when you open it and stops it when you leave. Measured on a 140x40 terminal it takes 10 to 15% of one core (the glow is a background colour per cell, which the terminal layer pays for; the scene itself draws in a millisecond), plus about 1% for the event stream. What had happened before you opened it sets the scene without animation: the last 2 hours of sessions and agents, every open pull request and every unanswered question. An agent whose transcript was last written more than 2 hours earlier and that is still running has no blossom until it next writes. Pull requests come from `gh`, polled once a minute, so a lantern or a firework can be up to a minute late; check states are known live only, so a replay's lanterns do not flicker. Without colour (`--no-color`) there is no glow: shapes and motion carry it; a terminal without truecolor gets the nearest colours it has.
 
 ```sh
 bin/isshoni-tui --replay events.jsonl              # replay a recording (python3 -m isshoni events --since 24h > events.jsonl), looping

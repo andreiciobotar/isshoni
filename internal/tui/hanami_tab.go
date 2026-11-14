@@ -16,7 +16,7 @@ import (
 // (the stream's process exists only then), or from recorded events in a replay.
 
 const (
-	hanamiFollowSince = "30m"           // history the stream starts with: what exists when the viewer arrives
+	hanamiFollowSince = "2h"            // history the stream starts with: what exists when the viewer arrives
 	hanamiReplaySpeed = 60.0            // a minute a second: an agent of five minutes blooms for five seconds
 	hanamiReplayGap   = 3 * time.Second // the longest a replay shows nothing happening
 	hanamiReplayRest  = 3 * time.Second // pause at the end of a replay before it starts over

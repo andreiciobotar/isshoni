@@ -148,10 +148,29 @@ func TestHanamiSceneFollowsEvents(t *testing.T) {
 		t.Fatalf("the branch did not grow: %.2f", g)
 	}
 
+	// a blossom is as large as its agent's work
+	small := s.branches[0].blossoms[0].size.x
+	for i := 0; i < 30; i++ {
+		s.Apply(ev("tool", 3, func(e *data.Event) { e.Agent, e.Role, e.Tool = "a1", "coder", "edit" }), false)
+	}
+	stepFor(s, goldenNow, 3*time.Second)
+	if a1, r1 := s.branches[0].blossoms[0], s.branches[0].blossoms[1]; a1.size.x < 2*small || r1.size.x > 1.2*small {
+		t.Fatalf("thirty calls did not grow the caller's blossom, or grew the other: %.1f and %.1f from %.1f", a1.size.x, r1.size.x, small)
+	}
+	// its note is held until its agent's next call, 12 s at most
+	if n := s.notes; len(n) == 0 || n[len(n)-1].held == 0 || n[len(n)-1].x1 <= n[len(n)-1].x0 {
+		t.Fatal("the last call's note is not sounding")
+	}
+	stepFor(s, goldenNow, noteHold*time.Second)
+	if n := s.notes; len(n) != 0 && n[len(n)-1].held != 0 {
+		t.Fatal("a note is held longer than its limit")
+	}
+
 	s.Apply(ev("return", 3, agent("a1", "coder", "")), false)
 	s.Apply(ev("return", 3, agent("zz", "coder", "")), false) // nobody's blossom: nothing
-	if len(s.branches[0].blossoms) != 1 || len(s.petals) != 5 {
-		t.Fatalf("a return drops its blossom as five petals: %d blossoms, %d petals", len(s.branches[0].blossoms), len(s.petals))
+	s.Apply(ev("return", 3, agent("a1", "coder", "")), false) // it returned already: no second handful
+	if bl := s.branches[0].blossoms; len(bl) != 2 || bl[0].closed.IsZero() || !bl[1].closed.IsZero() || len(s.petals) != 5 {
+		t.Fatalf("a return closes its blossom, which stays, and lets go five petals: %d blossoms, %d petals", len(bl), len(s.petals))
 	}
 	for i := 0; i < 3; i++ { // drawing is not part of the physics: it must not touch the generator or the state
 		s.draw(false)
@@ -161,6 +180,10 @@ func TestHanamiSceneFollowsEvents(t *testing.T) {
 	twin.Apply(ev("spawn", 0, agent("a1", "coder", "")), false)
 	twin.Apply(ev("spawn", 0, agent("r1", "reviewer", "")), false)
 	stepFor(twin, goldenNow, 3*time.Second)
+	for i := 0; i < 30; i++ {
+		twin.Apply(ev("tool", 3, func(e *data.Event) { e.Agent, e.Role, e.Tool = "a1", "coder", "edit" }), false)
+	}
+	stepFor(twin, goldenNow, 3*time.Second+noteHold*time.Second)
 	twin.Apply(ev("return", 3, agent("a1", "coder", "")), false)
 	if twin.rnd != s.rnd || strings.Join(twin.draw(false), "\n") != strings.Join(s.draw(false), "\n") {
 		t.Fatal("drawing a frame changed what the next frame is")
@@ -205,6 +228,9 @@ func TestHanamiSceneFollowsEvents(t *testing.T) {
 	}
 	s.lanterns = s.lanterns[:1]
 	s.Apply(ev("merge", 16, pr(7, "")), false)
+	if len(s.stars) != 1 || s.forte != 1 {
+		t.Fatalf("a merge lights the stage and leaves a star: %d stars, forte %.1f", len(s.stars), s.forte)
+	}
 	if len(s.lanterns) != 0 || len(s.fire) == 0 {
 		t.Fatalf("a merge bursts its lantern: %d lanterns, %d sparks", len(s.lanterns), len(s.fire))
 	}
@@ -241,10 +267,28 @@ func TestHanamiSceneFollowsEvents(t *testing.T) {
 		t.Fatal("cache reads do not reach the wind")
 	}
 
-	// the session falls silent: its branch withdraws, and with it everything is ambient again
-	stepFor(s, goldenNow.Add(41*time.Second+hanamiQuiet+time.Second), 40*time.Second)
+	// the agent that returned acts again (it was resumed): its blossom reopens
+	s.Apply(ev("tool", 42, func(e *data.Event) { e.Agent, e.Role, e.Tool = "a1", "coder", "shell" }), false)
+	if !s.branches[0].blossoms[0].closed.IsZero() {
+		t.Fatal("a resumed agent's blossom stays closed")
+	}
+	// the session falls silent: after three minutes whoever had not returned is closed, and the tree keeps
+	// what it bore for two hours; then the branch withdraws and everything is ambient again
+	rest := goldenNow.Add(42*time.Second + hanamiQuiet + time.Second)
+	stepFor(s, rest, 20*time.Second)
+	if b := s.branches; len(b) != 1 || len(b[0].blossoms) != 2 || b[0].blossoms[0].closed.IsZero() || b[0].grow.x < 0.9 {
+		t.Fatalf("a session at rest keeps its branch with its blossoms closed: %d branches", len(b))
+	}
+	stepFor(s, rest.Add(hanamiKeep), 20*time.Second)
 	if len(s.branches) != 0 || s.busy() {
-		t.Fatalf("a quiet session keeps its branch: %d branches", len(s.branches))
+		t.Fatalf("after the keep time the branch is still there: %d branches", len(s.branches))
+	}
+	if len(s.stars) == 0 {
+		t.Fatal("the merge's star went with the branch: it stays three times as long")
+	}
+	stepFor(s, rest.Add(4*hanamiKeep), time.Second)
+	if len(s.stars) != 0 {
+		t.Fatal("stars never fade")
 	}
 }
 
@@ -254,8 +298,24 @@ func TestHanamiSettledEventsDoNotMove(t *testing.T) {
 	for _, e := range hanamiFixture(t) {
 		s.Apply(e, true)
 	}
-	if s.busy() || s.acc != 0 || len(s.lanterns) != 1 || !s.lanterns[0].placed {
+	if s.busy() || s.acc != 0 || len(s.lanterns) != 1 || !s.lanterns[0].placed || s.forte != 0 {
 		t.Fatalf("settled history moved something, or lost the open pull request: %d lanterns", len(s.lanterns))
+	}
+	// the tree arrives with what it bore: ten agents came and went, each left a closed blossom of its size, and
+	// the merge left its star
+	closed, grown := 0, 0
+	for _, b := range s.branches {
+		for _, bl := range b.blossoms {
+			if !bl.closed.IsZero() {
+				closed++
+			}
+			if bl.size.x > blossomSize(s.geo(), 0) {
+				grown++
+			}
+		}
+	}
+	if closed != 10 || grown < 8 || len(s.stars) != 1 {
+		t.Fatalf("settled history left %d closed blossoms (%d grown) and %d stars", closed, grown, len(s.stars))
 	}
 	// a session that was working is there at full length, and stays while its last event is recent
 	last := hanamiFixture(t)[len(hanamiFixture(t))-1].TS
@@ -332,12 +392,12 @@ func TestHanamiCostsNothingWhenHidden(t *testing.T) {
 	m.tickFrom = now
 	now = now.Add(100 * time.Millisecond)
 	m.hanamiTick(100 * time.Millisecond)
-	if f := s.frame; f != 3 {
-		t.Fatalf("100 ms is three frames at 30 fps, stepped %d", f)
+	if f := s.frame; f != 2 {
+		t.Fatalf("100 ms is two frames at 20 a second, stepped %d", f)
 	}
 	m.hanamiTick(time.Hour) // a stalled terminal does not fast-forward
-	if f := s.frame; f != 3+hanamiMaxSteps {
-		t.Fatalf("a stall stepped %d frames", f-3)
+	if f := s.frame; f != 2+hanamiMaxSteps {
+		t.Fatalf("a stall stepped %d frames", f-2)
 	}
 
 	for _, k := range []string{"l", "z"} {
