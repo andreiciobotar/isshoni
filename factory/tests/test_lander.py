@@ -83,10 +83,7 @@ class Sim:
                 p["behind"] = True
             return 0, "", ""
         if a[:3] == ["gh", "pr", "ready"]:
-            target = next(x for x in a[3:] if x != "--undo")
-            n = int(target.removeprefix("worktree-t"))
-            if target.isdigit() and "--undo" in a:  # the tick's draft sync: not what these tests are about
-                return 0, "", ""
+            n = int(next(x for x in a[3:] if x != "--undo").removeprefix("worktree-t"))
             self.prs[n]["draft"] = "--undo" in a
             self.log.append(("undo" if "--undo" in a else "ready", n))
             return 0, "", ""
@@ -400,6 +397,14 @@ class TickTests(Loop):
         _, out, _ = self.go("watch")
         self.assertEqual(self.sim.merged, [1])
         self.assertIn("#1 merged https://x/pull/1\n", out)
+
+    def test_the_draft_sync_putting_an_in_flight_pull_request_back_to_draft_does_not_start_a_cascade(self):
+        self.sim.add(1, after=[PENDING] * 30 + [GREEN])
+        self.sim.add(2)
+        self.go("watch")
+        self.assertIn(("undo", 1), self.sim.log)  # the cheap part flipped it while its checks ran
+        self.assertEqual(self.sim.events("push", "merge", "undo")[:3], [("push", 1), ("undo", 1), ("merge", 1)])
+        self.assertEqual(self.sim.merged[0], 1)
 
     def test_a_waiting_record_does_not_fire_lgtm_blocked_but_a_reported_one_does(self):
         repo = SimpleNamespace(root=ROOT)

@@ -888,12 +888,12 @@ class SyncDraftTests(World):
         self.assertIn("#1 draft flag not changed: gh pr ready 1: refused\n", out)
         self.assertIn("#2 ready for review\n", out)
 
-    def test_a_green_approved_draft_turns_ready_and_the_next_tick_queues_it(self):
+    def test_a_green_approved_draft_turns_ready_and_is_queued_as_a_draft_too(self):
         approved = {"latestReviews": [{"state": "APPROVED", "submittedAt": iso(NOW - 60)}], "comments": []}
         reviews = lambda: [c for c in self.fake.calls if REVIEWS % 1 in c]
         code, out, _ = self.tick([{**pr(1, draft=True), **approved}])
         self.assertIn("#1 ready for review\n", out)
-        self.assertEqual(reviews(), [])  # a draft is never taken on an approval
+        self.assertTrue(reviews())  # the draft flag is not a gate: a draft is queued too
         code, out, _ = self.tick([{**pr(1), **approved}], at=NOW + 120)
         self.assertTrue(reviews())
         self.assertEqual(self.claude_runs(), [])

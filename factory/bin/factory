@@ -4178,10 +4178,8 @@ def lander_lock(repo):
 
 def approved_at(pr):
     """The newest time an approving review or an `lgtm` comment was left on `pr`, or None. Only a prefilter: the
-    gate of `factory merge --approved` decides. A draft is never one, and only a comment of an owner, member or
-    collaborator counts as an `lgtm`."""
-    if pr.get("isDraft"):
-        return None
+    gate of `factory merge --approved` decides. The draft flag is not a gate, so a draft counts; only a comment of an
+    owner, member or collaborator counts as an `lgtm`."""
     times = [r.get("submittedAt") for r in pr.get("latestReviews") or [] if r.get("state") == "APPROVED"]
     times += [c.get("createdAt") for c in pr.get("comments") or [] if str(c.get("body")).strip().lower() == "lgtm"
               and c.get("authorAssociation") in HUMAN_ASSOCIATIONS]
