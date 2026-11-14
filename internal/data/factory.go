@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +51,13 @@ type FactoryTask struct {
 	Waited      *int64 `json:"waited"`       // seconds since the last declared record; nil when undeclared
 	StopKind    string `json:"stop_kind"`    // QUESTION, BLOCKED or OVERTIME for a blocked task; empty when null
 	StopSummary string `json:"stop_summary"` // why it stopped; empty when null
+	WaitsOn     string `json:"waits_on"`     // a blocked task: human, dispatcher or a task's slug; empty when null
+}
+
+// WaitsOnHuman says whether a blocked task waits on the human; an empty WaitsOn is a
+// script from before the field.
+func (t FactoryTask) WaitsOnHuman() bool {
+	return t.Phase == "blocked" && (t.WaitsOn == "" || t.WaitsOn == "human")
 }
 
 // FactoryStatus is what `factory status --json` prints for one repository.
@@ -201,6 +210,35 @@ func ReadWorktreeCap(path string) (int, error) {
 		return 0, fmt.Errorf("%s: %w", ShortPath(path), ErrWorktreeCap)
 	}
 	return n, nil
+}
+
+// dispatcherName is what may be passed to `claude attach`: a leading - would be an option.
+var dispatcherName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// ReadDispatchers is the "dispatchers" list of the settings file, in the order written,
+// without the names that are not safe as an argument. A missing key, an empty list, a
+// value that is not a list of strings and an unreadable file are errors naming the file.
+func ReadDispatchers(path string) ([]string, error) {
+	obj, err := readSettings(path)
+	if err != nil {
+		return nil, err
+	}
+	no := func(why string) error {
+		return fmt.Errorf(`no dispatcher: "dispatchers" %s (%s)`, why, ShortPath(path))
+	}
+	raw, ok := obj["dispatchers"]
+	if !ok {
+		return nil, no("is not set")
+	}
+	var all []string
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return nil, no("is not a list of strings")
+	}
+	names := slices.DeleteFunc(all, func(n string) bool { return !dispatcherName.MatchString(n) })
+	if len(names) == 0 {
+		return nil, no("is empty")
+	}
+	return names, nil
 }
 
 // WriteWorktreeCap sets worktree_cap and leaves every other key's value as it was. The

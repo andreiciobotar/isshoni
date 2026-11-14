@@ -12,22 +12,24 @@
 </p>
 
 <p align="center">
-  Give Claude Code a brief, get back a reviewed pull request,<br>
-  see where every token went, and watch the factory improve with every task.
+  A software factory for Claude Code that gets better with every task.<br>
+  Give it a brief, get back a reviewed pull request, and see where every token went on a live terminal dashboard.
 </p>
 
 <p align="center">
   <a href="https://github.com/andreiciobotar/isshoni/actions/workflows/test.yml"><img src="https://github.com/andreiciobotar/isshoni/actions/workflows/test.yml/badge.svg" alt="tests"></a>
 </p>
 
-<!-- screenshot: isshoni-tui dashboard view -->
+<p align="center">
+  <img src="assets/tabs/dashboard.webp" alt="The live terminal dashboard: the cursor moves over a repository, its tasks and a session; cost, agent mix and dispatches follow the selected row">
+</p>
 
 Isshoni is two tools for people who run [Claude Code](https://claude.com/claude-code) on their repositories. Each works without the other.
 
 | | What it does | You run |
 |---|---|---|
 | **Monitor** | Shows where the money and tokens went: per repository, task, session, agent and model | `isshoni`, `isshoni-tui` |
-| **Factory** | Builds several tasks in parallel, each in its own git worktree, each ending in a draft pull request | `/factory:dispatch`, from the `factory` plugin |
+| **Factory** | Orchestrates Claude Code agents: several tasks in parallel, each in its own git worktree, each ending in a draft pull request | `/factory:dispatch`, from the `factory` plugin |
 
 ## Setup
 
@@ -56,7 +58,7 @@ Optional:
 
 `make uninstall` removes what the wizard put on the machine.
 
-## Factory
+## The software factory
 
 ```mermaid
 flowchart TD
@@ -68,16 +70,18 @@ flowchart TD
     subs -- opens --> pr[Draft pull request]
     you -- approves --> pr
     sm[Site manager<br>every 30 min] -- alerts --> disp
-    sm -- merges --> pr
+    lander[Lander · Sonnet] -- merges --> pr
 ```
 
-A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the site manager merges it once checks are green. Your other comments on a pull request reach its lead on the next watch tick.
+A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the lander merges it within a few minutes once checks are green. Your other comments on a pull request reach its lead on the next watch tick.
 
-<!-- screenshot: factory status with several tasks -->
+<p align="center">
+  <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap">
+</p>
 
 ## Kaizen (改善), built in
 
-Most agent setups run on day 100 the way they ran on day 1. Isshoni's factory learns from every task:
+Most multi-agent setups run on day 100 the way they ran on day 1. Isshoni's factory is self-improving. On every task:
 
 - Every agent reports what slowed it down.
 - Every lead records the key calls it made without asking, and why.
@@ -85,6 +89,10 @@ Most agent setups run on day 100 the way they ran on day 1. Isshoni's factory le
 - Every site manager alert is marked acted-on or noise, so its precision and recall are measured.
 
 The dispatcher reads it all and proposes edits to the factory's own rules; you decide.
+
+<p align="center">
+  <img src="assets/tabs/kaizen.webp" alt="The Kaizen view, page by page: Pulse (cost, time and review rounds per task), Flow (where money and time went), Anatomy (each release compared) and Board (open issues by topic)">
+</p>
 
 ```mermaid
 flowchart TD
@@ -103,12 +111,16 @@ Parsing a transcript is slow, so parsed sessions are cached, one file per transc
 
 Cost is the API list price, from [isshoni/prices.toml](isshoni/prices.toml). `isshoni-tui` is the same data live, plus the factory's tasks and whether it is getting better. Its fifth view, [Hanami (花見)](docs/isshoni.md#hanami-花見-the-work-as-something-to-watch), draws the work as motion: something to leave on a second screen.
 
-<!-- screenshot: isshoni-tui session timeline -->
+<p align="center">
+  <img src="assets/tabs/hanami.webp" alt="Hanami: a day of the factory replayed; blossoms open where agents work and a merge streams away">
+</p>
+
+Every view, the Agents one too, and its keys: [docs/isshoni.md](docs/isshoni.md#dashboard-isshoni-tui).
 
 ## More
 
 - [docs/factory.md](docs/factory.md): commands, states, settings, logs, the site manager
-- [docs/isshoni.md](docs/isshoni.md): the monitor's options and the dashboard's keys
+- [docs/isshoni.md](docs/isshoni.md): the monitor's options and the dashboard's keys, and `isshoni-tui --serve`, which also opens the dispatcher's conversation over SSH for a `write` key
 - `make test` runs everything
 
 ## Status
