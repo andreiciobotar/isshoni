@@ -72,8 +72,8 @@ def check_frame(frame,words,home,allow=()):
     hits=[sub for sub in (home,encode(home) if home else '','/Users/','/home/') if sub and sub in text]
     for w in sorted(words):
         if w in allow: continue
-        cut='|'.join(re.escape(w[:n]) for n in range(3,len(w)+1))
-        if re.search(r'(?<![A-Za-z0-9_-])(?:%s(?![A-Za-z0-9_-])|(?:%s)…)'%(re.escape(w),cut),text): hits.append(w)
+        forms=[re.escape(w)+r'(?![A-Za-z0-9_-])']+[re.escape(w[:n])+'…' for n in range(3,len(w)+1)]
+        if re.search(r'(?<![A-Za-z0-9_-])(?:%s)'%'|'.join(forms),text): hits.append(w)
     return hits
 
 def hanami_at(events,speed=60.0,dt=0.05,lead=1.0,gap=3.0):

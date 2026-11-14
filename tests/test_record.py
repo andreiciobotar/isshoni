@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import sys
@@ -64,6 +65,10 @@ class FrameTests(unittest.TestCase):
         self.assertEqual(self.check("x be\u2026"), [])  # under 3 characters
         self.assertEqual(self.check("x abeta\u2026 xfix\u2026"), [])  # not at a word start
 
+    def test_short_word_is_not_matched_by_a_bare_ellipsis(self):
+        self.assertEqual(record.check_frame("cap  \u2026  per x \u2502\u2026\u2502", {"ab", "a"}, ""), [])
+        self.assertEqual(record.check_frame("see ab here", {"ab"}, ""), ["ab"])
+
     def test_word_inside_longer_word_passes(self):
         self.assertEqual(self.check("betas beta-2 _beta alphabeta fix-it-now"), [])
 
@@ -127,8 +132,11 @@ class MainTests(unittest.TestCase):
                     mock.patch.object(record.os, "listdir", return_value=[ENC]), \
                     mock.patch.object(record.os, "symlink"), \
                     mock.patch.object(record.subprocess, "run", return_value=mock.Mock(stdout=sessions)), \
-                    mock.patch.object(record.strip, "render") as render:
-                with self.assertRaises(SystemExit):
+                    mock.patch.object(record.strip, "render") as render, \
+                    mock.patch.object(sys, "stderr", io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as cm:
                     record.main()
+            self.assertIn("nothing was written", str(cm.exception.code))
+            self.assertEqual(err.getvalue().count("scene factory frame"), 4)  # every hit is listed
             render.assert_not_called()
             self.assertFalse(os.path.exists(out))
