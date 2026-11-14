@@ -13,6 +13,7 @@ import (
 
 func fixtureRunner(t *testing.T) *Runner {
 	t.Helper()
+	t.Setenv("ISSHONI_CACHE_DIR", "") // the tests never touch the real session cache
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
