@@ -30,7 +30,7 @@ class StubProcess:
 
     def __init__(self, spawn, argv, **kw):
         self.spawn, self.argv, self.kw = spawn, argv, kw
-        self.pid = 0
+        self.pid = 2**31 - 2  # no such process, so a killpg on it is harmless (0 would be the test's own group)
 
     def __enter__(self):
         return self

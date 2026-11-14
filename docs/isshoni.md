@@ -555,7 +555,7 @@ What ends the children, by how the dashboard stops:
 | SIGHUP (closed terminal) | the program's context is cancelled; same path as `q`, exit 0 | same path as SIGTERM |
 | SIGKILL | nothing runs: see below | nothing runs: see below |
 
-After SIGKILL a one-shot call (monitor 2 min, `factory status` 25 s) ends at its own end, because it writes to a pipe nobody reads or finishes; the event stream ends the next time it writes an event to its closed pipe, and with the monitor's parent check (Part C of the same change) within a few ticks.
+After SIGKILL the timeouts died with the dashboard and apply no more: the one-shot children (monitor calls, `factory status`) run until they end on their own, which is soon unless the network hangs; the event stream ends through its parent check (`isshoni/events.py`).
 
 Measured on this machine with `bin/isshoni-tui` against the real data (TUI in a pty, `--serve` on a free port on 127.0.0.1 with an ssh client in a pty), each stop in a fresh run. Descriptors from `lsof -p`, children from `ps -axo pid,ppid,pgid,command` just before the stop, survivors counted among those children 3 s after (for `--serve`: after the server had ended). Calls are short, so most runs catch only the few children that were in flight; "Hanami" is the run with the Hanami tab open.
 

@@ -29,7 +29,7 @@ func runProgram(o Options, popts ...tea.ProgramOption) error {
 	hup, stop := signal.NotifyContext(ctx, syscall.SIGHUP)
 	defer stop()
 	_, err := tea.NewProgram(New(o), append(popts, tea.WithContext(hup))...).Run()
-	if hup.Err() != nil && ctx.Err() == nil { // hung up: the program ended on its own terms
+	if hup.Err() != nil { // hung up: the program ended on its own terms
 		return nil
 	}
 	return err

@@ -89,6 +89,9 @@ func main() {
 			fmt.Fprintln(os.Stderr, "isshoni-tui: unknown snapshot view", *snapshot)
 			os.Exit(2)
 		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		defer stop()
+		o.Ctx = ctx
 		out, err := tui.Snapshot(tui.SnapshotOptions{Options: o, View: *snapshot, Session: *session, Row: *row, Fold: *fold, W: w, H: h, At: *at, FrameStep: *step, Frames: *frames, Legend: *legend})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "isshoni-tui:", err)

@@ -24,6 +24,17 @@ sleep 60 &
 echo $! > "$GRANDCHILD"
 wait
 """
+SLEEPING_GH = """#!/bin/sh
+echo $$ > "$GHPID"
+exec sleep 60
+"""
+DETACHING_CLAUDE = """#!/bin/sh
+case "$1" in
+  agents) echo '[]'; exit 0 ;;
+esac
+sleep 60 >/dev/null 2>&1 &
+echo $! > "$GRANDCHILD"
+"""
 FAKE_GH = """#!/bin/sh
 echo '[{"number": 1, "url": "u", "isDraft": false, "headRefName": "worktree-t", "headRefOid": "abc", "baseRefName": "main", "author": {"login": "a"}, "isCrossRepository": false, "latestReviews": [], "comments": []}]'
 """
@@ -106,17 +117,41 @@ class RunLifetimeTests(Fakes):
         with mock.patch.object(factory, "RUN_TIMEOUT", 0.3):
             self.assertEqual(factory.run(["sleep", "60"]), (124, "", "timed out"))
 
-    def script_gets(self, signum):
-        """The script `lander 1` with the fake `claude` and `gh`, signalled during the claude run."""
+    def run_script(self, env):
+        """The script `lander 1` in a throwaway repository, in a process group of its own."""
         repo, home = self.tmp / "repo", self.tmp / "home"
         repo.mkdir()
         home.mkdir()
         subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30)
         env = {**os.environ, "HOME": str(home), "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
-               "GRANDCHILD": str(self.grandchild), "CLAUDE_CODE_SESSION_ID": "sid-d"}
+               "GRANDCHILD": str(self.grandchild), "CLAUDE_CODE_SESSION_ID": "sid-d", **env}
         env.pop("FACTORY_HOME", None)
-        p = start_in_group(self, [sys.executable, str(BIN), "lander", "1"], cwd=repo, env=env,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return start_in_group(self, [sys.executable, str(BIN), "lander", "1"], cwd=repo, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def test_a_group_run_that_ends_normally_leaves_no_grandchild(self):
+        claude = self.bin / "claude"
+        claude.write_text(DETACHING_CLAUDE)
+        env = {**os.environ, "GRANDCHILD": str(self.grandchild)}
+        self.assertEqual(factory.run([str(claude), "-p"], env=env, group=True), (0, "", ""))
+        self.assertTrue(gone(self.started()))
+
+    def test_the_script_on_sigterm_ends_an_ordinary_child(self):
+        (self.bin / "gh").write_text(SLEEPING_GH)
+        ghpid = self.tmp / "ghpid"
+        p = self.run_script({"GHPID": str(ghpid)})
+        end = time.monotonic() + 10
+        while not (ghpid.exists() and ghpid.read_text().strip()) and time.monotonic() < end:
+            time.sleep(0.02)
+        pid = int(ghpid.read_text())
+        self.addCleanup(lambda: alive(pid) and os.kill(pid, signal.SIGKILL))
+        os.kill(p.pid, signal.SIGTERM)
+        self.assertEqual(p.wait(timeout=10), 143)
+        self.assertTrue(gone(pid))
+
+    def script_gets(self, signum):
+        """The script `lander 1` with the fake `claude` and `gh`, signalled during the claude run."""
+        p = self.run_script({})
         pid = self.started()
         os.kill(p.pid, signum)
         self.assertEqual(p.wait(timeout=10), 128 + signum)
