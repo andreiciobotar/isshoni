@@ -8,7 +8,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 
-from . import metrics, transcript
+from . import authoring, metrics, transcript
 from .cli import fmt_duration
 
 ROLES = ("lead", "coder", "reviewer", "explorer", "lander", "other")
@@ -198,8 +198,24 @@ def _role_facts(sessions, prices):
     for role, r in anatomy.by_role(runs, prices).items():
         b = r.block()
         out[role] = {"calls": b["calls"], "peak": b["context"]["peak"], "tools": sum(b["tools"].values()),
-                     "dispatches": b["dispatches"], "cost": b["cost"]}
+                     "dispatches": b["dispatches"], "cost": b["cost"], "written": b["written"]}
     return out
+
+
+def _authoring(roles):
+    """Who wrote the product code and tests of a task: lines and calls per role, and the lead's share of the lines."""
+    part = lambda key: {r: sum(roles[r]["written"][k][key] for k in authoring.CODE) if r in roles else 0 for r in ROLES}  # noqa: E731
+    lines = part("lines")
+    total = sum(lines.values())
+    return {"lines": lines, "calls": part("calls"), "lead_share": round(lines["lead"] / total, 6) if total else None}
+
+
+def _pooled(tasks):
+    """The authoring of some tasks together: each role's part of the summed lines, not a median (most tasks have a lead share of zero)."""
+    lines = {r: sum(t["authoring"]["lines"][r] for t in tasks) for r in ROLES}
+    wrote = [t for t in tasks if sum(t["authoring"]["lines"].values())]
+    return {"tasks": len(wrote), "lead_tasks": sum(1 for t in wrote if t["authoring"]["calls"]["lead"]), "lines": lines,
+            "share": {r: round(n / sum(lines.values()), 6) for r, n in lines.items()} if wrote else None}
 
 
 def _task(key, recs, sessions, prices):
@@ -218,6 +234,7 @@ def _task(key, recs, sessions, prices):
          "state": states[-1] if states else None, "pr": None, "landed": False,
          "brief_to_pr_s": None, "pr_to_merge_s": None, "cost": None, "review_rounds": None, "first_pass": None,
          "_roles": _role_facts(sessions, prices)}
+    t["authoring"] = _authoring(t["_roles"])
     if sessions:
         t["cost"], t["review_rounds"] = _cost(sessions)
         t["first_pass"] = t["review_rounds"] == 1
@@ -289,7 +306,7 @@ def _anatomy(landed, versions):
         for r in ROLES:
             xs = ran(window, r)
             roles[r] = {k: med(xs, k) for k in ("calls", "peak", "tools")} if len(xs) >= ANATOMY_WINDOW // 2 + 1 else None
-        points.append({"slug": t["slug"], "version": t["version"], "roles": roles})
+        points.append({"slug": t["slug"], "version": t["version"], "roles": roles, "authoring": _pooled(window)})
     out = []
     for v in versions:
         mine = [t for t in costed if t["version"] == v]
@@ -310,7 +327,7 @@ def _anatomy(landed, versions):
                 **{k: med(xs, k) for k in ("calls", "peak", "tools", "dispatches")},
                 "tools_per_dispatch": _median(x["tools"] / x["dispatches"] for x in xs if x["dispatches"] > 0),
                 "classes": {k: round(classes[k] / whole, 6) for k in ("input", "output", "cache_write", "cache_read")} if whole else None}
-        out.append({"version": v, "tasks": len(mine), "roles": roles})
+        out.append({"version": v, "tasks": len(mine), "roles": roles, "authoring": _pooled(mine)})
     return {"window": ANATOMY_WINDOW, "min": VERSION_MIN, "points": points, "versions": out}
 
 
@@ -359,6 +376,37 @@ def _summary(tasks, versions):
         "defects": {k: sum(d[k] for d in defects) for k in DEFECT_KINDS},
         "trend_min": TREND_MIN, "trend": _trend(landed),
     }
+
+
+_SITE_MANAGER = re.compile(r"Job: (watch|digest)\. Repo: ")
+
+
+def _overhead(sessions, tasks, cutoff, prices):
+    """What the dispatcher and the site manager spent in the period (the calls of their sessions at or after the cutoff),
+    per task landed in it. Only sessions without a task, in a repository of the document, count."""
+    repos = {t["repo_path"] for t in tasks}
+    spent = {"dispatcher": 0.0, "site_manager": 0.0}
+    unpriced = counted = 0
+    for s in sessions:
+        if s.task or s.repo_path not in repos:
+            continue
+        who = ("dispatcher" if s.name == "dispatcher-" + _name(s.repo_path)
+               else "site_manager" if _SITE_MANAGER.match(s.first_prompt) else None)
+        if who is None:
+            continue
+        counted += 1
+        for run in [s.run] + [d.run for d in s.dispatches]:
+            for c in run.calls if run else ():
+                if cutoff is not None and not (c.ts and c.ts >= cutoff):
+                    continue
+                parts = prices.parts(c.model, c.raw)
+                if parts is None:
+                    unpriced += c.context + c.output
+                else:
+                    spent[who] += sum(parts.values())
+    landed = sum(1 for t in tasks if t["landed"])
+    return {**{k: round(v, 6) for k, v in spent.items()}, "sessions": counted, "unpriced_tokens": unpriced, "landed": landed,
+            "per_landed": round(sum(spent.values()) / landed, 6) if landed else None}
 
 
 # ---- outbox -------------------------------------------------------------------------
@@ -490,6 +538,7 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None):
     slowed.sort(key=lambda s: s["ts"] or "", reverse=True)
     ordered = [v for v, _ in sorted(versions.items(), key=lambda x: (x[1], x[0]))]
     summary = _summary(tasks, ordered)
+    summary["overhead"] = _overhead(sessions, tasks, cutoff, prices)
     for t in tasks:
         t["started"] = _iso(t["started"])
         del t["_roles"]

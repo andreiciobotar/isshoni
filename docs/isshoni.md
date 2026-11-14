@@ -148,6 +148,32 @@ name in `ROLES`, null for a role that did not run enough.
   `share` and `cost` from the task's `cost`, as the mix does. Tasks that did not land are in
   none of these figures.
 
+Every task has `authoring`: who wrote its product code and tests, over `ROLES`, from the
+`Edit` and `Write` calls of its runs (`written` of `isshoni anatomy`, below; only the kinds
+`product` and `tests`). `lines` and `calls` are `{role: int}`, and `lead_share` is
+`lines.lead` over the sum of `lines`, a float from 0 to 1, rounded to 6 places, or null when
+nobody wrote one. Each entry of `summary.anatomy.points` and `summary.anatomy.versions` has an
+`authoring` object over its tasks (the window's, the version's landed tasks with a cost):
+`tasks` (int, tasks in which any role wrote a line), `lead_tasks` (int, those in which the lead
+made a product or tests call), `lines` (`{role: int}`, summed) and `share` (`{role: float}`:
+each role's part of the summed lines, rounded to 6 places; null when `tasks` is 0). The share
+is pooled over the lines, not a median: most tasks have a lead share of zero, so a median
+would say nothing.
+
+`summary.overhead` is what the dispatcher and the site manager spent in the period, per task
+landed in it: `dispatcher` and `site_manager` (cost in USD, floats), `sessions` (int, how many
+sessions were counted), `unpriced_tokens` (int), `landed` (int, equal to `summary.landed`) and
+`per_landed` (`(dispatcher + site_manager) / landed`, null when `landed` is 0). A session counts
+when it has no task, its repository is the repository of at least one task of the document, and
+either its name (the last `customTitle` or `agentName` record of its transcript) is
+`dispatcher-<repository directory name>` (the dispatcher) or its first prompt starts with
+`Job: watch. Repo: ` or `Job: digest. Repo: ` (a site manager run). Its cost is that of every call
+of the session and of its dispatches whose time is at or after the `--since` cutoff (every call
+without one; a call without a time counts only without one), priced as `isshoni anatomy` prices.
+The measure is the cost in the period over the tasks landed in the period. Two approximations:
+a task started before the period but served in it is not in the divisor, and a task-less session
+that is neither is not overhead.
+
 `stops`, oldest first: a lead's `QUESTION`, `BLOCKED` or `OVERTIME` message (`waited_s`
 runs to the next prompt from the human or the dispatcher in the same session, null while
 unanswered; `why` is the event's `summary`, the first line of the message, or null on
@@ -187,9 +213,10 @@ subagent run the name of its agent type without the plugin prefix (`factory:land
 `lander`). `--factory-dir` (default `~/.claude/factory`) is read only for each task's plugin
 version. Without `--json` it prints one row per task and role (`task`, `version`, `role`, `runs`,
 `calls`, `ctx first`, `ctx median`, `ctx max`, `cost`, the shares of the role's cost by token
-class `in%` `out%` `cw%` `cr%`, own `tools`, `disp`atches) and the prices footer; no tasks prints `no tasks`.
+class `in%` `out%` `cw%` `cr%`, own `tools`, `disp`atches, `written`: the kinds with calls, as
+`kind calls/lines`), a line counting the written calls that matched no kind, and the prices footer; no tasks prints `no tasks`.
 
-`--json` is `{generated, factory_dir, prices, tasks, versions}`; no tasks gives two empty lists.
+`--json` is `{generated, factory_dir, prices, tasks, versions, unmatched}`; no tasks gives empty lists.
 Each task has `repo`, `repo_path`, `task`, `version`, `start`, `end`, `cost` (the sum of its
 roles' `cost.total`), `unpriced_tokens` and `roles`, a map from role name to a block that
 aggregates the role's runs (one run = one transcript):
@@ -201,6 +228,7 @@ aggregates the role's runs (one run = one transcript):
 | `tokens` | exact sums of `input`, `output`, `thinking` (part of `output`, not added to it), `cache_write_5m`, `cache_write_1h`, `cache_read` |
 | `cost` | `total` and the five classes, rounded to 6 places. Over a task the roles' `total`s add up to the task's `cost.total` in `sessions --json` (to 1e-6) |
 | `tools` | the role's own tool calls by kind, each tool call once, `Agent` excluded. `Bash` is split as `Bash:<command>` by the basename of the first word after an optional `cd <path> &&` |
+| `written` | the role's own `Edit` and `Write` calls by kind of file: `{kind: {calls, lines}}`, all seven kinds always present, see below |
 | `dispatches` | the role's `Agent` calls |
 | `fill` | where the context came from, see below |
 
@@ -208,6 +236,34 @@ aggregates the role's runs (one run = one transcript):
 factory's `events`, `retros` and `tasks` logs that carries one; null without one or without a store.
 `versions` rolls the tasks up by version (null last): `version`, `tasks`, `cost`, `unpriced_tokens` and
 `roles`, the role blocks computed over all runs of that version's tasks, not an average of task blocks.
+
+**Written.** `written` says who wrote what, not what survived. Each own `Edit` and `Write` call (a fork's
+copy of its parent's message is not counted twice) adds one call and some lines to the kind of its
+`file_path` (a missing or non-string path is the path `""`). Lines are what a diff would count: for
+`Write` the lines of `content`; for `Edit` the lines of `new_string` that are not in `old_string`
+(a multiset difference, so the context an `Edit` repeats is not counted; `replace_all` counts once).
+The kind comes from `isshoni/authoring.py`, the one place the rules live. A path is first cut after
+`/.claude/worktrees/<name>/` when it has that part (it is then inside, and relative); the first
+matching rule wins:
+
+| kind | applies | the path |
+|---|---|---|
+| `scratch` | outside | ends in `.retro.json`; has a directory named `tmp`, `scratchpad` or `T`; contains `/.claude/jobs/`; starts with `/private/var/` or `/var/folders/` |
+| `spec` | outside | contains `/factory/specs/`, or ends in `.pr.md` |
+| `rules` | inside | is `CLAUDE.md` or `AGENTS.md`; has a directory named `agents`, `skills`, `roles` or `commands` |
+| `tests` | inside | ends in `_test.go` or `.golden`; is `test_*.py`; has a directory named `test`, `tests`, `testdata` or `fixtures` |
+| `docs` | inside | ends in `.md` or `.txt` |
+| `product` | inside | ends in `.go .py .sh .toml .json .yaml .yml .mod .sum .js .ts .css .html`; is `Makefile` or `Dockerfile`, a dotfile, or any file without an extension |
+| `other` | | everything else: a file outside `.claude/worktrees/` that is not scratch or spec (memory files, the main checkout, a worktree a hook made elsewhere), an unknown extension inside, no path |
+
+`unmatched` lists every path counted as `other` over the tasks of the document, `{path, calls, lines}`,
+most calls first then by path; none is dropped, so a missing rule shows here. The headline kinds are
+`product` and `tests` (`CODE` in `isshoni/authoring.py`).
+
+Two limits, stated plainly. A write made through a shell command (`sed`, a heredoc, a generator,
+`go test -update`) is not seen. And what was written is not what survived to the merge: a later edit by
+any role overwrites it, and comparing with the merged diff would mean attributing each surviving line to a
+tool call, which is neither cheap nor exact, so it is not done.
 
 **Fill.** Per run, `base` is the first call's context. For each later call the context grew by
 `delta`: `own_output` is the previous call's output (at most `delta`), the rest is `inbound`,
