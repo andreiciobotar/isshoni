@@ -14,7 +14,11 @@ PAD=8         # the pre's padding, around each frame
 GAP=6         # between frames, and around the grid
 MAX_SHOT_H=8000  # px of one screenshot; a taller grid is split in several
 
-def render(frames,out,size,cols=4,chrome=os.environ.get('CHROME','')):
+def split_frames(text):
+    """The non-empty frames of `text`, separated by a line that is exactly a form feed."""
+    return [f for f in (f.rstrip('\n') for f in re.split(r'^\f\n?',text,flags=re.M)) if f]
+
+def render(frames,out,size,chrome,cols=4):
     """Draw ANSI `frames` in Chrome and write out.html and out.png; returns (the PNG paths, the frames cropped out of
     them as Pillow images, or None without Pillow)."""
     if not chrome: sys.exit('strip: Chrome or Chromium is missing. Install one, or pass --chrome PATH.')
@@ -59,10 +63,9 @@ def main():
     ap.add_argument('--frame-ms',type=int,default=120)
     ap.add_argument('--chrome',default=os.environ.get('CHROME',''))
     args=ap.parse_args()
-    frames=[f.rstrip('\n') for f in re.split(r'^\f\n?',sys.stdin.read(),flags=re.M)]
-    frames=[f for f in frames if f]
+    frames=split_frames(sys.stdin.read())
     if not frames: sys.exit('strip: no frames on stdin')
-    pngs,imgs=render(frames,args.out,args.size,args.cols,args.chrome)
+    pngs,imgs=render(frames,args.out,args.size,args.chrome,args.cols)
     for p in pngs: print(p)
     if imgs:
         from PIL import Image

@@ -1,11 +1,11 @@
 """Record a short looping animation of each dashboard tab from the real data of this repository only.
 
-    python3 tools/record.py [--out assets/tabs] [--scenes "dashboard hanami"] [--size 110x32] [--chrome PATH]
+    python3 tools/record.py [--out assets/tabs] [--scenes "dashboard hanami"] --chrome PATH
 
 Frames come from `bin/isshoni-tui --snapshot ...` over a projects dir that holds only this repository's
 directories, and are drawn by tools/strip.py. Nothing is rendered until every frame passed the privacy gate:
-see "Privacy gate" in docs/isshoni.md. Environment: SIZE=WxH, SCENES="a b", HANAMI_AT=<duration>,
-ALLOW="word word" (whole words that may appear although they are another repository's or task's name).
+see "Privacy gate" in docs/isshoni.md. Flags: --scenes, --chrome, --out. Environment: SIZE=WxH (default 110x32),
+HANAMI_AT=<duration>, ALLOW="word word" (whole words that may appear although they are another repository's or task's name).
 """
 import argparse,glob,json,os,re,shutil,subprocess,sys,tempfile,time
 from datetime import datetime,timedelta
@@ -27,7 +27,7 @@ SCENES={
     'agents':(1200,[['--snapshot','agents','--range',r] for r in ('24h','7d','30d','all')]),
     'factory':(900,[['--snapshot','factory','--range','24h']]*4),
     'kaizen':(2000,[['--snapshot',v,'--range','7d'] for v in ('kaizen','kaizen-flow','kaizen-anatomy','kaizen-board')]),
-    'hanami':(130,[['--snapshot','hanami','--replay','{replay}','--at','{at}','--frames',str(HANAMI_FRAMES),
+    'hanami':(130,[['--snapshot','hanami','--range','24h','--replay','{replay}','--at','{at}','--frames',str(HANAMI_FRAMES),
                     '--frame-step',HANAMI_STEP]]),
 }
 
@@ -65,13 +65,16 @@ def deny_words(sessions,own_dirs):
 def strip_ansi(text): return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]','',text)
 
 def check_frame(frame,words,home,allow=()):
-    """The first forbidden string found in an ANSI frame, else None."""
+    """Every forbidden string found in an ANSI frame: the home directory (also as a project directory name), `/Users/`,
+    `/home/`, and each deny word, whole or cut short by the TUI with `…` (a prefix of 3 or more characters).
+    `~/` is allowed on purpose: the Factory tab shows the generic `~/.claude/factory/settings.json`."""
     text=strip_ansi(frame)
-    for sub in (home,'/Users/','/home/'):
-        if sub and sub in text: return sub
+    hits=[sub for sub in (home,encode(home) if home else '','/Users/','/home/') if sub and sub in text]
     for w in sorted(words):
-        if w not in allow and re.search(r'(?<![A-Za-z0-9_-])%s(?![A-Za-z0-9_-])'%re.escape(w),text): return w
-    return None
+        if w in allow: continue
+        cut='|'.join(re.escape(w[:n]) for n in range(3,len(w)+1))
+        if re.search(r'(?<![A-Za-z0-9_-])(?:%s(?![A-Za-z0-9_-])|(?:%s)…)'%(re.escape(w),cut),text): hits.append(w)
+    return hits
 
 def hanami_at(events,speed=60.0,dt=0.05,lead=1.0,gap=3.0):
     """Seconds of replay time at which the last `merge` event is applied (as hanamiStep advances), or None."""
@@ -90,8 +93,6 @@ def save_webp(imgs,path,frame_ms):
     """Write `imgs` as one looping lossy animated WebP."""
     imgs[0].save(path,save_all=True,append_images=imgs[1:],lossless=False,quality=70,method=6,minimize_size=True,
                  duration=frame_ms,loop=0)
-
-def split_frames(out): return [f.rstrip('\n') for f in re.split(r'^\f\n?',out,flags=re.M) if f.strip()]
 
 def snapshot(args):
     return subprocess.run([os.path.join(ROOT,'bin','isshoni-tui')]+args,cwd=ROOT,capture_output=True,text=True,check=True).stdout
@@ -114,16 +115,16 @@ def record_scene(name,projects,size,tmp):
     started=time.time(); frames=[]
     for argl in SCENES[name][1]:
         if name=='hanami': argl=hanami_fill(argl,projects,tmp)
-        frames+=split_frames(snapshot(argl+['--projects-dir',projects,'--size',size]))
+        frames+=strip.split_frames(snapshot(argl+['--projects-dir',projects,'--size',size]))
     return frames,time.time()-started
 
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument('--out',default='assets/tabs')
-    ap.add_argument('--scenes',default=os.environ.get('SCENES',''),help='default: all')
-    ap.add_argument('--size',default=os.environ.get('SIZE',SIZE))
-    ap.add_argument('--chrome',default=os.environ.get('CHROME',''))
+    ap.add_argument('--scenes',default='',help='default: all')
+    ap.add_argument('--chrome',default='')
     args=ap.parse_args()
+    size=os.environ.get('SIZE',SIZE)
     names=args.scenes.split() or list(SCENES)
     for n in names:
         if n not in SCENES: sys.exit('record: unknown scene %s (have: %s)'%(n,' '.join(SCENES)))
@@ -144,17 +145,16 @@ def main():
         for n in own: os.symlink(os.path.join(projects,n),os.path.join(scoped,n))
         scenes={}
         for n in names:
-            scenes[n]=record_scene(n,scoped,args.size,tmp)
+            scenes[n]=record_scene(n,scoped,size,tmp)
             print('record: %s: %d frames in %.1f s'%(n,len(scenes[n][0]),scenes[n][1]),file=sys.stderr)
-        for n,(frames,_) in scenes.items():
-            for i,f in enumerate(frames):
-                hit=check_frame(f,words,home,allow)
-                if hit: sys.exit('record: scene %s frame %d shows %r; nothing was written.'%(n,i,hit))
+        hits=[(n,i,w) for n,(frames,_) in scenes.items() for i,f in enumerate(frames) for w in check_frame(f,words,home,allow)]
+        for n,i,w in hits: print('record: scene %s frame %d shows %r'%(n,i,w),file=sys.stderr)
+        if hits: sys.exit('record: %d hits; nothing was written.'%len(hits))
         os.makedirs(args.out,exist_ok=True)
         written=[]
         for n,(frames,_) in scenes.items():
             started=time.time(); work=os.path.join(tmp,'render-'+n)
-            imgs=strip.render(frames,os.path.join(work,n),args.size,chrome=args.chrome)[1]
+            imgs=strip.render(frames,os.path.join(work,n),size,args.chrome)[1]
             if not imgs: sys.exit('record: Pillow is missing (pip install pillow).')
             dest=os.path.join(args.out,n+'.webp'); save_webp(imgs,dest,SCENES[n][0]); written.append(dest)
             print('record: %s rendered in %.1f s'%(n,time.time()-started),file=sys.stderr)

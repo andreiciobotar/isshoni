@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from tests.support import ROOT
 
@@ -43,21 +44,35 @@ class FrameTests(unittest.TestCase):
         return record.check_frame(text, set(words), "/Users/someone", allow)
 
     def test_clean(self):
-        self.assertIsNone(self.check("\x1b[31mall fine\x1b[0m here"))
+        self.assertEqual(self.check("\x1b[31mall fine\x1b[0m here ~/.claude/factory"), [])
 
     def test_substring(self):
-        self.assertEqual(self.check("cwd /Users/someone/x"), "/Users/someone")
-        self.assertEqual(self.check("at /home/ci"), "/home/")
+        self.assertEqual(self.check("cwd /Users/someone/x"), ["/Users/someone", "/Users/"])
+        self.assertEqual(self.check("at /home/ci"), ["/home/"])
+
+    def test_encoded_home(self):
+        self.assertEqual(self.check("dir -Users-someone-code-x"), ["-Users-someone"])
 
     def test_whole_word(self):
-        self.assertEqual(self.check("repo \x1b[1mbeta\x1b[0m: 3"), "beta")
-        self.assertEqual(self.check("(fix-it)"), "fix-it")
+        self.assertEqual(self.check("repo \x1b[1mbeta\x1b[0m: 3"), ["beta"])
+        self.assertEqual(self.check("(fix-it)"), ["fix-it"])
+        self.assertEqual(self.check("\u2502beta\u2502"), ["beta"])
+
+    def test_word_cut_short(self):
+        self.assertEqual(self.check("task fix-\u2026"), ["fix-it"])
+        self.assertEqual(self.check("task fix\u2026"), ["fix-it"])
+        self.assertEqual(self.check("x be\u2026"), [])  # under 3 characters
+        self.assertEqual(self.check("x abeta\u2026 xfix\u2026"), [])  # not at a word start
 
     def test_word_inside_longer_word_passes(self):
-        self.assertIsNone(self.check("betas beta-2 _beta alphabeta fix-it-now"))
+        self.assertEqual(self.check("betas beta-2 _beta alphabeta fix-it-now"), [])
 
     def test_allow(self):
-        self.assertIsNone(self.check("a beta b", allow=["beta"]))
+        self.assertEqual(self.check("a beta b", allow=["beta"]), [])
+        self.assertEqual(self.check("a bet\u2026", allow=["beta"]), [])
+
+    def test_all_hits(self):
+        self.assertEqual(self.check("beta fix-it"), ["beta", "fix-it"])
 
     def test_deny_words_exclude_own_names(self):
         sessions = [
@@ -88,7 +103,8 @@ class WebpTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "t.webp")
             record.save_webp([Image.new("RGB", (8, 8), "black"), Image.new("RGB", (8, 8), "white")], path, 900)
-            data = open(path, "rb").read()
+            with open(path, "rb") as f:
+                data = f.read()
         # an ANMF chunk holds x, y, width-1, height-1 (3 bytes each) and then the duration (3 bytes)
         durations, pos = [], 12
         while pos < len(data):
@@ -97,3 +113,22 @@ class WebpTests(unittest.TestCase):
                 durations.append(int.from_bytes(data[pos + 8 + 12:pos + 8 + 15], "little"))
             pos += 8 + size + size % 2
         self.assertEqual(durations, [900, 900])
+
+
+class MainTests(unittest.TestCase):
+    def test_a_hit_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "out")
+            sessions = json.dumps({"sessions": [{"project_dir": "o", "repo": "beta", "task": None}]})
+            with mock.patch.object(sys, "argv", ["record.py", "--out", out, "--scenes", "factory"]), \
+                    mock.patch.object(record, "main_root", return_value=MAIN), \
+                    mock.patch.object(record, "store_refusal", return_value=None), \
+                    mock.patch.object(record, "snapshot", return_value="a beta frame\n"), \
+                    mock.patch.object(record.os, "listdir", return_value=[ENC]), \
+                    mock.patch.object(record.os, "symlink"), \
+                    mock.patch.object(record.subprocess, "run", return_value=mock.Mock(stdout=sessions)), \
+                    mock.patch.object(record.strip, "render") as render:
+                with self.assertRaises(SystemExit):
+                    record.main()
+            render.assert_not_called()
+            self.assertFalse(os.path.exists(out))
