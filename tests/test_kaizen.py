@@ -878,7 +878,11 @@ class GhTests(unittest.TestCase):
         kaizen._write_cache(self.cache, {"as_of": time.time() - age, "watermark": WATERMARK, "prs": {"1": CACHED}})
 
     def logged(self):
-        return [json.loads(line) for p in glob.glob(os.path.join(self.factory, "gh-*.jsonl")) for line in open(p)]
+        lines = []
+        for p in glob.glob(os.path.join(self.factory, "gh-*.jsonl")):
+            with open(p) as f:
+                lines += f.readlines()
+        return [json.loads(line) for line in lines]
 
     def test_cold_fetch_pages_until_a_short_page_and_maps_the_fields(self):
         short = [rest(7, "worktree-x", "2026-11-09T00:00:00Z", merged="2026-11-09T01:00:00Z"),
