@@ -56,11 +56,11 @@ Start: headless Chrome (`tools/strip.py`, 120 s timeout), `bin/isshoni-tui` and 
 
 ## Container start script (`docker/start`)
 
-Starts `supercronic` and, when a key and the dashboard exist, a loop that runs `isshoni-tui --serve` and restarts it 2 s after it ends. Both are children of the script. A third, `revive &`, runs in the background when the same container restarts: `stop()` does not signal it, and inside it `claude agents --json` and `claude --bg` run without a timeout. Known gap, not fixed here.
+Starts `supercronic` and, when a key and the dashboard exist, a loop that runs `isshoni-tui --serve` and restarts it 2 s after it ends. Both are children of the script. A third, `revive &`, runs in the background when the same container restarts: `stop()` ends it too, and inside it `claude agents --json` and `claude --bg` each get 30 s.
 
 | Event | What happens | How learned |
 |---|---|---|
-| SIGTERM, SIGINT | The script stops the loop and cron, waits for both (`end`), exits 0. `end` sends TERM every 0.1 s until each child is gone, because a TERM that reaches a child the shell has just forked is lost in dash. `revive` is not signalled and may outlive it (gap). | `docker/start_test.go` (`noStubLeft`: no recorded process survives) |
+| SIGTERM, SIGINT | The script stops the loop, cron and `revive`, waits for each (`end`), exits 0. `end` sends TERM every 0.1 s until the child is gone, because a TERM that reaches a child the shell has just forked is lost in dash. | `docker/start_test.go` (`noStubLeft`: no recorded process survives) |
 | The server dies | Restarted after 2 s; the loop is not started again once a stop was asked for. | `docker/start_test.go` |
 | Left on disk | `TMPDIR=/state/tmp` is never emptied. Not measured: no container on this machine. | read |
 

@@ -5,13 +5,36 @@ set -eu
 mkdir -p "$HOME" "$TMPDIR"
 touch "$HOME/.crontab"
 
+# end stops a child and waits for it. A TERM that reaches a child the shell has just forked is lost (it still has
+# the shell's handler, not yet its own), so it is sent every 0.1 s until the child is gone.
+end() {
+	while kill -TERM "$1" 2>/dev/null; do sleep 0.1 || :; done
+	wait "$1" 2>/dev/null || :
+}
+
 # revive starts the dispatchers recorded in the factory's settings that a restart left out. It runs in the
-# background and skips, with one line, what it cannot do; no settings file is no line.
+# background and skips, with one line, what it cannot do; no settings file is no line. Each claude call
+# gets 30 s (a listing or a start that takes longer is hung) and is a background child of revive, so that
+# a TERM (stop) ends revive and the call at once.
 revive() {
 	settings="$HOME/.claude/factory/settings.json"
 	[ -r "$settings" ] || return 0
-	running=$(claude agents --json 2>/dev/null) || { echo "dispatchers not restarted: claude cannot list sessions" >&2; return 0; }
-	missing=$(printf '%s' "$running" | python3 -c '
+	child= stopping= out="$TMPDIR/revive.$$"
+	trap 'stopping=1; [ -z "$child" ] || end "$child"' TERM INT
+	trap 'rm -f "$out"' EXIT
+	# bg runs its command as the current child and returns its status; a TERM during it ends revive.
+	bg() {
+		"$@" &
+		child=$!
+		status=0
+		[ -n "$stopping" ] || wait "$child" || status=$?
+		end "$child"
+		child=
+		[ -z "$stopping" ] || exit 0
+		return "$status"
+	}
+	bg timeout 30 claude agents --json >"$out" 2>/dev/null || { echo "dispatchers not restarted: claude cannot list sessions" >&2; return 0; }
+	missing=$(python3 -c '
 import json, sys
 try:
     have = {a.get("name") for a in json.load(sys.stdin)}
@@ -19,9 +42,9 @@ try:
     print(*[n for n in want if isinstance(n, str) and n not in have], sep="\n")
 except (OSError, ValueError, TypeError, AttributeError):
     sys.exit(1)
-' "$settings" 2>/dev/null) || { echo "dispatchers not restarted: cannot read the session list or $settings" >&2; return 0; }
+' "$settings" <"$out" 2>/dev/null) || { echo "dispatchers not restarted: cannot read the session list or $settings" >&2; return 0; }
 	for name in $missing; do
-		(cd "$HOME/code/${name#dispatcher-}" && claude --bg -n "$name" --permission-mode auto "/factory:dispatch" >/dev/null) 2>/dev/null ||
+		{ cd "$HOME/code/${name#dispatcher-}" && bg timeout 30 claude --bg -n "$name" --permission-mode auto "/factory:dispatch" >/dev/null; } 2>/dev/null ||
 			echo "dispatcher $name not restarted" >&2
 	done
 }
@@ -30,7 +53,11 @@ except (OSError, ValueError, TypeError, AttributeError):
 id_file="$HOME/.container-id" id=${HOSTNAME:-$(hostname)} before=
 [ ! -r "$id_file" ] || before=$(cat "$id_file")
 echo "$id" > "$id_file"
-if [ "$before" = "$id" ]; then revive & fi
+revive_pid=
+if [ "$before" = "$id" ]; then
+	revive &
+	revive_pid=$!
+fi
 
 # Wanted: a key is in the file (docs/container.md) and the dashboard is built, checked once, here. The
 # server is restarted 2 s after it ends, however it ends. The container's life is supercronic's.
@@ -41,13 +68,6 @@ tui="$HOME/.isshoni/bin/isshoni-tui"
 if ! { [ -s "$keys" ] && [ -x "$tui" ]; }; then
 	exec supercronic "$HOME/.crontab"
 fi
-
-# end stops a child and waits for it. A TERM that reaches a child the shell has just forked is lost (it still has
-# the shell's handler, not yet its own), so it is sent every 0.1 s until the child is gone.
-end() {
-	while kill -TERM "$1" 2>/dev/null; do sleep 0.1 || :; done
-	wait "$1" 2>/dev/null || :
-}
 
 # serve_loop runs in the background; on TERM it stops the current child and ends.
 serve_loop() {
@@ -74,8 +94,10 @@ stop() {
 	stopping=1
 	[ -z "$loop" ] || kill -TERM "$loop" 2>/dev/null || :
 	[ -z "$cron" ] || kill -TERM "$cron" 2>/dev/null || :
+	[ -z "$revive_pid" ] || kill -TERM "$revive_pid" 2>/dev/null || :
 	[ -z "$loop" ] || end "$loop"
 	[ -z "$cron" ] || end "$cron"
+	[ -z "$revive_pid" ] || end "$revive_pid"
 }
 
 stopping= cron= loop=
@@ -90,4 +112,6 @@ status=0
 [ -n "$stopping" ] || wait "$cron" || status=$?
 [ -z "$stopping" ] || status=0
 end "$loop"
+# revive is not stopped when cron ends by itself: it is waited for (a stop during the wait ends it).
+[ -z "$revive_pid" ] || wait "$revive_pid" 2>/dev/null || :
 exit "$status"

@@ -566,12 +566,12 @@ def _site_manager(records, cutoff):
                 misses += 1
                 suppressed_first += bool(r.get("firing"))
             else:
-                firings[fid] = {"decision": None, "outcome": None}
+                firings[fid] = {"decision": None, "to": None, "outcome": None}
         elif f and "decision" in r and f["decision"] is None:
-            f["decision"] = r["decision"]
+            f["decision"], f["to"] = r["decision"], r.get("to")
         elif f and "outcome" in r:
             f["outcome"] = r["outcome"]
-    escalated = [f for f in firings.values() if f["decision"] == "escalated"]
+    escalated = [f for f in firings.values() if f["decision"] == "escalated" and f["to"] != "lead"]  # a lead's message is not the dispatcher's
     acted = sum(f["outcome"] == "acted" for f in escalated)
     ignored = sum(f["outcome"] == "ignored" for f in escalated)
     ratio = lambda n, d: round(n / d, 6) if d else None  # noqa: E731

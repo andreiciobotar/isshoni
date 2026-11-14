@@ -450,7 +450,7 @@ class NewTests(unittest.TestCase):
                 "Your task slug is demo-task. Before each message to the dispatcher run `factory dispatcher`: "
                 "it prints its current session name (now d1). "
                 "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
-                "Your time limit is 2 hours. Your brief follows.\n\ndo it"]
+                "Your time limit is 120 minutes. Your brief follows.\n\ndo it"]
         self.assertEqual(fake.calls[-1], want)
 
     def test_lean_start_off_launches_the_old_argv_without_listing_plugins(self):
@@ -464,7 +464,7 @@ class NewTests(unittest.TestCase):
             "Your task slug is demo-task. Before each message to the dispatcher run `factory dispatcher`: "
                 "it prints its current session name (now d1). "
             "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
-            "Your time limit is 2 hours. Your brief follows.\n\ndo it"])
+            "Your time limit is 120 minutes. Your brief follows.\n\ndo it"])
         self.assertFalse(fake.ran("claude", "plugin"))
 
     def test_a_failing_plugin_list_still_launches_without_enabled_plugins(self):
@@ -670,6 +670,32 @@ class NewTests(unittest.TestCase):
         (rec,) = fake.tasks
         self.assertEqual((rec["repo"], rec["slug"], rec["state"], rec["role"]), (ROOT, "demo-task", "working", "dispatcher"))
 
+    def test_a_fractional_setting_is_told_in_whole_minutes(self):
+        _, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK), '{"task_time_limit_hours": 1.5}')
+        self.assertIn("Your time limit is 90 minutes.", next(c for c in fake.calls if c[:2] == ["claude", "--bg"])[-1], err)
+
+    def test_a_sized_brief_sets_the_limit_and_is_recorded(self):
+        args = ["new", "demo-task", "--brief", "go\nExpected size: Small", "--dispatcher", "d1"]
+        with mock.patch.object(factory, "task_event") as event:
+            code, _, err, fake = invoke(args, self.answers([], (), self.OK))
+        self.assertEqual(code, 0, err)
+        self.assertIn("Your time limit is 45 minutes.", next(c for c in fake.calls if c[:2] == ["claude", "--bg"])[-1])
+        self.assertTrue(fake.ran("git", "config", "branch.worktree-demo-task.factorySize", "small"))
+        self.assertEqual(event.call_args.kwargs["size"], "small")
+
+    def test_an_unsized_brief_records_nothing(self):
+        with mock.patch.object(factory, "task_event") as event:
+            _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK))
+        self.assertFalse(fake.ran("git", "config", "branch.worktree-demo-task.factorySize"))
+        self.assertNotIn("size", event.call_args.kwargs)
+
+    def test_a_failed_size_record_warns_and_the_task_starts(self):
+        args = ["new", "demo-task", "--brief", "Expected size: medium", "--dispatcher", "d1"]
+        answers = self.answers([], (), self.OK, {("git", "config", "branch.worktree-demo-task.factorySize"): (1, "", "locked")})
+        code, _, err, _ = invoke(args, answers)
+        self.assertEqual(code, 0)
+        self.assertIn("cannot record the size", err)
+
     def test_a_failed_launch_declares_nothing(self):
         _, _, _, fake = invoke(self.ARGS, self.answers([], (), {("claude", "--bg"): (1, "", "boom")}))
         self.assertEqual(fake.tasks, [])
@@ -853,6 +879,28 @@ def git_task_answers(slug, now, *, dirty="", counts="0\t2", commit_age=0, pr=Non
         ("git", "log"): (0, f"{int(now - commit_age)} sha-{slug}\n", ""),
         ("gh",): (0, json.dumps(pr if pr is not None else []), "") if pr != "missing" else (127, "", "no gh"),
     }
+
+
+NEARING = '[{"name": "nearing-limit", "threshold": 75}]'
+
+
+class LimitTests(unittest.TestCase):
+    def test_brief_size(self):
+        for brief, want in (("Expected size: small", "small"), ("expected SIZE: Medium\nmore", "medium"),
+                            ("x\nExpected size: about large, not small", "large"), ("no line", None),
+                            ("Expected size: tiny", None), ("Expected size: undersized", None),
+                            ("Expected size:\nsmall", None), ("a\nExpected size: large\nExpected size: small", "large")):
+            with self.subTest(brief=brief):
+                self.assertEqual(factory.brief_size(brief), want)
+
+    def test_task_limit(self):
+        self.assertEqual([factory.task_limit(s, 2) for s in ("small", "medium", "large", None, "huge")],
+                         [2700, 5400, 7200, 7200, 7200])
+        self.assertEqual([factory.task_limit(s, 1) for s in ("small", "medium", "large", None)], [2700, 3600, 3600, 3600])
+
+    def test_span(self):
+        self.assertEqual([factory.span(s) for s in (0, 59, 60, 2460, 3600, 5400, 7200, 7260)],
+                         ["0m", "0m", "1m", "41m", "1h", "1h30m", "2h", "2h1m"])
 
 
 class StatusTests(unittest.TestCase):
@@ -1167,6 +1215,75 @@ class StatusTests(unittest.TestCase):
         answers = repo_answers([task_entry("alpha")], [s], git_task_answers("x", time.time()))
         _, out, _, _ = invoke(["status", "--json"], answers, '{"task_time_limit_hours": 1}')
         self.assertTrue(json.loads(out)["rows"][0]["overtime"])
+
+    def rows_for(self, minutes, size=None, criteria=NEARING, state="working", hours=None):
+        """The row of a working task `minutes` into its run, with `criteria` as the criteria file's text."""
+        s = {"cwd": f"{WT}/alpha", "kind": "background", "status": "busy", "state": "working",
+             "startedAt": int(time.time() * 1000) - minutes * 60 * 1000}
+        extra = {("git", "config", "--get", "branch.worktree-alpha.factorySize"): (0, size + "\n", "")} if size else {}
+        answers = repo_answers([task_entry("alpha")], [s], git_task_answers("x", time.time()), extra)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d, "criteria.json")
+            if criteria is not None:
+                path.write_text(criteria)
+            with mock.patch.object(factory, "CRITERIA_PATH", path):
+                _, out, _, _ = invoke(["status", "--json"], answers, hours and json.dumps({"task_time_limit_hours": hours}),
+                                      tasks=[task_rec("alpha", state)] if state else ())
+        return json.loads(out)["rows"][0]
+
+    def test_limit_size_and_nearing_by_minutes(self):
+        for minutes, size, limit, nearing, overtime in (
+                (10, "small", 2700, False, False), (34, "small", 2700, True, False), (50, "small", 2700, False, True),
+                (50, "medium", 5400, False, False), (70, "medium", 5400, True, False), (100, "large", 7200, True, False),
+                (91, None, 7200, True, False), (95, "bogus", 7200, True, False), (80, None, 7200, False, False)):
+            with self.subTest(minutes=minutes, size=size):
+                row = self.rows_for(minutes, size)
+                self.assertEqual((row["limit"], row["nearing"], row["overtime"]), (limit, nearing, overtime))
+                self.assertEqual(row["size"], size if size in factory.SIZE_LIMIT_MINUTES else None)
+
+    def test_the_setting_is_the_ceiling(self):
+        row = self.rows_for(10, "large", hours=1)
+        self.assertEqual(row["limit"], 3600)
+
+    def test_a_fractional_setting_gives_whole_seconds(self):
+        row = self.rows_for(10, hours=1.5)
+        self.assertEqual(row["limit"], 5400)
+        self.assertIsInstance(row["limit"], int)
+        self.assertEqual(factory.span(row["limit"]), "1h30m")
+
+    def test_nothing_is_nearing_without_the_criteria_entry(self):
+        for criteria in (None, "not json", "{}", "[1]", "[]", "5", "null", '[{"name": "nearing-limit"}]',
+                         '[{"name": "nearing-limit", "threshold": true}]', '[{"name": "nearing-limit", "threshold": 0}]'):
+            with self.subTest(criteria=criteria):
+                self.assertFalse(self.rows_for(40, "small", criteria)["nearing"])
+
+    def test_only_a_working_task_is_nearing(self):
+        for state in ("handed-over", "blocked", None):
+            with self.subTest(state=state):
+                self.assertFalse(self.rows_for(40, "small", state=state)["nearing"])
+        self.assertTrue(self.rows_for(40, "small")["nearing"])
+
+    def test_nearing_is_past_the_threshold_not_at_it(self):
+        self.assertFalse(self.rows_for(30, "small")["nearing"])  # 67% of 45m
+        self.assertFalse(self.rows_for(40)["nearing"])  # 33% of the 2h ceiling
+        self.assertTrue(self.rows_for(91)["nearing"])  # 76% of the 2h ceiling
+
+    def test_table_cell_and_size_column(self):
+        s = {"cwd": f"{WT}/alpha", "kind": "background", "status": "busy", "state": "working",
+             "startedAt": int(time.time() * 1000) - 41 * 60 * 1000}
+        answers = repo_answers([task_entry("alpha")], [s], git_task_answers("x", time.time()),
+                               {("git", "config", "--get", "branch.worktree-alpha.factorySize"): (0, "small\n", "")})
+        _, out, _, _ = invoke(["status"], answers)
+        head, row = out.splitlines()[:2]
+        self.assertEqual(head.split()[7:9], ["ELAPSED", "SIZE"])
+        self.assertEqual(row.split()[7:11], ["41m", "/", "45m", "small"])
+
+    def test_the_cell_outside_motion_is_the_elapsed_alone(self):
+        s = {"cwd": f"{WT}/alpha", "kind": "background", "status": "idle", "state": "done",
+             "startedAt": int(time.time() * 1000) - 41 * 60 * 1000}
+        _, out, _, _ = invoke(["status"], repo_answers([task_entry("alpha")], [s], git_task_answers("x", time.time())),
+                              tasks=[task_rec("alpha", "handed-over", "http://d")])
+        self.assertEqual(out.splitlines()[1].split()[7:9], ["41m", "-"])
 
     def test_table_output(self):
         entries = [task_entry("alpha"), (f"{WT}/agent-1a2b", "b", False), ("/elsewhere", "c", False)]
@@ -1485,6 +1602,122 @@ class CleanTests(unittest.TestCase):
         self.assertIn(["git", "worktree", "remove", f"{WT}/x"], fake.calls)
 
 
+class AgentCleanTests(unittest.TestCase):
+    """`clean` and the dead subagent worktrees `agent-*` that Claude Code leaves behind."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = os.path.realpath(tmp.name)
+        self.path = f"{self.root}/.claude/worktrees/agent-ab"
+        os.makedirs(self.path)
+        self.age(25)
+
+    def age(self, hours):
+        t = time.time() - hours * 3600
+        os.utime(self.path, (t, t))
+
+    def clean(self, *, branch="worktree-agent-ab", lock=None, entries=(), dry=False, sessions=(), extra=None):
+        agent = (self.path, branch, False, *(() if lock is None else (lock,)))
+        answers = {
+            ("git", "worktree", "list"): (0, porcelain((self.root, "main", False), agent, *entries), ""),
+            ("git", "symbolic-ref"): (0, "refs/remotes/origin/main\n", ""),
+            ("claude", "agents"): (0, json.dumps(list(sessions)), ""),
+            ("git", "status"): (0, "", ""),
+            ("git", "rev-parse", "refs/heads/worktree-agent-ab"): (0, "sha-ab\n", ""),
+            ("git", "rev-parse", "origin/main^{tree}"): (0, "tree1\n", ""),
+            ("git", "merge-tree"): (0, "tree1\n", ""),
+            ("lsof",): (0, "p1\ncsh\nn/elsewhere\n", ""),
+            ("git", "worktree", "remove"): (0, "", ""),
+            ("git", "update-ref"): (0, "", ""),
+        }
+        answers.update(extra or {})
+        return invoke(["clean"] + (["--dry-run"] if dry else []), answers)
+
+    def holder(self, name):
+        return {("lsof",): (0, f"p9\ncnode\nn{name}\n", "")}
+
+    def test_keep_reasons(self):
+        nested = (f"{self.path}/.claude/worktrees/agent-1", "worktree-agent-1", False)
+        cases = {
+            "young": (dict(), "younger than 24 h"),
+            "detached head": (dict(branch=None), "detached HEAD, no branch to judge"),
+            "locked": (dict(lock="claude agent (pid 7)"),
+                       f"locked \\(claude agent \\(pid 7\\)\\); if nothing uses it, run: git worktree unlock {self.path}$"),
+            "locked without a reason": (dict(lock=""), f"locked; if nothing uses it, run: git worktree unlock {self.path}$"),
+            "worktree nested inside": (dict(entries=[nested]), "another worktree is registered inside it: .*/agent-1$"),
+            "uncommitted": (dict(extra={("git", "status"): (0, " M a\n", "")}), "uncommitted changes$"),
+            "unreadable status": (dict(extra={("git", "status"): (128, "", "bad")}), "cannot read git status$"),
+            "branch unreadable": (dict(extra={("git", "rev-parse", "refs/heads/worktree-agent-ab"): (128, "", "no ref")}),
+                                  "cannot tell whether worktree-agent-ab is merged: no ref$"),
+            "unmerged work": (dict(extra={("git", "merge-tree"): (0, "other\n", "")}),
+                              "branch worktree-agent-ab has work that is in neither origin/main nor a live task branch$"),
+            "conflict with a matching first line": (dict(extra={("git", "merge-tree"): (1, "tree1\n", "CONFLICT")}),
+                                                    "has work that is in neither origin/main"),
+            "merge-tree fails": (dict(extra={("git", "merge-tree"): (129, "", "unknown option")}),
+                                 "cannot tell whether worktree-agent-ab is merged: unknown option$"),
+            "target tree unreadable": (dict(extra={("git", "rev-parse", "origin/main^{tree}"): (128, "", "bad rev")}),
+                                       "cannot tell whether worktree-agent-ab is merged: bad rev$"),
+            "session inside": (dict(sessions=[{"id": "s1", "cwd": f"{self.path}/src", "kind": "interactive"}]),
+                               "session s1 works in it$"),
+            "process cwd": (dict(extra=self.holder(self.path)), r"pid 9 \(node\) uses it$"),
+            "process file open inside": (dict(extra=self.holder(f"{self.path}/src/a.py")), r"pid 9 \(node\) uses it$"),
+            "lsof fails": (dict(extra={("lsof",): (1, "", "boom")}), "cannot list open files: lsof printed nothing"),
+            "lsof missing": (dict(extra={("lsof",): (127, "", "No such file")}), "cannot list open files"),
+            "lsof timed out": (dict(extra={("lsof",): (124, "", "timed out")}), "cannot list open files"),
+        }
+        for name, (kw, pattern) in cases.items():
+            with self.subTest(name):
+                self.age(1 if name == "young" else 25)
+                code, out, _, fake = self.clean(**kw)
+                self.assertEqual(code, 0)
+                self.assertRegex(out.strip(), f"^kept agent-ab: .*{pattern}")
+                self.assertFalse(fake.ran("git", "worktree", "remove") or fake.ran("git", "update-ref"))
+
+    def test_a_process_in_a_sibling_directory_does_not_keep_it(self):
+        _, out, _, _ = self.clean(extra=self.holder(f"{self.path}-other/x"))
+        self.assertEqual(out.strip(), "removed agent-ab (its work is in origin/main)")
+
+    def test_it_is_removed_without_force_and_its_branch_deleted_at_the_judged_commit(self):
+        code, out, _, fake = self.clean()
+        self.assertEqual((code, out.strip()), (0, "removed agent-ab (its work is in origin/main)"))
+        self.assertIn(["git", "worktree", "remove", self.path], fake.calls)
+        self.assertIn(["git", "update-ref", "-d", "refs/heads/worktree-agent-ab", "sha-ab"], fake.calls)
+        self.assertFalse([c for c in fake.calls if "--force" in c or "-f" in c or c[:2] == ["git", "branch"]])
+
+    def test_the_work_may_be_in_a_live_task_branch(self):
+        task = (f"{self.root}/.claude/worktrees/x", "worktree-x", False)
+        extra = {("git", "merge-tree", "--write-tree", "origin/main"): (0, "other\n", ""),
+                 ("git", "rev-parse", "worktree-x^{tree}"): (0, "tree1\n", "")}
+        _, out, _, _ = self.clean(entries=[task], dry=True, extra=extra)
+        self.assertIn("would remove agent-ab (its work is in worktree-x)", out.splitlines())
+
+    def test_dry_run_removes_nothing(self):
+        code, out, _, fake = self.clean(dry=True)
+        self.assertEqual((code, out.strip()), (0, "would remove agent-ab (its work is in origin/main)"))
+        self.assertFalse(fake.ran("git", "worktree", "remove") or fake.ran("git", "update-ref"))
+
+    def test_a_refused_removal_is_kept_and_not_a_failure(self):
+        code, out, err, fake = self.clean(extra={("git", "worktree", "remove"): (1, "", "contains modified files")})
+        self.assertEqual((code, out.strip(), err), (0, "kept agent-ab: git worktree remove: contains modified files", ""))
+        self.assertFalse(fake.ran("git", "update-ref"))
+
+    def test_a_branch_that_moved_is_kept(self):
+        code, out, err, _ = self.clean(extra={("git", "update-ref"): (1, "", "cannot lock ref")})
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out.splitlines(), ["removed agent-ab (its work is in origin/main)",
+                                            "kept branch worktree-agent-ab: cannot lock ref"])
+
+    def test_lsof_is_asked_once_for_all_agents(self):
+        other = f"{self.root}/.claude/worktrees/agent-cd"
+        os.makedirs(other)
+        old = time.time() - 25 * 3600
+        os.utime(other, (old, old))
+        _, _, _, fake = self.clean(entries=[(other, "worktree-agent-cd", False)],
+                                   extra={("git", "rev-parse", "refs/heads/worktree-agent-cd"): (0, "sha-cd\n", "")})
+        self.assertEqual([c for c in fake.calls if c[0] == "lsof"], [["lsof", "-w", "-F", "pcn"]])
+
+
 class EndToEndTests(unittest.TestCase):
     FAKE_CLAUDE = """#!/usr/bin/env python3
 import json, os, sys
@@ -1502,6 +1735,10 @@ else:
 import os
 print(os.environ["FAKE_PR"])
 """
+    FAKE_LSOF = """#!/usr/bin/env python3
+import os
+print(os.environ["FAKE_LSOF"])
+"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1510,7 +1747,7 @@ print(os.environ["FAKE_PR"])
         self.repo, self.home, bindir = tmp / "repo", tmp / "home", tmp / "bin"
         for d in (self.repo, self.home, bindir):
             d.mkdir()
-        for name, text in (("claude", self.FAKE_CLAUDE), ("gh", self.FAKE_GH)):
+        for name, text in (("claude", self.FAKE_CLAUDE), ("gh", self.FAKE_GH), ("lsof", self.FAKE_LSOF)):
             tool = bindir / name
             tool.write_text(text)
             tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
@@ -1519,7 +1756,7 @@ print(os.environ["FAKE_PR"])
                            "cwd": str(self.repo)}
         self.env = {**os.environ, "HOME": str(self.home), "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
                     "FAKE_ARGV": str(self.argv_file), "FAKE_AGENTS": json.dumps([self.dispatcher]),
-                    "FAKE_PR": "[]", "CLAUDE_CODE_SESSION_ID": "sid-d", "GIT_AUTHOR_NAME": "t",
+                    "FAKE_PR": "[]", "FAKE_LSOF": "p1\ncinit\nn/", "CLAUDE_CODE_SESSION_ID": "sid-d", "GIT_AUTHOR_NAME": "t",
                     "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
         self.git("init", "-q", "-b", "main")
         self.git("commit", "-q", "--allow-empty", "-m", "init")
@@ -1584,6 +1821,40 @@ print(os.environ["FAKE_PR"])
         self.assertEqual((p.returncode, p.stdout.strip(), p.stderr), (0, "removed demo-task", ""))
         self.assertFalse(task_dir.exists())
         self.assertEqual(self.git("branch", "--list", "worktree-demo-task"), "")
+
+    def test_clean_removes_only_dead_agent_worktrees(self):
+        agents = {n: self.repo / ".claude/worktrees" / f"agent-{n}" for n in "abcdefg"}
+        for n, path in agents.items():
+            self.git("worktree", "add", "-q", "-b", f"worktree-agent-{n}", str(path))
+        self.git("worktree", "add", "-q", "-b", "worktree-demo", ".claude/worktrees/demo")
+        shas = {}
+        for n in "bcd":
+            (agents[n] / f"{n}.txt").write_text(n)
+            self.git("-C", str(agents[n]), "add", ".")
+            self.git("-C", str(agents[n]), "commit", "-q", "-m", n)
+            shas[n] = self.git("-C", str(agents[n]), "rev-parse", "HEAD").strip()
+        self.git("commit", "-q", "--allow-empty", "-m", "main moves on")  # a: an ancestor now, not the tip
+        self.git("cherry-pick", shas["b"])  # b: in main by content, not an ancestor
+        self.git("-C", str(self.repo / ".claude/worktrees/demo"), "merge", "-q", "--no-edit", "worktree-agent-c")
+        (agents["e"] / "dirty.txt").write_text("x")
+        old = time.time() - 25 * 3600
+        for n in "abcdeg":
+            os.utime(agents[n], (old, old))
+        lsof = f"p4242\ncnode\nfcwd\nn{agents['g']}\n"
+        p = self.factory("clean", "--dry-run", env={"FAKE_LSOF": lsof})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(all(path.is_dir() for path in agents.values()))
+        p = self.factory("clean", env={"FAKE_LSOF": lsof})
+        self.assertEqual((p.returncode, p.stderr), (0, ""))
+        for n, target in (("a", "main"), ("b", "main"), ("c", "worktree-demo")):
+            self.assertIn(f"removed agent-{n} (its work is in {target})", p.stdout.splitlines())
+            self.assertFalse(agents[n].exists())
+            self.assertEqual(self.git("branch", "--list", f"worktree-agent-{n}"), "")
+        for n, why in (("d", "has work that is in neither main nor a live task branch"), ("e", "uncommitted changes"),
+                       ("f", "younger than 24 h"), ("g", "pid 4242 (node) uses it")):
+            self.assertTrue(agents[n].is_dir())
+            self.assertIn(f"worktree-agent-{n}", self.git("branch", "--list", f"worktree-agent-{n}"))
+            self.assertRegex(p.stdout, f"(?m)^kept agent-{n}: .*{re.escape(why)}")
 
     def test_new_refuses_a_slug_whose_branch_is_on_the_remote(self):
         self.git("push", "-q", "origin", "HEAD:refs/heads/worktree-demo-task")

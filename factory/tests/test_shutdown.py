@@ -13,13 +13,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from test_factory import BIN, ROOT, WT, FakeRun, factory, porcelain
+from test_factory import BIN, ROOT, WT, FakeRun, factory, invoke, porcelain, repo_answers
 from test_factory import DISPATCHER
-from test_health import HOUR, NOW, SID, Harness, check, choice, fired, iso, lead, pic, register, reply
+from test_health import HOUR, NOW, SID, Harness, check, choice, decided, fired, iso, lead, pic, register, reply
 
 FAKE_CLAUDE = """#!/bin/sh
 case "$1" in
-  agents) echo '[]'; exit 0 ;;
+  agents) echo "${AGENTS:-[]}"; exit 0 ;;
 esac
 sleep 60 &
 echo $! > "$GRANDCHILD"
@@ -37,7 +37,7 @@ sleep 60 >/dev/null 2>&1 &
 echo $! > "$GRANDCHILD"
 """
 FAKE_GH = """#!/bin/sh
-echo '[{"number": 1, "url": "u", "isDraft": false, "headRefName": "worktree-t", "headRefOid": "abc", "baseRefName": "main", "author": {"login": "a"}, "isCrossRepository": false, "latestReviews": [], "comments": []}]'
+echo '[{"number": 1, "url": "u", "isDraft": false, "headRefName": "worktree-t", "headRefOid": "abc", "baseRefName": "main", "author": {"login": "a"}, "isCrossRepository": true, "latestReviews": [], "comments": []}]'
 """
 
 
@@ -171,13 +171,15 @@ class RunLifetimeTests(Fakes):
         self.assertIsNotNone(child.poll())
 
     def run_script(self, env):
-        """The script `lander 1` in a throwaway repository, in a process group of its own."""
+        """The script `lander 1` in a throwaway repository, in a process group of its own: the pull request is a fork,
+        so the loop stops on it and tells the dispatcher (the fake `claude` lists one) with a `claude -p` run."""
         repo, home = self.tmp / "repo", self.tmp / "home"
         repo.mkdir()
         home.mkdir()
         subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30)
+        agents = json.dumps([{"sessionId": "sid-d", "name": "dispatcher-repo", "cwd": str(repo), "kind": "interactive"}])
         env = {**os.environ, "HOME": str(home), "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
-               "GRANDCHILD": str(self.grandchild), "CLAUDE_CODE_SESSION_ID": "sid-d", **env}
+               "GRANDCHILD": str(self.grandchild), "CLAUDE_CODE_SESSION_ID": "sid-d", "AGENTS": agents, **env}
         env.pop("FACTORY_HOME", None)
         return start_in_group(self, [sys.executable, str(BIN), "lander", "1"], cwd=repo, env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -203,7 +205,7 @@ class RunLifetimeTests(Fakes):
         self.assertTrue(gone(pid))
 
     def script_gets(self, signum):
-        """The script `lander 1` with the fake `claude` and `gh`, signalled during the claude run."""
+        """The script `lander 1` with the fake `claude` and `gh`, signalled during the courier's claude run."""
         p = self.run_script({})
         pid = self.started()
         os.kill(p.pid, signum)
@@ -316,7 +318,7 @@ class BusyEveryTickTests(Harness):
 
     def setUp(self):
         super().setUp()
-        factory.write_lander(SimpleNamespace(root=ROOT), {"noticed": {}, "stopped": {}, "health": NOW - 10})  # no health pass
+        factory.write_lander(SimpleNamespace(root=ROOT), {"stopped": {}, "waiting": {}, "health": NOW - 10})  # no health pass
         self.busy = [DISPATCHER | {"name": "dispatcher-repo"}, lead("x", pid=100)]
 
     def hand_over(self, minutes):
@@ -333,8 +335,8 @@ class BusyEveryTickTests(Harness):
     def test_a_task_not_yet_past_the_threshold_costs_nothing_extra(self):
         self.hand_over(5)
         self.assertIn("nothing new", self.tick())
-        # the one listing is the draft sync's, which runs with any handed-over task
-        self.assertEqual((self.count("claude", "agents"), self.count("ps"), self.count("claude", "-p")), (1, 0, 0))
+        # the listings are the draft sync's and the lander loop's, which run with any handed-over task
+        self.assertEqual((self.count("claude", "agents"), self.count("ps"), self.count("claude", "-p")), (2, 0, 0))
 
     def test_no_handed_over_task_runs_no_session_listing_and_no_ps(self):
         self.assertIn("nothing new", self.tick())
@@ -346,8 +348,8 @@ class BusyEveryTickTests(Harness):
         [record] = self.records()
         self.assertEqual((record["criterion"], record["subject"]), ("busy-after-handover", "x"))
         self.assertIn("101 up 19:00: sleep 600", record["detail"])
-        # two listings: the draft sync's and the criterion's
-        self.assertEqual((self.count("claude", "agents"), self.count("ps"), len(self.claude_runs())), (2, 1, 1))
+        # three listings: the draft sync's, the criterion's and the lander loop's
+        self.assertEqual((self.count("claude", "agents"), self.count("ps"), len(self.claude_runs())), (3, 1, 1))
 
     def test_an_undecided_finding_is_sent_again_on_the_health_pass_only_and_a_decided_one_is_not(self):
         self.hand_over(7)
@@ -407,8 +409,19 @@ class BusyEveryTickTests(Harness):
         self.hand_over(7)
         self.tick()
         [sent] = json.loads(self.claude_runs()[0][-1].partition("\n\n")[2])
-        self.assertNotIn("task", sent)
+        self.assertEqual(sent["task"], {"worktree": f"{WT}/x", "lead": "x", "pid": 100})
         self.assertEqual(sent["transcript_tail"], ["T0 user: start"])
+
+    def test_a_lead_told_longer_than_the_grace_ago_is_fired_again_on_a_tick_between_health_passes(self):
+        self.hand_over(7)
+        told = NOW + 120 - (factory.LEAD_GRACE_MINUTES + 1) * 60
+        self.seed("firings", [fired("aaa", "busy-after-handover", "judgment"),
+                              decided("aaa", "escalated", ts=told, reason="stop sleep") | {"to": "lead"}])
+        self.tick(at=NOW + 120)
+        [argv] = self.claude_runs()
+        [sent] = json.loads(argv[-1].partition("\n\n")[2])
+        self.assertNotEqual(sent["id"], "aaa")
+        self.assertTrue(sent["lead_told"])
 
     def test_the_other_criteria_are_left_alone_between_health_passes(self):
         self.seed("firings", [fired("a", criterion="past-limit")])  # open, and not evaluated on this tick
@@ -422,10 +435,11 @@ class StaleLinesTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
-        patch = mock.patch.object(factory, "JOBS_DIR", self.tmp / "jobs")
-        patch.start()
-        self.addCleanup(patch.stop)
-        (self.tmp / "jobs").mkdir()
+        for name, path in (("JOBS_DIR", self.tmp / "jobs"), ("STORE", self.tmp / "store")):
+            patch = mock.patch.object(factory, name, path)
+            patch.start()
+            self.addCleanup(patch.stop)
+            path.mkdir()
 
     def old(self, path, hours=25):
         path.mkdir(exist_ok=True)
@@ -445,8 +459,8 @@ class StaleLinesTests(unittest.TestCase):
         self.assertEqual(factory.stale_lines(SimpleNamespace(agents=[])), [])
 
     def test_old_subagent_worktrees_are_counted_and_named_at_most_five(self):
-        paths = [str(self.old(self.tmp / f"agent-{i}")) for i in range(7)]
-        young = str(self.old(self.tmp / "agent-new", hours=1))
+        paths = [{"path": str(self.old(self.tmp / f"agent-{i}"))} for i in range(7)]
+        young = {"path": str(self.old(self.tmp / "agent-new", hours=1))}
         (line,) = factory.stale_lines(SimpleNamespace(agents=[*paths, young]))
         self.assertEqual(line, "7 subagent worktrees (agent-*) older than 24 h: agent-0, agent-1, agent-2, agent-3, agent-4")
 
@@ -459,12 +473,83 @@ class StaleLinesTests(unittest.TestCase):
         (line,) = factory.stale_lines(SimpleNamespace(agents=[]))
         self.assertTrue(line.startswith("2 finished job directories older than 24 h under ~/.claude/jobs (2.0 MB)"), line)
 
+    def clean(self, lsof):
+        code, out, err, fake = invoke(["clean"], {**repo_answers([]), ("lsof",): lsof})
+        self.assertEqual((code, err), (0, ""))
+        return out.splitlines(), fake
+
+    def test_clean_reports_finished_jobs_and_never_removes_them(self):
+        a, b, c = (self.job(n, "done") for n in "abc")
+        self.job("d", "done", hours=1)
+        self.job("e", "working")
+        held = os.path.realpath(a / "tmp" / "blob")
+        lsof = f"p4242\ncvim\nfcwd\nn/elsewhere\nftxt\nn{held}\np7\ncother\nn/tmp\n"
+        lines, fake = self.clean((0, lsof, ""))
+        self.assertEqual(lines, ["kept job a: belongs to Claude Code; pid 4242 (vim) has files open in it",
+                                 "kept job b: belongs to Claude Code; no process has files open in it, try: claude rm b",
+                                 "kept job c: belongs to Claude Code; no process has files open in it, try: claude rm c"])
+        self.assertEqual([c for c in fake.calls if c[0] == "lsof"], [["lsof", "-w", "-F", "pcn"]])
+        self.assertFalse(fake.ran("claude", "rm"))
+        self.assertTrue(all(d.is_dir() for d in (a, b, c)))
+
+    def test_a_directory_whose_name_only_starts_like_the_job_is_not_inside_it(self):
+        a = self.job("a", "done")
+        lines, _ = self.clean((0, f"p7\ncother\nn{os.path.realpath(a)}-other/x\n", ""))
+        self.assertEqual(lines, ["kept job a: belongs to Claude Code; no process has files open in it, try: claude rm a"])
+
+    def test_clean_says_when_it_cannot_list_open_files(self):
+        self.job("a", "done")
+        for lsof in ((1, "", "boom"), (127, "", "no lsof"), (124, "", "timed out"), (0, "", "")):
+            with self.subTest(lsof=lsof):
+                (line,), _ = self.clean(lsof)
+                self.assertRegex(line, "^kept job a: belongs to Claude Code; cannot list open files: lsof printed nothing")
+
+    def test_clean_asks_lsof_only_when_something_needs_it(self):
+        self.job("d", "done", hours=1)
+        lines, fake = self.clean((1, "", "boom"))
+        self.assertEqual((lines, fake.ran("lsof")), ([], False))
+
     def test_the_repo_lists_its_agent_worktrees(self):
         listed = porcelain((ROOT, "main", False), (f"{WT}/agent-ab", "worktree-agent-ab", False),
                            (f"{WT}/task", "worktree-task", False))
         with mock.patch.object(factory, "run", FakeRun({("git", "worktree"): (0, listed, "")})):
             repo = factory.Repo()
-        self.assertEqual((repo.agents, repo.leftover), ([f"{WT}/agent-ab"], 1))
+        self.assertEqual(([(a["path"], a["branch"], a["locked"]) for a in repo.agents], repo.leftover),
+                         ([(f"{WT}/agent-ab", "worktree-agent-ab", None)], 1))
+
+    def test_the_repo_keeps_the_branch_and_the_lock_of_an_agent_worktree(self):
+        listed = porcelain((ROOT, "main", False), (f"{WT}/agent-ab", "worktree-agent-ab", False, "claude agent (pid 7)"),
+                           (f"{WT}/agent-cd", None, False))
+        with mock.patch.object(factory, "run", FakeRun({("git", "worktree"): (0, listed, "")})):
+            repo = factory.Repo()
+        self.assertEqual([(a["branch"], a["locked"]) for a in repo.agents],
+                         [("worktree-agent-ab", "claude agent (pid 7)"), (None, None)])
+
+    def test_strangers_in_the_store_are_counted_and_named_at_most_five(self):
+        store = self.tmp / "store"
+        for name in ("tmp", *(f"tmp-fix{i}.py" for i in range(1, 7)), "tasks.jsonl", "cache"):
+            (store / name).mkdir() if name in ("tmp", "cache") else (store / name).write_text("x")
+        (line,) = factory.stale_lines(SimpleNamespace(agents=[]))
+        self.assertEqual(line, f"7 entries in {store} the factory does not write: "
+                               "tmp, tmp-fix1.py, tmp-fix2.py, tmp-fix3.py, tmp-fix4.py")
+
+    def test_every_name_the_factory_writes_in_the_store_is_not_a_stranger(self):
+        store = self.tmp / "store"
+        for name in ("events", "tasks", "feedback", "firings", "retros", "comments", "gh"):
+            factory.log(name, {"ts": factory.now()})
+        root = "/some/repo"
+        for kind, ext in (("dispatcher", "json"), ("comments", "json"), ("lander", "json"), ("watch", "lock"),
+                          ("lander", "lock"), ("word", "json"), ("word", "json.tmp"), ("dispatcher", "json.tmp"), ("comments", "json.tmp"), ("lander", "json.tmp")):
+            factory.repo_state(root, kind, ext).write_text("x")
+        for name in ("tasks.jsonl", "events.jsonl", "settings.json", "watch.log", "hosts.json", "hosts.json.tmp",
+                     ".settings-ab12.tmp"):
+            (store / name).write_text("x")
+        for name in ("cache", "comments", "identity", "specs", "deliverables", "dashboard"):
+            (store / name).mkdir()
+        self.assertEqual(factory.strangers(), [])
+        (store / "tmp-fix1.py").write_text("x")
+        (store / "gh.jsonl").write_text("x")
+        self.assertEqual([p.name for p in factory.strangers()], ["gh.jsonl", "tmp-fix1.py"])
 
 
 class HealthLinesTests(Harness):
