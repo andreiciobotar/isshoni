@@ -85,7 +85,7 @@ Per pull request, a loop that starts with the merge command, because the command
    - Failed or cancelled checks: stop `ci` with the checks' names and the link `gh pr checks <n>` gives.
    - `no task worktree has its head branch` (the brief says `no task`): stop `handover` at once.
    - Another handover reason (the task is not handed over, or has local commits): wait 60 s and try again, at most 5 times (a lead's turn may not have ended), then stop `handover`.
-   - Not approved, a draft, or stale: stop `unapproved` or `stale`; the human must approve again, never ask for an `lgtm`.
+   - Not approved or stale: stop `unapproved` or `stale`; the human must approve again, never ask for an `lgtm`.
    - Anything else: stop `other` with the line.
 2. `factory land <slug>`. It brings the branch up to date by merging its base in, runs the tests and pushes; it can run for half an hour. `LANDED`: step 3. `STOPPED tests`: the lead's; stop `tests`. `LANDED, LOOK` or `STOPPED conflict|golden`: the lead's; stop `conflict`. In both, message the lead with the report's "Needs the lead". `STOPPED busy` whose Facts say `state: working, declared by factory land`: stop `handover` and message the lead the report (its worktree holds an unpushed merge). Any other `STOPPED busy`: wait 60 s and try again, at most 5 times, then stop `handover`. Any other `STOPPED`, or an error with no report: stop `other` with its line.
 3. `gh pr checks <n> --watch --interval 20` on the new head. "No checks reported" right after a push: `sleep 30`, at most 6 times. A failed or cancelled check is a stop `ci` with its name and link. Never report a check as passed from an earlier read. Then step 1 again. Steps 2 and 3 run at most 5 times for one pull request; after that stop `behind`.
