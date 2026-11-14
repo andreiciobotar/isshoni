@@ -385,6 +385,33 @@ class LandTests(unittest.TestCase):
         (comment,) = self.gh_calls()
         self.assertIn("conflicts: a.txt - merged by hand", comment["body"])
 
+    def queued(self):
+        """The `queue` records of the run, without their `ts`, in the temporary store."""
+        files = sorted((self.home / ".claude/factory").glob("queue-*.jsonl"))
+        return [{k: v for k, v in json.loads(line).items() if k != "ts"} for f in files for line in f.read_text().splitlines()]
+
+    def number_the_pull_request(self, number=12):
+        self.prs["worktree-t1"][0]["url"] = f"https://x/pull/{number}"
+        self.write_state()
+
+    def test_the_queue_records_a_clean_base_merge_and_nothing_when_the_base_has_not_moved(self):
+        wt = self.task("t1")
+        self.number_the_pull_request()
+        self.land("t1")
+        self.assertEqual(self.queued(), [])
+        self.advance_main(1, "main line", "b.txt")
+        old = self.git("rev-parse", "HEAD", cwd=wt)
+        self.land("t1")
+        self.assertEqual(self.queued(), [{"repo": str(self.repo), "slug": "t1", "pr": 12, "head": old,
+                                          "step": "land-updated", "base": "origin/main"}])
+
+    def test_the_queue_records_a_conflicting_base_merge_with_its_files(self):
+        wt, old = self.conflict()
+        self.number_the_pull_request()
+        self.land("t1")
+        self.assertEqual(self.queued(), [{"repo": str(self.repo), "slug": "t1", "pr": 12, "head": old,
+                                          "step": "land-conflict", "base": "origin/main", "files": ["a.txt"]}])
+
     def test_a_lander_that_stops_pushes_nothing(self):
         wt, old = self.conflict()
         p = self.land("t1", FAKE_LANDER="stop")

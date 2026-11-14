@@ -65,6 +65,7 @@ STATUSES = ("open", "accepted", "rejected", "done")
 DECISION = "DECISION:"
 DECISION_MAX = 200
 CAUGHT_BY = ("tests", "reviewer", "lead", "ci", "human")
+CAUSES = ("spec", "brief", "conflict", "scope", "code")
 RETRO_LISTS = ("slowed", "rules_missing", "rules_dead_weight", "brief_questions")
 COPIED = {"SessionStart": ("source",), "SessionEnd": ("reason",), "SubagentStart": ("agent_id",),
           "SubagentStop": ("agent_id",), "Notification": ("notification_type", "message"),
@@ -1459,9 +1460,11 @@ def cmd_retro(args):
             raise Fail(f"retro: {key} must be a list of non-empty strings")
     defects = doc["defects"]
     if not isinstance(defects, list) or not all(
-            isinstance(d, dict) and set(d) == {"caught_by", "what"} and d["caught_by"] in CAUGHT_BY
-            and isinstance(d["what"], str) and d["what"].strip() for d in defects):
-        raise Fail(f"retro: defects must be a list of objects with caught_by ({'|'.join(CAUGHT_BY)}) and a non-empty what")
+            isinstance(d, dict) and {"caught_by", "what"} <= set(d) <= {"caught_by", "what", "cause"}
+            and d["caught_by"] in CAUGHT_BY and isinstance(d["what"], str) and d["what"].strip()
+            and d.get("cause", CAUSES[0]) in CAUSES for d in defects):
+        raise Fail(f"retro: defects must be a list of objects with caught_by ({'|'.join(CAUGHT_BY)}), a non-empty what "
+                   f"and optionally a cause ({'|'.join(CAUSES)})")
     log("retros", {**tag, **doc})
     print(f"retro: stored for {tag['slug']}")
     return 0
@@ -3073,6 +3076,11 @@ def to_draft(repo, branch):
         run(["gh", "pr", "ready", "--undo", branch], cwd=repo.root)
 
 
+def log_queue(repo, pr_number, slug, head, step, **fields):
+    """One `queue` record: what the merge queue or `factory land` did to the pull request at `head`."""
+    log("queue", {"ts": now(), "repo": repo.root, "slug": slug, "pr": pr_number, "head": head, "step": step, **fields})
+
+
 def merge_one(p, pr, merged, dry, permission=None):
     """Merge `pr` (with `dry`, only check it; `merged`: something would have merged before it). None, or the
     (kind, reason) of the first blocker. The invariant: a pull request is merged only when its head holds the
@@ -3084,7 +3092,7 @@ def merge_one(p, pr, merged, dry, permission=None):
     reason = handover_reason(p, pr)
     if reason:
         return "handover", reason
-    stop = permission is not None and approval_stop(p, pr, permission)
+    stop, approved_at = approval(p, pr, permission) if permission is not None else (None, None)
     if stop:
         return stop
     moved = "its base has moved since its head: bring it up to date (the lander does when its turn comes) so its checks run on the combination"
@@ -3125,6 +3133,7 @@ def merge_one(p, pr, merged, dry, permission=None):
         stop = gh_step(repo, *step)
         if stop:
             return stop
+    log_queue(repo, pr["number"], task_slug(repo, pr), pr["headRefOid"], "merged", approved_at=approved_at)
     return None
 
 
@@ -3296,19 +3305,20 @@ def stale_approval(p, pr, approval, heads):
     return None
 
 
-def approval_stop(p, pr, permission):
-    """(kind, reason) when GitHub's records hold no valid approval of the head of `pr`, else None."""
+def approval(p, pr, permission):
+    """(stop, approved_at): the (kind, reason) when GitHub's records hold no valid approval of the head of `pr`, else None;
+    with no stop, when the approval was given (its ISO time, or None when GitHub gave none)."""
     try:
         heads = approved_heads(p, pr)
         review = approving_review(p, pr, permission, heads)
         if review and review.get("commit_id") in heads:
-            return None
+            return None, review.get("submitted_at")
         lgtm = newest_approval(p, pr, permission)
         if lgtm:
-            return stale_approval(p, pr, lgtm, heads)
+            return stale_approval(p, pr, lgtm, heads), lgtm.get("created_at")
     except NotEvaluated as e:
-        return "pending", str(e)
-    return STALE_REVIEW if review else ("unapproved", "not approved on GitHub: no review approves it and no lgtm")
+        return ("pending", str(e)), None
+    return (STALE_REVIEW if review else ("unapproved", "not approved on GitHub: no review approves it and no lgtm")), None
 
 
 # ---- pull request comments --------------------------------------------------
@@ -3949,7 +3959,7 @@ HOME_FILE_RE = re.compile(r"settings\.json|watch\.log|identity|specs|deliverable
 # The other names the factory writes there, which uninstall leaves: the cache, the courier's notes, the logs
 # written through `log` that HOME_FILE_RE does not list, and the per-repository files of `repo_state` with their
 # temporary files. `strangers` is what matches neither.
-STORE_WRITTEN_RE = re.compile(r"cache|comments|tech-lead\.log|(gh|comments|techlead)-\d{4}-\d\d\.jsonl|(hosts|settings)\.json\.tmp"
+STORE_WRITTEN_RE = re.compile(r"cache|comments|tech-lead\.log|(gh|comments|techlead|queue)-\d{4}-\d\d\.jsonl|(hosts|settings)\.json\.tmp"
                               r"|[a-z]+-.+-[0-9a-f]{8}\.(json|lock)(\.tmp)?")  # the last is every name repo_state() makes
 Step = collections.namedtuple("Step", "name purpose optional state act recheck", defaults=(False,))
 
@@ -4561,7 +4571,12 @@ class Landing:
         rc, out, err = act_git(self.path, "merge", "--no-edit", self.target)
         if rc != 0:
             return self.conflict(task_files, out + err)
+        self.log_queue("land-updated", base=self.target)
         return self.after_merge(old_base, overlap)
+
+    def log_queue(self, step, **fields):
+        number = re.search(r"/pull/(\d+)$", self.url)
+        log_queue(self.repo, int(number[1]) if number else None, self.slug, self.old_head, step, **fields)
 
     def pull_request_fact(self, error):
         if error:
@@ -4639,6 +4654,7 @@ class Landing:
 
     def conflict(self, task_files, merge_output):
         conflicts = [line for line in merge_output.splitlines() if "CONFLICT" in line]
+        self.log_queue("land-conflict", base=self.target, files=self.out("diff", "--name-only", "--diff-filter=U").split())
         self.git("merge", "--abort")
         if self.out("rev-parse", "HEAD") != self.old_head or self.out("status", "--porcelain"):
             return self.stop("other", "the merge failed and could not be aborted back to the old head")
@@ -4980,6 +4996,8 @@ def after_red(repo, pr, stop):
         started, line = rerun_line(repo, str(pr["number"]))
     except NotEvaluated as e:
         started, line = False, f"no rerun: {e}"
+    if started:
+        log_queue(repo, pr["number"], task_slug(repo, pr), pr["headRefOid"], "rerun", text=line)
     return ("pending", line) if started else (stop[0], f"{stop[1]}; {line}")
 
 
@@ -5215,10 +5233,13 @@ def report_stop(repo, fallback, pr, kind, line):
     n, slug = pr["number"], task_slug(repo, pr)
     firing = fire(repo, {"criterion": "lgtm-blocked", "escalate": "always", "slug": slug, "subject": f"#{n}/{kind}",
                          "detail": f"#{n} stopped {kind}: {line}"})
-    if stop_policy(kind, line)[2] == "lead":
+    sent_back = stop_policy(kind, line)[2] == "lead"
+    if sent_back:
         to = send_back(repo, fallback, pr, slug, evidence(repo, n, kind, line))
     else:
         to = forward(repo, fallback, slug, "LANDER", f"#{n} stopped {kind}: {line}", lead=False)
+    log_queue(repo, n, slug, pr["headRefOid"], "sent-back" if sent_back else "stopped", kind=kind, text=line, told=to or "human",
+              **({"files": conflicting_files(repo, pr)} if sent_back and kind == "conflict" else {}))
     if to:
         log_firing(repo, id=firing["id"], decision="escalated", by="lander", reason=f"reported by the lander to the {to}")
     else:
@@ -5343,6 +5364,7 @@ def lander_pass(repo, fallback, p, snap, line, updated):
             stops[n] = (pr, *stop)
         else:
             updated[n] = tip()
+            log_queue(repo, n, task_slug(repo, pr), pr["headRefOid"], "updated", tip=updated[n])
             print(f"#{n} brought up to date, waiting for its checks")
             flight.add(n)
     settle(repo, fallback, stops)

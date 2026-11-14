@@ -405,6 +405,20 @@ class RetroTests(StoreCase):
                 self.assertEqual(len(err.splitlines()), 1)
         self.assertEqual(self.lines("retros"), [])
 
+    def test_a_defect_may_carry_a_known_cause_and_needs_none(self):
+        for cause in factory.CAUSES:
+            with self.subTest(cause):
+                doc = {**self.GOOD, "defects": [{"caught_by": "ci", "what": "x", "cause": cause}]}
+                self.assertEqual(self.retro(doc)[0], 0)
+        self.assertEqual([d["cause"] for line in self.lines("retros") for d in line["defects"]], list(factory.CAUSES))
+        self.assertEqual(self.retro(self.GOOD)[0], 0)
+
+    def test_an_unknown_cause_is_refused_naming_the_allowed_values(self):
+        doc = {**self.GOOD, "defects": [{"caught_by": "ci", "what": "x", "cause": "luck"}]}
+        code, out, err = self.retro(doc)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("spec|brief|conflict|scope|code", err)
+
     def test_empty_lists_are_valid(self):
         empty = {"defects": [], **{k: [] for k in factory.RETRO_LISTS}}
         self.assertEqual(self.retro(empty)[0], 0)
