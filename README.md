@@ -70,10 +70,10 @@ flowchart TD
     subs -- opens --> pr[Draft pull request]
     you -- approves --> pr
     sm[Site manager<br>every 30 min] -- alerts --> disp
-    sm -- merges --> pr
+    lander[Lander · Sonnet] -- merges --> pr
 ```
 
-A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the site manager merges it once checks are green.
+A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the lander merges it within a few minutes once checks are green.
 
 <!-- screenshot: factory status with several tasks -->
 
