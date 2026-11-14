@@ -132,6 +132,11 @@ class Setup(unittest.TestCase):
     def settings(self):
         return json.loads((self.store / "settings.json").read_text())
 
+    def add_host(self):
+        self.store.mkdir(parents=True, exist_ok=True)
+        (self.store / "hosts.json").write_text(json.dumps({"nas": {"target": "me@nas", "state": "/srv/f", "dashboard_port": 2222,
+                                                                  "repos": ["acme/widgets"], "alias": None, "rev": "x"}}))
+
     def set_up(self):
         """Everything the wizard sets up, in place and verified."""
         self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
@@ -151,7 +156,7 @@ class WizardFlow(Setup):
         self.assertEqual(self.created, [("octocat", None)])
         self.assertEqual(json.loads((self.store / "identity" / "app.json").read_text())["installation_id"], 7654321)
         self.assertNotIn("Nothing to do", self.out)
-        self.assertIn("/rename dispatcher-<repository directory name>", self.out)
+        self.assertNotIn("/rename", self.out)
         self.assertIn("/factory:dispatch", self.out)
         self.assertIn("site manager: starts with the dispatcher session", self.out)
         before, calls = self.snapshot(), len(self.machine.calls)
@@ -348,6 +353,20 @@ class WizardFlow(Setup):
         self.assertIn("  settings: done", self.out)
         self.assertNotIn("Nothing to do", self.out)
 
+    def test_the_last_line_points_to_the_remote_wizard_and_list_shows_the_hosts(self):
+        self.set_up()
+        self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
+        self.assertEqual(self.out.splitlines()[-1], "A server: `make wizard-remote` (docs/container.md).")
+        self.has_clone = False
+        self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
+        self.assertIn("needs a clone of the repository", self.out.splitlines()[-1])
+        self.assertEqual(self.command("wizard", "--list"), 0, self.out)
+        self.assertNotIn("A server:", self.out)
+        self.assertEqual(self.out.splitlines()[-3:], ["hosts:", "  none", "  their live state: bin/isshoni host status"])
+        self.add_host()
+        self.assertEqual(self.command("wizard", "--list"), 0, self.out)
+        self.assertEqual(self.out.splitlines()[-3:], ["hosts:", "  nas  me@nas  acme/widgets", "  their live state: bin/isshoni host status"])
+
     def test_ask(self):
         for text, want in (("y\n", True), ("YES\n", True), ("n\n", False), ("\n", False), ("", False), ("sure\n", False)):
             with mock.patch.object(sys, "stdin", io.StringIO(text)), redirect_stdout(io.StringIO()):
@@ -419,6 +438,54 @@ class UninstallFlow(Setup):
         self.assertIn(f"the home {self.store}: you declined", self.out)
         self.assertIn("the dashboard binary: you declined", self.out)
         self.assertEqual(self.opened, ["https://github.com/settings/apps/factory-octocat/advanced"])
+
+    def test_hosts_keep_the_app_and_the_identity_until_the_last_is_removed(self):
+        self.set_up()
+        self.add_host()
+        self.assertEqual(self.command("uninstall", "--yes"), 0, self.out + self.err)
+        self.assertIn("kept: 1 host(s) use it (nas)", self.out)
+        self.assertIn("`make uninstall-remote`", self.out)
+        self.assertIn("the App factory-octocat and its installation: 1 host(s) use it (nas)", self.out)
+        self.assertNotIn("Delete the App there", self.out)
+        self.assertFalse(self.github.called("DELETE", "/app/installations/7654321"))
+        self.assertEqual(self.opened, [])
+        self.assertEqual(sorted(p.name for p in self.store.iterdir()), ["hosts.json", "identity"])
+        self.assertEqual((self.machine.plugins, self.machine.markets), ([], []))
+        self.assertIn("kept, hosts still use it", self.out)
+        (self.store / "hosts.json").write_text("{}")
+        self.assertEqual(self.command("uninstall", "--yes"), 0, self.out + self.err)
+        self.assertTrue(self.github.called("DELETE", "/app/installations/7654321"))
+        self.assertEqual(self.opened, ["https://github.com/settings/apps/factory-octocat/advanced"])
+        self.assertFalse(self.store.exists())
+
+    def test_a_copy_of_the_identity_never_removes_the_app(self):
+        self.set_up()
+        app = self.store / "identity" / "app.json"
+        app.write_text(json.dumps({**json.loads(app.read_text()), "copy": True}))
+        self.assertEqual(self.command("uninstall", "--yes"), 0, self.out + self.err)
+        self.assertIn("this identity is a copy", self.out)
+        self.assertFalse(self.github.called("DELETE", "/app/installations/7654321"))
+        self.assertEqual(self.opened, [])
+        self.assertFalse(self.store.exists())
+
+    def test_an_unreadable_hosts_file_fails_and_removes_nothing_of_the_app(self):
+        self.set_up()
+        for text in ("{", "[]"):
+            (self.store / "hosts.json").write_text(text)
+            self.assertEqual(self.command("uninstall", "--yes"), 1, self.out + self.err)
+            self.assertIn(f"{self.store / 'hosts.json'}", self.out)
+            self.assertFalse(self.github.called("DELETE", "/app/installations/7654321"))
+            self.assertEqual(self.opened, [])
+            self.assertTrue((self.store / "identity" / "key.pem").exists())
+            self.assertTrue((self.store / "settings.json").exists())
+
+    def test_list_shows_the_hosts(self):
+        self.set_up()
+        self.add_host()
+        self.assertEqual(self.command("uninstall", "--list"), 0, self.out + self.err)
+        self.assertIn("kept: 1 host(s) use it (nas)", self.out)
+        self.assertEqual(self.out.splitlines()[-3:], ["hosts:", "  nas  me@nas  acme/widgets", "  their live state: bin/isshoni host status"])
+        self.assertEqual(self.opened, [])
 
     def test_the_app_installation_answers(self):
         self.set_up()

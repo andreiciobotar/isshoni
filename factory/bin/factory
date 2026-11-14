@@ -192,7 +192,8 @@ def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now):
     """The lead's launch command: the one place another runner would plug in."""
     lead_rules = (PLUGIN_ROOT / "roles" / "lead.md").read_text()
     prompt = (
-        f"Your task slug is {slug}. The dispatcher's session name is {dispatcher}. "
+        f"Your task slug is {slug}. Before each message to the dispatcher run `factory dispatcher`: "
+        f"it prints its current session name (now {dispatcher}). "
         f"Your base branch is {base} (remote {remote}). You started at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))}. "
         f"Your time limit is {settings['task_time_limit_hours']} hours. "
         f"Your brief follows.\n\n{brief}"
@@ -286,10 +287,42 @@ def unplaced_block(sessions):
     return None
 
 
-def live_dispatchers(sessions, root, name, exclude=None):
-    """The unfinished sessions named `name` that work in the repository at `root`, except session `exclude`."""
-    return [s for s in sessions if not finished(s) and s.get("name") == name and s.get("sessionId") != exclude
-            and isinstance(s.get("cwd"), str) and inside(os.path.realpath(s["cwd"]), root)]
+def read_registration(root):
+    """The session id registered as the dispatcher of the repository at `root`, else None."""
+    try:
+        reg = json.loads(repo_state(root, "dispatcher", "json").read_text())
+        return reg["session"] if reg["root"] == root and isinstance(reg["session"], str) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def dispatcher_name(root):
+    """The old-style session name of the dispatcher of the repository at `root`."""
+    return f"dispatcher-{os.path.basename(root)}"
+
+
+def find_dispatcher(sessions, root, fallback=None):
+    """The repository's dispatcher session, as (session, None), else (None, why). The registered session
+    while it has a process; else the one unfinished session named `fallback` (default dispatcher-<directory>)
+    working in `root`. Either must have a name no other running session carries."""
+    registered = read_registration(root)
+    running = [s for s in sessions if "pid" in s]
+    found = next((s for s in running if s.get("sessionId") == registered), None) if registered else None
+    if found is None:
+        name = fallback or dispatcher_name(root)
+        old = [s for s in sessions if not finished(s) and s.get("name") == name and isinstance(s.get("cwd"), str)
+               and inside(os.path.realpath(s["cwd"]), root)]
+        if len(old) != 1:
+            return None, (f"{len(old)} sessions named {name}" if old else
+                          f"no dispatcher session for {root}: run /factory:dispatch in a session there")
+        found = old[0]
+    name = found.get("name")
+    if not name:
+        return None, f"the dispatcher session {found.get('sessionId')} has no name yet"
+    same = [s for s in running if s.get("name") == name]
+    if len(same) > 1:
+        return None, f"{len(same)} sessions are named {name}: rename one"
+    return found, None
 
 
 def sessions_in(sessions, root, path):
@@ -802,7 +835,6 @@ def cmd_new(args):
         raise Fail("the brief is empty")
     settings = load_settings()
     repo = Repo()
-    dispatcher = args.dispatcher or f"dispatcher-{os.path.basename(repo.root)}"
     branch = f"worktree-{args.slug}"
     path = repo.worktree_path(args.slug)
     base = repo.default
@@ -826,11 +858,11 @@ def cmd_new(args):
     caller = next((s for s in sessions if caller_id in (s.get("sessionId"), s.get("id"))), None)
     if caller is None:
         raise Fail(f"the calling session {caller_id} is not listed by `claude agents --json --all`")
-    if caller.get("name") != dispatcher:
-        raise Fail(f"this session is named {caller.get('name')!r}, not {dispatcher!r}; "
-                   f"the human must run /rename {dispatcher}")
-    if any(s is not caller and s.get("name") == dispatcher for s in sessions):
-        raise Fail(f"another session is also named {dispatcher!r}; rename or stop it")
+    found, why = find_dispatcher(sessions, repo.root, args.dispatcher)
+    if found is not caller:
+        raise Fail(f"this session is not the dispatcher of {repo.root} ({why or 'it is ' + found['name']}); "
+                   "run /factory:dispatch in it")
+    dispatcher = caller["name"]
     if any(s.get("name") == args.slug for s in sessions) or sessions_in(sessions, repo.root, path):
         raise Fail(f"a session named {args.slug} or inside {path} already exists")
     cap = settings["worktree_cap"]
@@ -856,6 +888,11 @@ def cmd_new(args):
         sys.stderr.write(f"factory: warning: cannot check for an existing pull request on {branch}; continuing\n")
     elif old_pr != "none":
         raise Fail(f"a {old_pr} pull request already exists for branch {branch}; pick another slug")
+    rc, _, err = act_git(repo.root, "ls-remote", "--exit-code", "--heads", repo.remote, f"refs/heads/{branch}", timeout=GH_TIMEOUT)
+    if rc == 0:
+        raise Fail(f"branch {branch} already exists on {repo.remote} (another machine's task?); pick another slug")
+    if rc != 2:
+        sys.stderr.write(f"factory: warning: cannot check {repo.remote} for branch {branch}: {err.strip()}; continuing\n")
     if args.base:
         for argv in (["worktree", "add", "-b", branch, path, base],
                      ["config", f"branch.{branch}.factoryBase", base]):
@@ -1162,18 +1199,21 @@ def follow_dispatcher(p):
         return
     repo = Repo(cwd)
     backend, label = scheduler(), job_label(repo.root)
-    name = f"dispatcher-{os.path.basename(repo.root)}"
     if (event == "UserPromptSubmit" or (event == "SessionStart" and p.get("source") not in ("startup", "resume"))) \
             and all(backend.status(label)):
         return
     sessions = list_sessions() or []
     me = next((s for s in sessions if s.get("sessionId") == p.get("session_id")), None)
-    # A session that is ending may already be unlisted; its payload carries a custom title.
-    if me not in live_dispatchers(sessions, repo.root, name) and (me or p.get("session_title") != name):
+    registered = read_registration(repo.root)
+    # A session that is ending may already be unlisted; its payload carries its id and custom title.
+    mine = (registered and p.get("session_id") == registered) \
+        or (me is not None and me is find_dispatcher(sessions, repo.root)[0]) \
+        or (not me and not registered and p.get("session_title") == dispatcher_name(repo.root))
+    if not mine:
         return
     if event != "SessionEnd":
-        schedule_install(repo, name, backend)
-    elif p.get("reason") != "clear" and not live_dispatchers(sessions, repo.root, name, exclude=p["session_id"]) \
+        schedule_install(repo, backend)
+    elif p.get("reason") != "clear" and not find_dispatcher([s for s in sessions if s is not me], repo.root)[0] \
             and not handed_over(repo):
         schedule_remove(repo, backend)
 
@@ -1320,11 +1360,14 @@ def gh_json(repo, kind, *args):
     return data
 
 
-def gather(repo, dispatcher):
-    """The picture every criterion reads, built once."""
+def gather(repo, fallback):
+    """The picture every criterion reads, built once. `dispatcher` is the dispatcher's current session name,
+    None with the reason in `dispatcher_why`."""
     sessions = list_sessions()
     settings = load_settings()
-    return {"now": time.time(), "repo": repo, "dispatcher": dispatcher, "sessions": sessions,
+    found, why = (None, "cannot list sessions") if sessions is None else find_dispatcher(sessions, repo.root, fallback)
+    return {"now": time.time(), "repo": repo, "dispatcher": found and found["name"], "dispatcher_why": why,
+            "sessions": sessions,
             "monitor": settings["monitor"], "lgtm_from_author": settings["lgtm_from_author"],
             "lean_start": settings["lean_start"],
             "rows": None if sessions is None else collect(repo, sessions, settings["task_time_limit_hours"]),
@@ -1415,8 +1458,7 @@ def c_ci_red_default(p, _):
 def c_dispatcher_missing(p, _):
     if not any(r["phase"] in ("motion", "blocked", "review") for r in phased(p)):
         return []
-    n = len(live_dispatchers(p["sessions"], p["repo"].root, p["dispatcher"]))
-    return [(None, "-", f"{n} unfinished sessions named {p['dispatcher']}")] if n != 1 else []
+    return [] if p["dispatcher"] else [(None, "-", p["dispatcher_why"])]
 
 
 def c_quiet(p, threshold):
@@ -2007,10 +2049,6 @@ def record_decisions(repo, sent, result):
         log_firing(repo, id=fid, decision=decision, reason=reason.strip(), by="site-manager")
 
 
-def dispatcher_name(args, repo):
-    return args.dispatcher or f"dispatcher-{os.path.basename(repo.root)}"
-
-
 def notify(repo, f):
     """Tell the human on this machine; without a notification service the line in the watch log is the notice."""
     title = f"factory: {os.path.basename(repo.root)}"
@@ -2032,7 +2070,7 @@ def report(repo, sent):
 def cmd_health(args):
     repo = Repo()
     criteria = job_criteria(load_criteria(), "watch")
-    p = gather(repo, dispatcher_name(args, repo))
+    p = gather(repo, args.dispatcher)
     firings, skipped = evaluate(p, criteria)
     if args.json:
         print(json.dumps({"firings": firings, "not_evaluated": skipped}, indent=2))
@@ -2053,25 +2091,24 @@ def cmd_watch(args):
     every = load_criteria()
     criteria = job_criteria(every, "watch")
     print(f"{now()} watch {os.path.basename(repo.root)}")
-    name = dispatcher_name(args, repo)
-    cheap_tick(repo, name)
+    cheap_tick(repo, args.dispatcher)
     state = read_lander(repo)
     if time.time() - state["health"] >= HEALTH_SECONDS:
         state = {**state, "health": time.time()}
         write_lander(repo, state)
-        watch_health(repo, name, every, criteria)
+        watch_health(repo, args.dispatcher, every, criteria)
     word = read_word(repo)
     if handed_over(repo) or word["all"] or word["prs"]:
         with lander_lock(repo) as free:
             if free:
-                drain(repo, name, tick=True, deadline=state["health"] + HEALTH_SECONDS)
+                drain(repo, args.dispatcher, tick=True, deadline=state["health"] + HEALTH_SECONDS)
     return 0
 
 
-def watch_health(repo, name, every, criteria):
+def watch_health(repo, fallback, every, criteria):
     """The health run of a tick: evaluate the criteria, log, send what is new to the site manager, and the digest."""
-    p = gather(repo, name)
-    orphaned = p["sessions"] is not None and not live_dispatchers(p["sessions"], repo.root, p["dispatcher"])
+    p = gather(repo, fallback)
+    orphaned = str(p["dispatcher_why"]).startswith("no dispatcher session")  # not a shared or missing name
     current, skipped = evaluate(p, criteria)
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
@@ -2093,7 +2130,7 @@ def watch_health(repo, name, every, criteria):
             send.append({**f, "id": old["id"]})
     if not send:
         print("nothing new")
-    elif orphaned or any(f["criterion"] == "dispatcher-missing" for f in current):
+    elif orphaned or p["dispatcher"] is None or any(f["criterion"] == "dispatcher-missing" for f in current):
         for f in send:
             if f["criterion"] == "dispatcher-missing":
                 notify(repo, f)
@@ -2105,7 +2142,7 @@ def watch_health(repo, name, every, criteria):
         schedule_remove(repo, scheduler())
     last, digests = last_digest(repo.root), job_criteria(every, "digest")
     due = p["now"] - (last and epoch(last["ts"]) or 0) >= DIGEST_HOURS * 3600
-    if due and digests and not orphaned and not any(f["criterion"] == "dispatcher-missing" for f in current):
+    if due and digests and not orphaned and p["dispatcher"] and not any(f["criterion"] == "dispatcher-missing" for f in current):
         digest(p, digests, by_hand=False)
 
 
@@ -2113,6 +2150,8 @@ def digest(p, criteria, by_hand):
     """One digest: evaluate the digest criteria, have the site manager word what fired, and mark the window done.
     From the watch (not by_hand) it is silent until MIN_LANDED tasks have landed since the last one."""
     repo = p["repo"]
+    if p["dispatcher"] is None:
+        return print(f"digest skipped: {p['dispatcher_why']}")
     if not by_hand:
         try:
             current = window(p)[0]
@@ -2140,7 +2179,7 @@ def digest(p, criteria, by_hand):
 def cmd_digest(args):
     repo = Repo()
     criteria = job_criteria(load_criteria(), "digest")
-    p = gather(repo, dispatcher_name(args, repo))
+    p = gather(repo, args.dispatcher)
     if args.dry_run:
         firings, skipped = evaluate(p, criteria)
         print(json.dumps({"firings": firings, "not_evaluated": skipped}, indent=2))
@@ -2432,18 +2471,68 @@ def notify_argv(title, text):
 
 # ---- schedule ---------------------------------------------------------------
 
-def schedule_install(repo, dispatcher, backend):
+def schedule_install(repo, backend):
     """Install the watch job, replacing the one there; returns its label."""
     label, log = job_label(repo.root), STORE.expanduser() / "watch.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     env = {"PATH": job_path(), **({"FACTORY_HOME": str(STORE.expanduser())} if other_home() else {})}
-    backend.install(label, [sys.executable, str(FACTORY), "watch", "--dispatcher", dispatcher], repo.root, env, log)
+    backend.install(label, [sys.executable, str(FACTORY), "watch"], repo.root, env, log)
     return label
 
 
 def schedule_remove(repo, backend):
     """Remove the watch job; True when there was one."""
     return backend.remove(job_label(repo.root), repo.root)
+
+
+def register_dispatcher(repo, sessions):
+    """Make the calling session the dispatcher of the repository; saying so, and whom it took over from."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        raise Fail("CLAUDE_CODE_SESSION_ID is not set; run it in the session that is to be the dispatcher")
+    me = next((s for s in sessions if s.get("sessionId") == sid), None)
+    if me is None:
+        raise Fail(f"the calling session {sid} is not listed by `claude agents --json --all`")
+    if WORKTREE_RE.match(os.getcwd()):
+        raise Fail(f"this is a task worktree; run it from the main checkout, {repo.root}")
+    old = read_registration(repo.root)
+    if old != sid:
+        path = repo_state(repo.root, "dispatcher", "json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(path.name + ".tmp")
+        temp.write_text(json.dumps({"root": repo.root, "session": sid, "since": now()}))
+        os.replace(temp, path)
+    try:
+        schedule_install(repo, scheduler())
+    except Fail as e:
+        print(f"factory: schedule: {e}", file=sys.stderr)
+    print(f"dispatcher of {repo.root}: this session ({me.get('name') or 'no name yet'})")
+    previous = next((s for s in sessions if s.get("sessionId") == old and "pid" in s), None) if old != sid else None
+    if previous:
+        print(f"took over from {previous.get('name')} ({old}): send it one message that it is no longer the "
+              f"dispatcher of {os.path.basename(repo.root)}")
+    found, why = find_dispatcher(sessions, repo.root)
+    if found is not me:
+        raise Fail(why or f"the dispatcher resolves to {found['name']}, not this session", code=1)
+    return 0
+
+
+def cmd_dispatcher(args):
+    repo = Repo()
+    sessions = list_sessions()
+    if sessions is None:
+        raise Fail("cannot list sessions with `claude agents --json --all`")
+    if args.action == "register":
+        return register_dispatcher(repo, sessions)
+    found, why = find_dispatcher(sessions, repo.root)
+    if found is None:
+        raise Fail(why, code=1)
+    if args.json:
+        print(json.dumps({"root": repo.root, "session": found["sessionId"], "name": found["name"],
+                          "registered": read_registration(repo.root) == found["sessionId"]}))
+    else:
+        print(found["name"])
+    return 0
 
 
 def cmd_schedule(args):
@@ -2453,7 +2542,7 @@ def cmd_schedule(args):
         if "/.claude/worktrees/" in str(FACTORY):
             sys.stderr.write("factory: warning: this factory lives in a task worktree; the job breaks when it is "
                              "removed. Install from the main checkout or the installed plugin.\n")
-        schedule_install(repo, dispatcher_name(args, repo), backend)
+        schedule_install(repo, backend)
         print(f"installed {label} ({backend.name})")
         if backend.name == "systemd" and (note := linger_note()):
             print(note)
@@ -2827,10 +2916,10 @@ COURIER = ("Send one message with the SendMessage tool (load it with ToolSearch 
            "Then reply with the single word sent, or failed and the error.")
 
 
-def repo_state(repo, name, ext):
-    """A file of this repository's factory state, in the store next to the logs."""
-    key = hashlib.sha256(repo.root.encode()).hexdigest()[:8]
-    return STORE.expanduser() / f"{name}-{os.path.basename(repo.root)}-{key}.{ext}"
+def repo_state(root, name, ext):
+    """A file of the factory state of the repository at `root`, in the store next to the logs."""
+    key = hashlib.sha256(root.encode()).hexdigest()[:8]
+    return STORE.expanduser() / f"{name}-{os.path.basename(root)}-{key}.{ext}"
 
 
 def snapshot(repo):
@@ -2932,14 +3021,16 @@ def courier(repo, name, line):
     return rc == 0 and isinstance(reply, str) and reply.strip().lower() == "sent"
 
 
-def forward(repo, dispatcher, slug, head, said, lead=True):
-    """Put `head: <slug>: said` into the session of the lead of `slug`, else into the dispatcher's, whose line says it did
-    not reach the lead; the role that got it, or None. Without `lead` only the dispatcher is tried, with `head: said`."""
+def forward(repo, fallback, slug, head, said, lead=True):
+    """Put `head: <slug>: said` into the session of the lead of `slug`, else into the dispatcher's (found as `find_dispatcher`
+    does), whose line says it did not reach the lead; the role that got it, or None. Without `lead` only the dispatcher is
+    tried, with `head: said`."""
     sessions = list_sessions() or []
     live = lead and [s for s in sessions_in(sessions, repo.root, repo.worktree_path(slug)) if s.get("name") == slug]
     asked = [("lead", slug, f"{head}: {slug}: {said}")] if live else []
-    if live_dispatchers(sessions, repo.root, dispatcher):
-        asked.append(("dispatcher", dispatcher, f"{head}: {slug} (not delivered to its lead): {said}" if lead else f"{head}: {said}"))
+    dispatcher = find_dispatcher(sessions, repo.root, fallback)[0]
+    if dispatcher:
+        asked.append(("dispatcher", dispatcher["name"], f"{head}: {slug} (not delivered to its lead): {said}" if lead else f"{head}: {said}"))
     for to, name, line in asked:
         if courier(repo, name, line):
             return to
@@ -2953,10 +3044,10 @@ def save_comments(path, since, kept):
     os.replace(temp, path)
 
 
-def watch_comments(repo, dispatcher, snap):
+def watch_comments(repo, fallback, snap):
     """Forward what the human wrote on the pull requests of the tasks (of the snapshot `snap`) to their leads; log the rest."""
     prs = [pr for pr in snap if task_slug(repo, pr)]
-    path = repo_state(repo, "comments", "json")
+    path = repo_state(repo.root, "comments", "json")
     try:
         state = json.loads(path.read_text())
         seen, since = state["seen"], state["since"]
@@ -2993,7 +3084,7 @@ def watch_comments(repo, dispatcher, snap):
         kept[n] = sorted(old | {i["id"] for i in current} - retry)
         sent = sorted((i for i in new if i["decision"] == "forward"), key=lambda i: i["at"])
         batch = write_batch(slug, pr, sent) if sent else None
-        to = forward(repo, dispatcher, slug, "PR COMMENTS", f"{len(sent)} new from the human on #{n}: read {batch}") if sent else None
+        to = forward(repo, fallback, slug, "PR COMMENTS", f"{len(sent)} new from the human on #{n}: read {batch}") if sent else None
         if sent and to is None:
             to, title = "human", f"factory: comments on #{n}"
             argv = notify_argv(title, str(batch))
@@ -3022,17 +3113,36 @@ PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", 
 CALLBACK_DONE = "<!doctype html><meta charset=utf-8><p>Done. Go back to the terminal.</p>"
 
 
-def load_identity():
-    path = IDENTITY.expanduser() / "app.json"
+def load_object(path):
+    """The JSON object in `path`, None when there is no such file; Fail when it is not one."""
     try:
-        identity = json.loads(path.read_text())
+        value = json.loads(path.read_text())
     except FileNotFoundError:
         return None
     except ValueError as e:
         raise Fail(f"{path} cannot be read as JSON: {e}", 1)
-    if not isinstance(identity, dict):
+    if not isinstance(value, dict):
         raise Fail(f"{path} is not a JSON object", 1)
-    return identity
+    return value
+
+
+def load_identity():
+    return load_object(IDENTITY.expanduser() / "app.json")
+
+
+def load_hosts():
+    """The servers `isshoni host add` recorded in the store, by name; {} when there are none."""
+    return load_object(STORE.expanduser() / "hosts.json") or {}
+
+
+def print_hosts():
+    hosts = load_hosts()
+    print("hosts:")
+    for name, e in hosts.items():
+        print(f"  {name}  {e.get('target')}  {','.join(e.get('repos') or []) or '-'}")
+    if not hosts:
+        print("  none")
+    print("  their live state: bin/isshoni host status")
 
 
 def write_identity(identity):
@@ -3174,13 +3284,13 @@ def identity_exports():
     return values, None
 
 
-def act_git(path, *args):
+def act_git(path, *args, timeout=None):
     """`git` in `path` as the App when an identity is installed (as the session hook's `factory env` does), for what
     reaches the remote or makes commits: the human's credentials and name are not used then."""
     exports, error = identity_exports()
     if error:
         return 1, "", error
-    return run(["git", *args], cwd=path, env={**os.environ, **exports} if exports else None)
+    return run(["git", *args], cwd=path, timeout=timeout, env={**os.environ, **exports} if exports else None)
 
 
 def cmd_env(args):
@@ -3416,7 +3526,7 @@ def verify_app(identity):
 PLUGIN = "factory@factory"
 SOURCE = "andreiciobotar/isshoni"
 # The names the factory writes at the top of its home; uninstall removes these and nothing else there.
-HOME_FILE_RE = re.compile(r"settings\.json|watch\.log|identity|specs|deliverables|dashboard|\.settings-.*\.tmp"
+HOME_FILE_RE = re.compile(r"settings\.json|watch\.log|identity|specs|deliverables|dashboard|hosts\.json|\.settings-.*\.tmp"
                           r"|(events|tasks|feedback|firings|retros)(-\d{4}-\d\d)?\.jsonl")
 Step = collections.namedtuple("Step", "name purpose optional state act recheck", defaults=(False,))
 
@@ -3665,9 +3775,14 @@ def cmd_wizard(args):
     required = all(done for step, done, _ in states if not step.optional)
     if required:
         print("To start working, in the repository you want work done in, run `claude`, then:\n"
-              "  /rename dispatcher-<repository directory name>\n  /factory:dispatch")
+              "  /factory:dispatch")
     if not args.list and not did and not failed and all(done is not False for _, done, _ in states):
         print("Nothing to do: everything is set up.")
+    if args.list:
+        print_hosts()
+    else:
+        print("A server: `make wizard-remote` (docs/container.md)." if clone()
+              else "A server: needs a clone of the repository, then `make wizard-remote` there (docs/container.md).")
     return 0 if required and not failed else 1
 
 
@@ -3701,6 +3816,15 @@ def uninstall_app(args, left):
     identity = load_identity()
     if not identity:
         return print("  nothing to remove")
+    if identity.get("copy"):
+        return print("  this identity is a copy: the App belongs to the machine that ran `host add`, and only the copy "
+                     "here goes, with the home step")
+    hosts = load_hosts()
+    if hosts:
+        names = ", ".join(hosts)
+        print(f"  the App {identity['slug']} and its installation are kept: {len(hosts)} host(s) use it ({names}).\n"
+              "  Run `make uninstall-remote` for each (`bin/isshoni host remove NAME`), then `make uninstall` again.")
+        return left.append(f"the App {identity['slug']} and its installation: {len(hosts)} host(s) use it ({names})")
     problem = None
     if identity.get("installation_id") and uninstall_step(
             args, left, f"the App {identity['slug']}, installed", "its access to your repositories",
@@ -3758,19 +3882,24 @@ def count_files(path):
 def uninstall_home(args, left):
     home = STORE.expanduser()
     entries = sorted(home.iterdir()) if home.is_dir() else []
-    mine = [p for p in entries if HOME_FILE_RE.fullmatch(p.name)]
-    strangers = [p for p in entries if p not in mine]
+    kept = {"identity", "hosts.json"} if load_hosts() else set()
+    mine = [p for p in entries if HOME_FILE_RE.fullmatch(p.name) and p.name not in kept]
+    strangers = [p for p in entries if not HOME_FILE_RE.fullmatch(p.name)]
     if strangers and other_home():
         print(f"  {home} does not look like a factory home: {', '.join(p.name for p in strangers)}; nothing removed")
         return left.append(f"{home}: does not look like a factory home")
     for p in strangers:
         print(f"  not the factory's, kept: {p}")
         left.append(f"{p}: not the factory's")
+    for p in entries:
+        if p.name in kept:
+            print(f"  kept, hosts still use it: {p}")
+            left.append(f"{p}: hosts still use the App (`make uninstall-remote`, then `make uninstall` again)")
     if not mine:
         return print("  nothing to remove")
     found = "\n    ".join(f"{p} ({count_files(p)} files)" if p.is_dir() else str(p) for p in mine)
     if uninstall_step(args, left, "in " + str(home) + "\n    " + found, "all of it, for good, the identity's private key included"
-                      if (home / "identity").exists() else "all of it, for good", f"the home {home}"):
+                      if any(p.name == "identity" for p in mine) else "all of it, for good", f"the home {home}"):
         for p in mine:
             shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()
         try:
@@ -3808,6 +3937,12 @@ def cmd_uninstall(args):
                  "`factory clean` or `git worktree remove` removes them, before the plugin is uninstalled",
                  *([f"this clone ({clone()})"] if clone() else []), "git, gh, Go, Claude Code", *left):
         print(f"  {line}")
+    if args.list:
+        try:
+            print_hosts()
+        except Fail as e:
+            print(f"hosts: failed: {e}")
+            failed = True
     return 1 if failed else 0
 
 
@@ -4128,7 +4263,7 @@ def read_lander(repo):
     """lander.json: the stops the loop has reported (`stopped`) and those still inside their patience (`waiting`),
     each by pull request number, and when health last ran."""
     try:
-        data = json.loads(repo_state(repo, "lander", "json").read_text())
+        data = json.loads(repo_state(repo.root, "lander", "json").read_text())
     except (OSError, ValueError):
         data = None
     data = data if isinstance(data, dict) else {}
@@ -4144,14 +4279,14 @@ def write_json(path, data):
 
 
 def write_lander(repo, state):
-    write_json(repo_state(repo, "lander", "json"), state)
+    write_json(repo_state(repo.root, "lander", "json"), state)
 
 
 def read_word(repo):
     """The human's word, `{"all": until, "prs": {"<n>": until}}` (epoch seconds), without what has expired. The word file
     is per repository, transient and written only by `factory lander`."""
     try:
-        data = json.loads(repo_state(repo, "word", "json").read_text())
+        data = json.loads(repo_state(repo.root, "word", "json").read_text())
         live = lambda until: isinstance(until, (int, float)) and until > time.time()
         return {"all": data["all"] if live(data.get("all")) else 0, "prs": {n: t for n, t in data["prs"].items() if live(t)}}
     except (OSError, ValueError, KeyError, AttributeError, TypeError):
@@ -4159,13 +4294,13 @@ def read_word(repo):
 
 
 def write_word(repo, word):
-    write_json(repo_state(repo, "word", "json"), word)
+    write_json(repo_state(repo.root, "word", "json"), word)
 
 
 @contextlib.contextmanager
 def lander_lock(repo):
     """Hold the lander lock of this repository; yields whether it was free."""
-    path = repo_state(repo, "lander", "lock")
+    path = repo_state(repo.root, "lander", "lock")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         try:
@@ -4231,7 +4366,7 @@ def evidence(repo, n, kind, line):
     return "red checks: " + ", ".join(f"{c.get('name')} {c.get('link')}" for c in checks if c.get("bucket") in ("fail", "cancel"))
 
 
-def send_back(repo, dispatcher, pr, slug, evidence):
+def send_back(repo, fallback, pr, slug, evidence):
     """Return pull request `pr` to the lead of task `slug`: the task goes back to `working` and the pull request to draft
     (it leaves the queue until its lead hands over again), and one line with the one-line `evidence` goes to the lead's
     session, else the dispatcher's, else the human on this machine. Who was told: "lead", "dispatcher" or "human"."""
@@ -4239,7 +4374,7 @@ def send_back(repo, dispatcher, pr, slug, evidence):
     to_draft(repo, pr["headRefName"])
     said = (f"#{pr['number']} went back to you: {evidence}. Fix it on your branch (merge {repo.remote}/{repo.default} in), "
             "re-review what you change, and hand over again: it is then merged by itself.")
-    to = forward(repo, dispatcher, slug, "LANDER", said)
+    to = forward(repo, fallback, slug, "LANDER", said)
     if to is None:
         title = f"factory: #{pr['number']} went back to {slug}"
         argv = notify_argv(title, said)
@@ -4249,16 +4384,16 @@ def send_back(repo, dispatcher, pr, slug, evidence):
     return to
 
 
-def report_stop(repo, dispatcher, pr, kind, line):
+def report_stop(repo, fallback, pr, kind, line):
     """Tell of one stop, once: a firing of lgtm-blocked, then the lead (the pull request goes back to it), or the dispatcher, else the
     human, as its kind says."""
     n, slug = pr["number"], task_slug(repo, pr)
     firing = fire(repo, {"criterion": "lgtm-blocked", "escalate": "always", "slug": slug, "subject": f"#{n}/{kind}",
                          "detail": f"#{n} stopped {kind}: {line}"})
     if stop_policy(kind, line)[2] == "lead":
-        to = send_back(repo, dispatcher, pr, slug, evidence(repo, n, kind, line))
+        to = send_back(repo, fallback, pr, slug, evidence(repo, n, kind, line))
     else:
-        to = forward(repo, dispatcher, slug, "LANDER", f"#{n} stopped {kind}: {line}", lead=False)
+        to = forward(repo, fallback, slug, "LANDER", f"#{n} stopped {kind}: {line}", lead=False)
     if to:
         log_firing(repo, id=firing["id"], decision="escalated", by="lander", reason=f"reported by the lander to the {to}")
     else:
@@ -4266,7 +4401,7 @@ def report_stop(repo, dispatcher, pr, kind, line):
     print(f"#{n} stopped {kind}: {line} (told {to or 'human'})")
 
 
-def settle(repo, dispatcher, stops):
+def settle(repo, fallback, stops):
     """Record the stops of a pass in lander.json and report those that are out of patience and new, once each: `waiting`
     keeps the others, `stopped` what was reported; a record of a pull request with no such stop now is dropped. A
     `handover` of a pull request already sent back at this head (its task is working) stays quiet."""
@@ -4283,7 +4418,7 @@ def settle(repo, dispatcher, stops):
             news.append((pr, kind, line))
     write_lander(repo, {**state, "waiting": waiting, "stopped": stopped})
     for new in news:
-        report_stop(repo, dispatcher, *new)
+        report_stop(repo, fallback, *new)
 
 
 def conflicting_files(repo, pr):
@@ -4339,7 +4474,7 @@ def update_branch(repo, task):
     return None
 
 
-def lander_pass(repo, dispatcher, p, line, updated):
+def lander_pass(repo, fallback, p, line, updated):
     """One full pass over `line`: (whether a pull request merged, the stops {n: (pr, kind, line)}, the numbers in flight).
     At most one pull request is brought up to date, and none while another waits for its checks; `updated` keeps the
     tip of the default branch each one was updated against."""
@@ -4371,7 +4506,7 @@ def lander_pass(repo, dispatcher, p, line, updated):
             updated[n] = tip()
             print(f"#{n} brought up to date, waiting for its checks")
             flight.add(n)
-    settle(repo, dispatcher, stops)
+    settle(repo, fallback, stops)
     return False, stops, flight
 
 
@@ -4390,7 +4525,7 @@ def wait(p, flight, deadline):
                 return
 
 
-def drain(repo, name, tick=False, deadline=None):
+def drain(repo, fallback, tick=False, deadline=None):
     """Merge every pull request that is ready, one full pass after another (`merge_one` gates and merges; `update_branch`
     brings one pull request up to date), and wait for the checks of the one in flight.
     Ends when nothing merged and nothing is in flight, or at `deadline`; the numbers still stopped. With `tick` the
@@ -4406,12 +4541,12 @@ def drain(repo, name, tick=False, deadline=None):
             break
         stopped &= {pr["number"] for pr in snap}
         if tick and time.time() - cheap_at >= WATCH_INTERVAL:
-            watch_snapshot(repo, name, snap)
+            watch_snapshot(repo, fallback, snap)
             cheap_at = time.time()
         line = lander_queue(repo, snap, read_word(repo))
         if not line and first and not tick:
             print("nothing ready")
-        merged, stops, flight = lander_pass(repo, name, p, line, updated)
+        merged, stops, flight = lander_pass(repo, fallback, p, line, updated)
         stopped, first = stopped | set(stops), False
         if not (merged or flight):
             break
@@ -4431,7 +4566,7 @@ def draft_picture(repo, snap):
             "rows": None if sessions is None else collect(repo, sessions, load_settings()["task_time_limit_hours"], prs)}
 
 
-def cheap_tick(repo, name):
+def cheap_tick(repo, fallback):
     """The part of every tick that costs one `gh pr list`: with a task working, blocked or handed over, take the open
     pull requests once and look at them (`watch_snapshot`)."""
     here = {os.path.basename(t["path"]) for t in repo.tasks}
@@ -4441,14 +4576,14 @@ def cheap_tick(repo, name):
         snap = snapshot(repo)
     except NotEvaluated as e:
         return print(f"comments: {e}")
-    watch_snapshot(repo, name, snap)
+    watch_snapshot(repo, fallback, snap)
 
 
-def watch_snapshot(repo, name, snap):
+def watch_snapshot(repo, fallback, snap):
     """Give the open pull requests `snap` to the comment forwarder; with a task handed over (or a task's pull request that
     is ready for review while its task is not: it goes back to draft), also set the draft flags."""
     try:
-        watch_comments(repo, name, snap)
+        watch_comments(repo, fallback, snap)
     except Exception as e:  # the tick goes on without it
         print(f"comments: {why(e)}")
     if handed_over(repo) or any(not pr["isDraft"] and task_slug(repo, pr) for pr in snap):
@@ -4483,7 +4618,7 @@ def cmd_lander(args):
             print("a lander run is already going: it takes everything that is ready"
                   + (f" ({joined} {'is' if len(set(args.prs)) == 1 else 'are'} now in its queue)" if args.prs else ""))
             return 0
-        return 1 if drain(repo, dispatcher_name(args, repo)) else 0
+        return 1 if drain(repo, args.dispatcher) else 0
 
 
 def parse_args(argv):
@@ -4494,7 +4629,7 @@ def parse_args(argv):
     group = new.add_mutually_exclusive_group(required=True)
     group.add_argument("--brief")
     group.add_argument("--brief-file")
-    new.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
+    new.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
     new.add_argument("--base", help="slug of an open task to stack this task on")
     new.add_argument("--critical", action="store_true",
                      help="use the slots held in reserve: the default branch is red, the factory is broken, "
@@ -4540,11 +4675,11 @@ def parse_args(argv):
     show.add_argument("--until", metavar="TS")
     health = sub.add_parser("health", help="evaluate the criteria and print what fires (read-only)")
     health.add_argument("--json", action="store_true")
-    health.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
+    health.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
     watch = sub.add_parser("watch", help="the scheduled tick: evaluate, log, and send what is new to the site manager")
-    watch.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
+    watch.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
     digest = sub.add_parser("digest", help="the site manager's digest of where the money goes, now rather than when due")
-    digest.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
+    digest.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
     digest.add_argument("--dry-run", action="store_true", help="print the findings; log nothing, start no model")
     firing = sub.add_parser("firing", help="record the outcome of an escalated firing (the dispatcher runs it)")
     firing.add_argument("id")
@@ -4565,13 +4700,15 @@ def parse_args(argv):
     lander.add_argument("prs", nargs="*", type=int, metavar="pr", help="merge these on the human's word as well as what GitHub shows approved")
     lander.add_argument("--window", type=int, metavar="MINUTES",
                         help="every handed-over pull request with green checks merges for this long (0 closes the window); the next tick starts it")
-    lander.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
+    lander.add_argument("--dispatcher", help="the dispatcher's session name (old-style: the session name to look for when no registered session is running; default dispatcher-<repo directory>)")
     land = sub.add_parser("land", help="bring a handed-over task up to its base (a model takes part only on a conflict)")
     land.add_argument("slug", nargs="?")
     land.add_argument("--all", action="store_true", help="every handed-over task whose pull request conflicts or whose base merged")
     schedule = sub.add_parser("schedule", help="install, remove or show the job that runs watch every 2 minutes")
     schedule.add_argument("action", choices=("install", "remove", "status"))
-    schedule.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
+    dispatcher = sub.add_parser("dispatcher", help="print the current session name of this repository's dispatcher (exit 1 when none)")
+    dispatcher.add_argument("--json", action="store_true")
+    dispatcher.add_subparsers(dest="action").add_parser("register", help="make this session the repository's dispatcher")
     wizard = sub.add_parser("wizard", help="set everything up, step by step; rerun to repair or finish")
     wizard.add_argument("--yes", action="store_true", help="accept every offer without asking")
     wizard.add_argument("--list", action="store_true", help="show each step and its state; change nothing")
@@ -4593,8 +4730,8 @@ def main(argv=None):
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "land": cmd_land, "lander": cmd_lander, "schedule": cmd_schedule, "wizard": cmd_wizard,
-                "uninstall": cmd_uninstall, "env": cmd_env}[args.cmd](args)
+                "land": cmd_land, "lander": cmd_lander, "schedule": cmd_schedule, "dispatcher": cmd_dispatcher,
+                "wizard": cmd_wizard, "uninstall": cmd_uninstall, "env": cmd_env}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)
         return e.code

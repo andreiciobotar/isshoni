@@ -55,9 +55,12 @@ elif a[:2] == ["agents", "--json"] and os.path.exists(home + "/agents-broken"):
     print("supervisor unreachable")
     sys.exit(1)
 elif a[:2] == ["agents", "--json"]:
-    print(json.dumps([{"name": n, "kind": "background"} for n in s["agents"]]))
+    cwds = s.get("cwds", {})
+    print(json.dumps([{"name": n, "kind": "background", "status": "busy", "pid": 1, **({"cwd": cwds[n]} if n in cwds else {})}
+                      for n in s["agents"]]))
 elif "--bg" in a:
     s["agents"].append(a[a.index("-n") + 1])
+    s.setdefault("cwds", {})[a[a.index("-n") + 1]] = os.getcwd()
 elif a[:2] == ["plugin", "list"]:
     print(json.dumps([{"id": p} for p in s["plugins"]]))
 elif a[:3] == ["plugin", "marketplace", "list"]:
@@ -67,6 +70,23 @@ elif a[:3] == ["plugin", "marketplace", "add"]:
 elif a[:2] == ["plugin", "install"]:
     s["plugins"].append(a[2])
 json.dump(s, open(path, "w"))
+'''
+
+# Stands in for the factory script in the container: `dispatcher` answers from the agents of the claude stub.
+FACTORY_STUB = r'''#!/usr/bin/env python3
+import json, os, sys
+home = os.environ["HOME"]
+if sys.argv[1:] == ["dispatcher"]:
+    if os.path.exists(home + "/agents-broken"):
+        print("supervisor unreachable")
+        sys.exit(2)
+    agents = json.load(open(home + "/stub-state.json"))["agents"]
+    if os.path.exists(home + "/stub-crash"):
+        sys.exit(1)
+    if "dispatcher-" + os.path.basename(os.getcwd()) in agents:
+        sys.exit(0)
+    print("factory: no dispatcher session", file=sys.stderr)
+    sys.exit(1)
 '''
 
 FAKE_DOCKER = r"""#!/bin/sh
@@ -145,8 +165,9 @@ class HostTests(unittest.TestCase):
         (self.fh / "identity/key.pem").write_text(SECRET_KEY)
         (self.fh / "identity/app.json").write_text(json.dumps({"bot_login": "bot[bot]", "owner": "acme"}))
         for name, text in (("docker/Dockerfile", "FROM scratch\n"), ("docker/compose.yaml", "name: isshoni-factory\n"),
-                           ("docker/start", "#!/bin/sh\n"), ("factory/bin/factory", "#!/bin/sh\n"), ("Makefile", "install:\n")):
+                           ("docker/start", "#!/bin/sh\n"), ("factory/bin/factory", FACTORY_STUB), ("Makefile", "install:\n")):
             (self.repo / name).write_text(text)
+        (self.repo / "factory/bin/factory").chmod(0o755)
         sh(self.repo, "git", "init", "-q")
         self.commit("first")
         self.state = str(self.srv / "state")
@@ -249,6 +270,10 @@ class HostTests(unittest.TestCase):
             self.assertIn("dispatcher-widgets unknown", out)
             self.assertNotIn("missing", out)
             (self.srv / "home/agents-broken").unlink()
+            (self.srv / "home/stub-crash").touch()
+            rc, out, _ = self.run_host("status")
+            self.assertIn("dispatcher-widgets unknown", out)
+            (self.srv / "home/stub-crash").unlink()
         with self.subTest("list needs no network, status follows what runs"):
             n = len(self.calls())
             self.assertEqual(self.run_host("list"), (0, "nas  nas  %s  acme/widgets  factory\n" % self.state, ""))
@@ -399,6 +424,119 @@ class HostTests(unittest.TestCase):
         self.assertEqual(json.loads((self.srv / "home/.claude/settings.json").read_text())["env"]["CLAUDE_CODE_OAUTH_TOKEN"], TOKEN)
         self.assertIn("ssh box", out)
         self.assertIn("Host box", self.ssh_config())
+
+    def wizard(self, verb, *answers):
+        """`host <verb>` with its arguments left out, on a terminal that gives `answers`."""
+        with mock.patch("builtins.input", side_effect=list(answers)) as asked:
+            rc, out, err = self.run_host(verb, tty=True)
+        self.assertEqual(asked.call_count, len(answers), "asked a different number of questions than answered")
+        return rc, out, err
+
+    def registry(self):
+        return json.loads((self.fh / "hosts.json").read_text())
+
+    def test_add_without_arguments_asks_for_them_and_runs_the_same_steps(self):
+        rc, out, err = self.wizard("add", "nas", self.state, "acme/widgets", "factory", "")  # the alias is asked once
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertIn("bin/isshoni host add nas --state %s --repo acme/widgets --alias factory" % self.state, out)
+        self.assertEqual(self.steps(out)[1:], ["done"] * 11, out)
+        e = self.registry()["nas"]
+        self.assertEqual((e["target"], e["state"], e["dashboard_port"], e["repos"], e["alias"]), ("nas", self.state, 2222, ["acme/widgets"], "factory"))
+        self.assertIn("Host factory", self.ssh_config())
+        with self.subTest("a registered name is all it asks, and the rerun does nothing"):
+            rc, out, err = self.wizard("add", "nas", "")
+            self.assertEqual((rc, err, self.steps(out)), (0, "", ["already"] * 12), out)
+            self.assertIn("  nas  nas\n", out)
+            self.assertIn("bin/isshoni host add nas\n", out)
+            self.assertEqual(self.registry()["nas"]["alias"], "factory")
+
+    def test_an_empty_alias_answer_is_final_and_a_declined_run_does_nothing(self):
+        rc, out, err = self.wizard("add", "nas", self.state, "", "", "")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertIn("--state %s --alias ''\n" % self.state, out)
+        self.assertIn("Connect: ssh -J nas", out)
+        self.assertIsNone(self.registry()["nas"]["alias"])
+        self.assertEqual(self.registry()["nas"]["repos"], [])
+        (self.fh / "hosts.json").unlink()
+        n = len(self.calls())
+        rc, out, err = self.wizard("add", "other", self.state, "acme/widgets", "", "n")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("Nothing was done.", out)
+        self.assertEqual(len(self.calls()), n)
+        self.assertFalse((self.fh / "hosts.json").exists())
+
+    def test_the_printed_command_carries_the_name_of_a_host_registered_with_one(self):
+        self.assertEqual(self.add("--name", "box")[0], 0)
+        rc, out, err = self.wizard("add", "box", "")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertIn("bin/isshoni host add nas --name box --alias ''\n", out)
+
+    def test_an_empty_alias_removes_the_block_and_asks_nothing(self):
+        self.assertEqual(self.add("--alias", "factory")[0], 0)
+        self.assertIn("Host factory", self.ssh_config())
+        with mock.patch("builtins.input", side_effect=AssertionError("asked")):
+            rc, out, err = self.run_host("add", "nas", "--state", self.state, "--alias", "", tty=True)
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertNotIn("Host factory", self.ssh_config())
+        self.assertIsNone(self.registry()["nas"]["alias"])
+
+    def test_add_without_a_target_and_without_a_terminal_stops(self):
+        rc, out, err = self.run_host("add")
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn("TARGET", err)
+        self.assertIn("make wizard-remote", err)
+        self.assertEqual(self.calls(), [])
+
+    def test_remove_without_a_name_asks_which_and_whether_to_purge(self):
+        self.assertEqual(self.add()[0], 0)
+        rc, out, err = self.wizard("remove", "nas", "", "")  # the default answers are no
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("bin/isshoni host remove nas\n", out)
+        self.assertIn("Nothing was done.", out)
+        self.assertIn("nas", self.registry())
+        rc, out, err = self.wizard("remove", "nas", "y", "n")
+        self.assertIn("Nothing was done.", out)
+        self.assertIn("nas", self.registry())
+        rc, out, err = self.wizard("remove", "nas", "y", "y")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertIn("bin/isshoni host remove nas --purge-state", out)
+        self.assertEqual(self.registry(), {})
+        self.assertFalse(Path(self.state).exists())
+        self.assertIn("make uninstall", out)  # the last host, identity here, no install here
+
+    def test_remove_without_a_name_when_none_is_given_or_registered(self):
+        self.assertEqual(self.run_host("remove"), (0, "No host is registered.\n", ""))
+        self.assertEqual(self.add()[0], 0)
+        rc, out, err = self.run_host("remove")
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn("make uninstall-remote", err)
+        rc, out, err = self.wizard("remove", "nope")
+        self.assertEqual(rc, 1)
+        self.assertIn("no host named nope", err)
+
+    def test_the_last_remove_points_to_make_uninstall_only_when_nothing_else_uses_the_app(self):
+        line = "No install uses the GitHub App any more"
+        self.assertEqual(self.add()[0], 0)
+        self.assertEqual(self.add(target="nas2")[0], 0)
+        self.assertNotIn(line, self.run_host("remove", "nas")[1])  # another host is left
+        (self.fh / "settings.json").write_text("{}")
+        self.assertNotIn(line, self.run_host("remove", "nas2")[1])  # an install here
+        (self.fh / "settings.json").unlink()
+        self.assertEqual(self.add()[0], 0)
+        app = self.fh / "identity/app.json"
+        kept = app.read_text()
+        app.unlink()
+        self.assertNotIn(line, self.run_host("remove", "nas")[1])  # no identity here
+        app.write_text(kept)
+        self.assertEqual(self.add()[0], 0)
+        self.assertIn(line, self.run_host("remove", "nas")[1])
+
+    def test_the_server_gets_a_copy_of_the_identity_marked_as_one(self):
+        self.assertEqual(self.add()[0], 0)
+        copied = json.loads((self.srv / "home/.claude/factory/identity/app.json").read_text())
+        self.assertEqual(copied, {"bot_login": "bot[bot]", "owner": "acme", "copy": True})
+        self.assertNotIn("copy", json.loads((self.fh / "identity/app.json").read_text()))
+        self.assertEqual(self.steps(self.add()[1]), ["already"] * 12)
 
     def test_wrong_token_is_reported_without_echoing_it(self):
         (self.srv / "cbin/claude").rename(self.srv / "cbin/claude-real")

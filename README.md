@@ -46,7 +46,6 @@ make install && make up            # live dashboard; needs Go 1.27+
 Factory: `make wizard` in the clone checks the tools, builds the dashboard, installs the plugin, writes the settings, offers cost alerts with the daily digest and offers the factory its own GitHub App ([what each step does](docs/factory.md#setup-and-uninstall)). Then, in Claude Code, in the repository you want work done in:
 
 ```
-/rename dispatcher-<repository directory name>
 /factory:dispatch
 ```
 
@@ -54,26 +53,20 @@ Describe a task; ask for progress whenever you like. By default leads run unatte
 
 Optional:
 
-- [Always on](docs/container.md): `bin/isshoni host add <ssh target> --state <dir> --repo <owner/name>` runs the factory in a container on a Linux host that has Docker.
+- [Always on](docs/container.md): `make wizard-remote` asks for what it needs and runs the factory in a container on a Linux host that has Docker.
 
-`make uninstall` removes what the wizard put on the machine.
+`make uninstall` removes what the wizard put on this machine, `make uninstall-remote` a server's install.
 
 ## The software factory
 
-```mermaid
-flowchart TD
-    you([You]) <-- tasks, questions --> disp[Dispatcher]
-    disp <-- brief, questions --> lead
-    subgraph task [One per task, in its own worktree]
-        lead[Lead · Fable] --> subs[explorer · Haiku<br>coder · Sonnet<br>reviewer · Opus<br>lander · Sonnet]
-    end
-    subs -- opens --> pr[Draft pull request]
-    you -- approves --> pr
-    sm[Site manager<br>every 30 min] -- alerts --> disp
-    lander[Lander · Sonnet] -- merges --> pr
-```
+<p align="center">
+  <picture>
+    <source media="(max-width: 600px)" srcset="assets/diagrams/factory-narrow.svg">
+    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief; it starts one lead per task in its own worktree. The lead has an explorer, a coder and a reviewer work until the reviewer approves. The lander tests and pushes a pull request, a draft until handed over and green; you approve and the lander merges to main. A courier carries your comments to the lead; a site manager watches and escalates to the dispatcher. Every task leaves feedback and a retrospective; the dispatcher proposes rule edits, you decide. Models are defaults.">
+  </picture>
+</p>
 
-A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the lander merges it within a few minutes once checks are green. Your other comments on a pull request reach its lead on the next watch tick.
+A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`.
 
 <p align="center">
   <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap">
@@ -93,13 +86,6 @@ The dispatcher reads it all and proposes edits to the factory's own rules; you d
 <p align="center">
   <img src="assets/tabs/kaizen.webp" alt="The Kaizen view, page by page: Pulse (cost, time and review rounds per task), Flow (where money and time went), Anatomy (each release compared) and Board (open issues by topic)">
 </p>
-
-```mermaid
-flowchart TD
-    tasks[Every task] -. feedback, decisions,<br>retrospectives, cost .-> disp[Dispatcher]
-    disp -. proposes edits .-> you([You])
-    you -. accepts .-> rules[Rules for the next task]
-```
 
 On day one, agents reported the same shell friction eleven times and counting. It became a rule that day ([#8](https://github.com/andreiciobotar/isshoni/pull/8)).
 
