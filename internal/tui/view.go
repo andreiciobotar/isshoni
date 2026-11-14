@@ -47,6 +47,8 @@ func (m *model) frame() []string {
 		return m.fatalScreen(p)
 	case m.help:
 		return m.helpScreen(p)
+	case m.view == viewHanami:
+		return m.hanamiFrame(p)
 	case m.loading && len(m.sessions) == 0 && m.refreshErr == "":
 		return m.loadingScreen(p)
 	case len(m.sessions) == 0 && m.refreshErr != "":
@@ -117,7 +119,7 @@ func (m *model) header(p paint) string {
 		}
 		return bar.t(" "+txt, th.Muted) + bar.b(badge, th.Orange) + bar.t(" ", th.Muted)
 	}
-	tabs := tab(1, "Dashboard", viewDashboard, "Dash") + tab(2, "Agents", viewAgents, "Agents") + tab(3, "Factory", viewFactory, "Factory") + tab(4, "Kaizen", viewKaizen, "Kaizen")
+	tabs := tab(1, "Dashboard", viewDashboard, "Dash") + tab(2, "Agents", viewAgents, "Agents") + tab(3, "Factory", viewFactory, "Factory") + tab(4, "Kaizen", viewKaizen, "Kaizen") + tab(5, "Hanami", viewHanami, "✿") // a blossom below 110 columns, where the bar has no room for a fifth word
 
 	var chips []string
 	for i, r := range ranges {
@@ -200,6 +202,8 @@ func (m *model) subheader(p paint) string {
 		left = m.factorySubheader(p)
 	case m.view == viewKaizen:
 		left = m.kaizenSubheader(p)
+	case m.view == viewHanami:
+		left = m.hanamiSubheader(p)
 	case m.view == viewAgents:
 		n := 0
 		if m.agents != nil {

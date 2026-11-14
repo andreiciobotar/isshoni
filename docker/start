@@ -1,0 +1,16 @@
+#!/bin/sh
+# The container's main process: the dashboard over SSH when it is wanted, then the cron that runs the
+# site manager's job. Sessions are started with `docker exec`.
+set -eu
+mkdir -p "$HOME" "$TMPDIR"
+touch "$HOME/.crontab"
+
+# Wanted: a key is in the file (docs/container.md) and the dashboard is built. The server is not
+# restarted if it ends; the container's restart brings it back.
+keys="$HOME/.claude/factory/dashboard/authorized_keys"
+tui="$HOME/code/isshoni/bin/isshoni-tui"
+if [ -s "$keys" ] && [ -x "$tui" ]; then
+	"$tui" --serve 0.0.0.0:2222 &
+fi
+
+exec supercronic "$HOME/.crontab"
