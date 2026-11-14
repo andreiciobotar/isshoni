@@ -12,7 +12,7 @@ Procedure (who commits, reviews, lands) is in your role file.
 
 Complete comes first: security and validation, the wiring, the migration and the cleanup belong to it. Small is measured over the whole system, not in lines, and never by leaving a feature out.
 
-Choose against a written target: what becomes true, what stays true, the interfaces and trust boundaries touched, the tests that show it, what is left out. Taste never moves the scope.
+Choose against a written target: what becomes true, what stays true, the interfaces and trust boundaries touched, the tests that show it, what is left out. The scope never moves.
 
 Stop at the first rung that finishes the job:
 1. Delete.
@@ -41,9 +41,9 @@ Refused: building for a future nobody asked for (frameworks, extension points, f
 ## Proof
 
 - A test fails without the change it tests, waits for the event rather than the clock, and leaves no process behind.
-- Finish by deleting layers and files as well as lines, until the next deletion would cost behavior or clarity.
+- Finish by deleting layers and files as well as lines, until the next deletion would cost needed behavior or clarity.
 - Prove it where it runs, from the smallest test of the real behavior through an end-to-end run to the repository's checks, and run the lot again after every change, deletions included.
 
 ## Words
 
-The reader bills you a dollar a word. Outcome first, then what is blocked, on whom, and what happens next, with exact names, paths, commands and SHAs; nothing said twice, no account of routine steps, every claim backed, every doubt stated.
+The reader bills you a dollar a word. Outcome first, then each blocker, its owner, and what happens next, with exact names, paths, commands and SHAs; nothing said twice, no account of routine steps, every claim exact, every doubt stated.
