@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -27,7 +28,7 @@ func kaizenStubRunner(t *testing.T) (*Runner, string) {
 
 func TestKaizenDecodesTheFixtureAndPassesSince(t *testing.T) {
 	r, args := kaizenStubRunner(t)
-	doc, err := r.Kaizen(context.Background(), "7d")
+	doc, err := r.Kaizen(context.Background(), "7d", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,10 +56,27 @@ func TestKaizenDecodesTheFixtureAndPassesSince(t *testing.T) {
 	if len(doc.Stops) != 6 || doc.Stops[5].WaitedS != nil || doc.Stops[3].Why == "" || len(doc.Rewards) != 2 || len(doc.Outbox.Entries) != 27 || doc.Outbox.Topics[0].Topic != "brief" {
 		t.Fatalf("stops, rewards, outbox: %d %d %d", len(doc.Stops), len(doc.Rewards), len(doc.Outbox.Entries))
 	}
-	if _, err := r.Kaizen(context.Background(), ""); err != nil {
+	if _, err := r.Kaizen(context.Background(), "", false); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(args); strings.TrimSpace(string(b)) != "-m isshoni kaizen --json" {
 		t.Fatalf("no range, no --since: %q", b)
+	}
+}
+
+func TestKaizenCachedFlagAndPRDates(t *testing.T) {
+	r, args := kaizenStubRunner(t)
+	if _, err := r.Kaizen(context.Background(), "7d", true); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(args); strings.TrimSpace(string(b)) != "-m isshoni kaizen --since 7d --cached --json" {
+		t.Fatalf("args: %q", b)
+	}
+	var doc Kaizen
+	if err := json.Unmarshal([]byte(`{"repos":[{"repo":"a","repo_path":"/a","prs":"ok","prs_as_of":"2026-11-14T13:40:00Z","prs_error":"HTTP 403"},{"repo":"b","prs":"not fetched yet","prs_as_of":null,"prs_error":null}]}`), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if a, b := doc.Repos[0], doc.Repos[1]; a.PRsAsOf != "2026-11-14T13:40:00Z" || a.PRsError != "HTTP 403" || b.PRsAsOf != "" || b.PRsError != "" {
+		t.Fatalf("repos: %+v", doc.Repos)
 	}
 }

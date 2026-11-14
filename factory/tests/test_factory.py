@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -21,6 +22,7 @@ _loader.exec_module(factory)
 ROOT = "/repo"
 WT = f"{ROOT}/.claude/worktrees"
 DAY = 86400
+BATCH = ("gh", "pr", "list", "--state", "all", "--limit", "100")  # the one call `status` makes per repository
 
 
 def porcelain(*entries):
@@ -48,9 +50,15 @@ class FakeRun:
         self.calls = []
         self.inputs = []
 
-    def __call__(self, argv, cwd=None, input=None):
+    def __call__(self, argv, cwd=None, input=None, timeout=None):
         self.calls.append(list(argv))
         self.inputs.append(input)
+        unfiltered = argv[:3] == ["gh", "pr", "list"] and "--head" not in argv and factory.STATUS_PR_FIELDS in argv
+        if unfiltered and BATCH not in self.answers:  # a stub of its own wins
+            return self.listing()
+        return self.resolve(argv)
+
+    def resolve(self, argv):
         best = max((p for p in self.answers if tuple(argv[:len(p)]) == p), key=len, default=None)
         if best is None:
             return 1, "", "unexpected call"
@@ -60,6 +68,21 @@ class FakeRun:
         if isinstance(result, list):  # successive answers; the last one repeats
             return result.pop(0) if len(result) > 1 else result[0]
         return result
+
+    def listing(self):
+        """What one unfiltered `gh pr list` says: the `--head` answers of the stubs, one after the other, each entry
+        carrying its branch. The first failing answer is the whole answer."""
+        porcelain_out = self.answers.get(("git", "worktree", "list"), (0, "", ""))[1]
+        branches = re.findall(r"^branch refs/heads/(.+)$", porcelain_out, re.M)
+        branches += [p[4] for p in self.answers if p[:4] == ("gh", "pr", "list", "--head") and p[4] not in branches]
+        listed = []
+        for branch in branches:
+            rc, out, err = self.resolve(["gh", "pr", "list", "--head", branch, "--state", "all", "--limit", "1",
+                                         "--json", factory.STATUS_PR_FIELDS])
+            if rc != 0:
+                return rc, out, err
+            listed += [dict(pr, headRefName=branch) if isinstance(pr, dict) else pr for pr in json.loads(out)]
+        return 0, json.dumps(listed), ""
 
     def ran(self, *prefix):
         return any(c[:len(prefix)] == list(prefix) for c in self.calls)
@@ -104,11 +127,17 @@ def invoke(argv, answers, settings=None, env=None, tasks=(), cwd=None, events=No
     return code, out.getvalue(), err.getvalue(), fake
 
 
+PLUGINS = [{"id": "zeta@m", "enabled": True}, {"id": "factory@factory", "enabled": True},
+           {"id": "alpha@m", "enabled": False}, {"id": "factory@inline", "enabled": True}]
+LEAN_SETTINGS = {"disableBundledSkills": True, "enabledPlugins": {"alpha@m": False, "zeta@m": False}}
+
+
 def repo_answers(entries, sessions=(), *extras):
     answers = {
         ("git", "worktree", "list"): (0, porcelain((ROOT, "main", False), *entries), ""),
         ("git", "symbolic-ref"): (0, "refs/remotes/origin/main\n", ""),
         ("claude", "agents"): (0, json.dumps(list(sessions)), ""),
+        ("claude", "plugin", "list"): (0, json.dumps(PLUGINS), ""),
     }
     for extra in extras:
         answers.update(extra)
@@ -216,6 +245,18 @@ class StateTests(unittest.TestCase):
                 self.assertEqual(rec["session"], "sid-d")
                 self.assertNotIn("deliverable", rec)
 
+    def test_working_and_blocked_put_the_pull_request_back_to_draft_even_when_gh_fails(self):
+        for state in ("working", "blocked"):
+            with self.subTest(state):
+                code, out, err, fake = invoke(["state", state], repo_answers(
+                    [task_entry("x")], (), {("gh", "pr", "ready"): (1, "", "no pull request")}), cwd=self.CWD)
+                self.assertEqual((code, out, err), (0, f"x: {state}\n", ""))
+                self.assertIn(["gh", "pr", "ready", "--undo", "worktree-x"], fake.calls)
+
+    def test_handed_over_does_not_touch_the_draft_flag(self):
+        *_, fake = self.state("handed-over", "https://github.com/o/r/pull/9")
+        self.assertFalse(fake.ran("gh", "pr", "ready"))
+
     def test_handed_over_stores_a_link_as_given(self):
         code, out, _, fake = self.state("handed-over", "https://github.com/o/r/pull/9")
         self.assertEqual((code, out), (0, "x: handed-over\n"))
@@ -288,7 +329,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_defaults(self):
         want = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True}
+                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "lean_start": True}
         self.assertEqual(self.load(), want)
         self.assertEqual(self.load("{}"), want)
 
@@ -299,9 +340,10 @@ class SettingsTests(unittest.TestCase):
 
     def test_overrides(self):
         got = self.load('{"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan", '
-                        '"task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": false}')
+                        '"task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": false, "lean_start": false}')
         self.assertEqual(got, {"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan",
-                               "task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": False})
+                               "task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": False,
+                               "lean_start": False})
         self.assertEqual(self.load('{"worktree_cap": 9}')["lead_model"], "fable")
 
     def test_invalid_values_name_the_key(self):
@@ -314,6 +356,7 @@ class SettingsTests(unittest.TestCase):
                           ('{"task_time_limit_hours": "2"}', "task_time_limit_hours"),
                           ('{"task_time_limit_hours": true}', "task_time_limit_hours"),
                           ('{"lgtm_from_author": "no"}', "lgtm_from_author"), ('{"lgtm_from_author": 0}', "lgtm_from_author"),
+                          ('{"lean_start": "yes"}', "lean_start"), ('{"lean_start": 1}', "lean_start"),
                           ('{"monitor": ""}', "monitor"), ('{"monitor": 3}', "monitor"), ('{"monitor": null}', "monitor")):
             with self.assertRaisesRegex(factory.Fail, key):
                 self.load(text)
@@ -335,11 +378,44 @@ class NewTests(unittest.TestCase):
         plugin = str(BIN.resolve().parent.parent)
         lead = (BIN.resolve().parent.parent / "roles" / "lead.md").read_text()
         want = ["claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
-                "--permission-mode", "auto", "--plugin-dir", plugin, "--append-system-prompt", lead,
+                "--permission-mode", "auto", "--plugin-dir", plugin, "--strict-mcp-config",
+                "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}", "--append-system-prompt", lead,
                 "Your task slug is demo-task. The dispatcher's session name is d1. "
                 "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
                 "Your time limit is 2 hours. Your brief follows.\n\ndo it"]
         self.assertEqual(fake.calls[-1], want)
+
+    def test_lean_start_off_launches_the_old_argv_without_listing_plugins(self):
+        with mock.patch.object(factory.time, "time", return_value=1794610677):
+            _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), '{"lean_start": false}')
+        plugin = str(BIN.resolve().parent.parent)
+        lead = (BIN.resolve().parent.parent / "roles" / "lead.md").read_text()
+        self.assertEqual(fake.calls[-1], [
+            "claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
+            "--permission-mode", "auto", "--plugin-dir", plugin, "--append-system-prompt", lead,
+            "Your task slug is demo-task. The dispatcher's session name is d1. "
+            "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
+            "Your time limit is 2 hours. Your brief follows.\n\ndo it"])
+        self.assertFalse(fake.ran("claude", "plugin"))
+
+    def test_a_failing_plugin_list_still_launches_without_enabled_plugins(self):
+        answers = self.answers([], (), self.OK)
+        for listing in ((1, "", "boom"), (0, "not json", ""), (0, '{"a": 1}', ""), (0, "[1]", ""), (124, "", "timed out")):
+            answers[("claude", "plugin", "list")] = listing
+            with self.subTest(listing=listing):
+                code, _, err, fake = invoke(self.ARGS, answers)
+                argv = fake.calls[-1]
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(argv[argv.index("--settings") + 1]), {"disableBundledSkills": True})
+                self.assertIn("plugin list", err)
+                self.assertTrue(argv[-1].endswith("do it"))
+
+    def test_the_lean_settings_never_name_the_factory(self):
+        _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK))
+        argv = fake.calls[-1]
+        off = json.loads(argv[argv.index("--settings") + 1])["enabledPlugins"]
+        self.assertEqual(list(off), ["alpha@m", "zeta@m"])
+        self.assertNotIn("factory", "".join(off))
 
     def test_launch_argv_uses_settings(self):
         settings = '{"lead_model": "opus", "lead_permission_mode": "plan"}'
@@ -702,6 +778,22 @@ class StatusTests(unittest.TestCase):
             "in motion 2/5 (1 blocked); waiting for review 2; merged, not cleaned 0; settled, not cleaned 0; "
             "leftover agent worktrees 0; worktrees outside .claude/worktrees 0", "acting on GitHub with your gh login (no App identity: factory wizard)",
             "waiting on the human: handed /out/video.mp4", "waiting on the human: pr-only http://pr/7"])
+
+    def test_a_draft_pull_request_in_review_waits_on_checks_and_is_flagged(self):
+        self.assertIn("isDraft", factory.STATUS_PR_FIELDS.split(","))  # the fake gh answers whatever is asked
+        for draft, line in ((True, "waiting on checks: handed http://pr/7"), (False, "waiting on the human: handed http://pr/7")):
+            with self.subTest(draft=draft):
+                pr = [{"state": "OPEN", "url": "http://pr/7", "headRefOid": "sha-x", "isDraft": draft}]
+                answers = repo_answers([task_entry("handed")], (), git_task_answers("x", time.time(), pr=pr))
+                tasks = [task_rec("handed", "handed-over")]
+                _, out, _, _ = invoke(["status"], answers, tasks=tasks)
+                self.assertEqual(out.splitlines()[-1], line)
+                _, out, _, _ = invoke(["status", "--json"], answers, tasks=tasks)
+                self.assertEqual(json.loads(out)["rows"][0]["pr_draft"], draft)
+
+    def test_no_pull_request_is_not_a_draft(self):
+        doc, _ = self.status([task_entry("alpha")])
+        self.assertIs(doc["rows"][0]["pr_draft"], False)
 
     def test_a_review_task_without_deliverable_or_pull_request_waits_with_a_dash(self):
         answers = repo_answers([task_entry("handed")], (), git_task_answers("x", time.time()))
@@ -1223,6 +1315,8 @@ class EndToEndTests(unittest.TestCase):
 import json, os, sys
 if sys.argv[1:2] == ["agents"]:
     print(os.environ["FAKE_AGENTS"])
+elif sys.argv[1:3] == ["plugin", "list"]:
+    print("[]")
 elif sys.argv[1:2] == ["--bg"]:
     json.dump(sys.argv, open(os.environ["FAKE_ARGV"], "w"))
     print("backgrounded · 96dc4869 · " + sys.argv[sys.argv.index("-n") + 1])
@@ -1302,7 +1396,8 @@ print(os.environ["FAKE_PR"])
 
         # merged pull request at the same head: --dry-run changes nothing, a real clean removes it
         head = self.git("-C", str(task_dir), "rev-parse", "HEAD").strip()
-        merged = json.dumps([{"state": "MERGED", "url": "u", "headRefOid": head, "baseRefName": "main"}])
+        merged = json.dumps([{"state": "MERGED", "url": "u", "headRefOid": head, "baseRefName": "main",
+                              "headRefName": "worktree-demo-task"}])
         no_session = {"FAKE_AGENTS": json.dumps([self.dispatcher]), "FAKE_PR": merged}
         p = self.factory("clean", "--dry-run", env=no_session)
         self.assertEqual(p.stdout.strip(), "would remove demo-task")
@@ -1354,6 +1449,266 @@ print(os.environ["FAKE_PR"])
                            cwd=self.repo / ".claude/worktrees/first", env=self.env, capture_output=True, text=True)
         self.assertEqual((p.returncode, p.stderr), (0, ""))
         self.assertIn("The dispatcher's session name is dispatcher-repo.", json.loads(self.argv_file.read_text())[-1])
+
+
+def listed(**by_branch):
+    """The answer of the one `gh pr list`: {slug: state} as entries, newest first."""
+    return 0, json.dumps([{"state": state, "url": f"http://pr/{slug}", "headRefOid": "h", "baseRefName": "main",
+                           "headRefName": f"worktree-{slug}"} for slug, state in by_branch.items()]), ""
+
+
+class PullRequestBatchTests(unittest.TestCase):
+    """`status` asks GitHub once per repository, through a disk cache that keeps its values when GitHub fails."""
+
+    def setUp(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        self.home = Path(home.name)
+        patch = mock.patch.dict(os.environ, {"HOME": home.name, "CLAUDE_CODE_SESSION_ID": "sid-d"})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.gh = listed(a="OPEN", b="MERGED", c="CLOSED")
+        self.extra = {}
+
+    def status(self, *args, slugs="abc"):
+        answers = repo_answers([task_entry(s) for s in slugs], (), git_task_answers("x", time.time()),
+                               {BATCH: lambda: self.gh, **self.extra})
+        fake = FakeRun(answers)
+        out = io.StringIO()
+        with mock.patch.object(factory, "run", fake), redirect_stdout(out), mock.patch.object(os, "getcwd", return_value=ROOT):
+            self.assertEqual(factory.main(["status", *args]), 0)
+        return (json.loads(out.getvalue()) if "--json" in args else out.getvalue()), fake
+
+    def asked(self, fake):
+        return [c for c in fake.calls if c[:3] == ["gh", "pr", "list"]]
+
+    def age_cache(self, seconds):
+        (path,) = (self.home / ".claude/factory/cache").glob("prs-*.json")
+        stored = json.loads(path.read_text())
+        stored["as_of"] -= seconds
+        stored["asked"] -= seconds
+        path.write_text(json.dumps(stored))
+        return stored["as_of"]
+
+    def test_one_call_for_all_tasks_and_the_rows_read_it(self):
+        doc, fake = self.status("--json")
+        (call,) = self.asked(fake)
+        self.assertEqual(call[:7], ["gh", "pr", "list", "--state", "all", "--limit", "100"])
+        self.assertNotIn("--head", call)
+        self.assertEqual([(r["pr_state"], r["pr_url"]) for r in doc["rows"]],
+                         [("open", "http://pr/a"), ("merged", "http://pr/b"), ("closed", "http://pr/c")])
+        self.assertAlmostEqual(doc["prs"]["as_of"], time.time(), delta=60)
+        self.assertIsNone(doc["prs"]["error"])
+
+    def test_a_branch_the_list_lacks_is_none_and_the_first_entry_of_a_branch_wins(self):
+        self.gh = 0, json.dumps([
+            {"state": "OPEN", "url": "new", "headRefOid": "n", "baseRefName": "main", "headRefName": "worktree-a"},
+            {"state": "CLOSED", "url": "old", "headRefOid": "o", "baseRefName": "main", "headRefName": "worktree-a"}]), ""
+        rows = self.status("--json")[0]["rows"]
+        self.assertEqual([(r["pr_state"], r["pr_url"]) for r in rows], [("open", "new"), ("none", ""), ("none", "")])
+
+    def test_no_task_rows_no_call(self):
+        doc, fake = self.status("--json", slugs="")
+        self.assertEqual((self.asked(fake), doc["prs"]), ([], {"as_of": None, "error": None}))
+
+    def test_cached_makes_no_gh_call(self):
+        doc, fake = self.status("--json", "--cached")
+        self.assertEqual((self.asked(fake), [c for c in fake.calls if c[0] == "gh"]), ([], []))
+        self.assertEqual(([r["pr_state"] for r in doc["rows"]], doc["prs"]), (["unknown"] * 3, {"as_of": None, "error": None}))
+        self.status("--json")
+        as_of = self.age_cache(300)
+        doc, fake = self.status("--json", "--cached", "--max-age", "1")
+        self.assertEqual(([c for c in fake.calls if c[0] == "gh"], doc["prs"]), ([], {"as_of": as_of, "error": None}))
+        self.assertEqual([r["pr_state"] for r in doc["rows"]], ["open", "merged", "closed"])
+        self.assertRegex(self.status("--cached")[0], r"pull requests as of 5m ago\n")
+
+    def test_max_age_skips_a_young_cache_and_refreshes_an_old_one(self):
+        self.status("--json")
+        self.assertEqual(len(self.asked(self.status("--json", "--max-age", "60")[1])), 0)
+        self.assertEqual(len(self.asked(self.status("--json")[1])), 1)  # the default asks every time
+        self.age_cache(90)
+        self.gh = listed(a="MERGED", b="MERGED", c="CLOSED")
+        doc, fake = self.status("--json", "--max-age", "60")
+        self.assertEqual((len(self.asked(fake)), doc["rows"][0]["pr_state"]), (1, "merged"))
+
+    def test_a_cache_written_before_the_draft_flag_is_discarded_and_read_again(self):
+        self.status("--json")
+        (path,) = (self.home / ".claude/factory/cache").glob("prs-*.json")
+        stored = json.loads(path.read_text())
+        stored["prs"] = {b: v[:4] for b, v in stored["prs"].items()}
+        path.write_text(json.dumps(stored))
+        doc, fake = self.status("--json", "--max-age", "3600")
+        self.assertEqual((len(self.asked(fake)), doc["rows"][0]["pr_state"]), (1, "open"))
+
+    def test_max_age_asks_when_the_cache_lacks_a_branch(self):
+        self.status("--json", slugs="ab")
+        doc, fake = self.status("--json", "--max-age", "3600")
+        self.assertEqual((len(self.asked(fake)), doc["rows"][2]["pr_state"]), (1, "closed"))
+
+    def test_a_failing_or_timing_out_gh_keeps_the_cached_values_and_recovery_clears_the_error(self):
+        self.status("--json")
+        as_of = self.age_cache(120)
+        for failure, error in (((1, "", "HTTP 403: rate limit exceeded\nsecond line\n"), "HTTP 403: rate limit exceeded"),
+                               ((124, "", "timed out"), "timed out after 10 s")):
+            with self.subTest(error):
+                self.gh = failure
+                doc, out = self.status("--json")[0], self.status()[0]
+                self.assertEqual(doc["prs"], {"as_of": as_of, "error": error})
+                self.assertEqual([r["pr_state"] for r in doc["rows"]], ["open", "merged", "closed"])
+                self.assertRegex(out, rf"pull requests as of 2m ago \(GitHub: {error}\)\n")
+        self.gh = listed(a="MERGED", b="MERGED", c="CLOSED")
+        doc, out = self.status("--json")[0], self.status()[0]
+        self.assertIsNone(doc["prs"]["error"])
+        self.assertGreater(doc["prs"]["as_of"], as_of)
+        self.assertNotIn("pull requests as of", out)
+
+    def age_ask(self, seconds):
+        (path,) = (self.home / ".claude/factory/cache").glob("prs-*.json")
+        stored = json.loads(path.read_text())
+        stored["asked"] -= seconds
+        path.write_text(json.dumps(stored))
+
+    def test_a_failed_ask_is_not_repeated_within_max_age_and_a_later_success_clears_it(self):
+        self.status("--json")
+        as_of = self.age_cache(120)
+        self.gh = 1, "", "HTTP 502"
+        self.assertEqual(self.status("--json", "--max-age", "60")[0]["prs"], {"as_of": as_of, "error": "HTTP 502"})
+        self.gh = listed(a="MERGED", b="MERGED", c="CLOSED")
+        doc, fake = self.status("--json", "--max-age", "60")
+        self.assertEqual((self.asked(fake), doc["prs"], doc["rows"][0]["pr_state"]),
+                         ([], {"as_of": as_of, "error": "HTTP 502"}, "open"))
+        self.assertIsNone(self.status("--json", "--cached")[0]["prs"]["error"])
+        self.age_ask(61)
+        doc, fake = self.status("--json", "--max-age", "60")
+        self.assertEqual((len(self.asked(fake)), doc["prs"]["error"], doc["rows"][0]["pr_state"]), (1, None, "merged"))
+
+    def test_a_failed_ask_without_a_cache_is_not_repeated_either_and_max_age_0_asks(self):
+        self.gh = 1, "", "no route"
+        self.status("--json", "--max-age", "60")
+        self.gh = listed(a="OPEN", b="MERGED", c="CLOSED")
+        doc, fake = self.status("--json", "--max-age", "60")
+        self.assertEqual((self.asked(fake), doc["prs"], doc["rows"][0]["pr_state"]),
+                         ([], {"as_of": None, "error": "no route"}, "unknown"))
+        doc, fake = self.status("--json")
+        self.assertEqual((len(self.asked(fake)), doc["prs"]["error"], doc["rows"][0]["pr_state"]), (1, None, "open"))
+
+    def test_a_branch_the_full_list_cannot_settle_fails_the_ask_and_keeps_the_cache(self):
+        self.status("--json")
+        as_of = self.age_cache(120)
+        self.gh = 0, json.dumps([{"state": "OPEN", "url": "u", "headRefOid": "h", "baseRefName": "main",
+                                  "headRefName": f"other-{i}"} for i in range(100)]), ""
+        self.extra = {("gh", "pr", "list", "--head"): (1, "", "boom")}
+        doc = self.status("--json")[0]
+        self.assertEqual((doc["prs"]["as_of"], doc["prs"]["error"] is not None), (as_of, True))
+        self.assertEqual([r["pr_state"] for r in doc["rows"]], ["open", "merged", "closed"])
+
+    def test_clean_does_not_read_or_write_the_cache_and_keeps_a_task_when_gh_fails(self):
+        self.gh = listed(x="MERGED")
+        self.status("--json", slugs="x")  # the cache now says merged
+        cache = self.home / ".claude/factory/cache"
+        before = {p.name: p.read_bytes() for p in cache.iterdir()}
+        answers = repo_answers([task_entry("x")], (), git_task_answers("x", time.time()), {BATCH: (1, "", "HTTP 502")})
+        answers.update({("git", "worktree", "remove"): (0, "", ""), ("git", "branch"): (0, "", ""), ("claude", "rm"): (0, "", "")})
+        fake, out = FakeRun(answers), io.StringIO()
+        with mock.patch.object(factory, "run", fake), redirect_stdout(out), mock.patch.object(os, "getcwd", return_value=ROOT):
+            factory.main(["clean"])
+        self.assertIn("kept x: its pull request state is unknown", out.getvalue())
+        self.assertEqual({p.name: p.read_bytes() for p in cache.iterdir()}, before)
+
+    def test_the_whole_ask_gets_a_budget_and_a_fallback_call_gets_what_is_left(self):
+        full = [{"state": "OPEN", "url": "u", "headRefOid": "h", "baseRefName": "main", "headRefName": f"other-{i}"}
+                for i in range(100)]
+        self.gh = 0, json.dumps(full), ""
+        timeouts = []
+
+        def run(argv, cwd=None, input=None, timeout=None):
+            timeouts.append(timeout)
+            return self.gh if "--head" not in argv else (0, json.dumps([{"state": "OPEN"}]), "")
+        clock = iter([0.0, 12.0, 25.0, 25.0, 25.0])
+        repo = mock.Mock(root="/repo")
+        with mock.patch.object(factory, "run", run), mock.patch.object(factory.time, "monotonic", lambda: next(clock)):
+            found, error = factory.ask_pull_requests(repo, ["worktree-a", "worktree-b", "worktree-c"])
+        self.assertEqual((found, timeouts, error), (None, [10, 8], f"no answer within {factory.PR_BUDGET} s"))
+
+    def test_text_with_no_cache_and_a_failed_ask(self):
+        self.gh = 1, "", "no route"
+        self.assertRegex(self.status()[0], r"pull requests not fetched yet \(GitHub: no route\)\n")
+
+    def test_a_failing_gh_without_a_cache_leaves_the_rows_unknown(self):
+        self.gh = 1, "", "no route to host"
+        doc = self.status("--json")[0]
+        self.assertEqual(([r["pr_state"] for r in doc["rows"]], doc["prs"]),
+                         (["unknown"] * 3, {"as_of": None, "error": "no route to host"}))
+
+    def test_a_full_list_asks_for_a_branch_it_lacks_alone(self):
+        full = [{"state": "OPEN", "url": "u", "headRefOid": "h", "baseRefName": "main", "headRefName": f"other-{i}"}
+                for i in range(100)]
+        self.gh = 0, json.dumps(full), ""
+        old = 0, json.dumps([{"state": "MERGED", "url": "old", "headRefOid": "h", "baseRefName": "main"}]), ""
+        answers = repo_answers([task_entry("a")], (), git_task_answers("x", time.time()), {
+            BATCH: lambda: self.gh, ("gh", "pr", "list", "--head", "worktree-a"): old})
+        fake, out = FakeRun(answers), io.StringIO()
+        with mock.patch.object(factory, "run", fake), redirect_stdout(out), mock.patch.object(os, "getcwd", return_value=ROOT):
+            factory.main(["status", "--json"])
+        self.assertEqual(json.loads(out.getvalue())["rows"][0]["pr_state"], "merged")
+        self.assertTrue(fake.ran("gh", "pr", "list", "--head", "worktree-a"))
+
+
+class GhLogTests(unittest.TestCase):
+    """`run` logs a `gh` call that is slow or fails, and gives it a default timeout."""
+
+    def setUp(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        self.home = Path(home.name)
+        patch = mock.patch.dict(os.environ, {"HOME": home.name})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.timeouts = []
+
+    def run_gh(self, argv, result, seconds=0.0):
+        clock = iter([100.0, 100.0 + seconds])
+
+        def spawn(argv, **kw):
+            self.timeouts.append(kw["timeout"])
+            if isinstance(result, Exception):
+                raise result
+            return subprocess.CompletedProcess(argv, *result)
+        with mock.patch.object(factory.subprocess, "run", spawn), mock.patch.object(factory.time, "monotonic", lambda: next(clock)), \
+                mock.patch.object(factory, "acting_identity", lambda cwd=None: None):
+            factory.run(argv, cwd="/some/repo")
+        return [r for _, path in factory.log_files("gh") for r in factory.read_file(path)]
+
+    def test_a_fast_success_is_not_logged(self):
+        self.assertEqual(self.run_gh(["gh", "pr", "list"], (0, "[]", "")), [])
+
+    def test_a_slow_call_is_logged(self):
+        (line,) = self.run_gh(["gh", "pr", "list", "--state", "all"], (0, "[]", ""), seconds=30.1)
+        self.assertEqual({k: line[k] for k in ("argv", "cwd", "seconds", "rc", "error")},
+                         {"argv": ["gh", "pr", "list", "--state", "all"], "cwd": "/some/repo", "seconds": 30.1, "rc": 0, "error": ""})
+        self.assertRegex(line["ts"], r"^\d{4}-\d\d-\d\dT")
+        self.assertTrue((self.home / ".claude/factory" / f"gh-{line['ts'][:7]}.jsonl").exists())
+
+    def test_a_failure_is_logged_with_its_first_stderr_line_and_a_timeout_too(self):
+        (line,) = self.run_gh(["gh", "pr", "list"], (1, "", "HTTP 403: forbidden\nmore\n"))
+        self.assertEqual((line["rc"], line["error"]), (1, "HTTP 403: forbidden"))
+        lines = self.run_gh(["gh", "pr", "list"], subprocess.TimeoutExpired("gh", 30), seconds=30.0)
+        self.assertEqual([(l["rc"], l["error"]) for l in lines], [(1, "HTTP 403: forbidden"), (124, "timed out")])
+
+    def test_other_commands_are_not_logged(self):
+        self.assertEqual(self.run_gh(["git", "status"], (1, "", "fatal")), [])
+
+    def test_a_gh_call_without_a_timeout_gets_30_s_and_a_given_one_stays(self):
+        self.run_gh(["gh", "pr", "list"], (0, "", ""))
+        with mock.patch.object(factory.subprocess, "run", lambda argv, **kw: self.timeouts.append(kw["timeout"]) or
+                               subprocess.CompletedProcess(argv, 0, "", "")), mock.patch.object(factory, "acting_identity", lambda cwd=None: None):
+            factory.run(["gh", "x"], timeout=1800)
+            factory.run(["git", "status"])
+        self.assertEqual(self.timeouts, [30, 1800, None])
+
+    def test_a_log_that_cannot_be_written_is_swallowed(self):
+        with mock.patch.object(factory, "log", side_effect=OSError("read-only")):
+            self.assertEqual(self.run_gh(["gh", "x"], (1, "", "boom")), [])
 
 
 if __name__ == "__main__":

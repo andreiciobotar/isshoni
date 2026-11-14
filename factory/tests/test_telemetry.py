@@ -383,7 +383,7 @@ class RetroTests(StoreCase):
         return self.run_main(["retro"], text, {"CLAUDE_PROJECT_DIR": project, "CLAUDE_CODE_SESSION_ID": SID})
 
     def test_valid_object_is_stored_with_tags(self):
-        self.assertEqual(self.retro(self.GOOD), (0, "", ""))
+        self.assertEqual(self.retro(self.GOOD), (0, "retro: stored for my-task\n", ""))
         (line,) = self.lines("retros")
         self.assertEqual({k: line[k] for k in ("repo", "slug", "role", "version", "session")},
                          {"repo": REPO, "slug": "my-task", "role": "lead", "version": VERSION, "session": SID})
@@ -411,13 +411,13 @@ class RetroTests(StoreCase):
 
     def test_refused_outside_a_task_worktree(self):
         for project in ("/plain/dir", f"{REPO}/.claude/worktrees/agent-ab12"):
-            self.assertEqual(self.retro(self.GOOD, project)[0], 2)
+            self.assertEqual(self.retro(self.GOOD, project)[:2], (2, ""))
         self.assertEqual(self.lines("retros"), [])
 
     def test_unwritable_store_exits_1(self):
         (self.tmp / ".claude").mkdir()
         self.store.write_text("a file")
-        self.assertEqual(self.retro(self.GOOD)[0], 1)
+        self.assertEqual(self.retro(self.GOOD)[:2], (1, ""))
 
 
 class TaskEventTests(StoreCase):
