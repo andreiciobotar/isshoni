@@ -49,10 +49,14 @@ class FakeRun:
         self.answers = answers
         self.calls = []
         self.inputs = []
+        self.envs = []
+        self.timeouts = []
 
-    def __call__(self, argv, cwd=None, input=None, timeout=None):
+    def __call__(self, argv, cwd=None, input=None, timeout=None, env=None):
         self.calls.append(list(argv))
         self.inputs.append(input)
+        self.envs.append(env)
+        self.timeouts.append(timeout)
         unfiltered = argv[:3] == ["gh", "pr", "list"] and "--head" not in argv and factory.STATUS_PR_FIELDS in argv
         if unfiltered and BATCH not in self.answers:  # a stub of its own wins
             return self.listing()
@@ -232,7 +236,7 @@ class StateTests(unittest.TestCase):
     CWD = f"{WT}/x/sub"
 
     def state(self, *args, cwd=CWD, tasks=()):
-        return invoke(["state", *args], repo_answers([task_entry("x")]), cwd=cwd, tasks=tasks)
+        return invoke(["state", *args], repo_answers([task_entry("x"), task_entry("y")]), cwd=cwd, tasks=tasks)
 
     def test_each_state_is_written_with_the_repo_root_and_slug(self):
         for state in ("working", "blocked"):
@@ -244,6 +248,21 @@ class StateTests(unittest.TestCase):
                                  (ROOT, "x", state, "lead", None))
                 self.assertEqual(rec["session"], "sid-d")
                 self.assertNotIn("deliverable", rec)
+                self.assertNotIn("waits_on", rec)
+
+    def test_blocked_records_whom_it_waits_on_when_given(self):
+        for whom in ("human", "dispatcher", "y"):
+            with self.subTest(whom):
+                code, out, err, fake = self.state("blocked", whom)
+                self.assertEqual((code, out, err), (0, "x: blocked\n", ""))
+                self.assertEqual(fake.tasks[0]["waits_on"], whom)
+
+    def test_blocked_on_an_unknown_name_or_its_own_slug_writes_nothing(self):
+        for whom in ("nobody", "x"):
+            with self.subTest(whom):
+                code, out, err, fake = self.state("blocked", whom)
+                self.assertEqual((code, out, fake.tasks), (2, "", []))
+                self.assertRegex(err, "human, dispatcher or the slug of another open task")
 
     def test_working_and_blocked_put_the_pull_request_back_to_draft_even_when_gh_fails(self):
         for state in ("working", "blocked"):
@@ -274,8 +293,8 @@ class StateTests(unittest.TestCase):
             "the main checkout's subdirectory": (("working",), f"{ROOT}/src", "inside a task worktree"),
             "a sibling of a task": (("working",), f"{WT}/x-other", "inside a task worktree"),
             "handed-over without a deliverable": (("handed-over",), self.CWD, "needs a deliverable"),
-            "working with a deliverable": (("working", "https://x/y"), self.CWD, "take none"),
-            "blocked with a deliverable": (("blocked", "https://x/y"), self.CWD, "take none"),
+            "working with a deliverable": (("working", "https://x/y"), self.CWD, "working takes none"),
+            "blocked with a deliverable": (("blocked", "https://x/y"), self.CWD, "human, dispatcher"),
             "a missing file": (("handed-over", "/no/such/file"), self.CWD, "does not exist"),
         }
         for name, (args, cwd, pattern) in cases.items():
@@ -380,7 +399,7 @@ class ReserveTests(unittest.TestCase):
 
 class NewTests(unittest.TestCase):
     ARGS = ["new", "demo-task", "--brief", "do it", "--dispatcher", "d1"]
-    OK = {("claude", "--bg"): (0, "backgrounded · 96dc4869 · demo-task\n", "")}
+    OK = {("claude", "--bg"): (0, "backgrounded · 96dc4869 · demo-task\n", ""), ("git", "ls-remote"): (2, "", "")}
 
     def answers(self, entries, sessions=(), *extras, dispatcher="d1"):
         return repo_answers(entries, [dict(DISPATCHER, name=dispatcher), *sessions], *extras)
@@ -737,6 +756,40 @@ class NewTests(unittest.TestCase):
         _, _, err, _ = invoke(self.ARGS, self.answers([], (), {("claude", "--bg"): (1, "", "model not found\n")}))
         self.assertIn("model not found", err)
 
+    def test_the_remote_is_asked_for_the_branch(self):
+        ls, ok = ("git", "ls-remote"), {**self.OK, ("gh",): (0, "[]", "")}
+        code, _, err, fake = invoke(self.ARGS, self.answers([], (), ok))
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn(["git", "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/worktree-demo-task"], fake.calls)
+        code, _, err, fake = invoke(self.ARGS, self.answers([], (), ok, {ls: (0, "abc\trefs/heads/worktree-demo-task\n", "")}))
+        self.assertEqual(code, 2)
+        self.assertIn("branch worktree-demo-task already exists on origin (another machine's task?)", err)
+        self.assertFalse(fake.ran("claude", "--bg"))
+        code, _, err, fake = invoke(self.ARGS + ["--base", "feature"], self.answers([], (), ok, {ls: (0, "abc\n", "")}))
+        self.assertEqual(code, 2)
+        self.assertFalse(fake.ran("git", "worktree", "add"))
+        code, _, err, fake = invoke(self.ARGS, self.answers([], (), ok, {ls: (128, "", "no remote\n")}))
+        self.assertEqual(code, 0, err)
+        self.assertRegex(err, "warning: cannot check origin for branch worktree-demo-task: no remote; continuing")
+        self.assertTrue(fake.ran("claude", "--bg"))
+        code, _, err, fake = invoke(self.ARGS, self.answers([], (), ok, {ls: (124, "", "timed out")}))
+        self.assertEqual(code, 0, err)
+        self.assertIn("warning: cannot check origin for branch worktree-demo-task: timed out", err)
+
+    def test_the_remote_is_asked_as_the_app_and_with_a_timeout(self):
+        exports = {"GH_TOKEN": "tok", "GIT_TERMINAL_PROMPT": "0"}
+        ok = {**self.OK, ("gh",): (0, "[]", "")}
+        with mock.patch.object(factory, "identity_exports", lambda: (exports, None)):
+            code, _, err, fake = invoke(self.ARGS, self.answers([], (), ok))
+        self.assertEqual(code, 0, err)
+        at = next(i for i, c in enumerate(fake.calls) if c[:2] == ["git", "ls-remote"])
+        self.assertEqual((fake.envs[at]["GH_TOKEN"], fake.timeouts[at]), ("tok", factory.GH_TIMEOUT))
+        with mock.patch.object(factory, "identity_exports", lambda: ({}, "no App token: boom")):
+            code, _, err, fake = invoke(self.ARGS, self.answers([], (), ok))
+        self.assertEqual(code, 0)
+        self.assertIn("cannot check origin for branch worktree-demo-task: no App token: boom", err)
+        self.assertFalse(fake.ran("git", "ls-remote"))
+
     def test_no_remote_defaults_to_main(self):
         answers = self.answers([], (), self.OK)
         answers[("git", "symbolic-ref")] = (128, "", "no such ref")
@@ -778,6 +831,15 @@ class StatusTests(unittest.TestCase):
         self.assertFalse(row["stale"])
         self.assertEqual((row["phase"], doc["in_motion"], doc["in_review"], doc["merged"]), ("review", 0, 1, 0))
 
+    def test_waits_on_is_the_recorded_name_for_a_blocked_task_and_null_otherwise(self):
+        tasks = [{**task_rec("asked", "blocked"), "waits_on": "dispatcher"}, task_rec("plain", "blocked"),
+                 task_rec("busy", "working")]
+        answers = repo_answers([task_entry(s) for s in ("asked", "plain", "busy")], (), git_task_answers("x", time.time()))
+        code, out, err, _ = invoke(["status", "--json"], answers, tasks=tasks)
+        self.assertEqual(code, 0, err)
+        self.assertEqual({r["slug"]: r["waits_on"] for r in json.loads(out)["rows"]},
+                         {"asked": "dispatcher", "plain": "human", "busy": None})
+
     def test_phase_and_counts(self):
         entries = [task_entry(s) for s in ("moving", "working", "review", "merged")]
         busy = {"id": "s1", "cwd": f"{WT}/working", "kind": "background", "status": "busy", "state": "working"}
@@ -805,6 +867,7 @@ class StatusTests(unittest.TestCase):
         code, out, err, _ = invoke(["status", "--json"], answers, tasks=tasks)
         self.assertEqual(code, 0, err)
         doc = json.loads(out)
+        self.assertEqual([r["waits_on"] for r in doc["rows"]], [None, "human", None, None, None])
         self.assertEqual([(r["phase"], r["state"], r["deliverable"]) for r in doc["rows"]],
                          [("motion", None, None), ("blocked", "blocked", None),
                           ("review", "handed-over", "/out/video.mp4"), ("merged", "handed-over", "https://x/y"),
@@ -1410,6 +1473,9 @@ print(os.environ["FAKE_PR"])
                     "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
         self.git("init", "-q", "-b", "main")
         self.git("commit", "-q", "--allow-empty", "-m", "init")
+        self.origin = tmp / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(self.origin)], check=True)
+        self.git("remote", "add", "origin", str(self.origin))
 
     def git(self, *args):
         return subprocess.run(["git", *args], cwd=self.repo, env=self.env, check=True, capture_output=True, text=True).stdout
@@ -1468,6 +1534,13 @@ print(os.environ["FAKE_PR"])
         self.assertEqual((p.returncode, p.stdout.strip(), p.stderr), (0, "removed demo-task", ""))
         self.assertFalse(task_dir.exists())
         self.assertEqual(self.git("branch", "--list", "worktree-demo-task"), "")
+
+    def test_new_refuses_a_slug_whose_branch_is_on_the_remote(self):
+        self.git("push", "-q", "origin", "HEAD:refs/heads/worktree-demo-task")
+        p = self.factory("new", "demo-task", "--brief", "build it")
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("branch worktree-demo-task already exists on origin", p.stderr)
+        self.assertFalse(self.argv_file.exists())
 
     def declared(self):
         files = sorted((self.home / ".claude/factory").glob("tasks-*.jsonl"))
