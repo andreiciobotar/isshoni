@@ -4943,7 +4943,9 @@ class Landing:
 
     def conflict(self, task_files, merge_output):
         conflicts = [line for line in merge_output.splitlines() if "CONFLICT" in line]
-        self.log_queue("land-conflict", base=self.target, files=self.out("diff", "--name-only", "--diff-filter=U").split())
+        files = self.out("diff", "--name-only", "--diff-filter=U").split()
+        if files:  # a merge that failed with nothing unmerged is no conflict
+            self.log_queue("land-conflict", base=self.target, files=files)
         self.git("merge", "--abort")
         if self.out("rev-parse", "HEAD") != self.old_head or self.out("status", "--porcelain"):
             return self.stop("other", "the merge failed and could not be aborted back to the old head")
@@ -5523,12 +5525,13 @@ def report_stop(repo, fallback, pr, kind, line):
     firing = fire(repo, {"criterion": "lgtm-blocked", "escalate": "always", "slug": slug, "subject": f"#{n}/{kind}",
                          "detail": f"#{n} stopped {kind}: {line}"})
     sent_back = stop_policy(kind, line)[2] == "lead"
+    files = {"files": conflicting_files(repo, pr)} if sent_back and kind == "conflict" else {}  # before a tech lead fetches
     if sent_back:
         to = send_back(repo, fallback, pr, slug, evidence(repo, n, kind, line))
     else:
         to = forward(repo, fallback, slug, "LANDER", f"#{n} stopped {kind}: {line}", lead=False)
     log_queue(repo, n, slug, pr["headRefOid"], "sent-back" if sent_back else "stopped", kind=kind, text=line, told=to or "human",
-              **({"files": conflicting_files(repo, pr)} if sent_back and kind == "conflict" else {}))
+              **files)
     if to:
         log_firing(repo, id=firing["id"], decision="escalated", by="lander", reason=f"reported by the lander to the {to}")
     else:

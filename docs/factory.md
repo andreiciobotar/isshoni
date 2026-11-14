@@ -248,17 +248,17 @@ Unsuffixed `events.jsonl`, `retros.jsonl`, `feedback.jsonl`, `tasks.jsonl` and `
 ```
 `cause` is optional (a lead on the old rule text omits it; any other key or value is refused): why the defect arose. `spec`: the spec was wrong or silent; `brief`: the brief was; `conflict`: a merge of the base; `scope`: the scope changed mid-task; `code`: the code missed what the spec said. It answers why a review round happened; bad: one cause over a third of the defects.
 
-**Queue** (`queue`, one record per thing the merge queue or `factory land` did to a pull request) adds `slug` (`null` for a pull request of no task), `pr` (`null` for a `land-*` step before a pull request exists), `head` (full SHA of the head the step acted on) and `step`, with these fields:
+**Queue** (`queue`, one record per thing the merge queue or `factory land` did to a pull request) carries only `ts`, `repo`, `slug` (`null` for a pull request of no task), `pr` (`null` for a `land-*` step before a pull request exists), `head` (full SHA of the head the step acted on) and `step`, with these fields:
 
 | `step` | When | Fields |
 |---|---|---|
-| `merged` | `merge`, and the lander's loop, after `gh pr merge` succeeded (never with `--dry-run`) | `approved_at`: ISO time of the approving review (`submitted_at`) or of the accepted `lgtm` comment, `null` when no approval was required |
+| `merged` | `merge`, and the lander's loop, after `gh pr merge` succeeded (never with `--dry-run`) | `approved_at`: ISO time of the approving review (`submitted_at`) or of the accepted `lgtm` comment, `null` when no approval was required or GitHub gave no time |
 | `updated` | the loop merged the default branch into the branch and pushed | `tip`: the default branch's SHA merged in |
 | `rerun` | the loop started a re-run of failed checks | `text`: the rerun line |
 | `sent-back` | the loop returned the pull request to its lead | `kind`, `text` (the stop line), `told` (`tech lead`, `lead`, `dispatcher` or `human`), `files` (only for `conflict`: the conflicting files, may be empty) |
 | `stopped` | the loop reported a stop to the dispatcher or the human | `kind`, `text`, `told` |
 | `land-updated` | `factory land` merged its base in | `base`: the target ref |
-| `land-conflict` | that merge conflicted | `base`, `files`: the unmerged files |
+| `land-conflict` | that merge left unmerged files (a merge that failed otherwise writes nothing) | `base`, `files`: the unmerged files |
 
 What each answers, and what a bad value looks like:
 - `merged.approved_at`: splits hand-over to merge into waiting for the human (hand-over to approval) and waiting for the queue (approval to merge). Bad: approval to merge p90 over 15 min.

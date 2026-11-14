@@ -261,6 +261,7 @@ class MergeInOrderTests(Loop):
              "text": "conflicts with main in a.txt, b.txt", "told": "lead", "files": ["a.txt", "b.txt"]},
             {"repo": ROOT, "slug": "t2", "pr": 2, "head": "h2", "step": "sent-back", "kind": "ci",
              "text": "failed or cancelled checks: test; no rerun: test double", "told": "lead"}])
+        self.assertEqual(self.queued("rerun"), [])
 
     def test_the_queue_records_a_stop_with_who_was_told(self):
         self.sim.add(1, base="elsewhere", behind=False)
