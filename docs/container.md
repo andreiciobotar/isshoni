@@ -43,7 +43,7 @@ Only you can do these. In order:
 The container can serve `isshoni-tui` to any SSH client, for a phone or a laptop that has no `docker exec` ([isshoni.md](isshoni.md#over-ssh) has what it does). It needs the dashboard built (step 6) and a key:
 
 1. Put a public key in `<FACTORY_STATE>/home/.claude/factory/dashboard/authorized_keys`, one per line (`mkdir -p` the directory first). A line that starts with `write ` (`write ssh-ed25519 AAAA... laptop`) may also change the worktree cap; every other key is read-only.
-2. Restart the container: `docker compose restart`. The start script runs `isshoni-tui --serve 0.0.0.0:2222` when the file is not empty and `~/code/isshoni/bin/isshoni-tui` exists.
+2. Restart the container: `docker compose restart`. (A container built before the dashboard existed has neither the start script nor the published port: run `docker compose up -d --build` once instead.) The start script runs `isshoni-tui --serve 0.0.0.0:2222` when the file is not empty and `~/code/isshoni/bin/isshoni-tui` exists.
 3. Connect: `ssh -p 2222 HOST`, with `HOST` the machine the container runs on. The first time, `ssh` shows the server's fingerprint; compare it with the `serving ssh on ..., host key SHA256:...` line in `docker logs isshoni-factory`. The host key is created on that first start and kept in `<FACTORY_STATE>/home/.claude/factory/dashboard/host_key`.
 
 | `.env` key | Default | |
@@ -52,6 +52,7 @@ The container can serve `isshoni-tui` to any SSH client, for a phone or a laptop
 | `DASHBOARD_PORT` | 2222 | the host port |
 
 - **The key file is the only gate**: the container has no firewall and no other login. By default the port is open on the host's loopback only, so you reach it with an SSH tunnel to the host (`ssh -L 2222:127.0.0.1:2222 HOST`, then `ssh -p 2222 127.0.0.1`) or by putting the address of a LAN or VPN interface in `DASHBOARD_BIND`. `0.0.0.0` there publishes it to everyone who can reach the host. Keys can be added and removed while it runs.
+- **The port is published whether or not the dashboard is on**; with no key file nothing listens behind it. If host port 2222 is taken, set `DASHBOARD_PORT`: the container's own port stays 2222.
 - **Off**: empty or remove the key file and restart the container.
 - The server is not supervised: if it crashes it stays down until the container restarts. On `docker compose stop` it is killed with the container, not signalled, and holds no state to lose.
 - It runs where the factory runs, as the container's user, so the Factory view's `factory status` sees the same tmux and processes; a `write` key changes `~/.claude/factory/settings.json` of that user.

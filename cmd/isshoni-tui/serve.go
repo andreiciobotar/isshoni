@@ -77,6 +77,7 @@ func serve(ctx context.Context, ln net.Listener, o serveOptions) error {
 		return err
 	}
 	srv.Handler = s.session
+	srv.HandshakeTimeout = 30 * time.Second // before authentication only
 	o.Log.Printf("serving ssh on %s, host key %s", ln.Addr(), fingerprint)
 
 	served := make(chan error, 1)
@@ -88,12 +89,12 @@ func serve(ctx context.Context, ln net.Listener, o serveOptions) error {
 		return err
 	case <-ctx.Done():
 	}
+	s.mu.Lock()
+	s.closing = true // a handshake that finishes from here on gets no session
+	s.mu.Unlock()
 	srv.Close()
 	ln.Close()
 	<-served
-	s.mu.Lock()
-	s.closing = true
-	s.mu.Unlock()
 	handlersDone := make(chan struct{})
 	go func() { s.handlers.Wait(); close(handlersDone) }()
 	select {

@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	charmlog "charm.land/log/v2"
 	"github.com/charmbracelet/x/ansi"
 	gossh "golang.org/x/crypto/ssh"
 
@@ -463,8 +464,42 @@ func TestServeATerminalWithoutASizeGetsTheDefault(t *testing.T) {
 	if err := v.waitExit(); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(e.logs.String(), "panic") {
-		t.Fatalf("a viewer panicked: %s", e.logs.String())
+}
+
+// A client that drops while on the Factory view must not take anything else down: wish
+// sends a 0x0 resize as the window channel closes, which the Factory view cannot lay out.
+func TestServeAbruptDisconnectLeavesTheOthersRunning(t *testing.T) {
+	var wishLog syncBuf // wish logs a program that ended in an error, a recovered panic included
+	charmlog.SetOutput(&wishLog)
+	t.Cleanup(func() { charmlog.SetOutput(os.Stderr) })
+	e := newTestEnv(t)
+	s := newSigner(t)
+	e.allow(keyLine(s, ""))
+	addr, stop := e.start()
+
+	a := e.view(addr, viewOpts{signer: s})
+	b := e.view(addr, viewOpts{signer: s})
+	a.waitFor("zebrafish")
+	b.waitFor("zebrafish")
+	a.send("3c")
+	a.waitFor("worktree cap")
+	a.sess.Close()
+	a.client.Close()
+	waitFor(t, "A's session to end", func() bool { return strings.Contains(e.logs.String(), "session end") })
+	b.send("s")
+	b.waitFor("sort: cost")
+	c := e.view(addr, viewOpts{signer: s})
+	c.waitFor("zebrafish")
+	// the server's own shutdown closes the window channel of the viewers still on the Factory view
+	b.send("3")
+	b.waitFor("worktree cap")
+	c.send("3")
+	c.waitFor("worktree cap")
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	if out := wishLog.String(); out != "" {
+		t.Fatalf("a program ended in an error: %s", out)
 	}
 }
 
