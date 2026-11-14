@@ -735,6 +735,9 @@ func TestGradientAndAgentColors(t *testing.T) {
 		key24(th.AgentColor("coder")) != key24(th.Blue) || key24(th.AgentColor("reviewer")) != key24(th.Pink) {
 		t.Fatal("fixed agent colors")
 	}
+	if key24(th.AgentColor("lander")) != key24(mix(th.Yellow, th.Green, 0.5)) || agentLess("explorer", "lander") == agentLess("lander", "explorer") || !agentLess("lander", "general-purpose") {
+		t.Fatal("the lander has its own colour, after the explorer")
+	}
 	if key24(th.AgentColor("factory:coder")) != key24(th.Blue) || key24(th.AgentColor("factory:reviewer")) != key24(th.Pink) {
 		t.Fatal("a plugin's agent has the color of its role")
 	}

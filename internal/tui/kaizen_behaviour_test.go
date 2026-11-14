@@ -579,7 +579,7 @@ func TestKaizenFlowMixChart(t *testing.T) {
 	for _, w := range []int{140, 100, 80} {
 		out := mixText(t, kaizenDoc(t), w)
 		for _, want := range []string{"the mix over time", "role share of task cost · median of 5 tasks", "v0.1.0", "v0.2.0", "v0.3.0",
-			"lead 15%", "coder 38%", "reviewer 20%", "explorer 8%", "other 18%", "0%"} {
+			"lead 15%", "coder 38%", "reviewer 20%", "explorer 8%", "lander 6%", "other 14%", "0%"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%d columns lack %q:\n%s", w, want, out)
 			}
@@ -595,20 +595,20 @@ func TestKaizenFlowMixChart(t *testing.T) {
 
 func TestKaizenFlowMixShowsAnAddedRole(t *testing.T) {
 	doc := kaizenDoc(t)
-	doc.Roles = append(doc.Roles, "lander")
-	doc.Summary.ByRole["lander"] = 5
+	doc.Roles = append(doc.Roles, "planner")
+	doc.Summary.ByRole["planner"] = 5
 	for i := range doc.Summary.Mix.Points {
-		doc.Summary.Mix.Points[i].Share["lander"] = 0.05
+		doc.Summary.Mix.Points[i].Share["planner"] = 0.05
 	}
 	for i := range doc.Tasks {
 		if c := doc.Tasks[i].Cost; c != nil {
-			c.ByRole["lander"] = c.Total // the ROLES cell draws a role it has no colour rule for
+			c.ByRole["planner"] = c.Total // the ROLES cell draws a role it has no colour rule for
 		}
 	}
 	m := fakeModel(true, 140, 200)
 	setKaizen(m, doc, pageFlow)
 	out := plain(m)
-	for _, want := range []string{"lander $5.00", "lander 5%", "lead $35.85", "other $6.46", "coder 38%", "reviewer 20%", "other 18%", "lead 15%", "explorer 8%"} {
+	for _, want := range []string{"planner $5.00", "planner 5%", "lead $35.85", "other $5.86", "coder 38%", "reviewer 20%", "other 14%", "lead 15%", "explorer 8%"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("the legend and the chart name the new role beside the others: no %q\n%s", want, out)
 		}

@@ -165,7 +165,8 @@ class FixtureStore(Store):
             ("factory:reviewer", "claude-opus-5-5", 1000000, "10:20", "10:25"),
             ("coder", "claude-haiku-5-5", 2000000, "10:30", "10:35"),
             ("coder", "claude-sonnet-5-5", 1000000, "10:40", "10:41"),
-            ("reviewer", "claude-opus-5-5", 0, "10:45", "10:45", "no file")])
+            ("reviewer", "claude-opus-5-5", 0, "10:45", "10:45", "no file"),
+            ("factory:lander", "claude-haiku-5-5", 1000000, "10:46", "10:47")])  # after the last review: no rework
         session(self.projects, ALPHA, "c1", "%sT12:30:00.000Z" % DAY, 500000)
         self.doc = self.build(gh_alpha_only)
         self.by_slug = {t["slug"]: t for t in self.doc["tasks"]}
@@ -194,8 +195,8 @@ class TaskTests(FixtureStore):
 
     def test_cost_by_role_rework_unpriced(self):
         self.assertEqual(self.by_slug["a1"]["cost"], {
-            "total": 21.0, "unpriced_tokens": 1000000,
-            "by_role": {"lead": 10.0, "coder": 3.0, "reviewer": 5.0, "explorer": 2.0, "other": 1.0},
+            "total": 22.0, "unpriced_tokens": 1000000,
+            "by_role": {"lead": 10.0, "coder": 3.0, "reviewer": 5.0, "explorer": 2.0, "lander": 1.0, "other": 1.0},
             "rework": 2.0})
         self.assertEqual(self.by_slug["c1"]["cost"]["total"], 5.0)
         self.assertEqual(self.by_slug["c1"]["cost"]["rework"], 0.0)
@@ -245,10 +246,10 @@ class DocumentTests(FixtureStore):
     def test_summary(self):
         self.assertEqual(self.doc["summary"], {
             "tasks": 4, "landed": 1, "in_flight": 2,  # b1 is acknowledged
-            "cost": {"median": 21.0, "n": 1}, "brief_to_pr_s": {"median": 3000.0, "n": 1},
+            "cost": {"median": 22.0, "n": 1}, "brief_to_pr_s": {"median": 3000.0, "n": 1},
             "pr_to_merge_s": {"median": 600.0, "n": 1}, "review_rounds": {"median": 1.0, "n": 1},
-            "first_pass": {"yes": 1, "of": 1}, "rework_share": 0.095238,
-            "by_role": {"lead": 10.0, "coder": 3.0, "reviewer": 5.0, "explorer": 2.0, "other": 1.0},
+            "first_pass": {"yes": 1, "of": 1}, "rework_share": 0.090909,
+            "by_role": {"lead": 10.0, "coder": 3.0, "reviewer": 5.0, "explorer": 2.0, "lander": 1.0, "other": 1.0},
             "mix": {"window": 5, "points": []},
             "time": {"building_s": 2880, "stopped_s": 120, "merge_wait_s": 600},
             "defects": {"tests": 1, "reviewer": 2, "lead": 1, "ci": 0, "human": 0, "other": 2},
@@ -537,7 +538,7 @@ class MixTests(unittest.TestCase):
         self.assertEqual(self.lead(landed), [("m4", "0.1.0", 0.7), ("m5", "0.1.0", 0.6)])
         point = kaizen._mix(landed)["points"][0]
         self.assertEqual(list(point), ["slug", "version", "share"])
-        self.assertEqual(point["share"], {"lead": 0.7, "coder": 0.3, "reviewer": 0.0, "explorer": 0.0, "other": 0.0})
+        self.assertEqual(point["share"], {"lead": 0.7, "coder": 0.3, "reviewer": 0.0, "explorer": 0.0, "lander": 0.0, "other": 0.0})
         self.assertTrue(all(type(v) is float for v in point["share"].values()))
 
     def test_medians_are_per_role_and_need_not_sum_to_one(self):
@@ -668,7 +669,7 @@ class CliTests(Store):
                          ("2026-01-06T08:59:00Z", True, 1860, 600, 1, True))
         self.assertEqual(t["cost"], {"total": 0.004366, "unpriced_tokens": 14, "rework": 0.0,
                                      "by_role": {"lead": 0.004227, "coder": 0.0, "reviewer": 0.000133, "explorer": 6e-06,
-                                                 "other": 0.0}})
+                                                 "lander": 0.0, "other": 0.0}})
         self.assertEqual(d["prices"], price_file.load(PRICES_PATH).to_dict())
         self.assertEqual(d["summary"]["landed"], 1)
 

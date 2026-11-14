@@ -96,7 +96,7 @@ Per task (listed by `started`, tasks without one first, then slug):
 | `pr` | `{number, url, state, opened, merged}` |
 | `landed` | `pr.merged` is set |
 | `brief_to_pr_s`, `pr_to_merge_s` | `pr.opened - started` (null when negative); `pr.merged - pr.opened` |
-| `cost` | from its transcript sessions (same repository and worktree name): `{total, unpriced_tokens, by_role, rework}`; `by_role` has `lead` (the main session), `coder`, `reviewer`, `explorer` (also `Explore`) and `other` |
+| `cost` | from its transcript sessions (same repository and worktree name): `{total, unpriced_tokens, by_role, rework}`; `by_role` has `lead` (the main session), `coder`, `reviewer`, `explorer` (also `Explore`), `lander` and `other` |
 | `cost.rework` | cost of coder and reviewer dispatches that started after the first reviewer dispatch returned. A lower bound: the lead's own rework is not separable |
 | `review_rounds` | reviewer dispatches that ran (not `no-run`); null without sessions |
 | `first_pass` | `review_rounds == 1`; zero reviews is not first-pass |
@@ -285,4 +285,4 @@ VIEW=... SIZE=...` turns it into a PNG under `shots/` (needs Chrome).
   count up and the columns grow while new numbers arrive (never in a snapshot).
 
 A session is live when its transcript changed in the last 30 seconds or so. Agents keep
-one colour and one order everywhere: main, coder, reviewer, explorer, then the rest.
+one colour and one order everywhere: main, coder, reviewer, explorer, lander, then the rest.

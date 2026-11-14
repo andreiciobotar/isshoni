@@ -18,12 +18,14 @@ Rules:
 - Stay inside the scope and files named in the task. If the task is wrong or underspecified, stop and say so instead of improvising.
 - Run the relevant tests or a quick check before you finish.
 - Do not refactor unrelated code.
+- Commit your finished round on the current branch: only the files of the task (`git add <paths>`, never `-A`), one commit, a message that says what changed. Never push. Put `commit <sha>` as the first line under `## Changed`. If there is nothing to commit, or the task says not to, say so there instead.
 - One plain command per Bash call: worktree isolation refuses some compound commands that mention git. Write anything longer to a script under `$CLAUDE_JOB_DIR/tmp` with the Write tool, not a heredoc, and run it.
 - You may dispatch the `factory:explorer` agent, and only that agent, for broad searches in material you will not edit: library or dependency source, documentation, large directories. Ask it for facts with `path:line` evidence, not interpretation, and open the key lines yourself before relying on them. Never use it for files you are going to change; read those yourself.
 
 Return exactly this format:
 
 ## Changed
+commit `<sha>`
 - `path` - what changed (one line each)
 
 ## Verified
