@@ -91,7 +91,7 @@ class _Role:
         }
 
 
-def _roles(runs, prices):
+def by_role(runs, prices):
     """role -> _Role over [(role, Run)]."""
     out = {}
     for name, run in runs:
@@ -136,14 +136,14 @@ def build(sessions, prices, factory_dir, now=None):
             (metrics.role(d.agent_type), d.run) for s in ss for d in s.dispatches if d.run]
         t = metrics.totals(ss)
         tasks.append({"repo": ss[0].repo, "repo_path": repo_path, "task": task, "version": versions.get((repo_path, task)),
-                      "start": t["start"], "end": t["end"], **_summary(_roles(runs, prices)), "_runs": runs})
+                      "start": t["start"], "end": t["end"], **_summary(by_role(runs, prices)), "_runs": runs})
     tasks.sort(key=lambda t: (t["start"] is not None, t["start"] or "", t["task"], t["repo_path"] or ""))
     by_version = {}
     for t in tasks:
         by_version.setdefault(t["version"], []).append(t)
     rolled = []
     for v, ts in sorted(by_version.items(), key=lambda kv: _version_key(kv[0])):
-        roles = _roles([r for t in ts for r in t["_runs"]], prices)
+        roles = by_role([r for t in ts for r in t["_runs"]], prices)
         rolled.append({"version": v, "tasks": len(ts), **_summary(roles)})
     for t in tasks:
         del t["_runs"]

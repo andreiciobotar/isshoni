@@ -42,6 +42,7 @@ RUN set -eu; cd /tmp \
 
 # In /usr/bin, where a crontab is on any Linux: the watch job runs with a minimal PATH that has it.
 COPY --chmod=755 crontab /usr/bin/crontab
+COPY --chmod=755 start /usr/local/bin/isshoni-start
 
 # -o: the host's ids may be ones Debian already uses (a group like `users`).
 RUN groupadd -o -g "$GID" factory && useradd -o -u "$UID" -g "$GID" -d /state/home -s /bin/bash factory
@@ -55,6 +56,6 @@ ENV PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sb
     TMPDIR=/state/tmp \
     DISABLE_AUTOUPDATER=1
 
-# The container's one long-lived process is the cron that runs the site manager's job; sessions are
-# started with `docker exec`.
-CMD ["sh", "-c", "mkdir -p \"$HOME\" \"$TMPDIR\" && touch \"$HOME/.crontab\" && exec supercronic \"$HOME/.crontab\""]
+# The container's one long-lived process is the cron that runs the site manager's job, started by a
+# script that first starts the dashboard over SSH if it is wanted; sessions are started with `docker exec`.
+CMD ["isshoni-start"]

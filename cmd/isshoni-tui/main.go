@@ -2,12 +2,17 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"log"
+	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"isshoni/internal/data"
 	"isshoni/internal/tui"
@@ -19,7 +24,7 @@ func main() {
 		agents   = flag.String("agents-dir", "", "agent definitions dir, passed to isshoni")
 		prices   = flag.String("prices", "", "price file, passed to isshoni (default isshoni/prices.toml)")
 		rng      = flag.String("range", "7d", "initial range: 24h, 7d, 30d, all")
-		snapshot = flag.String("snapshot", "", "render one frame to stdout and exit: dashboard, session, agents, factory, kaizen, kaizen-flow, kaizen-board, hanami, help")
+		snapshot = flag.String("snapshot", "", "render one frame to stdout and exit: dashboard, session, agents, factory, kaizen, kaizen-flow, kaizen-anatomy, kaizen-board, hanami, help")
 		size     = flag.String("size", "140x40", "snapshot size WxH")
 		session  = flag.String("session", "", "session id prefix for --snapshot session")
 		row      = flag.Int("row", 0, "dashboard snapshot: cursor on table row N, 0 is the all row")
@@ -32,6 +37,9 @@ func main() {
 		frames   = flag.Int("frames", 1, "hanami snapshot: number of frames, separated by a form-feed line")
 		step     = flag.Duration("frame-step", 0, "hanami snapshot: time between frames (default 400ms)")
 		legend   = flag.Bool("legend", false, "hanami snapshot: with the legend open")
+		serveAt  = flag.String("serve", "", "serve the dashboard over SSH on ADDR (e.g. 127.0.0.1:2222) instead of on this terminal; public keys only")
+		keysFile = flag.String("authorized-keys", dashboardFile("authorized_keys"), "with --serve: the keys allowed in, one per line; `write ssh-ed25519 ...` may also change the worktree cap")
+		hostKey  = flag.String("host-key", dashboardFile("host_key"), "with --serve: the server's private key, created when missing")
 	)
 	flag.Parse()
 
@@ -52,6 +60,23 @@ func main() {
 		o.Replay = evs
 	}
 
+	if *serveAt != "" {
+		if *snapshot != "" {
+			fmt.Fprintln(os.Stderr, "isshoni-tui: --serve and --snapshot cannot be combined")
+			os.Exit(2)
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		ln, err := net.Listen("tcp", *serveAt)
+		if err == nil {
+			err = serve(ctx, ln, serveOptions{Runner: r, AuthorizedKeys: *keysFile, HostKey: *hostKey, Range: *rng, Follow: *follow, NoColor: *noColor, Log: log.New(os.Stderr, "isshoni-tui: ", log.LstdFlags)})
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "isshoni-tui:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *snapshot != "" {
 		w, h, err := parseSize(*size)
 		if err != nil {
@@ -59,7 +84,7 @@ func main() {
 			os.Exit(2)
 		}
 		switch *snapshot {
-		case "dashboard", "session", "agents", "factory", "kaizen", "kaizen-flow", "kaizen-board", "hanami", "help":
+		case "dashboard", "session", "agents", "factory", "kaizen", "kaizen-flow", "kaizen-anatomy", "kaizen-board", "hanami", "help":
 		default:
 			fmt.Fprintln(os.Stderr, "isshoni-tui: unknown snapshot view", *snapshot)
 			os.Exit(2)
@@ -76,6 +101,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "isshoni-tui:", err)
 		os.Exit(1)
 	}
+}
+
+// dashboardFile is a file in the dashboard's state directory.
+func dashboardFile(name string) string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude", "factory", "dashboard", name)
 }
 
 // absolute resolves a directory flag against the user's working directory, because

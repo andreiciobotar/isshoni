@@ -34,9 +34,15 @@ type Runner struct {
 	Timeout     time.Duration // per call; default callTimeout
 	Err         error         // set when the root could not be located; reported by Check
 
-	mu     sync.Mutex
-	closed bool // set by Wait: no call starts after it
-	calls  sync.WaitGroup
+	// Share, when non-nil, is serve mode: callers asking for the same thing share one
+	// process and its result. Runs live under this context, not the caller's.
+	Share context.Context
+
+	mu      sync.Mutex
+	closed  bool // set by Wait: no call starts after it
+	calls   sync.WaitGroup
+	entries map[string]*entry // Share only: runs by what they were asked
+	forgot  time.Time         // Share only: no run started before this is used again
 }
 
 // Projects is the transcripts root the CLI reads.
@@ -126,9 +132,25 @@ func (r *Runner) python() string {
 	return "python3"
 }
 
+// run asks for `isshoni <args> --json` and decodes its output into out.
 func (r *Runner) run(ctx context.Context, out any, args ...string) error {
+	scan := args[0] == "sessions" || args[0] == "session"
+	b, err := r.shared(ctx, strings.Join(args, "\x00"), scan, func(ctx context.Context) ([]byte, error) {
+		return r.output(ctx, args)
+	})
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(b, out); err != nil {
+		return fmt.Errorf("decode isshoni output: %w", err)
+	}
+	return nil
+}
+
+// output is one `isshoni <args> --json` process and what it printed.
+func (r *Runner) output(ctx context.Context, args []string) ([]byte, error) {
 	if !r.begin() {
-		return cmp.Or(ctx.Err(), context.Canceled)
+		return nil, cmp.Or(ctx.Err(), context.Canceled)
 	}
 	defer r.calls.Done()
 	timeout := r.Timeout
@@ -156,29 +178,26 @@ func (r *Runner) run(ctx context.Context, out any, args ...string) error {
 	cmd.Stdout, cmd.Stderr = &so, &se
 	if err := cmd.Run(); err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			return ErrPython
+			return nil, ErrPython
 		}
 		msg := strings.TrimSpace(se.String())
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("isshoni %s timed out after %s", args[0], timeout)
+			return nil, fmt.Errorf("isshoni %s timed out after %s", args[0], timeout)
 		} else if ctx.Err() != nil {
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
 		if msg == "" {
 			msg = err.Error()
 		}
 		if strings.Contains(msg, "No module named isshoni") {
-			return fmt.Errorf("%w: %s", ErrPackage, r.Root)
+			return nil, fmt.Errorf("%w: %s", ErrPackage, r.Root)
 		}
 		if i := strings.LastIndex(msg, "\n"); i >= 0 {
 			msg = strings.TrimSpace(msg[i+1:])
 		}
-		return errors.New(msg)
+		return nil, errors.New(msg)
 	}
-	if err := json.Unmarshal(so.Bytes(), out); err != nil {
-		return fmt.Errorf("decode isshoni output: %w", err)
-	}
-	return nil
+	return so.Bytes(), nil
 }
 
 func sinceArgs(since string) []string {

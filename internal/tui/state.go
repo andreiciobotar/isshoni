@@ -71,7 +71,9 @@ type Options struct {
 	NoColor bool
 	Follow  bool
 	Static  bool // render settled (snapshots, tests): no animation phase, no clock
-	Now     func() time.Time
+	// ReadOnly refuses the one write the dashboard makes, the worktree cap.
+	ReadOnly bool
+	Now      func() time.Time
 
 	Replay      []data.Event // start in the Hanami tab replaying these, not the live stream
 	ReplaySpeed float64      // event seconds per second; 0 is the default, a minute a second
@@ -1290,7 +1292,9 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 			m.filterIn = true
 		}
 	case key.Matches(msg, keys.CapEdit):
-		if m.view == viewFactory {
+		if m.view == viewFactory && m.opts.ReadOnly {
+			m.setToast("read-only: this key may not change the cap", true)
+		} else if m.view == viewFactory {
 			m.openCap()
 		}
 	}

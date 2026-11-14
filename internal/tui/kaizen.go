@@ -22,10 +22,11 @@ type kaizenPage int
 const (
 	pagePulse kaizenPage = iota
 	pageFlow
+	pageAnatomy
 	pageBoard
 )
 
-var kaizenPages = []string{"Pulse", "Flow", "Board"}
+var kaizenPages = []string{"Pulse", "Flow", "Anatomy", "Board"}
 
 type kaizenState struct {
 	doc       *data.Kaizen
@@ -36,7 +37,7 @@ type kaizenState struct {
 	doneRange int
 	err       string // the last load failed: the first line of why; doc is the result before it
 	page      kaizenPage
-	top       [3]int    // first visible body line, per page
+	top       [4]int    // first visible body line, per page
 	born      time.Time // when the numbers on screen arrived: the columns grow from here
 	shownAt   time.Time // when the rewards line was shown: it shimmers from here
 }
