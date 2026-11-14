@@ -1402,6 +1402,11 @@ def monitor_anatomy(p):
                 merged[slug] = when
         landed = [{**t, "merged": merged[t["task"]]} for t in doc["tasks"] if t["repo_path"]
                   and os.path.realpath(t["repo_path"]) == p["repo"].root and t["cost"] > 0 and t["task"] in merged]
+        for t in landed:
+            t["version"], t["roles"]
+            for r in t["roles"].values():
+                [r["cost"][k] for k in (*CLASSES, "total")], r["calls"], r["context"]["median"], r["context"]["peak"]
+                sum(r["tools"].values())
         return sorted(landed, key=lambda t: t["merged"])
     except (KeyError, TypeError, AttributeError):
         raise monitor_failed("unexpected output")
@@ -1438,8 +1443,12 @@ def named(ts):
     return ", ".join(names[:6]) + (f" and {len(names) - 6} more" if len(names) > 6 else "")
 
 
+def shown(n, fmt):
+    return "?" if n is None else fmt(n)
+
+
 def kilo(n):
-    return "?" if n is None else f"{n / 1000:.0f}k"
+    return shown(n, lambda n: f"{n / 1000:.0f}k")
 
 
 def blocks(ts, role):
@@ -1451,7 +1460,7 @@ def stat(items, get):
 
 
 def middle(values):
-    return statistics.median(values) if values else 0
+    return statistics.median(values) if values else None
 
 
 def lead_share(t):
@@ -1487,10 +1496,10 @@ def c_dearest_task(p, threshold):
     mine, others = top["roles"][role], blocks(baseline, role)
     return [(top["task"], top["task"],
              f"cost {top['cost']:.2f}, {top['cost'] / median:.1f} times the median of the {len(baseline)} before "
-             f"({median:.2f}); mostly the {role}: {mine['cost']['total']:.2f} against a median "
-             f"{middle(stat(others, lambda r: r['cost']['total'])):.2f}, {mine['calls']} calls against "
-             f"{middle(stat(others, lambda r: r['calls'])):.0f}, peak context {kilo(mine['context']['peak'])} against "
-             f"{kilo(middle(stat(others, lambda r: r['context']['peak'])))}")]
+             f"({median:.2f}; threshold {threshold:g} times); mostly the {role}: {mine['cost']['total']:.2f} against a "
+             f"median {shown(middle(stat(others, lambda r: r['cost']['total'])), '{:.2f}'.format)}, {mine['calls']} "
+             f"calls against {shown(middle(stat(others, lambda r: r['calls'])), '{:.0f}'.format)}, peak context "
+             f"{kilo(mine['context']['peak'])} against {kilo(middle(stat(others, lambda r: r['context']['peak'])))}")]
 
 
 ROLE_MEASURES = (("context", "median context per call", lambda r: r["context"]["median"], kilo),
@@ -1505,7 +1514,7 @@ def c_role_growing(p, threshold):
             continue
         for measure, phrase, get, fmt in ROLE_MEASURES:
             now_, before = middle(stat(blocks(current, role), get)), middle(stat(blocks(baseline, role), get))
-            if before and 100 * (now_ - before) / before > threshold:
+            if now_ is not None and before and 100 * (now_ - before) / before > threshold:
                 found.append((None, f"{role}/{measure}",
                               f"the {role}'s {phrase} is {fmt(now_)} over {len(blocks(current, role))} tasks "
                               f"({named([t for t in current if role in t['roles']])}), {fmt(before)} over the "
@@ -1526,7 +1535,7 @@ def c_version_shift(p, threshold):
         moved = []
         for label, fmt, pick, get in VERSION_MEASURES:
             now_, before = middle(stat(pick(mine), get)), middle(stat(pick(baseline), get))
-            if before and abs(100 * (now_ - before) / before) > threshold:
+            if now_ is not None and before and abs(100 * (now_ - before) / before) > threshold:
                 over = "" if moved else f" over the {len(baseline)} before"
                 moved.append(f"{label} {fmt(now_)} against {fmt(before)}{over} ({100 * (now_ - before) / before:+.0f}%)")
         if len(mine) >= 3 and moved:
@@ -1776,7 +1785,7 @@ def cmd_watch(args):
     current, skipped = evaluate(p, criteria)
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
-    evaluated = {c["name"] for c in criteria} - {s["criterion"] for s in skipped}
+    evaluated = {c["name"] for c in every} - {s["criterion"] for s in skipped}
     opened = {(f["criterion"], f["subject"]): f
               for f in fold(repo_log("firings", repo.root) or [])[0] if not f["cleared"]}
     for key, f in opened.items():

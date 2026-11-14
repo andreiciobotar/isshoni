@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from test_factory import ROOT, factory
-from test_health import HOUR, NOW, Harness, Home, TimedRun, check, choice, iso, pic, reply
+from test_health import HOUR, NOW, Harness, Home, TimedRun, check, choice, fired, iso, pic, reply
 
 MIX = {"cache_read": 0.6, "output": 0.4}
 SHIFTED = {"cache_read": 0.45, "output": 0.3, "cache_write_1h": 0.25}
@@ -71,6 +71,14 @@ class Evidence(Home):
                 with mock.patch.object(factory, "run", run), self.assertRaises(factory.NotEvaluated) as cm:
                     factory.anatomy(p)
                 self.assertEqual(str(cm.exception), why)
+
+    def test_a_role_block_that_lacks_a_field_is_unexpected_output(self):
+        for block in ({"cost": {"total": 1}}, {**role(), "tools": None}, {k: v for k, v in role().items() if k != "calls"}):
+            with self.subTest(block=sorted(block)):
+                p, run = self.p([task("a", lead=block)], [("a", NOW)])
+                with mock.patch.object(factory, "run", run), self.assertRaises(factory.NotEvaluated) as cm:
+                    factory.anatomy(p)
+                self.assertEqual(str(cm.exception), "the monitor failed: unexpected output")
 
     def test_a_failure_is_remembered(self):
         p, run = self.p([], [], monitor=(1, "", "boom"))
@@ -144,8 +152,8 @@ class Findings(unittest.TestCase):
         small = flat("c", 4, lead=role(5, calls=40, peak=180_000), coder=role(1))
         big = task("big", lead=role(15.2, calls=210, peak=301_000), coder=role(1))
         self.assertEqual(check("dearest-task", window_pic([*small, big], base), 1.5), [
-            ("big", "big", "cost 16.20, 2.7 times the median of the 5 before (6.00); mostly the lead: 15.20 against a "
-             "median 5.00, 210 calls against 40, peak context 301k against 180k")])
+            ("big", "big", "cost 16.20, 2.7 times the median of the 5 before (6.00; threshold 1.5 times); mostly the "
+             "lead: 15.20 against a median 5.00, 210 calls against 40, peak context 301k against 180k")])
         self.assertEqual(check("dearest-task", window_pic([*small, big], base), 3), [])
 
     def test_dearest_task_counts_a_role_the_baseline_lacks_as_zero(self):
@@ -153,8 +161,15 @@ class Findings(unittest.TestCase):
         big = task("big", lead=role(5), reviewer=role(10, calls=30, peak=90_000))
         [(slug, subject, detail)] = check("dearest-task", window_pic([big], base), 1.5)
         self.assertEqual((slug, subject), ("big", "big"))
-        self.assertTrue(detail.endswith("mostly the reviewer: 10.00 against a median 0.00, 30 calls against 0, "
-                                        "peak context 90k against 0k"), detail)
+        self.assertTrue(detail.endswith("mostly the reviewer: 10.00 against a median ?, 30 calls against ?, "
+                                        "peak context 90k against ?"), detail)
+
+    def test_dearest_task_shows_a_question_mark_for_null_baseline_context(self):
+        nulls = {"first": None, "median": None, "peak": None, "max": None}
+        base = [task(f"b{i}", lead={**role(5), "context": nulls}) for i in range(1, 6)]
+        big = task("big", lead=role(15, peak=150_000))
+        [(_, _, detail)] = check("dearest-task", window_pic([big], base), 1.5)
+        self.assertTrue(detail.endswith("peak context 150k against ?"), detail)
 
     def growing(self, current_median=130_000, base_median=100_000, **kw):
         base = flat("b", 5, lead=role(median=base_median, **kw))
@@ -183,6 +198,30 @@ class Findings(unittest.TestCase):
                     for i in range(1, 6)]
             with self.subTest(cur_with=cur_with, base_with=base_with):
                 self.assertEqual(check("role-growing", window_pic(cur, base), 20), [])
+
+    def test_the_lower_bound_of_three_tasks_fires(self):
+        def tasks(prefix, n_with, median):
+            return [task(f"{prefix}{i}", lead=role(), **({"coder": role(median=median)} if i <= n_with else {}))
+                    for i in range(1, 6)]
+        found = check("role-growing", window_pic(tasks("c", 3, 500_000), tasks("b", 3, 100_000)), 20)
+        self.assertEqual([f[1] for f in found], ["coder/context"])
+        self.assertEqual(check("role-growing", window_pic(tasks("c", 2, 500_000), tasks("b", 3, 100_000)), 20), [])
+
+    def test_no_data_is_not_a_measured_zero(self):
+        nulls = {"first": None, "median": None, "peak": None, "max": None}
+        cur, base = self.versions(4)
+        for t in cur:
+            t["roles"]["lead"]["context"] = nulls
+        [(_, _, detail)] = check("version-shift", window_pic(cur, base), 20)
+        self.assertNotIn("lead context", detail)
+        cur, base = self.versions(4)
+        for t in cur:
+            del t["roles"]["lead"]
+        [(_, _, detail)] = check("version-shift", window_pic(cur, base), 20)
+        self.assertNotIn("lead context", detail)
+        base = flat("b", 5, lead=role())
+        cur = [task(f"c{i}", lead={**role(), "context": nulls}) for i in range(1, 6)]
+        self.assertEqual(check("role-growing", window_pic(cur, base), 20), [])
 
     def test_a_baseline_median_of_zero_is_skipped(self):
         base = flat("b", 5, lead=role(tools=0))
@@ -345,6 +384,22 @@ class DigestCase(Harness):
         self.assertEqual(json.loads(out), {"firings": [], "not_evaluated": []})
         code, out, _ = self.cli("health")
         self.assertNotIn("mix-shift", out)
+        _, out, _ = self.cli("watch")
+        self.assertNotIn("not evaluated: mix-shift", out)
+        self.assertEqual(out.count("digest skipped: no monitor"), 1)
+
+    def test_a_tick_clears_a_digest_firing_a_killed_digest_left_open(self):
+        self.seed("firings", [fired("aaa", criterion="mix-shift", escalate="judgment", subject="cache_read")])
+        self.cli("watch", answers=self.world(marker_age=1))
+        [folded], _ = factory.fold(self.records())
+        self.assertTrue(folded["cleared"])
+
+    def test_a_due_tick_with_too_few_before_prints_four_lines_and_marks_nothing(self):
+        self.use("mix-shift", "dearest-task", "role-growing", "version-shift")
+        _, out, _ = self.cli("watch", answers=self.world(base=3, cur=5))
+        self.assertEqual(out.count("not evaluated:"), 4)
+        self.assertIn("only 3 landed tasks before this digest's", out)
+        self.assertEqual((self.markers(), self.claude_runs()), ([], []))
 
     # ---- the watch tick's cadence
 
