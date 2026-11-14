@@ -17,6 +17,7 @@ const (
 	meterCells  = 20 // beyond this many slots the meter is a bar
 	baseMax     = 24
 	prMax       = 24
+	phaseMax    = 24 // PHASE keeps more than this only when every column fits at it
 	slugLeast   = 16
 	nameLeast   = 12 // cells the repository name keeps before the meter shrinks
 	bandDoLeast = 30 // cells the band's do cell needs to stay on its row
@@ -484,6 +485,9 @@ func (m *model) factoryCols(p paint, w int, tasks []data.FactoryTask) factoryCol
 		c.pr = max(c.pr, min(width(prText(t)), prMax))
 		c.base = max(c.base, min(width(base), baseMax))
 		c.flags = max(c.flags, width(flagPills(p, t)))
+	}
+	if free := w - (2 + c.phase + c.flags + 4 + 2*3 + c.elapsed + c.pr + c.base); free < min(c.slug, slugLeast) {
+		c.phase = min(c.phase, phaseMax)
 	}
 	for step := 0; ; step++ {
 		cc := c

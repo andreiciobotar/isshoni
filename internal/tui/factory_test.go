@@ -432,6 +432,26 @@ func TestFactoryBlockedOnSomeoneElseIsLighter(t *testing.T) {
 	}
 }
 
+func TestFactoryColsKeepTheTableWhenAWhomIsLong(t *testing.T) {
+	cols := func(w int, whom string) factoryCols {
+		x := onTask()
+		x.WaitsOn = whom
+		m := factoryModel(true, w, 40, factoryRepo{name: "m", st: fstatus(5, x, ftask("quiet-refactor", "motion"), ftask("api-rate-limits", "review"))})
+		return m.factoryCols(m.th.on(m.th.Bg), w, m.fac.repos[0].st.Rows)
+	}
+	long := strings.Repeat("x", 40)
+	for _, w := range []int{80, 100} {
+		got, want := cols(w, long), cols(w, "dispatcher")
+		got.phase, want.phase = 0, 0 // the label is cut to the cell
+		if got != want || got.elapsed == 0 {
+			t.Errorf("%d columns: a 40-character WaitsOn gives %+v, a short one %+v", w, got, want)
+		}
+	}
+	if c := cols(140, "design-review-of-docs"); c.phase != 2+len("blocked on design-review-of-docs") {
+		t.Errorf("140 columns: PHASE is %d cells, the 21-character slug is cut", c.phase)
+	}
+}
+
 func TestFactoryWaitingLeavesOutADraftInReview(t *testing.T) {
 	ready, draft, blocked := ftask("ready", "review"), ftask("draft", "review"), ftask("held", "blocked")
 	draft.PRDraft, blocked.PRDraft = true, true

@@ -387,9 +387,9 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   long it has waited; when nothing waits it says so. The `3 Factory` tab carries `▲N`
   for the number waiting on every view (in a narrow header the live count then shows as
   `● N`, without the word). It refreshes every 30 seconds while shown, every 2 minutes
-  otherwise, in two passes. The first, for every
-  repository, is `factory status --json --cached` (10 s limit): it never contacts
-  GitHub, so the rows show at once. The second, only while the view is shown, is
+  otherwise, in two passes. The first, for every repository, is
+  `factory status --json --cached` (10 s limit): it never contacts GitHub, so the rows
+  show at once. The second, only while the view is shown, is
   `factory status --json --max-age 60` (25 s limit) for each repository with tasks
   whose pull request data is missing or older than 60 seconds; it asks GitHub (at most
   10 s per call, see [factory.md](factory.md)). It runs per repository, one at a time
