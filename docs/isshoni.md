@@ -58,7 +58,7 @@ task-notification) was found in the transcript.
 
 ## Kaizen measures
 ```
-isshoni kaizen [--since 7d] [--factory-dir DIR] [--json] [--cached]
+isshoni kaizen [--since 7d] [--factory-dir DIR] [--json] [--cached] [--modes]
 ```
 Whether the factory is getting better, computed once. It reads the factory's stores
 (`--factory-dir`, default `~/.claude/factory`; format in `docs/factory.md`, "Logs"), the
@@ -106,6 +106,7 @@ Per task (listed by `started`, tasks without one first, then slug):
 | `state` | its last declared state (the task state record with the newest `ts`) |
 | `pr` | `{number, url, state, opened, merged}` |
 | `landed` | `pr.merged` is set |
+| `mode` | `single` or `team`, from its last `TaskStarted` event; `single` when the event has none |
 | `brief_to_pr_s`, `pr_to_merge_s` | `pr.opened - started` (null when negative); `pr.merged - pr.opened` |
 | `size` | `size` of its `TaskStarted` event (`small`, `medium`, `large`), as written; null when absent |
 | `cost` | from its transcript sessions (same repository and worktree name): `{total, unpriced_tokens, by_role, rework}`; `by_role` has `lead` (the main session), `tech-lead` (the main session of a tech lead run: its id is the `session` of a `techlead` record), `coder`, `reviewer`, `explorer` (also `Explore`), `lander` and `other` |
@@ -162,6 +163,21 @@ hold, once each: `cache/kaizen-merges-<key>.json` (merge commit to pull request 
 merges with their conflicted files) and `cache/kaizen-approvals-<key>.json` (pull request number to
 approval time, or null when none was found) never expire. A failed call is not cached; gh runs 8 at a
 time. With `--cached` neither runs, and a pull request not in the caches is unknown.
+
+`summary.by_mode` compares the modes: one row per (`mode`, `size`) with a landed task, sizes in
+the order `small`, `medium`, `large`, `null` (no size stated on the task's `TaskStarted`), modes
+`single` then `team`. A row has `n`, the medians `cost_median`, `lead_share_median` (the lead's
+share of the lines written, 0 to 1), `lead_calls_median`, `handover_s_median` (`TaskStarted` to the
+first `handed-over` state), `review_rounds_median`, and `build_runs_median` (`techlead` records of
+kind `build` per task; null for `single`), plus `first_pass` (tasks of the `n`), `defects` (the
+sums by `caught_by`) and `lead_wakeups` (prompts to the lead after
+its first hand-over, summed). A median over tasks with no value is null. `defects` is null
+when no task of the row has a retro, `cost_median` skips a task whose tokens are all unpriced,
+`lead_calls_median` ignores tasks with no lead transcript,
+`handover_s_median` ignores a hand-over earlier than `TaskStarted`, and a team task with no
+`build` record counts 0 build runs. `isshoni kaizen --modes`
+prints the rows as a table, `-` for null, after a line counting the landed tasks of each mode; the
+`tech_lead` counts of the merge queue (`came_back` and the rest) leave out `build` records.
 
 `summary.mix` is how the cost mix by role moves: `window` (the integer 5) and `points`,
 one per landed task with a cost above zero, in start order, from the fifth such task on

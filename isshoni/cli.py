@@ -285,6 +285,27 @@ def _pulse_lines(pulse, cur):
             for label, f in figures]
 
 
+def print_modes(rows, cur):
+    """The landed tasks of each mode by stated size (summary.by_mode) as plain text."""
+    if not rows:
+        print("no landed task carries a mode yet")
+        return 0
+    landed = lambda mode: sum(r["n"] for r in rows if r["mode"] == mode)  # noqa: E731
+    print("landed tasks: single %d, team %d" % (landed("single"), landed("team")))
+    cell = lambda v, fmt="%g", scale=1: "-" if v is None else fmt % (v * scale)  # noqa: E731
+    out = []
+    for r in rows:
+        d = r["defects"]
+        defects = None if d is None else ", ".join("%s %d" % kv for kv in d.items() if kv[1]) or "none"
+        out.append([r["size"] or "none", r["mode"], r["n"], cell(r["cost_median"], "%.2f"),
+                    cell(r["lead_share_median"], "%.0f%%", 100), cell(r["lead_calls_median"]),
+                    cell(r["handover_s_median"], "%.0f", 1 / 60), "%d/%d" % (r["first_pass"], r["n"]),
+                    cell(r["review_rounds_median"]), cell(defects, "%s"), r["lead_wakeups"], cell(r["build_runs_median"])])
+    print(table(["size", "mode", "n", "cost " + cur, "lead share", "lead calls", "hand-over min", "first pass", "rounds",
+                 "defects", "wakeups", "builds"], out, left=("size", "mode", "defects")))
+    return 0
+
+
 def cmd_kaizen(args):
     from . import kaizen  # kaizen imports this module's formatters
 
@@ -295,6 +316,8 @@ def cmd_kaizen(args):
         emit_json(doc)
         return 0
     s, cur = doc["summary"], prices.currency
+    if args.modes:
+        return print_modes(s["by_mode"], cur)
     if not doc["tasks"]:
         print("no factory tasks in %s" % doc["factory_dir"])
         return 0
@@ -408,6 +431,7 @@ def build_parser():
     s = sub.add_parser("kaizen", parents=[_common(True), since], help="improvement measures of the factory")
     s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")
     s.add_argument("--cached", action="store_true", help="pull requests from the disk cache only; never run gh")
+    s.add_argument("--modes", action="store_true", help="landed tasks of each mode (single, team) by stated size, as a table")
     s.set_defaults(func=cmd_kaizen)
     s = sub.add_parser("anatomy", parents=[_common(True), since, scope], help="cost anatomy of each task per role")
     s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")

@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -17,6 +18,8 @@ from .cli import fmt_duration
 
 ROLES = ("lead", "tech-lead", "coder", "reviewer", "explorer", "lander", "other")
 DEFECT_KINDS = ("tests", "reviewer", "lead", "ci", "human", "other")
+MODES = ("single", "team")
+SIZES = ("small", "medium", "large")  # a task without a stated size sorts last, as `None`
 STOP_KINDS = ("QUESTION", "BLOCKED", "OVERTIME")
 STATUSES = ("open", "accepted", "rejected", "done")
 TREND_MIN = 10
@@ -322,11 +325,23 @@ def _started_rec(recs):
     return next((r for r in recs["events"] if r.get("event") == "TaskStarted" and _ts(r)), None)
 
 
+def _handed_over(recs):
+    """When the task was first declared handed over, or None."""
+    return min((ts for r in recs["tasks"] if r.get("state") == "handed-over" for ts in [_ts(r)] if ts), default=None)
+
+
+def _wakeups(recs, handed):
+    """Prompts to the lead, from the session or the human, after the task's first hand-over (`handed`)."""
+    return sum(1 for e in recs["events"] for ts in [_ts(e)] if handed and ts and ts > handed
+               and e.get("event") == "UserPromptSubmit" and e.get("role") == "lead" and e.get("from") in ("session", "human"))
+
+
 def _task(key, recs, sessions, prices, tech_sessions):
     """recs: this task's records by store."""
     repo, slug = key
     started_rec = _started_rec(recs)
     started = _ts(started_rec) if started_rec else None
+    last_start = next((r for r in reversed(recs["events"]) if r.get("event") == "TaskStarted"), {})
     if started is None:
         firsts = [s.first_ts for s in sessions if s.first_ts]
         started = min(firsts) if firsts else None
@@ -334,11 +349,16 @@ def _task(key, recs, sessions, prices, tech_sessions):
     version = _str(started_rec, "version") if started_rec and _str(started_rec, "version") else (
         _str(earliest[1], "version") if earliest else None)
     states = [r["state"] for r in recs["tasks"] if _str(r, "state")]
+    handed = _handed_over(recs)
     t = {"repo": _name(repo), "repo_path": repo, "slug": slug, "version": version, "started": started,
          "size": _str(started_rec, "size") if started_rec else None,
          "state": states[-1] if states else None, "pr": None, "landed": False,
+         "mode": last_start.get("mode") if last_start.get("mode") in MODES else "single",
          "brief_to_pr_s": None, "pr_to_merge_s": None, "cost": None, "review_rounds": None, "first_pass": None,
-         "_roles": _role_facts(sessions, prices, tech_sessions)}
+         "_roles": _role_facts(sessions, prices, tech_sessions), "_wakeups": _wakeups(recs, handed),
+         "_size": last_start.get("size") if last_start.get("size") in SIZES else None, "_handover_s": None}
+    if handed and started and handed >= started:
+        t["_handover_s"] = _seconds(handed, started)
     t["authoring"] = _authoring(t["_roles"])
     if sessions:
         t["cost"], t["review_rounds"] = _cost(sessions, tech_sessions)
@@ -483,6 +503,30 @@ def _summary(tasks, versions):
     }
 
 
+def _by_mode(landed):
+    """One row per (mode, stated size) holding a landed task: the medians of what the tasks measured, not a pooled sum."""
+    rows = []
+    for size in (*SIZES, None):
+        for mode in MODES:
+            ts = [t for t in landed if t["mode"] == mode and t["_size"] == size]
+            if not ts:
+                continue
+            roles = [t["_roles"]["lead"]["calls"] for t in ts if "lead" in t["_roles"]]
+            defects = [t["defects"] for t in ts if t["defects"]]
+            rows.append({
+                "mode": mode, "size": size, "n": len(ts),
+                "cost_median": _median(t["cost"]["total"] for t in ts if t["cost"] and (t["cost"]["total"] or not t["cost"]["unpriced_tokens"])),
+                "lead_share_median": _median(t["authoring"]["lead_share"] for t in ts),
+                "lead_calls_median": _median(roles),
+                "handover_s_median": _median(t["_handover_s"] for t in ts),
+                "first_pass": sum(t["first_pass"] is True for t in ts),
+                "review_rounds_median": _median(t["review_rounds"] for t in ts),
+                "defects": {k: sum(d[k] for d in defects) for k in DEFECT_KINDS} if defects else None,
+                "lead_wakeups": sum(t["_wakeups"] for t in ts),
+                "build_runs_median": _median(t["_build_runs"] for t in ts) if mode == "team" else None})
+    return rows
+
+
 _SITE_MANAGER = re.compile(r"Job: (watch|digest)\. Repo: ")
 
 
@@ -605,27 +649,21 @@ def _site_manager(records, cutoff):
 
 # ---- the tech lead ------------------------------------------------------------------
 
-def _tech_lead(records, cutoff, tasks, by_task):
-    """What came back from the merge queue in the window, how it ended, and how often a landed task's lead was woken
-    after the hand-over. A cost is the sum of the priced records, null when none is: never zero."""
-    mine = [r for r in records if cutoff is None or (_ts(r) and _ts(r) >= cutoff)]
+def _tech_lead(records, cutoff, tasks):
+    """What came back from the merge queue in the window (a record of a build run is not one of those), how it ended, and
+    how often a landed task's lead was woken after the hand-over. A cost is the sum of the priced records, null when none is: never zero."""
+    mine = [r for r in records if r.get("kind") in (None, "merge") and (cutoff is None or (_ts(r) and _ts(r) >= cutoff))]
 
     def spent(rs):
         costs = [r["cost_usd"] for r in rs if isinstance(r.get("cost_usd"), (int, float)) and not isinstance(r["cost_usd"], bool)]
         return round(sum(costs), 6) if costs else None
 
     landed = [t for t in tasks if t["landed"]]
-    wakeups = 0
-    for t in landed:
-        recs = by_task[(t["repo_path"], t["slug"])]
-        handed = [ts for r in recs["tasks"] if r.get("state") == "handed-over" for ts in [_ts(r)] if ts]
-        wakeups += sum(1 for e in recs["events"] for ts in [_ts(e)] if handed and ts and ts > min(handed)
-                       and e.get("event") == "UserPromptSubmit" and e.get("role") == "lead" and e.get("from") in ("session", "human"))
     outcome = lambda o: sum(r.get("outcome") == o for r in mine)  # noqa: E731
     return {"came_back": len(mine), "resolved": outcome("resolved"), "escalated": outcome("escalated"),
             "stopped": outcome("stopped"), "unstarted": outcome("unstarted"), "cost": spent(mine),
             "cost_resolved": spent([r for r in mine if r.get("outcome") == "resolved"]),
-            "landed": len(landed), "lead_wakeups": wakeups}
+            "landed": len(landed), "lead_wakeups": sum(t["_wakeups"] for t in landed)}
 
 
 # ---- the document -------------------------------------------------------------------
@@ -672,6 +710,9 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     tech = read_log(factory_dir, "techlead")
     tech_sessions = {r["session"] for r in tech if _str(r, "session")}
     tasks = [_task(k, recs, mine.get(k, []), prices, tech_sessions) for k, recs in by_task.items()]
+    builds = Counter(_key(r) for r in tech if r.get("kind") == "build")
+    for t in tasks:
+        t["_build_runs"] = builds[(t["repo_path"], t["slug"])]
     tasks.sort(key=lambda t: (t["started"] is not None, t["started"] or transcript.EPOCH, t["slug"], t["repo_path"]))
     everyone = tasks  # the pulse ignores the cutoff
     tasks = [t for t in tasks if cutoff is None or (t["started"] and t["started"] >= cutoff)]
@@ -695,9 +736,12 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     ordered = [v for v, _ in sorted(versions.items(), key=lambda x: (x[1], x[0]))]
     summary = _summary(tasks, ordered)
     summary["overhead"] = _overhead(sessions, tasks, summary["landed"], cutoff, prices)
+    summary["by_mode"] = _by_mode([t for t in tasks if t["landed"]])
+    tech_lead = _tech_lead(tech, cutoff, tasks)
     pulse_doc = pulse.build(factory_dir, everyone, by_task, sessions, prices, now, cached)
     for t in everyone:
-        del t["_roles"]
+        for private in [k for k in t if k.startswith("_")]:
+            del t[private]
     for t in tasks:
         t["started"] = _iso(t["started"])
     return {
@@ -709,5 +753,5 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
         "slowed": slowed, "rewards": _rewards([t for t in tasks if t["landed"]]),
         "outbox": _outbox(logs["feedback"], cutoff),
         "site_manager": _site_manager(read_log(factory_dir, "firings"), cutoff),
-        "tech_lead": _tech_lead(tech, cutoff, tasks, by_task), "pulse": pulse_doc,
+        "tech_lead": tech_lead, "pulse": pulse_doc,
     }

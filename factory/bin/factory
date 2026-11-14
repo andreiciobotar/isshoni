@@ -66,6 +66,7 @@ STATUSES = ("open", "accepted", "rejected", "done")
 DECISION = "DECISION:"
 DECISION_MAX = 200
 CAUGHT_BY = ("tests", "reviewer", "lead", "ci", "human")
+CAUSES = ("spec", "brief", "conflict", "scope", "code")
 RETRO_LISTS = ("slowed", "rules_missing", "rules_dead_weight", "brief_questions")
 COPIED = {"SessionStart": ("source",), "SessionEnd": ("reason",), "SubagentStart": ("agent_id",),
           "SubagentStop": ("agent_id",), "Notification": ("notification_type", "message"),
@@ -177,6 +178,7 @@ def validate_slug(slug):
 
 
 ALIASES = ("fable", "opus", "sonnet", "haiku")
+MODES = ("single", "team")
 MODEL_SHAPE_RE = re.compile(r"(fable|opus|sonnet|haiku|claude-[a-z0-9.-]+)(\[[0-9a-z]+\])?")
 TABLE_RE = re.compile(r"\s*\[([^\[\]]+)\]\s*(#.*)?")
 VALUE_RE = r"(\"(?:[^\"\\]|\\.)*\"|'[^']*'|\[[^\]]*\]|[^#\s]+)(.*)"
@@ -207,6 +209,10 @@ def permission_mode(v):
 def a_model(v):
     ok = isinstance(v, str) and MODEL_SHAPE_RE.fullmatch(v)
     return None if ok else (f': "{v}" is not a model (an alias: {", ".join(ALIASES)}; or a full id starting claude-)')
+
+
+def a_mode(v):
+    return None if v in MODES else f" must be one of {', '.join(MODES)}"
 
 
 def name_list(v):
@@ -240,7 +246,7 @@ SETTINGS = (
             'The lander: the lead\'s subagent, also the headless run of `factory land` (next run). Default "sonnet".'),
     Setting("models", "site_manager", "sonnet", a_model, 'The watch tick\'s judge. Next tick. Default "sonnet".'),
     Setting("models", "courier", "haiku", a_model, 'Carries pull request comments to a lead. Next tick. Default "haiku".'),
-    Setting("models", "tech_lead", "opus", a_model, 'Resolves a pull request that came back from the merge queue. Its next run. Default "opus".'),
+    Setting("models", "tech_lead", "opus", a_model, 'Resolves a pull request that came back from the merge queue and, in team mode, runs a task\'s build. Its next run. Default "opus".'),
     Setting("limits", "worktree_cap", 5, int_in(1), "Open task worktrees at most, the dashboard's c key edits it. Default 5.", toml_arg),
     Setting("limits", "reserve_percent", 10, int_in(0, 100),
             "Percent of the cap held back for critical tasks, rounded up, never the last slot. Default 10.", toml_arg),
@@ -250,6 +256,9 @@ SETTINGS = (
             f"The permission mode of every lead ({', '.join(PERMISSION_MODES)}). Default \"auto\"."),
     Setting("sessions", "lean_start", True, boolean,
             "Start leads, the site manager and the lander with no MCP servers, bundled skills or other plugins. Default true.", toml_arg),
+    Setting("sessions", "mode", "single", a_mode,
+            'What `factory new` starts a task as: "single" (the lead builds with its own subagents) or "team" (a tech lead '
+            'runs the build). Takes effect at the next `factory new`. Default "single".'),
     Setting("sessions", "dispatchers", None, name_list,
             "The dispatcher session names the served dashboard's `d` key reads; `isshoni host add` sets it. Unset by default.", json_arg),
     Setting("merging", "lgtm_from_author", True, boolean,
@@ -529,6 +538,8 @@ def agent_definitions(models):
 
 
 LEAD_TOOLS = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch,SendMessage,WebFetch,WebSearch,TaskStop,Monitor"
+LEAD_TEAM_DENIED = ("Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
+                    "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)")
 
 
 def agent_models(models):
@@ -588,9 +599,14 @@ def span(secs):
     return f"{h}h" * (h > 0) + f"{m}m" * (m > 0 or h == 0)
 
 
-def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limit):
-    """The lead's launch command: the one place another runner would plug in."""
+def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limit, mode):
+    """The lead's launch command: the one place another runner would plug in. In team mode the lead's rules are
+    followed by the team rules and its tools refuse the writing subagents (`--disallowedTools` is variadic: the flag
+    after it ends the list, and the prompt stays last)."""
     lead_rules = (PLUGIN_ROOT / "roles" / "lead.md").read_text()
+    team = mode == "team"
+    if team:
+        lead_rules += "\n\n" + (PLUGIN_ROOT / "roles" / "lead-team.md").read_text()
     prompt = (
         f"Your task slug is {slug}. Before each message to the dispatcher run `factory dispatcher`: "
         f"it prints its current session name (now {dispatcher}). "
@@ -606,6 +622,7 @@ def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limi
         "--permission-mode", settings["lead_permission_mode"],
         "--plugin-dir", str(PLUGIN_ROOT),
         *lean,
+        *(["--disallowedTools", *LEAD_TEAM_DENIED] if team else []),
         "--append-system-prompt", lead_rules,
         prompt,
     ]
@@ -1247,6 +1264,7 @@ def cmd_new(args):
         if problem := a_model(args.lead_model):
             raise Fail(f"--lead-model{problem}")
         settings["models"]["lead"] = args.lead_model
+    mode = args.mode or settings["mode"]
     size = brief_size(brief)
     repo = Repo()
     branch = f"worktree-{args.slug}"
@@ -1316,7 +1334,7 @@ def cmd_new(args):
                     remove_stacked(repo, path, branch)
                 raise Fail(f"git {' '.join(argv)} failed: {err.strip()}", code=1)
     rc, out, err = run(build_launch_argv(args.slug, dispatcher, brief, settings, base, repo.remote, time.time(),
-                                         task_limit(size, settings["task_time_limit_hours"])),
+                                         task_limit(size, settings["task_time_limit_hours"]), mode),
                        cwd=repo.root)
     match = BACKGROUNDED_RE.search(f"{out}\n{err}")
     if rc != 0 and not match:
@@ -1333,7 +1351,7 @@ def cmd_new(args):
         rc, _, err = repo.git("config", f"branch.{branch}.factorySize", size)
         if rc != 0:
             sys.stderr.write(f"factory: warning: cannot record the size of {branch}: {err.strip()}\n")
-    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"],
+    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"], mode=mode,
                models=agent_models(settings["models"]), **({"size": size} if size else {}))
     try:
         declare(repo, args.slug, "dispatcher", "working")
@@ -1656,6 +1674,9 @@ def cmd_state(args):
         if inside(deliverable, task["path"]):
             raise Fail(f"state: deliverable {deliverable} is inside the worktree, which clean removes")
     declare(repo, slug, "lead", args.state, deliverable, waits_on)
+    stated = args.state == "handed-over" and task["branch"] and config_value(repo, f"branch.{task['branch']}.factoryTest")
+    if stated and stated != "none":
+        repo.git("config", "factory.lastTest", stated)
     if args.state in ("working", "blocked"):
         to_draft(repo, task["branch"])
     print(f"{slug}: {args.state}")
@@ -1768,9 +1789,11 @@ def cmd_retro(args):
             raise Fail(f"retro: {key} must be a list of non-empty strings")
     defects = doc["defects"]
     if not isinstance(defects, list) or not all(
-            isinstance(d, dict) and set(d) == {"caught_by", "what"} and d["caught_by"] in CAUGHT_BY
-            and isinstance(d["what"], str) and d["what"].strip() for d in defects):
-        raise Fail(f"retro: defects must be a list of objects with caught_by ({'|'.join(CAUGHT_BY)}) and a non-empty what")
+            isinstance(d, dict) and {"caught_by", "what"} <= set(d) <= {"caught_by", "what", "cause"}
+            and d["caught_by"] in CAUGHT_BY and isinstance(d["what"], str) and d["what"].strip()
+            and d.get("cause", CAUSES[0]) in CAUSES for d in defects):
+        raise Fail(f"retro: defects must be a list of objects with caught_by ({'|'.join(CAUGHT_BY)}), a non-empty what "
+                   f"and optionally a cause ({'|'.join(CAUSES)})")
     log("retros", {**tag, **doc})
     print(f"retro: stored for {tag['slug']}")
     return 0
@@ -3373,6 +3396,11 @@ def to_draft(repo, branch):
         run(["gh", "pr", "ready", "--undo", branch], cwd=repo.root)
 
 
+def log_queue(repo, pr_number, slug, head, step, **fields):
+    """One `queue` record: what the merge queue or `factory land` did to the pull request at `head`."""
+    log("queue", {"ts": now(), "repo": repo.root, "slug": slug, "pr": pr_number, "head": head, "step": step, **fields})
+
+
 def merge_one(p, pr, merged, dry, permission=None):
     """Merge `pr` (with `dry`, only check it; `merged`: something would have merged before it). None, or the
     (kind, reason) of the first blocker. The invariant: a pull request is merged only when its head holds the
@@ -3384,7 +3412,7 @@ def merge_one(p, pr, merged, dry, permission=None):
     reason = handover_reason(p, pr)
     if reason:
         return "handover", reason
-    stop = permission is not None and approval_stop(p, pr, permission)
+    stop, approved_at = approval(p, pr, permission) if permission is not None else (None, None)
     if stop:
         return stop
     moved = "its base has moved since its head: bring it up to date (the lander does when its turn comes) so its checks run on the combination"
@@ -3425,6 +3453,7 @@ def merge_one(p, pr, merged, dry, permission=None):
         stop = gh_step(repo, *step)
         if stop:
             return stop
+    log_queue(repo, pr["number"], task_slug(repo, pr), pr["headRefOid"], "merged", approved_at=approved_at)
     return None
 
 
@@ -3596,19 +3625,20 @@ def stale_approval(p, pr, approval, heads):
     return None
 
 
-def approval_stop(p, pr, permission):
-    """(kind, reason) when GitHub's records hold no valid approval of the head of `pr`, else None."""
+def approval(p, pr, permission):
+    """(stop, approved_at): the (kind, reason) when GitHub's records hold no valid approval of the head of `pr`, else None;
+    with no stop, when the approval was given (its ISO time, or None when GitHub gave none)."""
     try:
         heads = approved_heads(p, pr)
         review = approving_review(p, pr, permission, heads)
         if review and review.get("commit_id") in heads:
-            return None
+            return None, review.get("submitted_at")
         lgtm = newest_approval(p, pr, permission)
         if lgtm:
-            return stale_approval(p, pr, lgtm, heads)
+            return stale_approval(p, pr, lgtm, heads), lgtm.get("created_at")
     except NotEvaluated as e:
-        return "pending", str(e)
-    return STALE_REVIEW if review else ("unapproved", "not approved on GitHub: no review approves it and no lgtm")
+        return ("pending", str(e)), None
+    return (STALE_REVIEW if review else ("unapproved", "not approved on GitHub: no review approves it and no lgtm")), None
 
 
 # ---- pull request comments --------------------------------------------------
@@ -4248,7 +4278,7 @@ HOME_FILE_RE = re.compile(r"settings\.(toml|json)|watch\.log|identity|specs|deli
 # The other names the factory writes there, which uninstall leaves: the cache, the courier's notes, the logs
 # written through `log` that HOME_FILE_RE does not list, and the per-repository files of `repo_state` with their
 # temporary files. `strangers` is what matches neither.
-STORE_WRITTEN_RE = re.compile(r"cache|comments|tech-lead\.log|(gh|comments|techlead)-\d{4}-\d\d\.jsonl|(hosts|settings)\.json\.tmp"
+STORE_WRITTEN_RE = re.compile(r"cache|comments|tech-lead\.log|(gh|comments|techlead|queue)-\d{4}-\d\d\.jsonl|(hosts|settings)\.json\.tmp"
                               r"|[a-z]+-.+-[0-9a-f]{8}\.(json|lock)(\.tmp)?")  # the last is every name repo_state() makes
 Step = collections.namedtuple("Step", "name purpose optional state act recheck", defaults=(False,))
 
@@ -4664,6 +4694,9 @@ LAND_TEST_TIMEOUT = 1800
 LAND_TIMEOUT = 1800
 LAND_TOOLS = ("Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
               "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)")
+ROLE_DENIED = ("Bash(gh pr merge*)", "Bash(gh pr review*)", "Bash(gh pr comment*)", "Bash(gh pr ready*)", "Bash(gh api*)",
+               "Bash(gh repo*)", "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)",
+               "Bash(git commit --amend*)", "Bash(git worktree*)")
 LAND_REASONS = ("dirty", "conflict", "golden", "tests", "denied", "other")
 LAND_RESULT_RE = re.compile(r"(LANDED, LOOK|LANDED|STOPPED)(?: (\S+))?")
 WORKFLOWS_REFUSAL = "without `workflows` permission"
@@ -4677,6 +4710,74 @@ def land_base(repo, branch):
     return recorded, not base_counts(repo, recorded, {})
 
 
+TEST_NOT_STATED = ("no test command stated for this task. Its lead finds how the repository runs its tests and states it: "
+                   "factory commands test '<command>' (or: factory commands test none, when the repository has none)")
+NO_TESTS = "NO TESTS WERE RUN: none found in this repository"
+
+
+def config_value(repo, key):
+    """The git config value of `key` in this repository ('' when unset); one config for all its worktrees."""
+    return repo.git("config", "--get", key)[1].strip()
+
+
+def test_command(repo, path, branch):
+    """(the test command or None, where it comes from) for the task on `branch` in the worktree `path`: stated for the
+    task, else the last one handed over here, else the Makefile's. `none` is a stated value."""
+    if stated := branch and config_value(repo, f"branch.{branch}.factoryTest"):
+        return stated, "stated for this task"
+    if last := config_value(repo, "factory.lastTest"):
+        return last, "last handed over in this repository"
+    return ("make test", "Makefile rule") if has_test_rule(path) else (None, "not stated")
+
+
+def golden_command(repo, branch):
+    """The golden command stated for the task on `branch`, or None."""
+    return (branch and config_value(repo, f"branch.{branch}.factoryGolden")) or None
+
+
+def commands_line(repo, path, branch):
+    """The line of a model role's brief that gives the commands of the task on `branch`."""
+    test, golden = test_command(repo, path, branch)[0], golden_command(repo, branch)
+    what = {None: "not stated: find how this repository runs its tests and run that",
+            "none": 'none: run no tests and report "NO TESTS WERE RUN: none found"'}.get(test, test)
+    return f"The test command is {what}. The golden command is {golden or 'none'}."
+
+
+def cmd_commands(args):
+    """State or print the test and golden commands of the task whose worktree this is (a lead runs it)."""
+    repo = Repo()
+    cwd = os.path.realpath(os.getcwd())
+    task = next((t for t in repo.tasks if inside(cwd, t["path"])), None)
+    path, branch = (task["path"], task["branch"]) if task else (repo.root, None)
+    if task and not branch and args.value is not None:
+        raise Fail(f"commands: the worktree is on a detached HEAD; check out worktree-{os.path.basename(path)}", 1)
+    test, source = test_command(repo, path, branch)
+    golden = golden_command(repo, branch)
+    if args.value is not None:
+        if not branch:
+            raise Fail("commands: run it from inside a task worktree", 1)
+        key = f"branch.{branch}.factory{args.which.capitalize()}"
+        if not args.value.strip():
+            raise Fail("commands: the command is empty", 1)
+        if args.value == "none" and args.which == "golden":
+            repo.git("config", "--unset", key)
+        else:
+            rc, _, err = repo.git("config", key, args.value)
+            if rc != 0:
+                raise Fail(f"git config {key} failed: {err.strip()}", 1)
+        print(f"{os.path.basename(path)}: {args.which} {args.value}")
+    elif args.which == "test":
+        if test is None:
+            raise Fail(TEST_NOT_STATED, 1)
+        print(test)
+    elif args.which == "golden":
+        print(golden or "none")
+    else:
+        print(f"test: {f'{test} ({source})' if test else 'not stated'}")
+        print(f"golden: {golden or 'none'}")
+    return 0
+
+
 def land_busy(repo, path):
     """Why the lead of the task at `path` may still be running, or None. Sessions that cannot be told count as busy."""
     sessions = list_sessions()
@@ -4685,16 +4786,13 @@ def land_busy(repo, path):
     return unplaced_block(sessions) or session_block(sessions_in(sessions, repo.root, path))
 
 
-def no_test_rule(path):
-    """Why `make test` is not known in `path`, or None: the first makefile make reads must have a `test:` rule.
-    Included files and rules naming several targets are not read."""
-    present = os.listdir(path)
+def has_test_rule(path):
+    """Whether the first makefile make reads in `path` has a `test:` rule. Included files and rules naming several
+    targets are not read."""
     for name in ("GNUmakefile", "makefile", "Makefile"):
-        if name not in present:
-            continue
-        text = (Path(path) / name).read_text()
-        return None if re.search(r"^test\s*:(?!:?=)", text, re.M) else f"no `test:` rule in {name}"
-    return "no Makefile"
+        if name in os.listdir(path):
+            return bool(re.search(r"^test\s*:(?!:?=)", (Path(path) / name).read_text(), re.M))
+    return False
 
 
 def lander_sections(text):
@@ -4791,10 +4889,10 @@ class Landing:
     """One handed-over task brought up to its base, as factory/agents/lander.md defines it. `run` gives
     (result, facts, needs): the result is LANDED, LANDED, LOOK or STOPPED <reason>."""
 
-    def __init__(self, repo, task, lean):
+    def __init__(self, repo, task, lean, mode):
         self.repo, self.path, self.branch, self.remote = repo, task["path"], task["branch"], repo.remote
         self.slug = os.path.basename(self.path)
-        self.lean = lean
+        self.lean, self.mode = lean, mode
         self.declared = False
 
     def mark_working(self):
@@ -4850,7 +4948,12 @@ class Landing:
         rc, out, err = act_git(self.path, "merge", "--no-edit", self.target)
         if rc != 0:
             return self.conflict(task_files, out + err)
+        self.log_queue("land-updated", base=self.target)
         return self.after_merge(old_base, overlap)
+
+    def log_queue(self, step, **fields):
+        number = re.search(r"/pull/(\d+)$", self.url)
+        log_queue(self.repo, int(number[1]) if number else None, self.slug, self.old_head, step, **fields)
 
     def pull_request_fact(self, error):
         if error:
@@ -4863,15 +4966,17 @@ class Landing:
         repo, branch = self.repo, self.branch
         new_head = self.out("rev-parse", "HEAD")
         unpushed = [f"head: `{self.old_head}` -> `{new_head}`, not pushed"]
-        missing = no_test_rule(self.path)
-        if missing:
-            return self.stop("tests", f"no test command: {missing}; the worktree is on the "
-                             f"merge commit at {new_head}, unpushed", unpushed)
-        rc, out, err = run(["make", "test"], cwd=self.path, timeout=LAND_TEST_TIMEOUT, group=True)
-        if rc != 0:
-            tail = "\n".join((out + err).splitlines()[-40:])
-            return self.stop("tests", f"make test {'timed out' if rc == 124 else 'failed'}; the worktree is on the "
-                             f"merge commit at {new_head}, unpushed. Last lines:\n{tail}", unpushed)
+        command = test_command(repo, self.path, branch)[0]
+        if command is None:
+            return self.stop("tests", f"{TEST_NOT_STATED}; the worktree is on the merge commit at {new_head}, unpushed",
+                             unpushed)
+        ran = NO_TESTS if command == "none" else f"`{command}` pass"
+        if command != "none":
+            rc, out, err = run(["sh", "-c", command], cwd=self.path, timeout=LAND_TEST_TIMEOUT, group=True)
+            if rc != 0:
+                tail = "\n".join((out + err).splitlines()[-40:])
+                return self.stop("tests", f"{command} {'timed out' if rc == 124 else 'failed'}; the worktree is on the "
+                                 f"merge commit at {new_head}, unpushed. Last lines:\n{tail}", unpushed)
         busy = land_busy(repo, self.path)
         if busy:
             self.mark_working()
@@ -4890,14 +4995,14 @@ class Landing:
             return self.stop("other", f"git push failed: {refusal}", unpushed)
         kind = "LANDED, LOOK" if look else "LANDED"
         details = [f"Overlap with the base: {', '.join(overlap) or 'none'}.", "Conflicts: none.",
-                   "Regenerated: nothing.", "Tests: `make test` pass."]
+                   "Regenerated: nothing.", f"Tests: {ran}."]
         retarget_error = self.retarget()
         error = "; ".join(e for e in (retarget_error, self.announce(new_head, kind, details, retarget_error)) if e)
         count = self.out("rev-list", "--count", f"{old_base}..{self.target}")
         facts = [f"base: `{self.target}` at `{self.out('rev-parse', self.target)}`, {count} commits since the old base; "
                  f"overlap: {', '.join(overlap) or 'none'}",
                  f"head: `{self.old_head}` -> `{new_head}` (merge of {self.target}), pushed; the reviewed commits are unchanged",
-                 "conflicts: none", "goldens: not run", "tests: `make test` pass",
+                 "conflicts: none", "goldens: not run", f"tests: {ran}",
                  self.pull_request_fact(retarget_error)]
         if error:
             return self.stop("other", f"pushed {new_head}, but {error}", facts)
@@ -4928,6 +5033,9 @@ class Landing:
 
     def conflict(self, task_files, merge_output):
         conflicts = [line for line in merge_output.splitlines() if "CONFLICT" in line]
+        files = self.out("diff", "--name-only", "--diff-filter=U").split()
+        if files:  # a merge that failed with nothing unmerged is no conflict
+            self.log_queue("land-conflict", base=self.target, files=files)
         self.git("merge", "--abort")
         if self.out("rev-parse", "HEAD") != self.old_head or self.out("status", "--porcelain"):
             return self.stop("other", "the merge failed and could not be aborted back to the old head")
@@ -4938,12 +5046,15 @@ class Landing:
         brief = "\n".join([
             f"Your task slug is {self.slug}.", base, f"The reviewed head is {self.old_head}.",
             "There is no pull request title, body file or retrospective file. Do not declare the hand-over.",
-            "Edit files with the Edit tool; shell commands that write files, and `gh` other than `pr view` and `pr edit`, are denied.",
+            "Edit files with the Edit tool. `gh` other than `pr view` and `pr edit` is not yours to run; merging, reviewing, "
+            "commenting, forced pushes, rebases, amends and `git worktree` are denied.",
             f"The golden files this task means to change: {', '.join(task_files) or 'none'}. A generated file on this "
-            "list may be regenerated with the repository's documented command; any other golden that changes is a stop."])
+            "list may be regenerated with the repository's documented command; any other golden that changes is a stop.",
+            commands_line(self.repo, self.path, self.branch)])
         lean = lean_flags() if self.lean else []
         argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", load_settings()["models"]["lander"],
-                "--permission-mode", "dontAsk", *lean, "--allowedTools", *LAND_TOOLS, "--output-format", "json", brief]
+                "--permission-mode", self.mode, *lean, "--allowedTools", *LAND_TOOLS,
+                "--disallowedTools", *ROLE_DENIED, "--output-format", "json", brief]
         rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT, group=True)
         try:
             text = json.loads(out).get("result")
@@ -4980,14 +5091,14 @@ class Landing:
                 f"{'some' if self.out('status', '--porcelain') else 'none'}, merge in progress: {'yes' if merging else 'no'}")
 
 
-def land_one(repo, slug, lean):
+def land_one(repo, slug, lean, mode):
     """Land one task and print its report; True when the result is LANDED."""
     task = next((t for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
     if task is None:
         raise Fail(f"land: {slug} is not a task worktree")
     if read_tasks(repo.root).get(slug, {}).get("state") != "handed-over":
         raise Fail(f"land: {slug} is not handed over")
-    landing = Landing(repo, task, lean)
+    landing = Landing(repo, task, lean, mode)
     result, facts, needs = landing.run()
     if result not in ("LANDED", "STOPPED busy"):
         landing.mark_working()
@@ -5021,7 +5132,8 @@ def land_candidates(repo):
 def cmd_land(args):
     if bool(args.slug) == args.all:
         raise Fail("land: name a task or give --all, not both")
-    lean = load_settings()["lean_start"]
+    settings = load_settings()
+    lean, mode = settings["lean_start"], settings["lead_permission_mode"]
     repo = Repo()
     slugs = [args.slug] if args.slug else land_candidates(repo)
     if not slugs:
@@ -5030,7 +5142,7 @@ def cmd_land(args):
     for slug in slugs:
         if args.all:
             print(f"# {slug}")
-        landed.append(land_one(repo, slug, lean))
+        landed.append(land_one(repo, slug, lean, mode))
     return 0 if all(landed) else 1
 
 
@@ -5269,6 +5381,8 @@ def after_red(repo, pr, stop):
         started, line = rerun_line(repo, str(pr["number"]))
     except NotEvaluated as e:
         started, line = False, f"no rerun: {e}"
+    if started:
+        log_queue(repo, pr["number"], task_slug(repo, pr), pr["headRefOid"], "rerun", text=line)
     return ("pending", line) if started else (stop[0], f"{stop[1]}; {line}")
 
 
@@ -5319,7 +5433,7 @@ TECH_LEAD_ROLE = PLUGIN_ROOT / "roles" / "tech-lead.md"
 TECH_LEAD_KIT = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch"
 TECH_LEAD_TOOLS = ("Read", "Edit", "Write", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "Bash(git *)", "Bash(make *)",
                    "Bash(gh pr view *)", "Bash(gh pr diff *)", "Bash(gh pr checks *)", "Bash(gh run view *)")
-TECH_LEAD_DENIED = ("Bash(git push*)", "Bash(git rebase*)", "Bash(git commit --amend*)", "Bash(git worktree*)")
+TECH_LEAD_DENIED = (*ROLE_DENIED, "Bash(git push*)")
 TECH_LEAD_SCHEMA = {"type": "object", "properties": {"outcome": {"enum": ["resolved", "escalate"]},
                                                       "note": {"type": "string"}}, "required": ["outcome", "note"]}
 
@@ -5338,9 +5452,9 @@ def tech_lead_missing(repo, slug):
 
 
 def log_tech_lead(repo, settings, slug, n, evidence, outcome, **fields):
-    """One `techlead` record; what `fields` leaves out is null, and `noted` false."""
+    """One `techlead` record; what `fields` leaves out is null, `noted` false and `kind` "merge" (a build run's is "build")."""
     f = {**dict.fromkeys(("session", "reason", "note", "head_before", "head_after", "cost_usd", "seconds")),
-         "noted": False, **fields}
+         "noted": False, "kind": "merge", **fields}
     log("techlead", {**record(repo.root, slug, "tech-lead", settings["models"]["tech_lead"], f.pop("session")),
                      "pr": n, "evidence": evidence, "outcome": outcome, **f})
 
@@ -5378,14 +5492,15 @@ def tech_lead_prompt(repo, slug, pr, evidence, spec):
                if r.get("pr") == pr["number"] and r.get("note")]
     return (f"Task slug: {slug}. Pull request: #{pr['number']} {pr['url']}. It came back from the merge queue: {evidence}. "
             f"The spec is {spec}. The default branch is {repo.default}, on remote {repo.remote}. "
-            f"The pull request came back at {pr['headRefOid']}.\n\nEarlier tech lead runs on this pull request:\n"
+            f"The pull request came back at {pr['headRefOid']}. "
+            f"{commands_line(repo, tech_lead_paths(repo, slug)[0], f'worktree-{slug}')}\n\nEarlier tech lead runs on this pull request:\n"
             + ("\n".join(earlier) or "none"))
 
 
 def tech_lead_argv(repo, slug, pr, evidence, spec, settings):
     """The tech lead's launch command, the one place another runner would plug in."""
     lean = lean_flags() if settings["lean_start"] else []
-    return ["claude", "-p", "--model", settings["models"]["tech_lead"], "--permission-mode", "dontAsk",
+    return ["claude", "-p", "--model", settings["models"]["tech_lead"], "--permission-mode", settings["lead_permission_mode"],
             "--plugin-dir", str(PLUGIN_ROOT), *lean, f"--tools={TECH_LEAD_KIT}",
             "--allowedTools", *TECH_LEAD_TOOLS, "--disallowedTools", *TECH_LEAD_DENIED,
             "--max-budget-usd", TECH_LEAD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(TECH_LEAD_SCHEMA),
@@ -5398,6 +5513,24 @@ def spec_hash(spec):
         return hashlib.sha256(spec.read_bytes()).hexdigest()
     except OSError:
         return None
+
+
+def model_answer(rc, out, outcomes, key, timeout, budget):
+    """What a headless run (`claude -p --output-format json`) left: (session id, cost in USD or None, the answer's
+    outcome if it is one of `outcomes` and its `key` is text else None, that text, why the run has no usable answer or
+    None)."""
+    try:
+        doc = json.loads(out)
+    except ValueError:
+        doc = None
+    doc = doc if isinstance(doc, dict) else {}
+    cost, answer = doc.get("total_cost_usd"), doc.get("structured_output")
+    answered = isinstance(answer, dict) and answer.get("outcome") in outcomes and isinstance(answer.get(key), str)
+    reason = (f"reached {timeout // 60} minutes" if rc == 124
+              else f"reached {float(budget):g} USD" if doc.get("subtype") == "error_max_budget_usd"
+              else None if rc == 0 and answered else "ended without an answer")
+    return (doc.get("session_id"), cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+            *((answer["outcome"], answer[key].strip()) if answered else (None, None)), reason)
 
 
 def tech_lead_state(repo, worktree, pr, old_head, old_default, spec, before):
@@ -5463,21 +5596,8 @@ def tech_lead_run(repo, settings, args, learned):
     before, started = spec_hash(spec), time.monotonic()
     argv = tech_lead_argv(repo, slug, pr, evidence, spec, settings)
     rc, out, _ = run(argv, cwd=worktree, timeout=TECH_LEAD_TIMEOUT, env={**os.environ, "FACTORY_ROLE": "tech-lead"}, group=True)
-    try:
-        doc = json.loads(out)
-    except ValueError:
-        doc = None
-    doc = doc if isinstance(doc, dict) else {}
-    cost = doc.get("total_cost_usd")
-    learned.update(session=doc.get("session_id"), head_before=old_head, seconds=round(time.monotonic() - started),
-                   cost_usd=cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None)
-    answer = doc.get("structured_output")
-    answered = isinstance(answer, dict) and answer.get("outcome") in ("resolved", "escalate") \
-        and isinstance(answer.get("note"), str)
-    verdict, note = (answer["outcome"], answer["note"].strip()) if answered else (None, None)
-    reason = (f"reached {TECH_LEAD_TIMEOUT // 60} minutes" if rc == 124
-              else f"reached {float(TECH_LEAD_BUDGET):g} USD" if doc.get("subtype") == "error_max_budget_usd"
-              else None if rc == 0 and answered else "ended without an answer")
+    session, cost, verdict, note, reason = model_answer(rc, out, ("resolved", "escalate"), "note", TECH_LEAD_TIMEOUT, TECH_LEAD_BUDGET)
+    learned.update(session=session, head_before=old_head, seconds=round(time.monotonic() - started), cost_usd=cost)
     head, clean, flaw = tech_lead_state(repo, worktree, pr, old_head, old_default, spec, before)
     reason = reason or (flaw if verdict == "resolved" else None)
     if verdict == "resolved" and not reason:
@@ -5498,16 +5618,129 @@ def tech_lead_run(repo, settings, args, learned):
     return 0 if outcome == "resolved" else 1
 
 
+BUILD_TIMEOUT = 5400
+BUILD_BUDGET = "15.00"
+BUILD_ROLE = PLUGIN_ROOT / "roles" / "tech-lead-build.md"
+BUILD_DENIED = ("Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)", "Bash(git commit --amend*)",
+                "Bash(git worktree*)")
+BUILD_OUTCOMES = ("built", "question", "stopped")
+BUILD_SCHEMA = {"type": "object", "properties": {"outcome": {"enum": list(BUILD_OUTCOMES)}, "handover": {"type": "string"}},
+                "required": ["outcome", "handover"]}
+
+
+def build_prompt(repo, slug, spec, handover, note):
+    branch = f"worktree-{slug}"
+    size = repo.git("config", "--get", f"branch.{branch}.factorySize")[1].strip()
+    base, merged = land_base(repo, branch)
+    base = f"{repo.default} (the recorded base {base} has merged)" if merged else base
+    return (f"Task slug: {slug}. The spec is {spec}. The base branch is {base}, on remote {repo.remote}. "
+            f"The hand-over file is {handover}: " + ("earlier runs: read it first." if handover.exists() else "this is the first run.")
+            + (f" The lead says: {note}" if note else "") + (f" The task's stated size is {size}." if size in SIZE_LIMIT_MINUTES else ""))
+
+
+def build_argv(repo, slug, spec, handover, note, settings):
+    """The build's launch command, the one place another runner would plug in."""
+    lean = lean_flags() if settings["lean_start"] else []
+    return ["claude", "-p", "--model", settings["models"]["tech_lead"],
+            "--agents", json.dumps(agent_definitions(settings["models"])), "--permission-mode", settings["lead_permission_mode"],
+            "--plugin-dir", str(PLUGIN_ROOT), *lean, f"--tools={LEAD_TOOLS}", "--disallowedTools", *BUILD_DENIED,
+            "--max-budget-usd", BUILD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(BUILD_SCHEMA),
+            "--append-system-prompt", BUILD_ROLE.read_text(), build_prompt(repo, slug, spec, handover, note)]
+
+
+def cmd_build(args):
+    """Start a tech lead on the build of the task whose worktree this is, detached; its `--run` half does the work: see
+    docs/factory.md, "Team mode". Once the run holds the lock, a failure is a `stopped` record and a line to the lead."""
+    slug = args.slug
+    validate_slug(slug)
+    repo, settings = Repo(), load_settings()
+    if missing := tech_lead_missing(repo, slug):
+        raise Fail(missing)
+    with repo_lock(repo, f"tech-lead-{slug}") as free:
+        if not free:
+            raise Fail(f"a tech lead run is already going for {slug}")
+        if args.run:
+            return build_locked(repo, settings, args)
+    argv = [sys.executable, str(Path(__file__).resolve()), "build", slug, "--run",
+            *(["--note", args.note] if args.note else []), *(["--dispatcher", args.dispatcher] if args.dispatcher else [])]
+    try:
+        spawn(argv, repo.root, STORE.expanduser() / "tech-lead.log")
+    except OSError as e:
+        raise Fail(f"the process could not be started: {e}", code=1)
+    print(f"tech lead started for {slug}; you will get a TECH LEAD: line when it ends")
+    return 0
+
+
+def build_locked(repo, settings, args):
+    """The run, under its lock: tell the lead how it ended; exit code."""
+    slug = args.slug
+    spec = tech_lead_paths(repo, slug)[1]
+    handover = spec.with_suffix(".handover.md")
+    n = len(re.findall(r"^## Run ", handover.read_text() if handover.exists() else "", re.M)) + 1
+    learned, text = {}, None
+    try:
+        outcome, reason, text = build_run(repo, settings, args, spec, handover, learned)
+    except Exception as e:
+        outcome, reason = "stopped", f"the run failed: {why(e)}"
+    try:
+        build_finish(repo, settings, slug, n, handover, outcome, reason, text, learned)
+    except OSError as err:
+        print(f"build run {n}: the hand-over section or the record could not be written: {err}")
+    line = f"build run {n} {outcome}" + (f": {reason}" if reason else "")
+    tell_lead(repo, args.dispatcher, slug, "TECH LEAD", f"{line}. Read {handover} (the last section).",
+              f"factory: build run {n} of {slug} {outcome}")
+    print(f"{slug} {line}".splitlines()[0])
+    return 0 if outcome == "built" else 1
+
+
+def build_finish(repo, settings, slug, n, handover, outcome, reason, text, learned):
+    """The run's section of the hand-over file, then its `techlead` record: the same for a run that failed."""
+    cost, head = learned.get("cost_usd"), repo.git("rev-parse", "HEAD", path=repo.worktree_path(slug))[1].strip()
+    with open(handover, "a") as f:
+        f.write(f"## Run {n}: {outcome} ({now()}, {f'{cost:.2f}' if cost is not None else 'unpriced'} USD, "
+                f"{round(learned.get('seconds', 0) / 60)} min, head {head[:7]})\n" + (f"Reason: {reason}\n" if reason else "")
+                + f"\n{text or 'No hand-over was written.'}\n\n")
+    log_tech_lead(repo, settings, slug, None, "build", outcome, kind="build", reason=reason, head_after=head, **learned)
+
+
+def build_run(repo, settings, args, spec, handover, learned):
+    """One build run: (outcome, reason or None, the hand-over text or None). `learned` gets the session, cost, seconds and old head as soon as the
+    model has run, for the record of a later failure. The task stays `working`: the lead decides what comes next."""
+    slug = args.slug
+    worktree, branch = repo.worktree_path(slug), f"worktree-{slug}"
+    git = lambda *a: repo.git(*a, path=worktree)[1].strip()
+    declare(repo, slug, "tech-lead", "working")
+    old_head, before, started = git("rev-parse", "HEAD"), spec_hash(spec), time.monotonic()
+    rc, out, _ = run(build_argv(repo, slug, spec, handover, args.note, settings), cwd=worktree, timeout=BUILD_TIMEOUT,
+                     env={**os.environ, "FACTORY_ROLE": "tech-lead"}, group=True)
+    session, cost, verdict, text, reason = model_answer(rc, out, BUILD_OUTCOMES, "handover", BUILD_TIMEOUT, BUILD_BUDGET)
+    seconds = round(time.monotonic() - started)
+    learned.update(session=session, head_before=old_head, seconds=seconds, cost_usd=cost)
+    if verdict == "built" and not reason:
+        pr_state = pull_request(repo, branch)[0]
+        checks = [(not git("status", "--porcelain"), "the worktree is not clean"),
+                  (git("rev-parse", "--abbrev-ref", "HEAD") == branch, f"the worktree is not on {branch}"),
+                  (spec_hash(spec) == before, "the spec changed"),
+                  (pr_state == "open", f"cannot check for a pull request on {branch}" if pr_state == "unknown"
+                   else f"{branch} has no open pull request")]
+        reason = next((why for ok, why in checks if not ok), None)
+    return "stopped" if reason else verdict, reason, text
+
+
 def report_stop(repo, fallback, pr, kind, line):
     """Tell of one stop, once: a firing of lgtm-blocked, then the lead (the pull request goes back to it), or the dispatcher, else the
     human, as its kind says."""
     n, slug = pr["number"], task_slug(repo, pr)
     firing = fire(repo, {"criterion": "lgtm-blocked", "escalate": "always", "slug": slug, "subject": f"#{n}/{kind}",
                          "detail": f"#{n} stopped {kind}: {line}"})
-    if stop_policy(kind, line)[2] == "lead":
+    sent_back = stop_policy(kind, line)[2] == "lead"
+    files = {"files": conflicting_files(repo, pr)} if sent_back and kind == "conflict" else {}  # before a tech lead fetches
+    if sent_back:
         to = send_back(repo, fallback, pr, slug, evidence(repo, n, kind, line))
     else:
         to = forward(repo, fallback, slug, "LANDER", f"#{n} stopped {kind}: {line}", lead=False)
+    log_queue(repo, n, slug, pr["headRefOid"], "sent-back" if sent_back else "stopped", kind=kind, text=line, told=to or "human",
+              **files)
     if to:
         log_firing(repo, id=firing["id"], decision="escalated", by="lander", reason=f"reported by the lander to the {to}")
     else:
@@ -5632,6 +5865,7 @@ def lander_pass(repo, fallback, p, snap, line, updated):
             stops[n] = (pr, *stop)
         else:
             updated[n] = tip()
+            log_queue(repo, n, task_slug(repo, pr), pr["headRefOid"], "updated", tip=updated[n])
             print(f"#{n} brought up to date, waiting for its checks")
             flight.add(n)
     settle(repo, fallback, stops)
@@ -5760,6 +5994,8 @@ def parse_args(argv):
     new.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
     new.add_argument("--lead-model", help="the lead's model for this task instead of models.lead in the settings")
     new.add_argument("--base", help="slug of an open task to stack this task on")
+    new.add_argument("--mode", choices=MODES, help="single: the lead builds with its own subagents; team: a tech lead "
+                     "runs the build (default: sessions.mode in the settings)")
     new.add_argument("--critical", action="store_true",
                      help="use the slots held in reserve: the default branch is red, the factory is broken, "
                           "or the human says so")
@@ -5775,6 +6011,9 @@ def parse_args(argv):
     state.add_argument("deliverable", nargs="?", metavar="deliverable|whom",
                        help="with handed-over: a link, or a path outside the worktree; with blocked: whom it waits on, "
                             "human (default), dispatcher or the slug of another open task")
+    commands = sub.add_parser("commands", help="state or print the test and golden commands of a task (a lead runs it in its worktree)")
+    commands.add_argument("which", nargs="?", choices=("test", "golden"))
+    commands.add_argument("value", nargs="?", metavar="command|none", help="record it for this task; none: there is none")
     ack = sub.add_parser("ack", help="record the human's word on a task whose work was handed over")
     ack.add_argument("slug")
     ack.add_argument("state", choices=SETTLED)
@@ -5835,6 +6074,11 @@ def parse_args(argv):
     tech.add_argument("pr", type=int)
     tech.add_argument("evidence", help="one line: why it came back")
     tech.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
+    build = sub.add_parser("build", help="start a tech lead on this task's build (a model takes part; run it in the task's worktree)")
+    build.add_argument("slug")
+    build.add_argument("--note", help="what changed since the last run: the lead's words to the tech lead")
+    build.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
+    build.add_argument("--run", action="store_true", help=argparse.SUPPRESS)
     land = sub.add_parser("land", help="bring a handed-over task up to its base (a model takes part only on a conflict)")
     land.add_argument("slug", nargs="?")
     land.add_argument("--all", action="store_true", help="every handed-over task whose pull request conflicts or whose base merged")
@@ -5871,10 +6115,10 @@ def main(argv=None):
             if args.cmd == "hook":
                 return 0
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
-        return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
+        return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "commands": cmd_commands, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander, "tech-lead": cmd_tech_lead,
+                "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander, "tech-lead": cmd_tech_lead, "build": cmd_build,
                 "schedule": cmd_schedule, "dispatcher": cmd_dispatcher, "wizard": cmd_wizard, "uninstall": cmd_uninstall,
                 "env": cmd_env, "settings": cmd_settings}[args.cmd](args)
     except Fail as e:

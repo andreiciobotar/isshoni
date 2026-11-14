@@ -262,10 +262,7 @@ def build(factory_dir, tasks, by_task, sessions, prices, now=None, cached=False)
     since = _ts(queue[0]) if queue else None
     queued = {(r.get("repo"), r.get("pr")): r.get("approved_at") for r in queue if r.get("step") == "merged"}
 
-    def handed_over(t):
-        return min((ts for r in by_task[(t["repo_path"], t["slug"])]["tasks"] if r.get("state") == "handed-over" for ts in [_ts(r)] if ts), default=None)
-
-    first = {id(t): handed_over(t) for rows in merged.values() for t, _ in rows}
+    first = {id(t): kaizen._handed_over(by_task[(t["repo_path"], t["slug"])]) for rows in merged.values() for t, _ in rows}
     wanted = [(t["repo_path"], t["pr"]["number"], at) for rows in merged.values() for t, at in rows
               if first[id(t)] and first[id(t)] <= at and (t["repo_path"], t["pr"]["number"]) not in queued]
     github = _approvals(factory_dir, wanted, cached)
