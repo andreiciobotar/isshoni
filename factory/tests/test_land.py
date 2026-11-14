@@ -51,10 +51,12 @@ elif a[:1] == ["-p"]:
         time.sleep(30)
     if mode in ("push", "lie"):
         subprocess.run(["git", "commit", "--allow-empty", "-q", "-m", "resolved"], check=True)
-        subprocess.run(["git", "push", "-q", "--force", "origin", "HEAD"], check=True)
+        subprocess.run(["git", "push", "-q", "origin", "HEAD"], check=True)
+    if mode == "garbage-merging":
+        subprocess.run(["git", "merge", "--no-commit", "origin/main"])
     says = {"push": "LANDED, LOOK https://x/pull/t1`", "lie": "LANDED https://x/pull/t1`",
             "lie-nopush": "LANDED https://x/pull/t1`", "stop": "STOPPED conflict` (hunks below)"}
-    if mode == "garbage":
+    if mode in ("garbage", "garbage-merging"):
         print("not json")
     else:
         print(json.dumps({"result": REPLY % says[mode]}))
@@ -178,7 +180,7 @@ class LandTests(unittest.TestCase):
         return {"id": "s1", "sessionId": "s1", "kind": "background", "cwd": str(wt), "status": "busy",
                 "state": "working", **extra}
 
-    def test_clean_rebase_without_overlap_lands_with_no_model(self):
+    def test_clean_merge_without_overlap_lands_with_no_model(self):
         wt = self.task("t1")
         self.advance_main(1, "main line", "b.txt")
         old = self.git("rev-parse", "HEAD", cwd=wt)
@@ -188,11 +190,14 @@ class LandTests(unittest.TestCase):
         self.assertNotEqual(self.remote_head(), old)
         self.assertEqual(self.remote_head(), self.git("rev-parse", "HEAD", cwd=wt))
         self.assertEqual(self.git("rev-parse", "origin/main", cwd=wt), self.git("merge-base", "HEAD", "origin/main", cwd=wt))
+        self.assertEqual(self.git("rev-parse", f"{self.remote_head()}^1", cwd=wt), old)
+        self.assertEqual(len(self.git("rev-list", "--parents", "-1", self.remote_head(), cwd=wt).split()), 3)
         self.assertEqual(self.last_state(), "handed-over")
         (comment,) = self.gh_calls()
         self.assertEqual(comment["argv"][:3], ["pr", "comment", "https://x/pull/t1"])
         self.assertIn(f"`{old}` -> `{self.remote_head()}`", comment["body"])
-        self.assertIn("Range-diff: identical.", comment["body"])
+        self.assertIn("The reviewed commits are unchanged.", comment["body"])
+        self.assertNotIn("Range-diff", comment["body"])
         self.assertIn("Result: LANDED.", comment["body"])
         self.assertNotIn("lgtm", comment["body"].lower())
         self.assertEqual(self.claude_calls(), [])
@@ -237,12 +242,14 @@ class LandTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--output-format") + 1], "json")
         brief = argv[-1]
         for text in ("Your task slug is t1.", "The base is main (remote origin).", f"The reviewed head is {old}.",
-                     f"The head last pushed is {old}.", "Do not declare the hand-over", "a.txt"):
+                     "Do not declare the hand-over", "a.txt"):
             self.assertIn(text, brief)
+        self.assertNotIn("head last pushed", brief)
         self.assertNotIn("has merged", brief)
         self.assertNotIn("authorised", brief)
         self.assertNotEqual(self.remote_head(), old)
         self.assertIn("- conflicts: a.txt - merged by hand", p.stdout)
+        self.assertIn(f"the conflict resolution: `git show --remerge-diff {self.remote_head()}`", p.stdout)
         self.assertNotIn("Factory feedback", p.stdout)
         self.assertNotIn("the brief was fine", p.stdout)
         self.assertEqual(self.last_state(), "working")
@@ -274,8 +281,17 @@ class LandTests(unittest.TestCase):
         p = self.land("t1", FAKE_LANDER="garbage")
         self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED other`"))
         self.assertEqual(self.remote_head(), old)
+        self.assertIn("the lander's reply could not be read", p.stdout)
 
-    def test_failing_tests_leave_the_rebased_commits_unpushed(self):
+    def test_an_unreadable_reply_with_a_merge_left_in_progress_says_so(self):
+        wt, old = self.conflict()
+        p = self.land("t1", FAKE_LANDER="garbage-merging")
+        self.assertEqual(self.result(p), "`STOPPED other`")
+        self.assertIn("the lander's reply could not be read", p.stdout)
+        self.assertIn(f"the worktree is at `{old}`, uncommitted changes: some, merge in progress: yes", p.stdout)
+        self.assertEqual(self.remote_head(), old)
+
+    def test_failing_tests_leave_the_merge_commit_unpushed(self):
         wt = self.task("t1")
         self.advance_main(1, "main line", "b.txt")
         old = self.git("rev-parse", "HEAD", cwd=wt)
@@ -284,7 +300,8 @@ class LandTests(unittest.TestCase):
         self.assertIn("boom", p.stdout)
         new = self.git("rev-parse", "HEAD", cwd=wt)
         self.assertNotEqual(new, old)
-        self.assertIn(f"on the rebased commits at {new}, unpushed", p.stdout)
+        self.assertIn(f"on the merge commit at {new}, unpushed", p.stdout)
+        self.assertEqual(self.git("rev-parse", f"{new}^1", cwd=wt), old)
         self.assertEqual((self.remote_head(), self.gh_calls(), self.last_state()), (old, [], "working"))
 
     def test_a_busy_lead_stops_before_anything_changes(self):
@@ -306,7 +323,7 @@ class LandTests(unittest.TestCase):
         (self.state / "busy.json").write_text(json.dumps([self.busy_session(wt)]))
         p = self.land("t1", TEST_CMD=f"cp {self.state}/busy.json {self.state}/agents.json")
         self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED busy`"))
-        self.assertIn("rebased commits", p.stdout)
+        self.assertIn("merge commit", p.stdout)
         self.assertEqual((self.remote_head(), self.gh_calls(), self.last_state()), (old, [], "working"))
 
     def test_a_dirty_worktree_stops(self):
@@ -355,7 +372,7 @@ class LandTests(unittest.TestCase):
         self.assertEqual(self.git("merge-base", "--is-ancestor", "origin/main", "HEAD", cwd=wt), "")
         edit, comment = self.gh_calls()
         self.assertEqual(edit["argv"], ["pr", "edit", "https://x/pull/t1", "--base", "main"])
-        self.assertIn("Rebased onto `origin/main`", comment["body"])
+        self.assertIn("Merged `origin/main`", comment["body"])
 
     def test_all_takes_only_conflicting_or_base_merged_tasks(self):
         self.task("t1", line=1)
@@ -381,7 +398,7 @@ class LandTests(unittest.TestCase):
         p = self.land("--all")
         self.assertEqual((p.returncode, p.stdout), (0, "nothing to land\n"))
 
-    def test_a_remote_that_moves_before_the_push_fails_the_lease(self):
+    def test_a_remote_that_moves_before_the_push_is_refused_without_force(self):
         wt = self.task("t1")
         self.advance_main(1, "main line", "b.txt")
         p = self.land("t1", TEST_CMD=f"{self.bump} {self.other}")
@@ -390,6 +407,21 @@ class LandTests(unittest.TestCase):
         self.assertEqual(self.gh_calls(), [])
         self.assertEqual(self.last_state(), "working")
         self.assertNotEqual(self.remote_head(), self.git("rev-parse", "HEAD", cwd=wt))
+        self.assertEqual(self.remote_head(), self.git("rev-parse", "origin/worktree-t1", cwd=self.other))
+
+    def test_a_push_refused_for_workflows_is_denied_with_the_human_command(self):
+        wt = self.task("t1")
+        self.advance_main(1, "main line", "b.txt")
+        old = self.remote_head()
+        hook = self.remote / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\necho 'refusing to allow a GitHub App to create or update workflow "
+                        "`.github/workflows/test.yml` without `workflows` permission' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        p = self.land("t1")
+        self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED denied`"))
+        self.assertIn(f"From your own terminal: git -C {wt} push -u origin HEAD", p.stdout)
+        self.assertIn("without `workflows` permission", p.stdout)
+        self.assertEqual((self.remote_head(), self.gh_calls(), self.last_state()), (old, [], "working"))
 
     def test_no_test_target_is_a_stop_even_when_a_test_directory_exists(self):
         (self.repo / "Makefile").write_text("all:\n\t@true\n")
@@ -406,14 +438,6 @@ class LandTests(unittest.TestCase):
         self.assertIn("no test command: no `test:` rule in Makefile", p.stdout)
         self.assertEqual((self.remote_head(), self.last_state()), (old, "working"))
 
-    def test_a_range_diff_that_differs_is_a_look(self):
-        self.task("t1", line=20)
-        self.advance_main(17, "main line")
-        p = self.land("t1")
-        self.assertEqual(self.result(p), "`LANDED, LOOK https://x/pull/t1`")
-        self.assertIn("range-diff differs", p.stdout)
-        self.assertIn("Range-diff: differs.", self.gh_calls()[0]["body"])
-
     def test_working_is_declared_before_a_look_is_pushed(self):
         self.task("t1", line=20)
         self.advance_main(2, "main line")
@@ -428,42 +452,12 @@ class LandTests(unittest.TestCase):
         self.assertEqual(seen.read_text().strip(), "working")
         self.assertEqual([r["state"] for r in self.declared() if r["slug"] == "t1"], ["handed-over", "working"])
 
-    def grow(self, wt, n, odd=None):
-        """Commits 2..n on the task branch (commit `odd` edits a.txt line 20), pushed, with the pull request's head."""
-        for i in range(2, n + 1):
-            if i == odd:
-                self.edit(wt, 20, "odd line")
-            else:
-                (wt / f"f{i}.txt").write_text(f"c{i}\n")
-                self.git("add", ".", cwd=wt)
-                self.git("commit", "-q", "-m", f"c{i}", cwd=wt)
-        self.git("push", "-q", "origin", "worktree-t1", cwd=wt)
-        self.prs["worktree-t1"][0]["headRefOid"] = self.git("rev-parse", "HEAD", cwd=wt)
-        self.write_state()
-
-    def test_twelve_commits_rebased_cleanly_are_identical(self):
-        wt = self.task("t1", line=20)
-        self.grow(wt, 12)
-        self.advance_main(1, "main line", "b.txt")
-        p = self.land("t1")
-        self.assertEqual((p.returncode, self.result(p)), (0, "`LANDED https://x/pull/t1`"))
-        self.assertIn("range-diff: identical", p.stdout)
-
-    def test_a_difference_among_the_first_of_twelve_commits_is_seen(self):
-        wt = self.task("t1", line=1, text="task line")
-        self.grow(wt, 12, odd=2)
-        self.advance_main(17, "main line")
-        p = self.land("t1")
-        self.assertEqual(self.result(p), "`LANDED, LOOK https://x/pull/t1`")
-        self.assertIn("range-diff differs", p.stdout)
-        self.assertIn("Range-diff: differs.", self.gh_calls()[0]["body"])
-
     def test_a_lander_that_exits_non_zero_is_a_stop_with_what_git_shows(self):
         wt, old = self.conflict()
         p = self.land("t1", FAKE_LANDER="fail")
         self.assertEqual(self.result(p), "`STOPPED other`")
         self.assertIn("the lander run exited 1", p.stdout)
-        self.assertIn(f"`{old}`, uncommitted changes: none, rebase in progress: no", p.stdout)
+        self.assertIn(f"`{old}`, uncommitted changes: none, merge in progress: no", p.stdout)
         self.assertEqual(self.last_state(), "working")
 
     def test_a_lander_that_times_out_is_a_stop(self):
@@ -481,10 +475,10 @@ class LandTests(unittest.TestCase):
         self.assertIn("`STOPPED other`", out.getvalue())
         self.assertIn("the lander run timed out", out.getvalue())
 
-    def test_a_rebase_that_fails_without_a_conflict_is_a_stop_with_no_model(self):
+    def test_a_merge_that_fails_without_a_conflict_is_a_stop_with_no_model(self):
         wt = self.task("t1")
         self.advance_main(1, "main line", "b.txt")
-        hook = self.repo / ".git" / "hooks" / "pre-rebase"
+        hook = self.repo / ".git" / "hooks" / "pre-merge-commit"
         hook.write_text("#!/bin/sh\necho refused by hook >&2\nexit 1\n")
         hook.chmod(0o755)
         p = self.land("t1")
@@ -538,7 +532,7 @@ class LandTests(unittest.TestCase):
         self.assertEqual(edit["argv"], ["pr", "edit", "https://x/pull/t1", "--base", "main"])
         self.assertEqual((self.remote_head(), self.last_state()), (old, "handed-over"))
 
-    def test_a_branch_with_a_merge_commit_is_a_stop_before_any_rebase(self):
+    def test_a_branch_that_holds_a_merge_commit_lands_again(self):
         wt = self.task("t1", line=20)
         self.advance_main(1, "main line", "b.txt")
         self.git("fetch", "-q", "origin", cwd=wt)
@@ -552,10 +546,10 @@ class LandTests(unittest.TestCase):
         self.advance_main(2, "again", "b.txt")
         old = self.git("rev-parse", "HEAD", cwd=wt)
         p = self.land("t1")
-        self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED other`"))
-        self.assertIn("the branch holds a merge commit; a rebase would drop it", p.stdout)
-        self.assertEqual((self.git("rev-parse", "HEAD", cwd=wt), self.remote_head(), self.claude_calls(), self.last_state()),
-                         (old, old, [], "working"))
+        self.assertEqual((p.returncode, self.result(p)), (0, "`LANDED https://x/pull/t1`"))
+        new = self.remote_head()
+        self.assertEqual((new, self.git("rev-parse", f"{new}^1", cwd=wt), self.claude_calls()), (self.git("rev-parse", "HEAD", cwd=wt), old, []))
+        self.assertEqual((wt / "extra.txt").read_text(), "in the merge\n")
 
     def test_a_failed_retarget_after_the_push_is_reported_with_one_comment(self):
         wt = self.task("t1", line=25, base="worktree-gone")
@@ -588,7 +582,7 @@ class LandTests(unittest.TestCase):
             module.main(["land", "t1"])
         return out.getvalue()
 
-    def test_fetch_rebase_and_push_act_as_the_app(self):
+    def test_fetch_merge_and_push_act_as_the_app(self):
         wt = self.task("t1")
         self.advance_main(1, "main line", "b.txt")
         seen = self.state / "probe"
