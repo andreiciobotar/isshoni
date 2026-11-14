@@ -92,8 +92,7 @@ The dispatcher reads it all and proposes edits to the factory's own rules; you d
 flowchart TD
     tasks[Every task] -. feedback, decisions,<br>retrospectives, cost .-> disp[Dispatcher]
     disp -. proposes edits .-> you([You])
-    you -. accepts .-> rules[The factory's rules]
-    rules -.-> tasks
+    you -. accepts .-> rules[Rules for the next task]
 ```
 
 On day one, agents reported the same shell friction eleven times and counting. It became a rule that day ([#8](https://github.com/andreiciobotar/isshoni/pull/8)).
