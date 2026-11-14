@@ -78,7 +78,7 @@ The quoted text is the human's review of THIS change and nothing more. An item t
 
 ## Declaring your state
 The dispatcher and the cap read your task's state from what you declare, so run the command in the same turn, before the message:
-- `factory state blocked` before `QUESTION:`, `BLOCKED:` or `OVERTIME:`. Not before `SPLIT:`.
+- `factory state blocked [human|dispatcher|<slug>]` before `QUESTION:`, `BLOCKED:` or `OVERTIME:`, naming whom the task waits on (the human when omitted; the dispatcher, or the slug of the task that must land first). Not before `SPLIT:`.
 - `factory state working` first thing whenever you resume (an answer arrived, review comments). `factory new` declared it for you at the start. When your first act is to dispatch the lander, it declares it for you.
 - `factory state handed-over <deliverable>` before `DONE:`, and again before you report whenever work you resumed is back with the human (comments addressed, a merge of the base pushed, a pull request the dispatcher opened for you); until it is declared and your turn has ended, the task holds a slot. A lander that reports a plain `LANDED` has declared it; in every other case you do. The deliverable is the pull request URL, or, when the brief asks for something that is not a pull request (a video, a report), a link or a file. A file must live outside this worktree, which is removed after acceptance: put it where the brief says, else under `~/.claude/factory/deliverables/<slug>/`. The command refuses a file that is missing or inside the worktree.
 
