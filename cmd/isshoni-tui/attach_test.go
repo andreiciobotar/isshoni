@@ -89,7 +89,10 @@ func TestAttachGivesTheTerminalToTheDispatcherAndComesBack(t *testing.T) {
 	v.send("detach\r")
 	v.waitAfter(mark, "zebrafish")
 	waitFor(t, "the attach end line", func() bool { return strings.Contains(e.logs.String(), "attach end") })
-	v.send("q")
+	mark = v.out.Len()
+	v.send("?") // a key typed after the return reaches the dashboard
+	v.waitAfter(mark, "dashboard · agents · factory")
+	v.send("?q") // closes the help, then quits
 	if err := v.waitExit(); err != nil {
 		t.Fatalf("q ends the session cleanly after coming back: %v", err)
 	}
@@ -179,7 +182,7 @@ func TestAttachIsRefusedForAReadOnlyKey(t *testing.T) {
 	v := e.view(addr, viewOpts{signer: s})
 	v.waitFor("zebrafish")
 	v.send("d")
-	v.waitFor("read-only: this key may not open the dispatcher")
+	v.waitFor("read-only key: no dispatcher")
 	if names := e.attachedNames(); len(names) != 0 {
 		t.Fatalf("the stub ran for a read-only key: %v", names)
 	}
@@ -236,7 +239,7 @@ func TestAttachFailureComesBackWithAToast(t *testing.T) {
 	v.waitFor("STUB ATTACHED dispatcher-a")
 	mark := v.out.Len()
 	v.send("fail\r")
-	v.waitAfter(mark, "dispatcher dispatcher-a: exit status 3; is it running? (claude agents)")
+	v.waitAfter(mark, "dispatcher-a: not running?")
 	v.send("q")
 	var exit *gossh.ExitError
 	if err := v.waitExit(); errors.As(err, &exit) {

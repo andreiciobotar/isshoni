@@ -296,7 +296,7 @@ func (attachCommand) SetStderr(io.Writer) {}
 // exits, so the kernel signals it on every resize. It ends the attach client only: the
 // dispatcher's session belongs to its own supervisor. The client gets a SIGHUP when the
 // connection ends, and a kill 2 seconds later if it stays.
-func (s *server) attach(sess ssh.Session, term string, tty *os.File, name string) error {
+func (s *server) attach(sess ssh.Session, term string, tty *os.File, name string) (err error) {
 	cmd := exec.CommandContext(sess.Context(), cmp.Or(s.o.Claude, "claude"), "attach", name)
 	cmd.Env = append(os.Environ(), "TERM="+term)
 	for _, kv := range sess.Environ() {
@@ -308,16 +308,13 @@ func (s *server) attach(sess ssh.Session, term string, tty *os.File, name string
 	cmd.WaitDelay = 2 * time.Second
 	who := fmt.Sprintf("%s %s %s", sess.RemoteAddr(), gossh.FingerprintSHA256(sess.PublicKey()), name)
 	s.o.Log.Printf("attach start %s", who)
-	defer s.o.Log.Printf("attach end %s", who)
-	client, err := dupFile(tty) // exec reads the descriptor of what it is given: not the program's own
+	defer func() { s.o.Log.Printf("attach end %s: %v", who, err) }()
+	// its own open file description of the slave, so what exec does to the flags stays with it
+	client, err := os.OpenFile(tty.Name(), os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return err
 	}
 	defer client.Close()
-	// the duplicate shares the slave's open file description, which Go leaves non-blocking
-	if err := unix.SetNonblock(int(client.Fd()), false); err != nil {
-		return err
-	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = client, client, client
 	// Its own session with the pty as controlling terminal, so the kernel signals it on a resize.
 	// macOS revokes the pty when that session's leader exits, which would end the dashboard's

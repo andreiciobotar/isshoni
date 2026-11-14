@@ -1149,9 +1149,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case attachMsg:
 		if msg.err != nil {
-			text := "dispatcher " + msg.name + ": " + firstLine(msg.err.Error())
+			text := msg.name + ": " + firstLine(msg.err.Error())
 			if errors.As(msg.err, new(*exec.ExitError)) {
-				text += "; is it running? (claude agents)"
+				text = msg.name + ": not running?"
 			}
 			m.setToast(text, true)
 		}
@@ -1336,7 +1336,7 @@ type attachMsg struct {
 func (m *model) dispatcher() tea.Cmd {
 	switch {
 	case m.opts.ReadOnly:
-		m.setToast("read-only: this key may not open the dispatcher", true)
+		m.setToast("read-only key: no dispatcher", true)
 		return nil
 	case m.opts.Attach == nil:
 		return nil

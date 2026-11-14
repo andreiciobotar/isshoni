@@ -77,7 +77,7 @@ func TestDRefusesWithoutADispatcherOrWithoutWrite(t *testing.T) {
 	m, asked = attachModel(t, `{"dispatchers": ["dispatcher-a"]}`)
 	m.opts.ReadOnly = true
 	send(m, "d")
-	if m.toast.text != "read-only: this key may not open the dispatcher" || len(*asked) != 0 {
+	if m.toast.text != "read-only key: no dispatcher" || len(*asked) != 0 {
 		t.Fatalf("toast %q, asked %v", m.toast.text, *asked)
 	}
 }
@@ -114,11 +114,11 @@ func TestTheEndOfAnAttachToastsAFailure(t *testing.T) {
 		t.Fatalf("a clean return toasts %q", m.toast.text)
 	}
 	m.Update(attachMsg{name: "dispatcher-a", err: errors.New("no pty")})
-	if m.toast.text != "dispatcher dispatcher-a: no pty" || !m.toast.err {
+	if m.toast.text != "dispatcher-a: no pty" || !m.toast.err {
 		t.Fatalf("toast %q", m.toast.text)
 	}
 	m.Update(attachMsg{name: "dispatcher-a", err: exec.Command("sh", "-c", "exit 3").Run()})
-	if m.toast.text != "dispatcher dispatcher-a: exit status 3; is it running? (claude agents)" {
+	if m.toast.text != "dispatcher-a: not running?" {
 		t.Fatalf("toast %q", m.toast.text)
 	}
 }
