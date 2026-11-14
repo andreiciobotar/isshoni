@@ -575,7 +575,7 @@ class LandTests(unittest.TestCase):
         self.assertNotIn("Result: LANDED", comment["body"])
         self.assertEqual(self.last_state(), "working")
 
-    def land_as(self, exports, code=0):
+    def land_as(self, exports, code=0, error=None):
         """`factory land t1` in this process, with the App's exports as `factory env` would give them."""
         loader = importlib.machinery.SourceFileLoader("factory_land_id", str(BIN))
         module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_land_id", loader))
@@ -583,7 +583,7 @@ class LandTests(unittest.TestCase):
         out, cwd = io.StringIO(), os.getcwd()
         self.addCleanup(os.chdir, cwd)
         os.chdir(self.repo)
-        with mock.patch.dict(os.environ, self.env), mock.patch.object(module, "identity_exports", lambda: (exports, code)), \
+        with mock.patch.dict(os.environ, self.env), mock.patch.object(module, "identity_exports", lambda: (exports, code, error)), \
                 redirect_stdout(out):
             module.main(["land", "t1"])
         return out.getvalue()
@@ -600,15 +600,20 @@ class LandTests(unittest.TestCase):
         self.assertEqual(seen.read_text().strip(), "app")
         self.assertEqual(self.git("log", "-1", "--format=%cn", cwd=wt), "bot")
 
-    def test_a_lock_down_makes_the_land_fail_closed(self):
+    def test_a_failed_mint_stops_at_the_first_fetch_with_git_untouched(self):
         wt = self.task("t1")
         self.advance_main(1, "main line", "b.txt")
         old = self.git("rev-parse", "HEAD", cwd=wt)
-        out = self.land_as({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "url./nonexistent/.insteadOf",
-                            "GIT_CONFIG_VALUE_0": str(self.remote)}, code=1)
+        touched = self.state / "git-touched"
+        hook = self.repo / ".git" / "hooks" / "reference-transaction"
+        hook.write_text(f"#!/bin/sh\necho ran >> {touched}\n")
+        hook.chmod(0o755)
+        out = self.land_as({"HARMLESS": "1"}, code=1, error="no App token: the mint was refused")
         self.assertIn("`STOPPED other`", out)
-        self.assertIn("git fetch origin failed", out)
+        self.assertIn("git fetch origin failed: no App token: the mint was refused", out)
         self.assertEqual((self.git("rev-parse", "HEAD", cwd=wt), self.remote_head()), (old, old))
+        self.assertFalse(touched.exists())
+        self.assertEqual(self.gh_calls(), [])
 
 
 if __name__ == "__main__":
