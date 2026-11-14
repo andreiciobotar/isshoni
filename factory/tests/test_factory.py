@@ -232,7 +232,7 @@ class StateTests(unittest.TestCase):
     CWD = f"{WT}/x/sub"
 
     def state(self, *args, cwd=CWD, tasks=()):
-        return invoke(["state", *args], repo_answers([task_entry("x")]), cwd=cwd, tasks=tasks)
+        return invoke(["state", *args], repo_answers([task_entry("x"), task_entry("y")]), cwd=cwd, tasks=tasks)
 
     def test_each_state_is_written_with_the_repo_root_and_slug(self):
         for state in ("working", "blocked"):
@@ -244,6 +244,21 @@ class StateTests(unittest.TestCase):
                                  (ROOT, "x", state, "lead", None))
                 self.assertEqual(rec["session"], "sid-d")
                 self.assertNotIn("deliverable", rec)
+                self.assertNotIn("waits_on", rec)
+
+    def test_blocked_records_whom_it_waits_on_when_given(self):
+        for whom in ("human", "dispatcher", "y"):
+            with self.subTest(whom):
+                code, out, err, fake = self.state("blocked", whom)
+                self.assertEqual((code, out, err), (0, "x: blocked\n", ""))
+                self.assertEqual(fake.tasks[0]["waits_on"], whom)
+
+    def test_blocked_on_an_unknown_name_or_its_own_slug_writes_nothing(self):
+        for whom in ("nobody", "x"):
+            with self.subTest(whom):
+                code, out, err, fake = self.state("blocked", whom)
+                self.assertEqual((code, out, fake.tasks), (2, "", []))
+                self.assertRegex(err, "human, dispatcher or the slug of another open task")
 
     def test_working_and_blocked_put_the_pull_request_back_to_draft_even_when_gh_fails(self):
         for state in ("working", "blocked"):
@@ -274,8 +289,8 @@ class StateTests(unittest.TestCase):
             "the main checkout's subdirectory": (("working",), f"{ROOT}/src", "inside a task worktree"),
             "a sibling of a task": (("working",), f"{WT}/x-other", "inside a task worktree"),
             "handed-over without a deliverable": (("handed-over",), self.CWD, "needs a deliverable"),
-            "working with a deliverable": (("working", "https://x/y"), self.CWD, "take none"),
-            "blocked with a deliverable": (("blocked", "https://x/y"), self.CWD, "take none"),
+            "working with a deliverable": (("working", "https://x/y"), self.CWD, "working takes none"),
+            "blocked with a deliverable": (("blocked", "https://x/y"), self.CWD, "human, dispatcher"),
             "a missing file": (("handed-over", "/no/such/file"), self.CWD, "does not exist"),
         }
         for name, (args, cwd, pattern) in cases.items():
@@ -729,6 +744,15 @@ class StatusTests(unittest.TestCase):
         self.assertFalse(row["stale"])
         self.assertEqual((row["phase"], doc["in_motion"], doc["in_review"], doc["merged"]), ("review", 0, 1, 0))
 
+    def test_waits_on_is_the_recorded_name_for_a_blocked_task_and_null_otherwise(self):
+        tasks = [{**task_rec("asked", "blocked"), "waits_on": "dispatcher"}, task_rec("plain", "blocked"),
+                 task_rec("busy", "working")]
+        answers = repo_answers([task_entry(s) for s in ("asked", "plain", "busy")], (), git_task_answers("x", time.time()))
+        code, out, err, _ = invoke(["status", "--json"], answers, tasks=tasks)
+        self.assertEqual(code, 0, err)
+        self.assertEqual({r["slug"]: r["waits_on"] for r in json.loads(out)["rows"]},
+                         {"asked": "dispatcher", "plain": "human", "busy": None})
+
     def test_phase_and_counts(self):
         entries = [task_entry(s) for s in ("moving", "working", "review", "merged")]
         busy = {"id": "s1", "cwd": f"{WT}/working", "kind": "background", "status": "busy", "state": "working"}
@@ -756,6 +780,7 @@ class StatusTests(unittest.TestCase):
         code, out, err, _ = invoke(["status", "--json"], answers, tasks=tasks)
         self.assertEqual(code, 0, err)
         doc = json.loads(out)
+        self.assertEqual([r["waits_on"] for r in doc["rows"]], [None, "human", None, None, None])
         self.assertEqual([(r["phase"], r["state"], r["deliverable"]) for r in doc["rows"]],
                          [("motion", None, None), ("blocked", "blocked", None),
                           ("review", "handed-over", "/out/video.mp4"), ("merged", "handed-over", "https://x/y"),

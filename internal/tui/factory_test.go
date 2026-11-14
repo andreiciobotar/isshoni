@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"isshoni/internal/data"
 )
 
@@ -61,7 +63,22 @@ func delta() factoryRepo {
 	slow.Waited, slow.StopKind, slow.StopSummary = ptr(int64(300)), "OVERTIME", "ran 3h of 2h: split it?"
 	wide.Waited, wide.StopKind = ptr(int64(7200)), "BLOCKED"
 	wide.StopSummary = "データベースの接続情報が見つかりません。どの環境のものを使えばよいですか？ 本番ではない方でお願いします。"
-	return factoryRepo{name: "delta-docs", path: "/r/delta", st: fstatus(5, file, link, bare, slow, wide)}
+	return factoryRepo{name: "delta-docs", path: "/r/delta", st: fstatus(5, file, link, bare, slow, wide, onDispatcher(), onTask())}
+}
+
+// onDispatcher and onTask are tasks blocked on someone else, each with a reason; the band leaves them out.
+func onDispatcher() data.FactoryTask {
+	x := ftask("pick-a-theme", "blocked")
+	x.Waited, x.WaitsOn, x.StopKind = ptr(int64(600)), "dispatcher", "BLOCKED"
+	x.StopSummary = "the  palette is\nstill   open: which   brief decides it?"
+	return x
+}
+
+func onTask() data.FactoryTask {
+	x := ftask("docs-after-review", "blocked")
+	x.Waited, x.WaitsOn, x.StopKind = ptr(int64(900)), "design-review", "BLOCKED"
+	x.StopSummary = "needs the design review to land first, then the docs can quote its final wording without guessing"
+	return x
 }
 
 // waitingRepos is the fixture with every kind of waiting task.
@@ -309,6 +326,71 @@ func TestFactoryWaitingOrder(t *testing.T) {
 	}
 	if len(factoryModel(true, 140, 40, factoryRepo{name: "m", st: fstatus(5, ftask("a", "motion"), ftask("b", "merged"), ftask("c", "settled"))}).waiting()) != 0 {
 		t.Fatal("only review and blocked tasks wait on the human")
+	}
+}
+
+func TestFactoryBandLeavesOutTasksBlockedOnSomeoneElse(t *testing.T) {
+	human, empty := ftask("on-human", "blocked"), ftask("old-script", "blocked")
+	human.WaitsOn = "human"
+	m := factoryModel(true, 140, 40, factoryRepo{name: "m", st: fstatus(5, human, empty, onDispatcher(), onTask())})
+	var got []string
+	for _, it := range m.waiting() {
+		got = append(got, it.task.Slug)
+	}
+	slices.Sort(got)
+	if want := "old-script on-human"; strings.Join(got, " ") != want {
+		t.Fatalf("only blocked-on-human (or unrecorded) tasks are in the band: %q, want %q", strings.Join(got, " "), want)
+	}
+	if band := strings.Join(m.needsYou(m.th.on(m.th.Bg), 140), "\n"); !strings.Contains(band, "Needs you  2") {
+		t.Fatalf("band count: %s", band)
+	}
+	if st := m.fac.repos[0].st; st.Blocked != 4 {
+		t.Fatalf("the blocked count is unchanged: %+v", st)
+	}
+}
+
+func TestFactoryTaskRowNamesWhomABlockedTaskWaitsOn(t *testing.T) {
+	for _, w := range []int{80, 100, 140} {
+		m := factoryModel(true, w, 60, delta())
+		plain := ansi.Strip(strings.Join(m.factoryLines(m.th.on(m.th.Bg), w, 60), "\n"))
+		lines := strings.Split(plain, "\n")
+		for _, l := range lines {
+			if width(l) > w {
+				t.Errorf("%d columns: line of %d cells: %q", w, width(l), l)
+			}
+		}
+		at := func(slug string) (row, reason string) {
+			for i, l := range lines {
+				if strings.Contains(l, slug) && strings.Contains(l, "blocked on") {
+					return l, lines[i+1]
+				}
+			}
+			t.Fatalf("%d columns: no blocked-on row for %s in\n%s", w, slug, plain)
+			return
+		}
+		row, reason := at("pick-a-theme")
+		if !strings.Contains(row, "blocked on dispatcher") || strings.Contains(row, "needs you") {
+			t.Errorf("%d columns: %q", w, row)
+		}
+		if i := width(row[:strings.Index(row, "blocked on")]); !strings.HasPrefix(reason, strings.Repeat(" ", i-2)+"the palette is still open: which") {
+			t.Errorf("%d columns: reason not indented under PHASE, whitespace not collapsed: %q", w, reason)
+		}
+		row, reason = at("docs-after")
+		if !strings.Contains(row, "blocked on design") || !strings.Contains(reason, "needs the design review") {
+			t.Errorf("%d columns: %q / %q", w, row, reason)
+		}
+		if w == 80 && !strings.HasSuffix(strings.TrimRight(reason, " "), "…") {
+			t.Errorf("80 columns: a long reason is truncated: %q", reason)
+		}
+		for _, l := range lines {
+			if strings.Contains(l, "stuck-on-keys") && strings.Contains(l, "blocked on") {
+				t.Errorf("a task blocked on the human keeps its row: %q", l)
+			}
+		}
+	}
+	m := factoryModel(true, 140, 60, factoryRepo{name: "m", st: fstatus(5, func() data.FactoryTask { x := onDispatcher(); x.StopSummary = ""; return x }())})
+	if got := len(m.taskRow(m.th.on(m.th.Bg), m.factoryCols(m.th.on(m.th.Bg), 140, m.fac.repos[0].st.Rows), m.fac.repos[0].st.Rows[0], 140)); got != 1 {
+		t.Fatalf("no summary, no second line: %d lines", got)
 	}
 }
 
@@ -666,6 +748,8 @@ func TestGoldenFactory(t *testing.T) {
 		{"factory-140x40", 140, 40, func(m *model) { setFactory(m, waitingRepos()...) }, true},
 		{"factory-100x30", 100, 30, func(m *model) { setFactory(m, waitingRepos()...) }, true},
 		{"factory-80x24", 80, 24, func(m *model) { setFactory(m, waitingRepos()...) }, true},
+		{"factory-blocked-on-100x30", 100, 30, func(m *model) { setFactory(m, waitingRepos()...); m.fac.top = 1 << 10; m.fixScroll() }, true},
+		{"factory-blocked-on-80x24", 80, 24, func(m *model) { setFactory(m, waitingRepos()...); m.fac.top = 1 << 10; m.fixScroll() }, true},
 		{"factory-quiet-80x24", 80, 24, func(m *model) {
 			setFactory(m, factoryRepo{name: "calm", path: "/r/calm", st: fstatus(5, manyTasks(2)...)})
 		}, true},
@@ -1114,7 +1198,7 @@ func TestSnapshotFactory(t *testing.T) {
 	if n := fetchCount(t, dir); n != 1 {
 		t.Fatalf("the snapshot runs the fetch pass once, after the cached one: %d", n)
 	}
-	for _, want := range []string{"proj", "stacked", "cost-in-money", "in motion ▲●○○○○○ 2/7", "write-up.md", "needs-an-answer", "worktree cap  7", "[3 Factory ▲2]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"} {
+	for _, want := range []string{"proj", "stacked", "cost-in-money", "in motion ▲▲●○○○○ 3/7", "blocked on needs-an-a", "Needs the login task to land first.", "write-up.md", "needs-an-answer", "worktree cap  7", "[3 Factory ▲2]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("snapshot lacks %q:\n%s", want, out)
 		}
