@@ -2701,12 +2701,15 @@ def store_identity(identity, pem):
     write_identity(identity)
 
 
-def create_app(owner):
+APP_NAME_MAX = 34
+
+
+def create_app(owner, name):
     owner = owner or (remote_repo() or (None,))[0]
     if not owner:
         raise Fail("no owner: run inside a clone whose origin is on GitHub, or pass --owner NAME", 1)
     org = api("GET", f"/users/{urllib.parse.quote(owner)}", 200).get("type") == "Organization"
-    name = f"factory-{owner}"[:34]
+    name = name or f"isshoni-lander-{owner}"[:APP_NAME_MAX]
     print(f"This creates a GitHub App named {name} under {'the organization' if org else 'the account'} {owner}, "
           "after one confirmation in your browser.")
     print("Then you install it on the repositories you choose, with a second confirmation.")
@@ -2791,6 +2794,10 @@ def verify_app(identity):
                                 + (", or this machine's clock is off by minutes." if status == 401 else "."))
     if status != 200:
         raise Fail(f"GitHub GET /app failed: {reason(status, body)}", 1)
+    if not (isinstance(body, dict) and body.get("slug") and body.get("html_url")):
+        raise Fail("GitHub's answer to GET /app lacks the App's slug or html_url; nothing was written", 1)
+    old_slug = identity["slug"]
+    identity = {**identity, "slug": body["slug"], "html_url": body["html_url"]}
     installation = installation_for(identity)
     token, _ = installation_token({**identity, "installation_id": installation["id"]})
     repos = installed_repositories(token)
@@ -2801,6 +2808,8 @@ def verify_app(identity):
     identity = {**identity, "installation_id": installation["id"], "installation_url": installation["html_url"],
                 "repository_selection": installation.get("repository_selection"), "bot_login": bot, "bot_id": bot_id, "bot_email": f"{bot_id}+{bot}@users.noreply.github.com"}
     write_identity(identity)
+    if identity["slug"] != old_slug:
+        print(f"renamed: {old_slug} -> {identity['slug']}")
     print(f"App {identity['slug']}: {identity['html_url']}")
     if identity["repository_selection"] == "all":
         print(f"Acts as {bot}; reads and writes all {len(repos)} repositories of {identity['owner']}.")
@@ -2816,13 +2825,18 @@ def verify_app(identity):
 
 
 def cmd_wizard(args):
+    if args.name and len(args.name) > APP_NAME_MAX:
+        raise Fail(f"--name is {len(args.name)} characters: an App name is {APP_NAME_MAX} at most", 2)
     identity = load_identity()
+    if identity and args.name:
+        raise Fail(f"this machine already has the App {identity['slug']}: the wizard does not rename it; rename it on "
+                   f"its GitHub settings page ({identity['html_url']}) and run the wizard again", 1)
     if identity is None:
         if (IDENTITY.expanduser() / "key.pem").exists():
             raise Fail(f"{IDENTITY.expanduser() / 'key.pem'} exists without app.json: remove the directory with "
                        f"`rm -r {IDENTITY}`, delete the App it belongs to on your GitHub apps settings page "
                        f"(it holds the name), and run again", 1)
-        identity = create_app(args.owner)
+        identity = create_app(args.owner, args.name)
     elif args.owner and args.owner.lower() != identity["owner"].lower():
         raise Fail(f"this machine's identity is the App {identity['slug']} of {identity['owner']}, not {args.owner}: "
                    f"one identity per machine (to replace it, undo it first)", 1)
@@ -3200,6 +3214,7 @@ def parse_args(argv):
     schedule.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
     wizard = sub.add_parser("wizard", help="create, install and check the factory's own GitHub App (rerun to repair)")
     wizard.add_argument("--owner", help="the account or organization to create the App under (default: owner of origin)")
+    wizard.add_argument("--name", help="the new App's name, 34 characters at most (default: isshoni-lander-<owner>)")
     return parser.parse_args(argv)
 
 
