@@ -980,3 +980,63 @@ func TestHanamiCirculation(t *testing.T) {
 		t.Fatalf("the bell is not at the left edge of the sky: %.0f, %.0f", x, y)
 	}
 }
+
+// Small words: a role when a blossom opens, a lantern's number and its merge, a waiting question's slug.
+func TestHanamiSmallWords(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	s.w, s.h = 100, 30
+	s.Apply(ev("spawn", 0, func(e *data.Event) { e.Agent, e.Role = "a1", "coder" }), true)
+	if len(s.words) != 0 {
+		t.Fatal("a settled blossom says its role")
+	}
+	s.Apply(ev("spawn", 0, func(e *data.Event) { e.Agent, e.Role = "a2", "reviewer" }), false)
+	stepFor(s, goldenNow, 500*time.Millisecond)
+	if len(s.words) != 0 {
+		t.Fatal("the role is said before the brief arrived")
+	}
+	stepFor(s, goldenNow, 700*time.Millisecond)
+	if len(s.words) != 1 || s.words[0].text != "reviewer" {
+		t.Fatalf("the role is not said when the blossom opens: %+v", s.words)
+	}
+	stepFor(s, goldenNow, 1500*time.Millisecond) // in the hold: shown even without colour
+	if !strings.Contains(strings.Join(s.draw(false), "\n"), "reviewer") {
+		t.Fatal("the role is not on screen")
+	}
+	stepFor(s, goldenNow, 6*time.Second)
+	if len(s.words) != 0 || strings.Contains(strings.Join(s.draw(false), "\n"), "reviewer") {
+		t.Fatal("the role is still there 6 s later")
+	}
+
+	pr := func(e *data.Event) { e.PR = 31 }
+	s.Apply(ev("pr", 0, pr), false)
+	if len(s.words) != 1 || s.words[0].text != "#31" {
+		t.Fatalf("a lantern's number: %+v", s.words)
+	}
+	s.Apply(ev("merge", 1, pr), false)
+	stepFor(s, goldenNow, 6*time.Second)
+	s.Apply(ev("pr", 2, func(e *data.Event) { e.PR = 32 }), true) // from history: no word
+	s.Apply(ev("merge", 2, func(e *data.Event) { e.PR = 33 }), true)
+	if len(s.words) > 1 {
+		t.Fatalf("history spoke: %+v", s.words)
+	}
+	for i := 0; i < 20; i++ {
+		s.say(hWord{text: "x", ttl: 4})
+	}
+	if len(s.words) != maxWords {
+		t.Fatalf("%d words on screen, at most %d", len(s.words), maxWords)
+	}
+
+	s.Apply(ev("question", 3, func(e *data.Event) { e.Slug = "quiet-lamps" }), true)
+	stepFor(s, goldenNow, 30*time.Second)
+	if !strings.Contains(strings.Join(s.draw(false), "\n"), "quiet-lamps") {
+		t.Fatal("a waiting question's slug is not beside its bell")
+	}
+	// a word does not overwrite the disc's mark
+	g := s.geo()
+	s.words = nil
+	s.say(hWord{text: strings.Repeat("w", 60), ttl: 100, x: g.cx + 90, y: g.cy})
+	stepFor(s, goldenNow, time.Second)
+	if row := ansi.Strip(s.draw(false)[int(g.cy/4)]); !strings.Contains(row, brandKanji) || !strings.Contains(row, "www") {
+		t.Fatalf("the word is missing, or it ate the disc's mark: %q", row)
+	}
+}

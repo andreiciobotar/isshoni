@@ -36,6 +36,7 @@ const (
 	maxRings     = 60  // rings on the water, one per tool call
 	maxBriefs    = 60  // lights on their way to a new blossom
 	maxBeads     = 6   // beads of sap in flight on one branch
+	maxWords     = 6   // small words on screen: the oldest goes
 	briefTrip    = 0.9 // seconds a light takes from the disc to where it is going
 	beadTrip     = 1.2
 	maxCanopy    = 14 // blossoms on one branch; the longest closed go first
@@ -238,6 +239,16 @@ const (
 	bellReturning
 )
 
+// hWord is a small word that fades in over 0.3 s, holds, and fades out over 1 s, beside what it names.
+type hWord struct {
+	text     string
+	age, ttl float64
+	bl       *hBlossom // beside this blossom (on its branch), or under this lantern, or at x, y
+	b        *hBranch
+	l        *hLantern
+	x, y     float64
+}
+
 type hBell struct {
 	slug  string
 	slot  int
@@ -287,6 +298,7 @@ type hanamiScene struct {
 	starred  int // stars ever placed: where the next one sits
 	bells    []*hBell
 	briefs   []hBrief
+	words    []hWord
 	sapDebt  float64 // beads owed, thinned in a replay like sparks
 	home     float64 // 1 when a return's last petal reaches the disc, decaying: the rim takes the petals' colour
 	homeCol  hrgb
@@ -493,7 +505,18 @@ func (s *hanamiScene) lantern(g hGeo, e data.Event, settled bool) *hLantern {
 		l.placed = true
 	}
 	s.lanterns = append(s.lanterns, l)
+	if !settled {
+		s.say(hWord{text: "#" + strconv.Itoa(e.PR), ttl: 6, l: l})
+	}
 	return l
+}
+
+// say shows a small word; at most six are up, and the oldest goes for a new one.
+func (s *hanamiScene) say(w hWord) {
+	if len(s.words) >= maxWords {
+		s.words = s.words[1:]
+	}
+	s.words = append(s.words, w)
 }
 
 // Apply feeds one event to the scene. A settled event is one that happened before the
@@ -622,7 +645,7 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 		case i >= 0 && s.lanterns[i].placed:
 			l := s.lanterns[i]
 			s.lanterns = slices.Delete(s.lanterns, i, i+1)
-			s.hanabi(g, l.x.x, l.y.x)
+			s.hanabi(g, l)
 		default:
 			s.lantern(g, e, false).burst = true // rises first, then bursts
 		}
@@ -760,7 +783,10 @@ func (s *hanamiScene) note(g hGeo, tool string, col hrgb, who string) {
 }
 
 // hanabi is a merge: the firework where the lantern was, the whole stage lit, and a star left behind.
-func (s *hanamiScene) hanabi(g hGeo, x, y float64) {
+func (s *hanamiScene) hanabi(g hGeo, l *hLantern) {
+	x, y := l.x.x, l.y.x
+	s.words = slices.DeleteFunc(s.words, func(w hWord) bool { return w.l == l })
+	s.say(hWord{text: "#" + strconv.Itoa(l.pr) + " merged", ttl: 3, x: x, y: y + 9})
 	size := math.Max(0.9, math.Min(g.W, 2*g.H)/170)
 	dt := harmonica.FPS(hanamiFPS)
 	for ring := 0; ring < 3; ring++ {
@@ -958,7 +984,7 @@ func (s *hanamiScene) Step(now time.Time) {
 		if l.burst && math.Abs(l.y.x-ty) < 3 {
 			s.lanterns = slices.Delete(s.lanterns, i, i+1)
 			i--
-			s.hanabi(g, l.x.x, l.y.x)
+			s.hanabi(g, l)
 		}
 	}
 
@@ -983,12 +1009,22 @@ func (s *hanamiScene) Step(now time.Time) {
 	s.fire = fire
 
 	s.home *= 1 - dt/0.4
+	words := s.words[:0]
+	for _, w := range s.words {
+		if w.age += dt; w.age < w.ttl {
+			words = append(words, w)
+		}
+	}
+	s.words = words
 	briefs := s.briefs[:0]
 	for _, br := range s.briefs {
 		if br.t += dt / briefTrip; br.t < 1 {
 			briefs = append(briefs, br)
 		} else {
-			br.bl.bud = false // it arrived: the blossom opens
+			br.bl.bud = false // it arrived: the blossom opens, and says what it is
+			if br.bl.role != "" {
+				s.say(hWord{text: br.bl.role, ttl: 4, b: br.b, bl: br.bl})
+			}
 		}
 	}
 	s.briefs = briefs
@@ -1199,6 +1235,19 @@ func (cv *hCanvas) text(cx, cy int, s string, c hrgb, bold bool) int {
 		cx += w
 	}
 	return cx
+}
+
+// word writes ASCII s from (cx, cy) in the sky: it leaves every cell that already holds a glyph or the disc.
+func (cv *hCanvas) word(cx, cy int, s string, c hrgb) {
+	for i, r := range s {
+		x := cx + i
+		if x < 0 || x >= cv.w || cy < 0 || cy >= cv.sky || r < ' ' || r > '~' {
+			continue
+		}
+		if cell := &cv.cells[cy*cv.w+x]; cell.ch == 0 && !cell.filled && !cell.skip {
+			cell.ch, cell.c, cell.bold = r, c, false
+		}
+	}
 }
 
 // flower draws a five-petalled blossom of radius r dots: filled while its agent works, an outline once it
@@ -1626,6 +1675,31 @@ func (s *hanamiScene) draw(legend bool) []string {
 		cv.glyph(int(x/2), int(y/4), '✦', text, true)
 	}
 
+	// small words: beside what they name, never over a glyph, the disc, or the water
+	for _, w := range s.words {
+		a := math.Min(1, math.Min(w.age/0.3, w.ttl-w.age))
+		if th.NoColor && a < 1 {
+			continue // without colour nothing can be faint: shown for the hold only
+		}
+		x, y := w.x, w.y
+		switch {
+		case w.bl != nil:
+			bx, by, _, _ := w.b.blossomAt(g, w.bl)
+			x, y = bx+math.Max(1.5, w.bl.size.x)+3, by
+		case w.l != nil:
+			x, y = w.l.x.x-float64(len(w.text)), w.l.y.x+9
+		default:
+			x -= float64(len(w.text))
+		}
+		cv.word(int(x/2), int(y/4), w.text, bg.mix(muted, 0.8*a))
+	}
+	for _, b := range s.bells { // a waiting question's slug stays
+		if b.state == bellWaiting {
+			x, y := bellAt(g, b.slot)
+			cv.word(int((x+8)/2), int(y/4), b.slug, muted)
+		}
+	}
+
 	// the water: the waterline, the rings of tool calls, and the sky reflected, flatter and dimmer
 	if g.waterRow < g.staffTop {
 		cv.layer, cv.lo, cv.hi = 0, int(g.waterY), int(g.H)
@@ -1755,6 +1829,7 @@ var hanamiLegend = [][2]string{
 	{"*✶", "hanabi: a merge lights the stage, and leaves a star for 6 h"},
 	{"✦", "a question: light runs to a bell at the edge and waits for you"},
 	{"✧", "light along a branch: a brief out to a new agent; work rising"},
+	{"Aa", "words: a blossom's role, a lantern's number, a question's slug"},
 	{"◌", "a ripple from the disc: the site manager's tick"},
 	{"⠒", "water: a ring a tool call, the sky mirrored. Horizon: the hour"},
 	{"◐", "the beat: the rate of tool calls. The disc, staff, blossoms pulse"},
