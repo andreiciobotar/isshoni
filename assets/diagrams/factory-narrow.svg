@@ -4,7 +4,7 @@
        GitHub's phone column is 324 px wide, so this viewBox is 330 wide and shows at about 1:1.
        The left strip (x 6 to 40) carries the dotted lines up to the lead and the dispatcher. -->
   <title>How a brief becomes a merged pull request, and how the factory improves</title>
-  <desc>You give the dispatcher a brief. It starts one lead per task, in its own worktree. The lead writes the spec and dispatches an explorer (Haiku), a coder (Sonnet) and a reviewer (Opus) until the reviewer approves. The lander (Sonnet) runs the tests and pushes a pull request, a draft until it is ready: green with no conflict. You approve, and a merge queue script merges it to main in order, every 2 minutes. A pull request that conflicts or goes red, before or at the merge queue, goes to the tech lead (Opus), which resolves it, notes it on the pull request and hands it over again; only if behaviour would change does it go back to the lead. Your comments on the pull request reach the lead. A site manager (Sonnet, every 30 minutes) looks, then tells the dispatcher and the lead. Models are defaults. Kaizen: every task leaves feedback, decisions, a retrospective and its cost; the dispatcher (Fable) proposes rule edits, you decide, and the rules apply to the next task.</desc>
+  <desc>You give the dispatcher a brief. It starts one lead per task, in its own worktree. The lead writes the spec and dispatches an explorer (Haiku), a coder (Sonnet) and a reviewer (Opus) until the reviewer approves. The lander (Sonnet) runs the tests and pushes a pull request, a draft until it is ready: green with no conflict. You approve, and a merge queue script merges it to main in order, every 2 minutes. A pull request that conflicts, before or at the merge queue, or goes red there, goes to the tech lead (Opus), which resolves it, notes it on the pull request and hands it over again; only if behaviour would change does it go back to the lead. Your comments on the pull request reach the lead. A site manager (Sonnet, every 30 minutes) looks, then tells the dispatcher or a lead. Models are defaults. Kaizen: every task leaves feedback, decisions, a retrospective and its cost; the dispatcher (Fable) proposes rule edits, you decide, and the rules apply to the next task.</desc>
   <style>
     svg { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; }
     .bg { fill: #12111C; }
@@ -109,7 +109,7 @@
     <text class="s" x="113" y="466" text-anchor="middle">draft → ready</text>
     <text class="t" x="113" y="482" text-anchor="middle">green, no conflict</text>
   </g>
-  <text class="s" x="44" y="423">your comments</text>
+  <text class="s" x="54" y="424">your comments</text>
   <path class="arrow" d="M186 462H202"/>
 
   <!-- you: approve -->
@@ -131,8 +131,9 @@
     <text class="s" x="113" y="598" text-anchor="middle">notes on PR</text>
     <text class="t" x="113" y="614" text-anchor="middle">hands over again</text>
   </g>
-  <text class="s" x="44" y="644">only if behaviour</text>
-  <text class="s" x="44" y="658">would change</text>
+  <text class="s" x="58" y="644">only if</text>
+  <text class="s" x="58" y="658">behaviour</text>
+  <text class="s" x="58" y="672">would change</text>
 
   <!-- merge queue: a script merges in order -->
   <g class="muted">
@@ -161,8 +162,8 @@
   </g>
   <path class="aux" d="M40 818H17V100H170V84"/>
   <path class="aux" d="M17 198H48"/>
-  <path class="aux" d="M40 586H28V226H48"/>
-  <path class="aux join" d="M40 462H28"/>
+  <path class="aux" d="M52 626V684H28V226H48"/>
+  <path class="aux join" d="M48 430V408H28"/>
 
   <!-- kaizen lane, stacked -->
   <text class="k" x="16" y="874">kaizen 改善</text>
