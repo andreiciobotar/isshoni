@@ -469,6 +469,8 @@ class UninstallFlow(Setup):
         (self.store / "specs" / "repo" / "a.md").write_text("x")
         (self.store / "deliverables" / "t").mkdir(parents=True)
         (self.store / "deliverables" / "t" / "b.txt").write_text("x")
+        (self.store / "dashboard").mkdir()
+        (self.store / "dashboard" / "host_key").write_text("x")
         (self.store / "notes.txt").write_text("not ours")
         (self.store / "events.jsonl.bak").write_text("not ours")
         self.assertEqual(self.command("uninstall", "--list"), 0)
