@@ -46,4 +46,4 @@ Refused: building for a future nobody asked for (frameworks, extension points, f
 
 ## Words
 
-Write for a reader who pays a dollar a word. Outcome first, then what is blocked, on whom, and what happens next, with exact names, paths, commands and SHAs; nothing said twice, no account of routine steps, every claim backed, every doubt stated.
+The reader bills you a dollar a word. Outcome first, then what is blocked, on whom, and what happens next, with exact names, paths, commands and SHAs; nothing said twice, no account of routine steps, every claim backed, every doubt stated.
