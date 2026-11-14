@@ -832,7 +832,10 @@ def cmd_new(args):
         sys.stderr.write(f"factory: warning: cannot check for an existing pull request on {branch}; continuing\n")
     elif old_pr != "none":
         raise Fail(f"a {old_pr} pull request already exists for branch {branch}; pick another slug")
-    rc, _, err = repo.git("ls-remote", "--exit-code", "--heads", repo.remote, f"refs/heads/{branch}")
+    exports, error = identity_exports()  # as `gh` above acts as the App: a private remote needs it
+    rc, _, err = (1, "", error) if error else run(
+        ["git", "ls-remote", "--exit-code", "--heads", repo.remote, f"refs/heads/{branch}"], cwd=repo.root,
+        timeout=GH_TIMEOUT, env={**os.environ, **exports} if exports else None)
     if rc == 0:
         raise Fail(f"branch {branch} already exists on {repo.remote} (another machine's task?); pick another slug")
     if rc != 2:
@@ -2949,31 +2952,26 @@ PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", 
 CALLBACK_DONE = "<!doctype html><meta charset=utf-8><p>Done. Go back to the terminal.</p>"
 
 
-def load_identity():
-    path = IDENTITY.expanduser() / "app.json"
+def load_object(path):
+    """The JSON object in `path`, None when there is no such file; Fail when it is not one."""
     try:
-        identity = json.loads(path.read_text())
+        value = json.loads(path.read_text())
     except FileNotFoundError:
         return None
     except ValueError as e:
         raise Fail(f"{path} cannot be read as JSON: {e}", 1)
-    if not isinstance(identity, dict):
+    if not isinstance(value, dict):
         raise Fail(f"{path} is not a JSON object", 1)
-    return identity
+    return value
+
+
+def load_identity():
+    return load_object(IDENTITY.expanduser() / "app.json")
 
 
 def load_hosts():
     """The servers `isshoni host add` recorded in the store, by name; {} when there are none."""
-    path = STORE.expanduser() / "hosts.json"
-    try:
-        hosts = json.loads(path.read_text())
-    except FileNotFoundError:
-        return {}
-    except ValueError as e:
-        raise Fail(f"{path} cannot be read as JSON: {e}", 1)
-    if not isinstance(hosts, dict):
-        raise Fail(f"{path} is not a JSON object", 1)
-    return hosts
+    return load_object(STORE.expanduser() / "hosts.json") or {}
 
 
 def print_hosts():
@@ -3603,15 +3601,15 @@ def cmd_wizard(args):
     for step, done, detail in states:
         print(f"  {step.name}: {'n/a' if done is None else 'done' if done else 'not done'} ({detail})")
     print("site manager: starts with the dispatcher session and stops with it; nothing to install")
-    if args.list:
-        print_hosts()
     required = all(done for step, done, _ in states if not step.optional)
     if required:
         print("To start working, in the repository you want work done in, run `claude`, then:\n"
               "  /rename dispatcher-<repository directory name>\n  /factory:dispatch")
     if not args.list and not did and not failed and all(done is not False for _, done, _ in states):
         print("Nothing to do: everything is set up.")
-    if not args.list:
+    if args.list:
+        print_hosts()
+    else:
         print("A server: `make wizard-remote` (docs/container.md)." if clone()
               else "A server: needs a clone of the repository, then `make wizard-remote` there (docs/container.md).")
     return 0 if required and not failed else 1

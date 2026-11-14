@@ -479,10 +479,10 @@ def connect(c):
         c.alias = answer or None
         if c.alias:
             alias_conflict(c.name, c.alias)
-    if c.alias:
+    if c.alias is not None:
         text = read_ssh_config()
         new = block_re(c.name).sub("", text)
-        new = new + ("\n" if new else "") + alias_block(c.name, c.alias, c.target, c.port)
+        new = new + (("\n" if new else "") + alias_block(c.name, c.alias, c.target, c.port) if c.alias else "")
         if new != text:
             write_ssh_config(new)
             changed = True
@@ -528,7 +528,7 @@ def wizard_add(args):
     name = NAME_RE.sub("-", target)
     if name in reg:
         args.target, args.name, args.alias = reg[name]["target"], name, reg[name]["alias"] or ""
-        argv = ["add", args.target]
+        argv = ["add", args.target, *(["--name", name] if name != NAME_RE.sub("-", args.target) else [])]
     else:
         args.target, args.state = target, ask("The state directory on the server (an absolute path, e.g. /srv/factory): ")
         args.repo = ask("Repositories to clone and start a dispatcher for, owner/name separated by spaces (empty for none): ").split()
@@ -684,7 +684,7 @@ def register(sub):
     s.add_argument("--repo", action="append", default=[], metavar="OWNER/NAME", help="a repository to clone and start a dispatcher for (repeatable)")
     s.add_argument("--key", metavar="PUBKEY_FILE", help="the public key to authorise for the dashboard (default: the one ssh offers for the target)")
     s.add_argument("--dashboard-port", type=int, help="the server's loopback port for the dashboard (default 2222)")
-    s.add_argument("--alias", help="write a Host block with this name to ~/.ssh/config")
+    s.add_argument("--alias", help="write a Host block with this name to ~/.ssh/config; an empty value means none: the block is removed and nothing is asked")
     s.set_defaults(host_func=cmd_add)
     s = verbs.add_parser("list", help="the recorded hosts, without network")
     s.set_defaults(host_func=cmd_list)

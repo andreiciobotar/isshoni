@@ -702,7 +702,11 @@ class SyncDraftTests(World):
         with self.subTest("the lgtm step"):
             self.setUp()
             self.seed("tasks", record)
-            self.tick([theirs()], {1: [comment()]}, tasks=[])
+            activity = {("gh", "api", "-X", "GET", ACTIVITY, "-f", "ref=refs/heads/worktree-other"): raw(
+                [{"after": SHA, "timestamp": iso(NOW - 3600)}])}
+            _, out, _ = self.tick([theirs()], {1: [comment()]}, tasks=[], extra=activity)
+            self.assertIn("#1 blocked: no task worktree has its head branch", out)
+            self.assertNotIn("not evaluated", out)
             self.assertEqual(self.gh_mutations(), [])
         with self.subTest("merge --all"):
             self.setUp()

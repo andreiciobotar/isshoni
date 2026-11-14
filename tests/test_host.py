@@ -439,6 +439,20 @@ class HostTests(unittest.TestCase):
         self.assertEqual(len(self.calls()), n)
         self.assertFalse((self.fh / "hosts.json").exists())
 
+    def test_the_printed_command_carries_the_name_of_a_host_registered_with_one(self):
+        self.assertEqual(self.add("--name", "box")[0], 0)
+        rc, out, err = self.wizard("add", "box", "")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertIn("bin/isshoni host add nas --name box\n", out)
+
+    def test_an_empty_alias_removes_the_block_and_asks_nothing(self):
+        self.assertEqual(self.add("--alias", "factory")[0], 0)
+        self.assertIn("Host factory", self.ssh_config())
+        rc, out, err = self.add("--alias", "")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertNotIn("Host factory", self.ssh_config())
+        self.assertIsNone(self.registry()["nas"]["alias"])
+
     def test_add_without_a_target_and_without_a_terminal_stops(self):
         rc, out, err = self.run_host("add")
         self.assertEqual((rc, out), (1, ""))

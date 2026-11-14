@@ -49,10 +49,14 @@ class FakeRun:
         self.answers = answers
         self.calls = []
         self.inputs = []
+        self.envs = []
+        self.call_timeouts = []
 
-    def __call__(self, argv, cwd=None, input=None, timeout=None):
+    def __call__(self, argv, cwd=None, input=None, timeout=None, env=None):
         self.calls.append(list(argv))
         self.inputs.append(input)
+        self.envs.append(env)
+        self.call_timeouts.append(timeout)
         unfiltered = argv[:3] == ["gh", "pr", "list"] and "--head" not in argv and factory.STATUS_PR_FIELDS in argv
         if unfiltered and BATCH not in self.answers:  # a stub of its own wins
             return self.listing()
@@ -704,6 +708,23 @@ class NewTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertRegex(err, "warning: cannot check origin for branch worktree-demo-task: no remote; continuing")
         self.assertTrue(fake.ran("claude", "--bg"))
+        code, _, err, fake = invoke(self.ARGS, self.answers([], (), ok, {ls: (124, "", "timed out")}))
+        self.assertEqual(code, 0, err)
+        self.assertIn("warning: cannot check origin for branch worktree-demo-task: timed out", err)
+
+    def test_the_remote_is_asked_as_the_app_and_with_a_timeout(self):
+        exports = {"GH_TOKEN": "tok", "GIT_TERMINAL_PROMPT": "0"}
+        ok = {**self.OK, ("gh",): (0, "[]", "")}
+        with mock.patch.object(factory, "identity_exports", lambda: (exports, None)):
+            code, _, err, fake = invoke(self.ARGS, self.answers([], (), ok))
+        self.assertEqual(code, 0, err)
+        at = next(i for i, c in enumerate(fake.calls) if c[:2] == ["git", "ls-remote"])
+        self.assertEqual((fake.envs[at]["GH_TOKEN"], fake.call_timeouts[at]), ("tok", factory.GH_TIMEOUT))
+        with mock.patch.object(factory, "identity_exports", lambda: ({}, "no App token: boom")):
+            code, _, err, fake = invoke(self.ARGS, self.answers([], (), ok))
+        self.assertEqual(code, 0)
+        self.assertIn("cannot check origin for branch worktree-demo-task: no App token: boom", err)
+        self.assertFalse(fake.ran("git", "ls-remote"))
 
     def test_no_remote_defaults_to_main(self):
         answers = self.answers([], (), self.OK)

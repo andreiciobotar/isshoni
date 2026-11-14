@@ -19,7 +19,7 @@ bin/isshoni host add nas --state /srv/factory --repo owner/name
 | `--key PUBKEY_FILE` | the public key to authorise for the dashboard; default: the first `<identityfile>.pub` that `ssh -G <target>` lists |
 | `--name NAME` | the host's name here; default: the target, every character outside `A-Za-z0-9_-` turned into `-` |
 | `--dashboard-port PORT` | the server's loopback port for the dashboard; default 2222; like `--state`, fixed once recorded |
-| `--alias ALIAS` | write a `Host` block with this name to `~/.ssh/config` (below) |
+| `--alias ALIAS` | write a `Host` block with this name to `~/.ssh/config` (below); `--alias ""` means none: the block is removed and nothing is asked |
 
 The laptop keeps its records in `~/.claude/factory/hosts.json` (`$FACTORY_HOME` moves it), mode 0600. Each step first looks at the server and does only what is missing, so **a rerun is also the update**: it ships `HEAD` of your clone again when the server has another revision, and resumes where an earlier run stopped. Each prints `[k/12] <step>: done` or `already`. What the steps do to the server:
 
