@@ -162,7 +162,8 @@ def validate_slug(slug):
 
 SETTINGS_DEFAULTS = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
                      "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "reserve_percent": 10,
-                     "lean_start": True, "tech_lead_model": "opus"}
+                     "lean_start": True, "tech_lead_model": "opus", "mode": "single"}
+MODES = ("single", "team")
 
 
 def reserve(cap, percent):
@@ -208,13 +209,18 @@ def load_settings():
     tech_lead_model = data.get("tech_lead_model", settings["tech_lead_model"])
     if not isinstance(tech_lead_model, str) or not tech_lead_model.strip():
         raise Fail("settings: tech_lead_model must be a non-empty string")
+    task_mode = data.get("mode", settings["mode"])
+    if task_mode not in MODES:
+        raise Fail(f"settings: mode must be one of {', '.join(MODES)}")
     return {"worktree_cap": cap, "lead_model": model, "lead_permission_mode": mode,
             "task_time_limit_hours": hours, "monitor": monitor and os.path.expanduser(monitor),
             "lgtm_from_author": from_author, "reserve_percent": percent, "lean_start": lean,
-            "tech_lead_model": tech_lead_model}
+            "tech_lead_model": tech_lead_model, "mode": task_mode}
 
 
 LEAD_TOOLS = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch,SendMessage,WebFetch,WebSearch,TaskStop,Monitor"
+LEAD_TEAM_DENIED = ("Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
+                    "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)")
 
 
 def lean_flags():
@@ -269,9 +275,14 @@ def span(secs):
     return f"{h}h" * (h > 0) + f"{m}m" * (m > 0 or h == 0)
 
 
-def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limit):
-    """The lead's launch command: the one place another runner would plug in."""
+def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limit, mode):
+    """The lead's launch command: the one place another runner would plug in. In team mode the lead's rules are
+    followed by the team rules and its tools refuse the writing subagents (`--disallowedTools` is variadic: the flag
+    after it ends the list, and the prompt stays last)."""
     lead_rules = (PLUGIN_ROOT / "roles" / "lead.md").read_text()
+    team = mode == "team"
+    if team:
+        lead_rules += "\n\n" + (PLUGIN_ROOT / "roles" / "lead-team.md").read_text()
     prompt = (
         f"Your task slug is {slug}. Before each message to the dispatcher run `factory dispatcher`: "
         f"it prints its current session name (now {dispatcher}). "
@@ -286,6 +297,7 @@ def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limi
         "--permission-mode", settings["lead_permission_mode"],
         "--plugin-dir", str(PLUGIN_ROOT),
         *lean,
+        *(["--disallowedTools", *LEAD_TEAM_DENIED] if team else []),
         "--append-system-prompt", lead_rules,
         prompt,
     ]
@@ -923,6 +935,7 @@ def cmd_new(args):
     if not brief.strip():
         raise Fail("the brief is empty")
     settings = load_settings()
+    mode = args.mode or settings["mode"]
     size = brief_size(brief)
     repo = Repo()
     branch = f"worktree-{args.slug}"
@@ -992,7 +1005,7 @@ def cmd_new(args):
                     remove_stacked(repo, path, branch)
                 raise Fail(f"git {' '.join(argv)} failed: {err.strip()}", code=1)
     rc, out, err = run(build_launch_argv(args.slug, dispatcher, brief, settings, base, repo.remote, time.time(),
-                                         task_limit(size, settings["task_time_limit_hours"])),
+                                         task_limit(size, settings["task_time_limit_hours"]), mode),
                        cwd=repo.root)
     match = BACKGROUNDED_RE.search(f"{out}\n{err}")
     if rc != 0 and not match:
@@ -1009,7 +1022,7 @@ def cmd_new(args):
         rc, _, err = repo.git("config", f"branch.{branch}.factorySize", size)
         if rc != 0:
             sys.stderr.write(f"factory: warning: cannot record the size of {branch}: {err.strip()}\n")
-    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["lead_model"],
+    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["lead_model"], mode=mode,
                **({"size": size} if size else {}))
     try:
         declare(repo, args.slug, "dispatcher", "working")
@@ -5034,9 +5047,9 @@ def tech_lead_missing(repo, slug):
 
 
 def log_tech_lead(repo, settings, slug, n, evidence, outcome, **fields):
-    """One `techlead` record; what `fields` leaves out is null, and `noted` false."""
+    """One `techlead` record; what `fields` leaves out is null, `noted` false and `kind` "merge" (a build run's is "build")."""
     f = {**dict.fromkeys(("session", "reason", "note", "head_before", "head_after", "cost_usd", "seconds")),
-         "noted": False, **fields}
+         "noted": False, "kind": "merge", **fields}
     log("techlead", {**record(repo.root, slug, "tech-lead", settings["tech_lead_model"], f.pop("session")),
                      "pr": n, "evidence": evidence, "outcome": outcome, **f})
 
@@ -5094,6 +5107,24 @@ def spec_hash(spec):
         return hashlib.sha256(spec.read_bytes()).hexdigest()
     except OSError:
         return None
+
+
+def model_answer(rc, out, outcomes, key, timeout, budget):
+    """What a headless run (`claude -p --output-format json`) left: (session id, cost in USD or None, the answer's
+    outcome if it is one of `outcomes` and its `key` is text else None, that text, why the run has no usable answer or
+    None)."""
+    try:
+        doc = json.loads(out)
+    except ValueError:
+        doc = None
+    doc = doc if isinstance(doc, dict) else {}
+    cost, answer = doc.get("total_cost_usd"), doc.get("structured_output")
+    answered = isinstance(answer, dict) and answer.get("outcome") in outcomes and isinstance(answer.get(key), str)
+    reason = (f"reached {timeout // 60} minutes" if rc == 124
+              else f"reached {float(budget):g} USD" if doc.get("subtype") == "error_max_budget_usd"
+              else None if rc == 0 and answered else "ended without an answer")
+    return (doc.get("session_id"), cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+            *((answer["outcome"], answer[key].strip()) if answered else (None, None)), reason)
 
 
 def tech_lead_state(repo, worktree, pr, old_head, old_default, spec, before):
@@ -5159,21 +5190,8 @@ def tech_lead_run(repo, settings, args, learned):
     before, started = spec_hash(spec), time.monotonic()
     argv = tech_lead_argv(repo, slug, pr, evidence, spec, settings)
     rc, out, _ = run(argv, cwd=worktree, timeout=TECH_LEAD_TIMEOUT, env={**os.environ, "FACTORY_ROLE": "tech-lead"}, group=True)
-    try:
-        doc = json.loads(out)
-    except ValueError:
-        doc = None
-    doc = doc if isinstance(doc, dict) else {}
-    cost = doc.get("total_cost_usd")
-    learned.update(session=doc.get("session_id"), head_before=old_head, seconds=round(time.monotonic() - started),
-                   cost_usd=cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None)
-    answer = doc.get("structured_output")
-    answered = isinstance(answer, dict) and answer.get("outcome") in ("resolved", "escalate") \
-        and isinstance(answer.get("note"), str)
-    verdict, note = (answer["outcome"], answer["note"].strip()) if answered else (None, None)
-    reason = (f"reached {TECH_LEAD_TIMEOUT // 60} minutes" if rc == 124
-              else f"reached {float(TECH_LEAD_BUDGET):g} USD" if doc.get("subtype") == "error_max_budget_usd"
-              else None if rc == 0 and answered else "ended without an answer")
+    session, cost, verdict, note, reason = model_answer(rc, out, ("resolved", "escalate"), "note", TECH_LEAD_TIMEOUT, TECH_LEAD_BUDGET)
+    learned.update(session=session, head_before=old_head, seconds=round(time.monotonic() - started), cost_usd=cost)
     head, clean, flaw = tech_lead_state(repo, worktree, pr, old_head, old_default, spec, before)
     reason = reason or (flaw if verdict == "resolved" else None)
     if verdict == "resolved" and not reason:
@@ -5192,6 +5210,106 @@ def tech_lead_run(repo, settings, args, learned):
         tell_tech_lead(repo, args, slug, n, evidence, said, where)
     print(f"#{n} tech lead {outcome}: {(said.splitlines() or [''])[0]}")
     return 0 if outcome == "resolved" else 1
+
+
+BUILD_TIMEOUT = 5400
+BUILD_BUDGET = "15.00"
+BUILD_ROLE = PLUGIN_ROOT / "roles" / "tech-lead-build.md"
+BUILD_DENIED = ("Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)", "Bash(git commit --amend*)",
+                "Bash(git worktree*)")
+BUILD_OUTCOMES = ("built", "question", "stopped")
+BUILD_SCHEMA = {"type": "object", "properties": {"outcome": {"enum": list(BUILD_OUTCOMES)}, "handover": {"type": "string"}},
+                "required": ["outcome", "handover"]}
+
+
+def build_prompt(repo, slug, spec, handover, note):
+    branch = f"worktree-{slug}"
+    size = repo.git("config", "--get", f"branch.{branch}.factorySize")[1].strip()
+    return (f"Task slug: {slug}. The spec is {spec}. The base branch is {land_base(repo, branch)[0]}, on remote {repo.remote}. "
+            f"The hand-over file is {handover}: " + ("earlier runs: read it first." if handover.exists() else "this is the first run.")
+            + (f" The lead says: {note}" if note else "") + (f" The task's stated size is {size}." if size in SIZE_LIMIT_MINUTES else ""))
+
+
+def build_argv(repo, slug, spec, handover, note, settings):
+    """The build's launch command, the one place another runner would plug in."""
+    lean = lean_flags() if settings["lean_start"] else []
+    return ["claude", "-p", "--model", settings["tech_lead_model"], "--permission-mode", settings["lead_permission_mode"],
+            "--plugin-dir", str(PLUGIN_ROOT), *lean, f"--tools={LEAD_TOOLS}", "--disallowedTools", *BUILD_DENIED,
+            "--max-budget-usd", BUILD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(BUILD_SCHEMA),
+            "--append-system-prompt", BUILD_ROLE.read_text(), build_prompt(repo, slug, spec, handover, note)]
+
+
+def cmd_build(args):
+    """Start a tech lead on the build of the task whose worktree this is, detached; its `--run` half does the work: see
+    docs/factory.md, "Team mode". Once the run holds the lock, a failure is a `stopped` record and a line to the lead."""
+    slug = args.slug
+    validate_slug(slug)
+    repo, settings = Repo(), load_settings()
+    if missing := tech_lead_missing(repo, slug):
+        raise Fail(missing)
+    with repo_lock(repo, f"tech-lead-{slug}") as free:
+        if not free:
+            raise Fail(f"a tech lead run is already going for {slug}")
+        if args.run:
+            return build_locked(repo, settings, args)
+    argv = [sys.executable, str(Path(__file__).resolve()), "build", slug, "--run",
+            *(["--note", args.note] if args.note else []), *(["--dispatcher", args.dispatcher] if args.dispatcher else [])]
+    try:
+        spawn(argv, repo.root, STORE.expanduser() / "tech-lead.log")
+    except OSError as e:
+        raise Fail(f"the process could not be started: {e}", code=1)
+    print(f"tech lead started for {slug}; you will get a TECH LEAD: line when it ends")
+    return 0
+
+
+def build_locked(repo, settings, args):
+    """The run, under its lock: tell the lead how it ended; exit code."""
+    slug = args.slug
+    spec = tech_lead_paths(repo, slug)[1]
+    handover = spec.with_suffix(".handover.md")
+    n = len(re.findall(r"^## Run ", handover.read_text() if handover.exists() else "", re.M)) + 1
+    learned = {}
+    try:
+        outcome, reason = build_run(repo, settings, args, n, spec, handover, learned)
+    except Exception as e:
+        outcome, reason = "stopped", f"the run failed: {why(e)}"
+        try:
+            log_tech_lead(repo, settings, slug, None, "build", outcome, kind="build", reason=reason, **learned)
+        except OSError as err:
+            print(f"build run {n}: the record could not be written: {err}")
+    line = f"{slug} build run {n} {outcome}" + (f": {reason}" if reason else "")
+    tell_lead(repo, args.dispatcher, slug, "TECH LEAD", f"{line}. Read {handover} (the last section).",
+              f"factory: build run {n} of {slug} {outcome}")
+    print(line.splitlines()[0])
+    return 0 if outcome == "built" else 1
+
+
+def build_run(repo, settings, args, n, spec, handover, learned):
+    """One build run: (outcome, reason or None). `learned` gets the session, cost, seconds and old head as soon as the
+    model has run, for the record of a later failure. The task stays `working`: the lead decides what comes next."""
+    slug = args.slug
+    worktree, branch = repo.worktree_path(slug), f"worktree-{slug}"
+    git = lambda *a: repo.git(*a, path=worktree)[1].strip()
+    declare(repo, slug, "tech-lead", "working")
+    old_head, before, started = git("rev-parse", "HEAD"), spec_hash(spec), time.monotonic()
+    rc, out, _ = run(build_argv(repo, slug, spec, handover, args.note, settings), cwd=worktree, timeout=BUILD_TIMEOUT,
+                     env={**os.environ, "FACTORY_ROLE": "tech-lead"}, group=True)
+    session, cost, verdict, text, reason = model_answer(rc, out, BUILD_OUTCOMES, "handover", BUILD_TIMEOUT, BUILD_BUDGET)
+    seconds = round(time.monotonic() - started)
+    learned.update(session=session, head_before=old_head, seconds=seconds, cost_usd=cost)
+    if verdict == "built" and not reason:
+        checks = [(not git("status", "--porcelain"), "the worktree is not clean"),
+                  (git("rev-parse", "--abbrev-ref", "HEAD") == branch, f"the worktree is not on {branch}"),
+                  (spec_hash(spec) == before, "the spec changed"),
+                  (pull_request(repo, branch)[0] == "open", f"{branch} has no open pull request")]
+        reason = next((why for ok, why in checks if not ok), None)
+    outcome, head = "stopped" if reason else verdict, git("rev-parse", "HEAD")
+    with open(handover, "a") as f:
+        f.write(f"## Run {n}: {outcome} ({now()}, {f'{cost:.2f}' if cost is not None else 'unpriced'} USD, "
+                f"{round(seconds / 60)} min, head {head[:7]})\n" + (f"Reason: {reason}\n" if reason else "")
+                + f"\n{text or 'No hand-over was written.'}\n\n")
+    log_tech_lead(repo, settings, slug, None, "build", outcome, kind="build", reason=reason, head_after=head, **learned)
+    return outcome, reason
 
 
 def report_stop(repo, fallback, pr, kind, line):
@@ -5455,6 +5573,8 @@ def parse_args(argv):
     group.add_argument("--brief-file")
     new.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
     new.add_argument("--base", help="slug of an open task to stack this task on")
+    new.add_argument("--mode", choices=MODES, help="single: the lead builds with its own subagents; team: a tech lead "
+                     "runs the build (default: the setting mode)")
     new.add_argument("--critical", action="store_true",
                      help="use the slots held in reserve: the default branch is red, the factory is broken, "
                           "or the human says so")
@@ -5530,6 +5650,11 @@ def parse_args(argv):
     tech.add_argument("pr", type=int)
     tech.add_argument("evidence", help="one line: why it came back")
     tech.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
+    build = sub.add_parser("build", help="start a tech lead on this task's build (a model takes part; run it in the task's worktree)")
+    build.add_argument("slug")
+    build.add_argument("--note", help="what changed since the last run: the lead's words to the tech lead")
+    build.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
+    build.add_argument("--run", action="store_true", help=argparse.SUPPRESS)
     land = sub.add_parser("land", help="bring a handed-over task up to its base (a model takes part only on a conflict)")
     land.add_argument("slug", nargs="?")
     land.add_argument("--all", action="store_true", help="every handed-over task whose pull request conflicts or whose base merged")
@@ -5565,7 +5690,7 @@ def main(argv=None):
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander, "tech-lead": cmd_tech_lead, "schedule": cmd_schedule, "dispatcher": cmd_dispatcher,
+                "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander, "tech-lead": cmd_tech_lead, "build": cmd_build, "schedule": cmd_schedule, "dispatcher": cmd_dispatcher,
                 "wizard": cmd_wizard, "uninstall": cmd_uninstall, "env": cmd_env}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)

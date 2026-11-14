@@ -382,7 +382,7 @@ class SettingsTests(unittest.TestCase):
     def test_defaults(self):
         want = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
                 "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "reserve_percent": 10,
-                "lean_start": True, "tech_lead_model": "opus"}
+                "lean_start": True, "tech_lead_model": "opus", "mode": "single"}
         self.assertEqual(self.load(), want)
         self.assertEqual(self.load("{}"), want)
 
@@ -398,7 +398,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(got, {"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan",
                                "task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": False,
                                "reserve_percent": 25, "lean_start": False,
-                               "tech_lead_model": "opus"})
+                               "tech_lead_model": "opus", "mode": "single"})
+        self.assertEqual(self.load('{"mode": "team"}')["mode"], "team")
         for percent in (0, 100):
             self.assertEqual(self.load('{"reserve_percent": %d}' % percent)["reserve_percent"], percent)
         self.assertEqual(self.load('{"worktree_cap": 9}')["lead_model"], "fable")
@@ -417,6 +418,7 @@ class SettingsTests(unittest.TestCase):
                           ('{"reserve_percent": 101}', "reserve_percent"), ('{"reserve_percent": 2.5}', "reserve_percent"),
                           ('{"reserve_percent": "10"}', "reserve_percent"),
                           ('{"lean_start": "yes"}', "lean_start"), ('{"lean_start": 1}', "lean_start"),
+                          ('{"mode": "both"}', "mode"), ('{"mode": ""}', "mode"), ('{"mode": true}', "mode"),
                           ('{"monitor": ""}', "monitor"), ('{"monitor": 3}', "monitor"), ('{"monitor": null}', "monitor")):
             with self.assertRaisesRegex(factory.Fail, key):
                 self.load(text)
@@ -454,6 +456,34 @@ class NewTests(unittest.TestCase):
                 "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
                 "Your time limit is 120 minutes. Your brief follows.\n\ndo it"]
         self.assertEqual(fake.calls[-1], want)
+
+    def test_the_mode_reaches_the_argv_and_the_started_event(self):
+        roles = BIN.resolve().parent.parent / "roles"
+        single = (roles / "lead.md").read_text()
+        team = single + "\n\n" + (roles / "lead-team.md").read_text()
+        denied = ["Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
+                  "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)"]
+        cases = [([], {"mode": "team"}, "team"), (["--mode", "team"], {}, "team"),
+                 (["--mode", "single"], {"mode": "team"}, "single"), ([], {}, "single")]
+        for extra, settings, mode in cases:
+            for lean in (True, False):
+                with self.subTest(extra=extra, settings=settings, lean=lean), mock.patch.object(factory, "task_event") as event:
+                    code, _, err, fake = invoke(self.ARGS + extra, self.answers([], (), self.OK),
+                                                json.dumps({**settings, "lean_start": lean}))
+                    argv = fake.calls[-1]
+                    rules = argv.index("--append-system-prompt")
+                    self.assertEqual(code, 0, err)
+                    self.assertEqual(event.call_args.kwargs["mode"], mode)
+                    self.assertEqual(argv[rules + 1], team if mode == "team" else single)
+                    self.assertTrue(argv[-1].endswith("do it"))
+                    self.assertEqual(rules + 2, len(argv) - 1)
+                    self.assertEqual("--disallowedTools" in argv, mode == "team")
+                    if mode == "team":
+                        self.assertEqual(argv[rules - len(denied) - 1:rules], ["--disallowedTools", *denied])
+
+    def test_a_mode_that_is_not_one_is_refused(self):
+        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+            factory.parse_args(self.ARGS + ["--mode", "both"])
 
     def test_lean_start_off_launches_the_old_argv_without_listing_plugins(self):
         with mock.patch.object(factory.time, "time", return_value=1794610677):

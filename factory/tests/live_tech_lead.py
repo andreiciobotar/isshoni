@@ -427,6 +427,16 @@ def live(ctx, s):
     reset(ctx["state"])
 
 
+REAL_STORE = Path("~/.claude/factory").expanduser()
+
+
+def leaked(tmp):
+    """Lines of the real store's events and tasks logs that name this run's temp directory."""
+    name = os.path.basename(tmp)
+    return sum(name in line for pattern in ("events-*.jsonl", "tasks-*.jsonl") for path in REAL_STORE.glob(pattern)
+               for line in path.read_text(errors="replace").splitlines())
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--factory", default=str(HERE.parent / "bin" / "factory"), help="the factory script")
@@ -440,12 +450,16 @@ def main():
     tmp = tempfile.mkdtemp(prefix="live-tech-lead-")
     try:
         ctx = stage(tmp, factory)
+        home, real = os.path.realpath(ctx["env"]["FACTORY_HOME"]), os.path.realpath(REAL_STORE.parent)
+        if (home + os.sep).startswith(real + os.sep):
+            sys.exit(f"FACTORY_HOME {home} is under the real {real}: refusing to run")
         (dry if args.dry else lambda c, ss: [live(c, s) for s in ss])(ctx, chosen)
     finally:
         if args.keep:
             say(f"kept: {tmp}")
         else:
             shutil.rmtree(tmp, ignore_errors=True)
+    check(leaked(tmp) == 0, f"no line of the real store's events or tasks logs names {os.path.basename(tmp)}")
     say("FAILED: " + "; ".join(failures) if failures else "all expectations met")
     if args.out:
         Path(args.out).expanduser().parent.mkdir(parents=True, exist_ok=True)

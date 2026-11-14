@@ -437,7 +437,7 @@ class TaskEventTests(StoreCase):
         (e,) = self.lines()
         self.assertEqual({k: v for k, v in e.items() if k != "ts"},
                          {"repo": tf.ROOT, "slug": "demo-task", "role": "dispatcher", "model": None, "version": VERSION,
-                          "session": "sid-d", "event": "TaskStarted", "base": "main", "lead_model": "fable"})
+                          "session": "sid-d", "event": "TaskStarted", "base": "main", "lead_model": "fable", "mode": "single"})
 
     def test_clean_records_task_removed(self):
         code, out, _, _ = self.clean()

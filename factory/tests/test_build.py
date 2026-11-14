@@ -1,0 +1,256 @@
+import io
+import json
+import re
+import sys
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
+
+from test_factory import BIN, LEAN_SETTINGS, factory
+from test_tech_lead import DEFAULT, OLD, Case, Machine, SLUG, URL
+
+HEAD = "d" * 40
+SPEC_TEXT = "the spec"
+
+
+def built(outcome="built", handover="### Result\nthe pull request " + URL, **extra):
+    return 0, json.dumps({"subtype": "success", "is_error": False, "session_id": "sid-b", "total_cost_usd": 3.2,
+                          "structured_output": {"outcome": outcome, "handover": handover}, **extra}), ""
+
+
+class Build(Machine):
+    """The tech-lead machine, with the pull request list and the task's recorded size."""
+
+    def __init__(self, *a, pr="OPEN", size="", **kw):
+        super().__init__(*a, claude=kw.pop("claude", built()), **kw)
+        self.pr, self.size = pr, size
+
+    def resolve(self, a):
+        if a[:3] == ["gh", "pr", "list"]:
+            return 0, json.dumps([{"state": self.pr, "url": URL, "headRefOid": HEAD, "baseRefName": DEFAULT, "isDraft": True}]
+                                 if self.pr else []), ""
+        if a[:3] == ["git", "config", "--get"]:
+            return (0, self.size + "\n", "") if a[3].endswith("factorySize") and self.size else (1, "", "")
+        return super().resolve(a)
+
+
+class BuildCase(Case):
+    def setUp(self):
+        super().setUp()
+        self.handover = self.spec.with_suffix(".handover.md")
+
+    def build(self, *flags, **machine):
+        m = self.use(Build(self.root, **machine))
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = factory.main(["build", SLUG, "--run", "--dispatcher", "dispatcher-repo", *flags])
+        return code, out.getvalue(), err.getvalue(), m
+
+    def only_record(self):
+        [r] = self.records("techlead")
+        return r
+
+
+class LaunchTests(BuildCase):
+    def test_launch_command(self):
+        code, *_, m = self.build("--note", "The spec has a new section.", size="medium")
+        [argv] = m.tech_lead_calls()
+        role = (BIN.parent.parent / "roles" / "tech-lead-build.md").read_text()
+        self.assertEqual(argv[:-1], [
+            "claude", "-p", "--model", "opus", "--permission-mode", "auto", "--plugin-dir", str(BIN.parent.parent),
+            "--strict-mcp-config", "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}",
+            "--disallowedTools", "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)",
+            "Bash(git commit --amend*)", "Bash(git worktree*)",
+            "--max-budget-usd", "15.00", "--output-format", "json", "--json-schema", json.dumps(factory.BUILD_SCHEMA),
+            "--append-system-prompt", role])
+        self.assertEqual(json.loads(argv[argv.index("--json-schema") + 1])["required"], ["outcome", "handover"])
+        self.assertEqual(argv[-1], (
+            f"Task slug: {SLUG}. The spec is {self.spec}. The base branch is main, on remote origin. "
+            f"The hand-over file is {self.handover}: this is the first run. The lead says: The spec has a new section. "
+            "The task's stated size is medium."))
+        i = m.calls.index(argv)
+        self.assertEqual((m.cwds[i], m.timeouts[i], m.envs[i]["FACTORY_ROLE"], m.groups[i]),
+                         (f"{self.root}/.claude/worktrees/{SLUG}", 5400, "tech-lead", True))
+
+    def test_the_prompt_sends_a_later_run_to_the_hand_over_file_and_says_nothing_of_a_missing_note_or_size(self):
+        self.handover.write_text("## Run 1: question (x)\n")
+        *_, m = self.build()
+        self.assertEqual(m.tech_lead_calls()[0][-1], (
+            f"Task slug: {SLUG}. The spec is {self.spec}. The base branch is main, on remote origin. "
+            f"The hand-over file is {self.handover}: earlier runs: read it first."))
+
+    def test_the_model_and_the_permission_mode_come_from_the_settings(self):
+        (self.store / "settings.json").write_text('{"tech_lead_model": "sonnet", "lead_permission_mode": "plan", "lean_start": false}')
+        *_, m = self.build()
+        argv = m.tech_lead_calls()[0]
+        self.assertEqual((argv[3], argv[5], "--strict-mcp-config" in argv), ("sonnet", "plan", False))
+        self.assertEqual(self.only_record()["model"], "sonnet")
+
+    def test_the_command_starts_a_detached_run_and_returns(self):
+        self.use(Build(self.root))
+        out = io.StringIO()
+        with mock.patch.object(factory, "spawn") as spawn, redirect_stdout(out):
+            code = factory.main(["build", SLUG, "--note", "again", "--dispatcher", "dispatcher-repo"])
+        self.assertEqual((code, out.getvalue()), (0, f"tech lead started for {SLUG}; you will get a TECH LEAD: line when it ends\n"))
+        spawn.assert_called_once_with([sys.executable, str(BIN), "build", SLUG, "--run", "--note", "again", "--dispatcher",
+                                       "dispatcher-repo"], self.root, self.store / "tech-lead.log")
+        self.assertEqual((self.declared(), self.records("techlead")), ([], []))
+
+    def test_without_a_note_or_a_dispatcher_the_run_gets_neither_flag(self):
+        self.use(Build(self.root))
+        with mock.patch.object(factory, "spawn") as spawn, redirect_stdout(io.StringIO()):
+            factory.main(["build", SLUG])
+        spawn.assert_called_once_with([sys.executable, str(BIN), "build", SLUG, "--run"], self.root, self.store / "tech-lead.log")
+
+    def test_a_process_that_cannot_start_fails(self):
+        self.use(Build(self.root))
+        err = io.StringIO()
+        with mock.patch.object(factory, "spawn", side_effect=OSError("no fork")), redirect_stderr(err):
+            code = factory.main(["build", SLUG])
+        self.assertEqual(code, 1)
+        self.assertIn("no fork", err.getvalue())
+
+    def test_a_missing_spec_or_a_run_that_is_going_fails_in_both_halves_and_starts_nothing(self):
+        for run in ([], ["--run"]):
+            with self.subTest(run=run):
+                self.spec.unlink()
+                self.use(Build(self.root))
+                with mock.patch.object(factory, "spawn") as spawn, redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(factory.main(["build", SLUG, *run]), 2)
+                self.assertIn(f"the spec {self.spec} is missing", err.getvalue())
+                self.spec.write_text(SPEC_TEXT)
+                with factory.repo_lock(factory.Repo(), f"tech-lead-{SLUG}"), mock.patch.object(factory, "spawn") as spawn, \
+                        redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(factory.main(["build", SLUG, *run]), 2)
+                spawn.assert_not_called()
+                self.assertIn(f"a tech lead run is already going for {SLUG}", err.getvalue())
+                self.assertEqual((self.declared(), self.records("techlead"), self.machine.tech_lead_calls()), ([], [], []))
+
+
+class OutcomeTests(BuildCase):
+    def test_built_with_every_check_passing_tells_the_lead_and_declares_nothing_further(self):
+        code, out, _, m = self.build()
+        self.assertEqual(code, 0)
+        self.assertEqual(m.lines, [f"TECH LEAD: {SLUG}: {SLUG} build run 1 built. Read {self.handover} (the last section)."])
+        self.assertEqual(self.declared(), [("working", "tech-lead", None)])
+        self.assertEqual(out, f"{SLUG} build run 1 built\n")
+        self.assertEqual((m.pushes, m.comments), ([], []))
+        r = self.only_record()
+        self.assertEqual({k: r[k] for k in ("kind", "slug", "role", "model", "session", "pr", "evidence", "outcome", "reason",
+                                            "note", "noted", "head_before", "head_after", "cost_usd")},
+                         {"kind": "build", "slug": SLUG, "role": "tech-lead", "model": "opus", "session": "sid-b", "pr": None,
+                          "evidence": "build", "outcome": "built", "reason": None, "note": None, "noted": False,
+                          "head_before": OLD, "head_after": "a" * 40,
+                          "cost_usd": 3.2})
+        self.assertIsInstance(r["seconds"], int)
+
+    def test_each_failed_check_makes_a_built_answer_stopped_and_names_itself(self):
+        cases = {"the worktree is not clean": ({"dirty": True}, "OPEN"),
+                 f"the worktree is not on worktree-{SLUG}": ({"branch": "elsewhere"}, "OPEN"),
+                 "the spec changed": (self.edit_spec, "OPEN"),
+                 f"worktree-{SLUG} has no open pull request": ({}, None)}
+        for reason, (after, pr) in cases.items():
+            with self.subTest(reason=reason):
+                self.spec.write_text(SPEC_TEXT)
+                code, _, _, m = self.build(after=after, pr=pr)
+                r = self.records("techlead")[-1]
+                self.assertEqual((code, r["outcome"], r["reason"]), (1, "stopped", reason))
+                self.assertIn(f"build run {len(self.records('techlead'))} stopped: {reason}. Read", m.lines[0])
+                self.assertIn("## Run %d: stopped" % len(self.records("techlead")), self.handover.read_text())
+
+    def edit_spec(self):
+        self.spec.write_text("another spec")
+        return {}
+
+    def test_a_closed_pull_request_is_not_an_open_one(self):
+        code, *_ = self.build(pr="MERGED")
+        self.assertEqual((code, self.only_record()["outcome"]), (1, "stopped"))
+
+    def test_question_and_stopped_are_taken_as_they_are_without_the_checks(self):
+        for outcome in ("question", "stopped"):
+            with self.subTest(outcome=outcome):
+                code, _, _, m = self.build(claude=built(outcome, "### Questions\nwhich one?"), after={"dirty": True}, pr=None)
+                r = self.records("techlead")[-1]
+                self.assertEqual((code, r["outcome"], r["reason"]), (1, outcome, None))
+                self.assertTrue(m.lines[-1].startswith(f"TECH LEAD: {SLUG}: {SLUG} build run {len(self.records('techlead'))} {outcome}. Read"))
+
+    def test_a_timeout_a_budget_stop_and_a_garbled_answer_each_say_what_happened(self):
+        budget = (1, json.dumps({"subtype": "error_max_budget_usd", "is_error": True, "session_id": "sid-b",
+                                 "total_cost_usd": 15.02}), "")
+        cases = [((124, "", "timed out"), "reached 90 minutes", None), (budget, "reached 15 USD", 15.02),
+                 ((0, "not json", ""), "ended without an answer", None), ((1, "", "crash"), "ended without an answer", None),
+                 ((0, json.dumps({"structured_output": {"outcome": "maybe", "handover": "x"}}), ""), "ended without an answer", None),
+                 ((0, json.dumps({"structured_output": {"outcome": "built"}}), ""), "ended without an answer", None)]
+        for claude, reason, cost in cases:
+            with self.subTest(reason=reason, claude=claude[:2]):
+                code, _, _, m = self.build(claude=claude)
+                r = self.records("techlead")[-1]
+                self.assertEqual((code, r["outcome"], r["reason"], r["cost_usd"]), (1, "stopped", reason, cost))
+                self.assertIn(f"stopped: {reason}. Read", m.lines[-1])
+
+    def test_a_failure_after_the_lock_is_a_stopped_record_and_a_line_and_no_section(self):
+        with mock.patch.object(factory, "build_argv", side_effect=OSError("no role file")):
+            code, out, _, m = self.build()
+        self.assertEqual(code, 1)
+        r = self.only_record()
+        self.assertEqual((r["kind"], r["outcome"], r["pr"], r["evidence"]), ("build", "stopped", None, "build"))
+        self.assertIn("the run failed: OSError: no role file", r["reason"])
+        self.assertIn("build run 1 stopped: the run failed: OSError: no role file. Read", m.lines[0])
+        self.assertFalse(self.handover.exists())
+
+    def test_a_record_that_cannot_be_written_still_tells_the_lead(self):
+        with mock.patch.object(factory, "build_argv", side_effect=OSError("x")), \
+                mock.patch.object(factory, "log_tech_lead", side_effect=OSError("disk full")):
+            code, out, _, m = self.build()
+        self.assertEqual((code, len(m.lines)), (1, 1))
+        self.assertIn("the record could not be written: disk full", out)
+
+
+class HandOverFileTests(BuildCase):
+    HEADER = r"^## Run %d: %s \(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ, %s USD, \d+ min, head %s\)$"
+
+    def test_runs_are_numbered_across_runs_and_each_section_has_its_header_and_text(self):
+        self.build(claude=built("question", "### Questions\nwhich one?"))
+        self.build(claude=built("built", "### Result\ndone"))
+        text = self.handover.read_text()
+        first, second = re.split(r"(?m)^(?=## Run )", text)[1:]
+        self.assertRegex(first.splitlines()[0], self.HEADER % (1, "question", "3.20", "a" * 7))
+        self.assertRegex(second.splitlines()[0], self.HEADER % (2, "built", "3.20", "a" * 7))
+        self.assertEqual(first.splitlines()[1:], ["", "### Questions", "which one?", ""])
+        self.assertEqual(second.splitlines()[1:], ["", "### Result", "done", ""])
+        self.assertEqual([self.records("techlead")[i]["outcome"] for i in (0, 1)], ["question", "built"])
+
+    def test_a_reason_gets_its_own_line_and_an_empty_hand_over_the_fallback_text(self):
+        self.build(claude=built("built", "  "), pr=None)
+        first = self.handover.read_text().splitlines()
+        self.assertRegex(first[0], self.HEADER % (1, "stopped", "3.20", "a" * 7))
+        self.assertEqual(first[1:4], [f"Reason: worktree-{SLUG} has no open pull request", "", "No hand-over was written."])
+
+    def test_a_cost_that_is_missing_is_unpriced_in_the_header_and_null_in_the_record(self):
+        rc, out, err = built()
+        doc = json.loads(out)
+        del doc["total_cost_usd"]
+        self.build(claude=(rc, json.dumps(doc), err))
+        self.assertRegex(self.handover.read_text().splitlines()[0], self.HEADER % (1, "built", "unpriced", "a" * 7))
+        self.assertIsNone(self.only_record()["cost_usd"])
+
+    def test_the_head_in_the_header_is_the_head_after_the_run(self):
+        self.build(after={"head": HEAD})
+        self.assertRegex(self.handover.read_text().splitlines()[0], self.HEADER % (1, "built", "3.20", "d" * 7))
+        r = self.only_record()
+        self.assertEqual((r["head_before"], r["head_after"]), ("a" * 40, HEAD))
+
+
+class MergeRecordTests(unittest.TestCase):
+    def test_a_merge_record_says_so_and_a_build_one_can_say_otherwise(self):
+        records = []
+        with mock.patch.object(factory, "log", lambda name, rec: records.append(rec)), \
+                mock.patch.object(factory, "record", lambda *a: {}):
+            repo = mock.Mock(root="/r")
+            factory.log_tech_lead(repo, {"tech_lead_model": "opus"}, "x", 7, "e", "resolved")
+            factory.log_tech_lead(repo, {"tech_lead_model": "opus"}, "x", None, "build", "built", kind="build")
+        self.assertEqual([r["kind"] for r in records], ["merge", "build"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -70,6 +70,8 @@ A lead asks you only what it cannot decide itself. Nothing merges without you: a
 
 A pull request that conflicts with the default branch or goes red in the merge queue is resolved by a tech lead session, not by waking its lead; the lead hears only when the fix is a behaviour question.
 
+In team mode (`factory new --mode team`) the lead writes the spec and judges the result, and a tech lead session runs the coders, reviewers and lander ([Team mode](docs/factory.md#team-mode)).
+
 <p align="center">
   <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap and its reserve">
 </p>
