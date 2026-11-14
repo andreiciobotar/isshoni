@@ -10,12 +10,12 @@ _WORKTREE = re.compile(r"/\.claude/worktrees/[^/]+/(.*)", re.S)
 
 # (kind, inside a worktree, pattern); the first match wins. Outside, the pattern sees the absolute path, inside the relative one.
 _RULES = tuple((kind, inside, re.compile(pattern)) for kind, inside, pattern in (
-    ("scratch", False, r"\.retro\.json$|(^|/)(tmp|scratchpad|T)/|/\.claude/jobs/|^/private/var/|^/var/folders/"),
+    ("scratch", False, r"\.retro\.json$|(^|/)(tmp|scratchpad|T)/|/\.claude/(jobs|plans)/|^/private/var/|^/var/folders/"),
     ("spec", False, r"/factory/specs/|\.pr\.md$"),
     ("rules", True, r"(^|/)(CLAUDE|AGENTS)\.md$|(^|/)(agents|skills|roles|commands)/"),
     ("tests", True, r"_test\.go$|(^|/)(test|tests|testdata|fixtures)/|\.golden$|(^|/)test_[^/]*\.py$"),
     ("docs", True, r"\.(md|txt)$"),
-    ("product", True, r"\.(go|py|sh|toml|json|yaml|yml|mod|sum|js|ts|css|html)$|(^|/)\.[^/]*$|(^|/)[^/.]+$"),
+    ("product", True, r"."),  # whatever else a worktree holds: a list of extensions would lag behind every new language
 ))
 
 

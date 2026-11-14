@@ -248,13 +248,13 @@ matching rule wins:
 
 | kind | applies | the path |
 |---|---|---|
-| `scratch` | outside | ends in `.retro.json`; has a directory named `tmp`, `scratchpad` or `T`; contains `/.claude/jobs/`; starts with `/private/var/` or `/var/folders/` |
+| `scratch` | outside | ends in `.retro.json`; has a directory named `tmp`, `scratchpad` or `T`; contains `/.claude/jobs/` or `/.claude/plans/`; starts with `/private/var/` or `/var/folders/` |
 | `spec` | outside | contains `/factory/specs/`, or ends in `.pr.md` |
 | `rules` | inside | is `CLAUDE.md` or `AGENTS.md`; has a directory named `agents`, `skills`, `roles` or `commands` |
 | `tests` | inside | ends in `_test.go` or `.golden`; is `test_*.py`; has a directory named `test`, `tests`, `testdata` or `fixtures` |
 | `docs` | inside | ends in `.md` or `.txt` |
-| `product` | inside | ends in `.go .py .sh .toml .json .yaml .yml .mod .sum .js .ts .css .html`; is `Makefile` or `Dockerfile`, a dotfile, or any file without an extension |
-| `other` | | everything else: a file outside `.claude/worktrees/` that is not scratch or spec (memory files, the main checkout, a worktree a hook made elsewhere), an unknown extension inside, no path |
+| `product` | inside | anything else in the worktree (code, config, data, assets): there is no list of extensions to fall behind |
+| `other` | | everything else: a file outside `.claude/worktrees/` that is not scratch or spec (memory files, the main checkout, a worktree a hook made elsewhere), no path |
 
 `unmatched` lists every path counted as `other` over the tasks of the document, `{path, calls, lines}`,
 most calls first then by path; none is dropped, so a missing rule shows here. The headline kinds are

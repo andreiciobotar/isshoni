@@ -13,7 +13,7 @@ class KindTests(unittest.TestCase):
 
     def test_scratch_and_spec_outside_a_worktree(self):
         self.check("scratch", "/r/alpha/x.retro.json", "/r/alpha/tmp/a.py", "/home/u/.claude/jobs/1/tmp/q.py", "/home/u/scratchpad/n.md",
-                   "/private/var/x/y", "/var/folders/ab/T/z.txt", "/x/T/z", "/tmp/a")
+                   "/private/var/x/y", "/var/folders/ab/T/z.txt", "/x/T/z", "/tmp/a", "/home/u/.claude/plans/p.md")
         self.check("spec", "/home/u/.claude/factory/specs/ccmon/x.md", "/r/alpha/x.pr.md")
 
     def test_rules_inside(self):
@@ -34,13 +34,13 @@ class KindTests(unittest.TestCase):
 
     def test_other(self):
         self.check("other", "", "/home/u/.claude/projects/x/memory/m.md", "/r/alpha/isshoni/a.py", "/home/u/notes.md",
-                   "/r/alpha/CLAUDE.md", "/r/alpha/.claude/hooks-made/t1/a.py", WT + "a/b.xyz", WT + "a.MD", WT)
+                   "/r/alpha/CLAUDE.md", "/r/alpha/.claude/hooks-made/t1/a.py", WT)
 
     def test_the_worktree_is_cut_at_its_name(self):
         self.check("product", "/x/.claude/worktrees/a1/tmp-not/x.py", "/x/.claude/worktrees/a1/b/c.py")
         self.check("tests", "/x/.claude/worktrees/tmp/tests/c.py")  # a worktree named like scratch is still inside
         self.check("product", "/x/.claude/worktrees/a1/T")  # the file is the one word `T`: no extension
-        self.check("other", "/x/.claude/worktrees/a1/b/c.xyz")
+        self.check("product", "/x/.claude/worktrees/a1/b/c.xyz", WT + "web/app.tsx", WT + "db/001.sql")  # no list of extensions
 
     def test_a_path_in_a_worktree_is_never_scratch_or_spec(self):
         self.check("product", WT + "tmpx/a.py")
