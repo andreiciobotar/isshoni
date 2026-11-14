@@ -1,5 +1,5 @@
  Isshoni 一緒に  1 Dashboard  2 Agents [3 Factory ▲7] 4 Kaizen  5 Hanami                                         24h [7d] 30d  all   ○ idle 
- Factory  14 in motion (6 blocked) · 3 waiting for review · 1 merged, not cleaned · 1 settled  · as of 11:00:00                             
+ Factory  17 in motion (8 blocked) · 3 waiting for review · 1 merged, not cleaned · 1 settled  · as of 11:00:00                             
  ▲ Needs you  7                                                                                                                             
  ◆ alpha       api-rate-limits  review PR          3h00m  #42 https://github.com/o/alpha/pull/42                                            
  ▲ delta-docs  wide-ask         unblock            2h00m  データベースの接続情報が見つかりません。どの環境のものを使えばよいですか？ 本番…  
@@ -12,29 +12,29 @@
  worktree cap  5  per repo, 1 in reserve   c edit                                                           ~/.claude/factory/settings.json 
                                                                                                                                             
  alpha                                                                             in motion ▲●●●●● 6/4+1   review 1   merged 1   settled 1 
-  SLUG               PHASE                                     ELAPSED  SIZE    PR                      BASE          FLAGS                 
-  needs-an-answer    ▲ blocked, needs you                       10m40s  -       example.com/design/doc  main                                
-  login-flow         ⠋ in motion                         2h15m / 1h30m  medium  -                       main          [overtime]            
-  quiet-refactor     ⠋ in motion                              4m / 45m  small   -                       main                                
-  rate-limit-docs    ● in motion                                     -  -       #40 closed              main          [stale]               
-  slow-export        ⠋ in motion                             41m / 45m  small   -                       main                                
-  stacked-on-login   ● in motion                               1m / 2h  -       ?                       ↳ login-flow                        
-  api-rate-limits    ◆ waiting for review                        1h30m  -       #42                     main                                
-  old-experiment     ✓ merged, not cleaned                       1m01s  -       #31                     main                                
-  release-notes      · settled, not cleaned                     50m00s  -       release-notes.md        main                                
+  SLUG               PHASE                                           ELAPSED  SIZE    PR                      BASE          FLAGS           
+  needs-an-answer    ▲ blocked, needs you                             10m40s  -       example.com/design/doc  main                          
+  login-flow         ⠋ in motion                               2h15m / 1h30m  medium  -                       main          [overtime]      
+  quiet-refactor     ⠋ in motion                                    4m / 45m  small   -                       main                          
+  rate-limit-docs    ● in motion                                           -  -       #40 closed              main          [stale]         
+  slow-export        ⠋ in motion                                   41m / 45m  small   -                       main                          
+  stacked-on-login   ● in motion                                     1m / 2h  -       ?                       ↳ login-flow                  
+  api-rate-limits    ◆ waiting for review                              1h30m  -       #42                     main                          
+  old-experiment     ✓ merged, not cleaned                             1m01s  -       #31                     main                          
+  release-notes      · settled, not cleaned                           50m00s  -       release-notes.md        main                          
                                                                                                                                             
  beta-é日本語                                                                                       in motion ●●● 3/2   review 0   merged 0 
-  SLUG               PHASE                                     ELAPSED  SIZE    PR                      BASE          FLAGS                 
-  task-00            ⠋ in motion                                 1m00s  -       -                       main                                
-  task-01            ⠋ in motion                                 2m00s  -       -                       main                                
-  task-02            ⠋ in motion                                 3m00s  -       -                       main                                
+  SLUG               PHASE                                           ELAPSED  SIZE    PR                      BASE          FLAGS           
+  task-00            ⠋ in motion                                       1m00s  -       -                       main                          
+  task-01            ⠋ in motion                                       2m00s  -       -                       main                          
+  task-02            ⠋ in motion                                       3m00s  -       -                       main                          
                                                                                                                                             
  gamma                                                                                                                                      
   ⚠ not inside a git repository                                                                                                             
                                                                                                                                             
- delta-docs                                                                                       in motion ▲▲▲▲▲ 5/5   review 2   merged 0 
-  SLUG               PHASE                                     ELAPSED  SIZE    PR                      BASE          FLAGS                 
-  docs-after-review  ▲ blocked on design-review-of-docs              -  -       -                       main                                
+ delta-docs                                                                                    in motion ▲▲▲▲▲▲▲● 8/5   review 2   merged 0 
+  SLUG               PHASE                                           ELAPSED  SIZE    PR                      BASE          FLAGS           
+  docs-after-review  ▲ blocked on design-review-of-docs                    -  -       -                       main                          
                      needs the design review to land first, then the docs can quote its final wording without guessing                      
- +7 more lines · ↓ to scroll                                                                                                                
+ +10 more lines · ↓ to scroll                                                                                                               
  ↑↓/jk move  ·  c edit cap  ·  r range  ·  tab next view  ·  ? help  ·  q quit                                                              

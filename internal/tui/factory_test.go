@@ -81,7 +81,8 @@ func delta() factoryRepo {
 	slow.Waited, slow.StopKind, slow.StopSummary = ptr(int64(300)), "OVERTIME", "ran 3h of 2h: split it?"
 	wide.Waited, wide.StopKind = ptr(int64(7200)), "BLOCKED"
 	wide.StopSummary = "データベースの接続情報が見つかりません。どの環境のものを使えばよいですか？ 本番ではない方でお願いします。"
-	return factoryRepo{name: "delta-docs", path: "/r/delta", st: fstatus(5, file, link, bare, slow, wide, onDispatcher(), onTask())}
+	return factoryRepo{name: "delta-docs", path: "/r/delta", st: fstatus(5, file, link, bare, slow, wide, onDispatcher(), onTask(),
+		pausedFor("paused-fresh", 12*time.Minute, "login-flow", "api-keys"), pausedFor("paused-stale", 45*time.Minute, "login-flow"), prioritizedFor("rush-fix", 3*time.Minute))}
 }
 
 // onDispatcher and onTask are tasks blocked on someone else, each with a reason; the band leaves them out.
@@ -96,6 +97,25 @@ func onTask() data.FactoryTask {
 	x := ftask("docs-after-review", "blocked")
 	x.Waited, x.WaitsOn, x.StopKind = ptr(int64(900)), "design-review-of-docs", "BLOCKED" // 21 characters
 	x.StopSummary = "needs the design review to land first, then the docs can quote its final wording without guessing"
+	return x
+}
+
+// fakeNow is the clock of fakeModel.
+var fakeNow = t0.Add(time.Hour)
+
+// pausedFor is a task the site manager paused age ago, waiting on the slugs.
+func pausedFor(slug string, age time.Duration, waits ...string) data.FactoryTask {
+	x := ftask(slug, "blocked")
+	x.WaitsOn = strings.Join(waits, ", ")
+	x.Paused = &data.FactoryFlag{Since: fakeNow.Add(-age), WaitsOn: waits}
+	return x
+}
+
+// prioritizedFor is a task in motion the queue prioritized age ago.
+func prioritizedFor(slug string, age time.Duration) data.FactoryTask {
+	x := ftask(slug, "motion")
+	x.Session, x.Elapsed = "working", ptr(int64(600))
+	x.Prioritized = &data.FactoryFlag{Since: fakeNow.Add(-age)}
 	return x
 }
 
@@ -576,6 +596,78 @@ func TestFactoryBlockedOnSomeoneElseIsLighter(t *testing.T) {
 		}
 		if strings.Contains(got, p.b("▲ ", th.Muted)) || strings.Contains(got, p.b("▲ ", th.Orange)) {
 			t.Errorf("%s is bold or orange: %q", label, got)
+		}
+	}
+}
+
+func TestFactoryPausedLabelShowsAgeAndWaitedTasks(t *testing.T) {
+	m := factoryModel(false, 140, 60, factoryRepo{name: "m", st: fstatus(5,
+		pausedFor("under-a-minute", 20*time.Second, "a"), pausedFor("fresh", 12*time.Minute, "a", "b"),
+		pausedFor("nearly", 30*time.Minute-time.Second, "a"), pausedFor("stale", 30*time.Minute, "a"), pausedFor("older", 95*time.Minute, "a"))})
+	p, th := m.th.on(m.th.Bg), m.th
+	rows := m.fac.repos[0].st.Rows
+	cols := m.factoryCols(p, 140, rows)
+	for i, c := range []struct {
+		label string
+		col   color.Color
+	}{
+		{"paused 0m: waits a", th.Muted}, {"paused 12m: waits a, b", th.Muted}, {"paused 29m: waits a", th.Muted},
+		{"paused 30m: waits a", th.Yellow}, {"paused 1h35m: waits a", th.Yellow},
+	} {
+		got := m.taskRow(p, cols, rows[i], 140)[0]
+		if !strings.Contains(got, p.t("▲ ", c.col)) || !strings.Contains(got, p.t(c.label, c.col)) {
+			t.Errorf("want %q in %v: %q", c.label, c.col, got)
+		}
+		if rows[i].WaitsOnHuman() {
+			t.Errorf("a paused task does not wait on the human: %+v", rows[i])
+		}
+	}
+	noAge := pausedFor("no-age", 0, "a")
+	noAge.Paused.Since = time.Time{}
+	if _, label, _ := m.phaseLook(noAge, true); label != "paused: waits a" {
+		t.Errorf("a pause without a time shows without an age: %q", label)
+	}
+}
+
+func TestFactoryPrioritizedPillComesFirst(t *testing.T) {
+	both := prioritizedFor("both", 3*time.Minute)
+	both.Overtime, both.Stale = true, true
+	m := factoryModel(false, 140, 60, factoryRepo{name: "m", st: fstatus(5, prioritizedFor("rush", 3*time.Minute), both)})
+	p, th := m.th.on(m.th.Bg), m.th
+	rows := m.fac.repos[0].st.Rows
+	cols := m.factoryCols(p, 140, rows)
+	if got, want := m.taskRow(p, cols, rows[0], 140)[0], p.pill("prioritized 3m", th.Purple); !strings.Contains(got, want) {
+		t.Errorf("want %q: %q", want, got)
+	}
+	if got, want := m.taskRow(p, cols, rows[1], 140)[0], p.pill("prioritized 3m", th.Purple)+p.sp(1)+p.pill("overtime", th.Red)+p.sp(1)+p.pill("stale", th.Yellow); !strings.Contains(got, want) {
+		t.Errorf("want %q: %q", want, got)
+	}
+	// without room the pill goes and the pills that were there stay whole
+	if got := flagPills(p, both, fakeNow, pillWidth("overtime")+1+pillWidth("stale")); got != p.pill("overtime", th.Red)+p.sp(1)+p.pill("stale", th.Yellow) {
+		t.Errorf("the prioritized pill takes room from the others: %q", got)
+	}
+}
+
+func TestFactoryFlagsLeaveEveryOtherColumnAlone(t *testing.T) {
+	long := strings.Repeat("x", 40)
+	cols := func(w int, flagged bool) factoryCols {
+		paused, rush := onTask(), prioritizedFor("rush-fix", 3*time.Minute)
+		paused.WaitsOn, paused.Size = long, "medium"
+		if flagged {
+			paused.Paused = &data.FactoryFlag{Since: fakeNow.Add(-45 * time.Minute), WaitsOn: []string{long}}
+		} else {
+			rush.Prioritized = nil
+		}
+		m := factoryModel(true, w, 40, factoryRepo{name: "m", st: fstatus(5, paused, rush, ftask("api-rate-limits", "review"))})
+		return m.factoryCols(m.th.on(m.th.Bg), w, m.fac.repos[0].st.Rows)
+	}
+	for _, w := range []int{80, 100, 120} {
+		got, want := cols(w, true), cols(w, false)
+		got.phase, want.phase = 0, 0 // the label is cut to the cell
+		got.size, want.size = 0, 0   // SIZE gives way to a wider PHASE, and the paused label is longer
+		got.flags, want.flags = 0, 0 // the pill takes only room no other column wants
+		if got != want || got.elapsed == 0 {
+			t.Errorf("%d columns: flags give %+v, none %+v", w, got, want)
 		}
 	}
 }
@@ -1433,7 +1525,7 @@ func TestSnapshotFactory(t *testing.T) {
 	if n := fetchCount(t, dir); n != 1 {
 		t.Fatalf("the snapshot runs the fetch pass once, after the cached one: %d", n)
 	}
-	for _, want := range []string{"proj", "stacked", "cost-in-money", "in motion ▲▲●○○○◌ 3/6+1", "blocked on needs-an-a", "Needs the login task to land first.", "write-up.md", "needs-an-answer", "worktree cap  7", "[3 Factory ▲2]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"} {
+	for _, want := range []string{"proj", "stacked", "cost-in-money", "in motion ▲▲●○○○◌ 3/6+1", "paused 12m: waits nee", "Needs the login task to land first.", "write-up.md", "needs-an-answer", "worktree cap  7", "[3 Factory ▲2]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("snapshot lacks %q:\n%s", want, out)
 		}

@@ -1,8 +1,5 @@
  Isshoni  1 Dash  2 Agents [3 Factory ▲7] 4 Kaizen  5 ✿                  24h [7d] 30d  all   ○ idle 
- Factory  14 motion (6 blocked) · 3 review · 1 merged · 1 settled  · as of 11:00:00                 
-  rate-limit-docs    ● in motion                     -  #40 closed              [stale]             
-  slow-export        ⠋ in motion                41m00s  -                                           
-  stacked-on-login   ● in motion                 1m35s  ?                                           
+ Factory  17 motion (8 blocked) · 3 review · 1 merged · 1 settled  · as of 11:00:00                 
   api-rate-limits    ◆ waiting for review        1h30m  #42                                         
   old-experiment     ✓ merged, not cleaned       1m01s  #31                                         
   release-notes      · settled, not cleaned     50m00s  release-notes.md                            
@@ -16,15 +13,18 @@
  gamma                                                                                              
   ⚠ not inside a git repository                                                                     
                                                                                                     
- delta-docs                                               in motion ▲▲▲▲▲ 5/5   review 2   merged 0 
+ delta-docs                                            in motion ▲▲▲▲▲▲▲● 8/5   review 2   merged 0 
   SLUG               PHASE                     ELAPSED  PR                      FLAGS               
   docs-after-review  ▲ blocked on design-rev…        -  -                                           
                      needs the design review to land first, then the docs can quote its final word… 
+  paused-fresh       ▲ paused 12m: waits log…        -  -                                           
+  paused-stale       ▲ paused 45m: waits log…        -  -                                           
   pick-a-theme       ▲ blocked on dispatcher         -  -                                           
                      the palette is still open: which brief decides it?                             
   slow-import        ▲ blocked, needs you            -  -                                           
   stuck-on-keys      ▲ blocked, needs you            -  -                                           
   wide-ask           ▲ blocked, needs you            -  -                                           
+  rush-fix           ⠋ in motion                10m00s  -                       [prioritized 3m]    
   design-review      ◆ waiting for review            -  design.md                                   
   video-cut          ◆ waiting for review            -  example.com/cut/v2                          
  ↑↓/jk move  ·  c edit cap  ·  r range  ·  tab next view  ·  ? help  ·  q quit                      

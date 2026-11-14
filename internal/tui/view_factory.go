@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"image/color"
+	"math"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -19,8 +20,9 @@ const (
 	prMax       = 24
 	phaseMax    = 24 // PHASE keeps more than this only when every column fits at it
 	slugLeast   = 16
-	nameLeast   = 12 // cells the repository name keeps before the meter shrinks
-	bandDoLeast = 30 // cells the band's do cell needs to stay on its row
+	pausedStale = 30 * time.Minute // a pause this old is stale: the script's blocked-unanswered bound
+	nameLeast   = 12               // cells the repository name keeps before the meter shrinks
+	bandDoLeast = 30               // cells the band's do cell needs to stay on its row
 )
 
 // factoryBody is the factory view: what waits on the human, the settings line, then one
@@ -420,6 +422,18 @@ func (m *model) phaseLook(t data.FactoryTask, long bool) (glyph, label string, c
 	if t.Phase == "blocked" && !t.WaitsOnHuman() {
 		label = "blocked on " + t.WaitsOn
 	}
+	stalePause := false
+	if f := t.Paused; f != nil && t.Phase == "blocked" {
+		label = "paused"
+		if !f.Since.IsZero() {
+			age := max(0, m.now().Sub(f.Since))
+			label += " " + limitSpan(int64(age.Seconds()))
+			stalePause = age >= pausedStale
+		}
+		if len(f.WaitsOn) > 0 {
+			label += ": waits " + strings.Join(f.WaitsOn, ", ")
+		}
+	}
 	switch t.Phase {
 	case "motion":
 		glyph = "●"
@@ -432,6 +446,9 @@ func (m *model) phaseLook(t data.FactoryTask, long bool) (glyph, label string, c
 	case "merged":
 		return "✓", label, m.mergedColor()
 	case "blocked":
+		if stalePause {
+			return "▲", label, th.Yellow
+		}
 		if !t.WaitsOnHuman() {
 			return "▲", label, th.Muted // not waiting on you
 		}
@@ -474,13 +491,24 @@ func baseText(base string) (text string, stacked bool) {
 	return strings.TrimPrefix(base, "origin/"), false
 }
 
-func flagPills(p paint, t data.FactoryTask) string {
+// flagPills is a task's FLAGS cell. The prioritized pill goes first, and only when the whole
+// line fits in room cells, so it never costs another pill its place or its column width.
+func flagPills(p paint, t data.FactoryTask, now time.Time, room int) string {
 	var ps []string
 	if t.Overtime {
 		ps = append(ps, p.pill("overtime", p.th.Red))
 	}
 	if t.Stale {
 		ps = append(ps, p.pill("stale", p.th.Yellow))
+	}
+	if f := t.Prioritized; f != nil {
+		text := "prioritized"
+		if !f.Since.IsZero() {
+			text += " " + limitSpan(int64(max(0, now.Sub(f.Since)).Seconds()))
+		}
+		if pill := p.pill(text, p.th.Purple); width(strings.Join(append([]string{pill}, ps...), p.sp(1))) <= room {
+			ps = append([]string{pill}, ps...)
+		}
 	}
 	return strings.Join(ps, p.sp(1))
 }
@@ -526,6 +554,7 @@ func limitSpan(secs int64) string {
 // then drops BASE, PR and ELAPSED in that order.
 func (m *model) factoryCols(p paint, w int, tasks []data.FactoryTask) factoryCols {
 	c := factoryCols{slug: 4, phase: 5, elapsed: elapsedLeast, pr: 2, base: 4, flags: 5, span: true}
+	flagsWant := 0 // FLAGS wide enough for every prioritized pill too
 	for _, t := range tasks {
 		_, label, _ := m.phaseLook(t, m.w >= 100)
 		base, _ := baseText(t.Base)
@@ -537,7 +566,8 @@ func (m *model) factoryCols(p paint, w int, tasks []data.FactoryTask) factoryCol
 		}
 		c.pr = max(c.pr, min(width(prText(t)), prMax))
 		c.base = max(c.base, min(width(base), baseMax))
-		c.flags = max(c.flags, width(flagPills(p, t)))
+		c.flags = max(c.flags, width(flagPills(p, t, m.now(), 0)))
+		flagsWant = max(flagsWant, width(flagPills(p, t, m.now(), math.MaxInt)))
 	}
 	used := func(cc factoryCols) int {
 		n := 2 + cc.phase + cc.flags + 4 // indent, and the gaps before PHASE and FLAGS
@@ -570,6 +600,7 @@ func (m *model) factoryCols(p paint, w int, tasks []data.FactoryTask) factoryCol
 		}
 		if free := w - used(cc); free >= min(c.slug, slugLeast) || step == 5 {
 			cc.slug = max(1, min(c.slug, free))
+			cc.flags += max(0, min(flagsWant-cc.flags, free-cc.slug)) // only room no other column wants
 			return cc
 		}
 	}
@@ -627,7 +658,7 @@ func (m *model) taskRow(p paint, c factoryCols, t data.FactoryTask, w int) block
 		p.t(cell(cmp.Or(t.Size, "-"), c.size, false), th.Faint),
 		p.t(cell(pr, c.pr, false), prCol),
 		p.t(cell(base, c.base, false), baseCol),
-		fit(flagPills(p, t), c.flags, p))}
+		fit(flagPills(p, t, m.now(), c.flags), c.flags, p))}
 	if reason := strings.Join(strings.Fields(t.StopSummary), " "); t.Phase == "blocked" && !t.WaitsOnHuman() && reason != "" {
 		indent := 2 + c.slug + 2
 		row = append(row, fit(p.sp(indent)+p.t(trunc(reason, max(1, w-indent-1)), th.Faint), w, p))
