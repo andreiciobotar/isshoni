@@ -1085,9 +1085,9 @@ class JobTests(unittest.TestCase):
             return 0, "", ""
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": home}), \
                 mock.patch.object(factory, "run", run):
-            factory.Systemd().install("job", ["/py", "/a$b/f%y"], "/re%po", "/bin", "/lo%g")
+            factory.Systemd().install("job", ["/py", "/a$b/f%y"], "/re%po", {"PATH": "/bin"}, "/lo%g")
             unit = (Path(home) / "systemd" / "user" / "job.service").read_text()
-            factory.Cron().install("job", ["/py", "/f%y"], "/re%po", "/bin", "/lo%g")
+            factory.Cron().install("job", ["/py", "/f%y"], "/re%po", {"PATH": "/bin"}, "/lo%g")
         self.assertIn("WorkingDirectory=/re%%po\n", unit)
         self.assertIn("ExecStart=/py '/a$$b/f%%y'\n", unit)
         self.assertIn("StandardOutput=append:/lo%%g\n", unit)

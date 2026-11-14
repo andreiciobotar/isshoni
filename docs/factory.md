@@ -79,6 +79,11 @@ The cap (`worktree_cap`) counts slots per repository. Only `new` checks it, so a
 | `lgtm_from_author` | `true` | `true` or `false`: whether an `lgtm` by the pull request's author counts; set `false` once the factory has its own account (see Merging) |
 | `monitor` | none | the path of the monitor's `isshoni` command; the cost criteria need it (see Criteria) |
 
+## FACTORY_HOME
+`FACTORY_HOME` moves everything the factory keeps under `~/.claude/factory`: the settings file, the logs and the outbox, the task state, `watch.log` and the `identity/` directory (App, key, cached tokens). Unset or empty it is `~/.claude/factory`; `~` is expanded; a relative value exits 2 with one line (a hook exits 0 and records nothing), because the hook and the schedule run in other directories. Messages that name the settings file print the real path. It does not move `~/.claude/projects` (Claude Code's transcripts), the scheduler's own files (`~/Library/LaunchAgents`, systemd units, crontab) or the spec directory the lead's rules name. The hook and `factory env` run in the session's environment and read the same variable.
+
+`factory schedule install` with `FACTORY_HOME` set writes it into the job's environment beside `PATH` (launchd `EnvironmentVariables`, a systemd `Environment=` line, a variable before the command in cron) and hashes the home into the job's label, so a job installed under another home is a second job and never replaces the real one; it also leaves a legacy job without a hash alone. With the variable unset the label and the job are unchanged. It is meant for tests and exercises: a scratch home that cannot touch the real outbox, tasks or App.
+
 ## Messages
 Leads and the dispatcher talk through Claude Code's `SendMessage`, by session name. A lead's first line starts with `QUESTION:`, `BLOCKED:`, `OVERTIME:`, `SPLIT:` or `DONE:` and its slug. The human can always `claude attach <slug>`.
 

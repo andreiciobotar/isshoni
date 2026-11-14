@@ -27,12 +27,13 @@ import webbrowser
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-SETTINGS_PATH = Path("~/.claude/factory/settings.json")
 PERMISSION_MODES = ("acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan")
 STALE_SECONDS = 7 * 24 * 3600
 SLUG_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 BACKGROUNDED_RE = re.compile(r"backgrounded\s*·\s*(\S+)\s*·\s*(.+)")
-STORE = Path("~/.claude/factory")
+DEFAULT_STORE = Path("~/.claude/factory")
+STORE = Path(os.environ.get("FACTORY_HOME") or DEFAULT_STORE)
+SETTINGS_PATH = STORE / "settings.json"
 IDENTITY = STORE / "identity"
 KEEP_MONTHS = 12
 BOUND_RE = re.compile(r"\d{4}-\d{2}(-\d{2}(T\d{2}(:\d{2}(:\d{2}Z?)?)?)?)?")
@@ -1334,7 +1335,7 @@ def monitor_failed(why):
 def monitor_json(p, *args):
     """What the monitor command prints as JSON for `args`."""
     if not p["monitor"]:
-        raise NotEvaluated('no monitor: set "monitor" in ~/.claude/factory/settings.json to the path of the isshoni command')
+        raise NotEvaluated(f'no monitor: set "monitor" in {SETTINGS_PATH} to the path of the isshoni command')
     rc, out, err = run([p["monitor"], *args], timeout=MONITOR_TIMEOUT)
     if rc:
         raise monitor_failed(err.strip().splitlines()[-1] if err.strip() else f"exit {rc}")
@@ -2004,7 +2005,9 @@ def cmd_firings(args):
 # Everything that names an operating-system tool: the scheduler backends, the job's PATH, the notifier.
 
 def job_label(root):
-    return f"com.claude.factory.watch.{os.path.basename(root)}-{hashlib.sha256(root.encode()).hexdigest()[:8]}"
+    """Under another `FACTORY_HOME` the home is hashed in too: that job is never the real one."""
+    key = root if STORE == DEFAULT_STORE else f"{root}\0{STORE.expanduser()}"
+    return f"com.claude.factory.watch.{os.path.basename(root)}-{hashlib.sha256(key.encode()).hexdigest()[:8]}"
 
 
 def job_path():
@@ -2036,7 +2039,9 @@ class Launchd:
         return was
 
     def drop_legacy(self, label, root):
-        """The job of the version without the hash in its label, when it belongs to this repository."""
+        """The job of the version without the hash in its label, when it belongs to this repository (and the real home)."""
+        if STORE != DEFAULT_STORE:
+            return False
         old = label.rsplit("-", 1)[0]
         try:
             ours = plistlib.loads(self.plist(old).read_bytes()).get("WorkingDirectory") == root
@@ -2044,13 +2049,13 @@ class Launchd:
             return False
         return ours and self.drop(old)
 
-    def install(self, label, argv, cwd, path, log):
+    def install(self, label, argv, cwd, env, log):
         self.drop_legacy(label, cwd)
         plist = self.plist(label)
         plist.parent.mkdir(parents=True, exist_ok=True)
         plist.write_bytes(plistlib.dumps({
             "Label": label, "ProgramArguments": argv, "WorkingDirectory": cwd, "StartInterval": WATCH_INTERVAL,
-            "EnvironmentVariables": {"PATH": path}, "StandardOutPath": str(log), "StandardErrorPath": str(log)}))
+            "EnvironmentVariables": env, "StandardOutPath": str(log), "StandardErrorPath": str(log)}))
         run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"])
         rc, out, err = run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)])
         if rc != 0:
@@ -2070,12 +2075,13 @@ class Systemd:
     def unit(self, label, kind):
         return Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "systemd" / "user" / f"{label}.{kind}"
 
-    def install(self, label, argv, cwd, path, log):
+    def install(self, label, argv, cwd, env, log):
         service, timer = self.unit(label, "service"), self.unit(label, "timer")
         service.parent.mkdir(parents=True, exist_ok=True)
         command = shlex.join(argv).replace("$", "$$")
+        environment = "".join(f'Environment="{k}={v}"\n' for k, v in env.items())
         service.write_text((f"[Unit]\nDescription=factory watch {cwd}\n\n[Service]\nType=oneshot\n"
-                            f"WorkingDirectory={cwd}\nEnvironment=\"PATH={path}\"\nExecStart={command}\n"
+                            f"WorkingDirectory={cwd}\n{environment}ExecStart={command}\n"
                             f"StandardOutput=append:{log}\nStandardError=append:{log}\n").replace("%", "%%"))
         timer.write_text(f"[Unit]\nDescription=factory watch {cwd}\n\n[Timer]\nOnActiveSec={WATCH_INTERVAL}\n"
                          f"OnUnitActiveSec={WATCH_INTERVAL}\n\n[Install]\nWantedBy=timers.target\n")
@@ -2110,9 +2116,9 @@ class Cron:
         if rc != 0:
             raise Fail(f"schedule: crontab failed: {(err or out).strip()}", code=1)
 
-    def install(self, label, argv, cwd, path, log):
+    def install(self, label, argv, cwd, env, log):
         q = shlex.quote
-        command = f"cd {q(cwd)} && PATH={q(path)} {shlex.join(argv)} >> {q(str(log))} 2>&1".replace("%", "\\%")
+        command = f"cd {q(cwd)} && {' '.join(f'{k}={q(v)}' for k, v in env.items())} {shlex.join(argv)} >> {q(str(log))} 2>&1".replace("%", "\\%")
         self.write([*self.lines(label)[1], f"*/{WATCH_INTERVAL // 60} * * * * {command} # {label}"])
 
     def remove(self, label, root):
@@ -2157,7 +2163,8 @@ def schedule_install(repo, dispatcher, backend):
     """Install the watch job, replacing the one there; returns its label."""
     label, log = job_label(repo.root), STORE.expanduser() / "watch.log"
     log.parent.mkdir(parents=True, exist_ok=True)
-    backend.install(label, [sys.executable, str(FACTORY), "watch", "--dispatcher", dispatcher], repo.root, job_path(), log)
+    env = {"PATH": job_path(), **({} if STORE == DEFAULT_STORE else {"FACTORY_HOME": str(STORE.expanduser())})}
+    backend.install(label, [sys.executable, str(FACTORY), "watch", "--dispatcher", dispatcher], repo.root, env, log)
     return label
 
 
@@ -3226,6 +3233,10 @@ def parse_args(argv):
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
+        if not STORE.expanduser().is_absolute():
+            if args.cmd == "hook":
+                return 0
+            raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
