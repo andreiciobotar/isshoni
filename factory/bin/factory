@@ -1043,6 +1043,7 @@ def cmd_retro(args):
             and isinstance(d["what"], str) and d["what"].strip() for d in defects):
         raise Fail(f"retro: defects must be a list of objects with caught_by ({'|'.join(CAUGHT_BY)}) and a non-empty what")
     log("retros", {**tag, **doc})
+    print(f"retro: stored for {tag['slug']}")
     return 0
 
 
