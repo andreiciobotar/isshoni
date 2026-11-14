@@ -240,7 +240,7 @@ class TaskTests(FixtureStore):
     def test_cost_by_role_rework_unpriced(self):
         self.assertEqual(self.by_slug["a1"]["cost"], {
             "total": 22.0, "unpriced_tokens": 1000000,
-            "by_role": {"lead": 10.0, "coder": 3.0, "reviewer": 5.0, "explorer": 2.0, "lander": 1.0, "other": 1.0},
+            "by_role": {"lead": 10.0, "tech-lead": 0.0, "coder": 3.0, "reviewer": 5.0, "explorer": 2.0, "lander": 1.0, "other": 1.0},
             "rework": 2.0})
         self.assertEqual(self.by_slug["c1"]["cost"]["total"], 5.0)
         self.assertEqual(self.by_slug["c1"]["cost"]["rework"], 0.0)
@@ -300,7 +300,7 @@ class DocumentTests(FixtureStore):
             "cost": {"median": 22.0, "n": 1}, "brief_to_pr_s": {"median": 3000.0, "n": 1},
             "pr_to_merge_s": {"median": 600.0, "n": 1}, "review_rounds": {"median": 1.0, "n": 1},
             "first_pass": {"yes": 1, "of": 1}, "rework_share": 0.090909,
-            "by_role": {"lead": 10.0, "coder": 3.0, "reviewer": 5.0, "explorer": 2.0, "lander": 1.0, "other": 1.0},
+            "by_role": {"lead": 10.0, "tech-lead": 0.0, "coder": 3.0, "reviewer": 5.0, "explorer": 2.0, "lander": 1.0, "other": 1.0},
             "mix": {"window": 5, "points": []},
             "time": {"building_s": 2880, "stopped_s": 120, "merge_wait_s": 600},
             "defects": {"tests": 1, "reviewer": 2, "lead": 1, "ci": 0, "human": 0, "other": 2},
@@ -373,7 +373,7 @@ def shapes(d):
     add("median", [s[m] for m in ("cost", "brief_to_pr_s", "pr_to_merge_s", "review_rounds")])
     add("stop", d["stops"]), add("slowed", d["slowed"]), add("reward", d["rewards"])
     add("outbox", [o]), add("counts", [o["issues"], o["decisions"]]), add("topic", o["topics"]), add("entry", o["entries"])
-    add("site_manager", [d["site_manager"]])
+    add("site_manager", [d["site_manager"]]), add("tech_lead", [d["tech_lead"]])
     add("authoring", [t["authoring"] for t in tasks]), add("authoring_roles", [t["authoring"][k] for t in tasks for k in ("lines", "calls")])
     add("pooled", [x["authoring"] for x in a["points"] + a["versions"]])
     add("pooled_roles", [x["authoring"]["lines"] for x in a["points"] + a["versions"]])
@@ -393,7 +393,7 @@ class DashboardFixtureTests(FixtureStore):
         self.assertEqual({n for n, v in fixture.items() if len(v) != 1}, set())
         self.assertLessEqual({"doc", "repo", "version", "task", "pr", "cost", "by_role", "defects", "summary", "time",
                               "first_pass", "median", "stop", "slowed", "outbox", "counts", "topic", "entry",
-                              "site_manager", "mix", "authoring", "authoring_roles", "pooled", "pooled_roles", "pooled_share",
+                              "site_manager", "tech_lead", "mix", "authoring", "authoring_roles", "pooled", "pooled_roles", "pooled_share",
                               "overhead"}, set(ours))
         for name in ours:
             self.assertEqual(fixture[name], ours[name], name)
@@ -522,6 +522,85 @@ class SiteManagerTests(Store):
         self.assertEqual(self.record(), theirs)
 
 
+def came_back(ts, outcome, cost=None, slug="a1", session=None, repo=ALPHA):
+    return {"ts": ts, "repo": repo, "slug": slug, "role": "tech-lead", "model": "opus", "version": "0.6.0", "session": session,
+            "pr": 1, "evidence": "it conflicts", "outcome": outcome, "reason": None, "note": None, "noted": True,
+            "head_before": None, "head_after": None, "cost_usd": cost, "seconds": 60}
+
+
+class TechLeadTests(Store):
+    EMPTY = {"came_back": 0, "resolved": 0, "escalated": 0, "stopped": 0, "unstarted": 0, "cost": None,
+             "cost_resolved": None, "landed": 0, "lead_wakeups": 0}
+
+    def record(self, gh=lambda p: [], cutoff=None):
+        return self.build(gh, cutoff=cutoff)["tech_lead"]
+
+    def test_a_store_without_the_log_gives_zero_counts_and_unknown_costs(self):
+        self.assertEqual(self.record(), self.EMPTY)
+
+    def test_each_outcome_counts_and_costs_sum_what_is_priced(self):
+        t = "%sT12:00:00Z" % DAY
+        self.log("techlead.jsonl", [came_back(t, "resolved", 1.5)])  # the legacy file and the month files are one log
+        self.log("techlead-2026-11.jsonl", [
+            came_back(t, "resolved", 2.0), came_back(t, "resolved", None), came_back(t, "escalated", 0.25),
+            came_back(t, "stopped", 3.0), came_back(t, "unstarted"), "not json"])
+        self.assertEqual(self.record(), {**self.EMPTY, "came_back": 6, "resolved": 3, "escalated": 1, "stopped": 1,
+                                         "unstarted": 1, "cost": 6.75, "cost_resolved": 3.5})
+
+    def test_no_priced_record_is_unpriced_not_zero(self):
+        self.log("techlead.jsonl", [came_back("%sT12:00:00Z" % DAY, "resolved"), came_back("%sT12:00:00Z" % DAY, "unstarted")])
+        d = self.record()
+        self.assertEqual((d["came_back"], d["cost"], d["cost_resolved"]), (2, None, None))
+
+    def test_cost_resolved_is_null_when_only_other_outcomes_are_priced(self):
+        self.log("techlead.jsonl", [came_back("%sT12:00:00Z" % DAY, "escalated", 1.0)])
+        d = self.record()
+        self.assertEqual((d["cost"], d["cost_resolved"]), (1.0, None))
+
+    def test_since_keeps_records_by_their_own_time(self):
+        self.log("techlead.jsonl", [came_back("%sT11:59:59Z" % DAY, "resolved", 1.0), came_back("%sT12:00:00Z" % DAY, "resolved", 2.0),
+                                    {**came_back("x", "resolved", 4.0), "ts": None}])
+        d = self.record(cutoff=datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc))
+        self.assertEqual((d["came_back"], d["cost"]), (1, 2.0))
+
+    def test_lead_wakeups_count_after_the_first_hand_over_only_role_lead_from_session_or_human_on_landed_tasks(self):
+        wake = lambda hhmm, slug="a1", role="lead", who="human", event="UserPromptSubmit": ev(  # noqa: E731
+            "%sT%s:00Z" % (DAY, hhmm), event, slug=slug, role=role, **{"from": who})
+        extra = [
+            wake("10:29"),  # before the hand-over
+            wake("10:31"), wake("10:32", who="session"),  # these two count
+            wake("10:33", who="subagent"), wake("10:34", who="tech-lead"),  # not from the session or the human
+            wake("10:35", role="tech-lead"), wake("10:36", role="coder"),  # not the lead
+            wake("10:37", event="Notification"),
+            ev("%sT10:38:00Z" % DAY, "UserPromptSubmit", **{"from": "human"}),  # no role
+            wake("10:39", slug="a2")]  # a task that did not land
+        self.log("tasks-2026-11.jsonl", [{"ts": "%sT10:30:00Z" % DAY, "repo": ALPHA, "slug": "a1", "state": "handed-over"},
+                                         {"ts": "%sT10:20:00Z" % DAY, "repo": ALPHA, "slug": "a1", "state": "working"},
+                                         {"ts": "%sT10:50:00Z" % DAY, "repo": ALPHA, "slug": "a1", "state": "handed-over"},
+                                         {"ts": "%sT10:00:00Z" % DAY, "repo": ALPHA, "slug": "a2", "state": "handed-over"}])
+        self.log("events-2026-11.jsonl", [ev("%sT10:00:00Z" % DAY, "TaskStarted"), ev("%sT10:00:00Z" % DAY, "TaskStarted", slug="a2")]
+                 + extra)
+        gh = lambda p: [pr(1, "worktree-a1", "%sT10:20:00Z" % DAY, "%sT11:00:00Z" % DAY),  # noqa: E731
+                        pr(2, "worktree-a2", "%sT10:20:00Z" % DAY, None, "OPEN")]
+        d = self.record(gh)
+        self.assertEqual((d["landed"], d["lead_wakeups"]), (1, 2))
+
+    def test_a_task_never_handed_over_has_no_wakeups(self):
+        self.log("events-2026-11.jsonl", [ev("%sT10:00:00Z" % DAY, "TaskStarted"),
+                                          ev("%sT10:31:00Z" % DAY, "UserPromptSubmit", role="lead", **{"from": "human"})])
+        d = self.record(lambda p: [pr(1, "worktree-a1", "%sT10:20:00Z" % DAY, "%sT11:00:00Z" % DAY)])
+        self.assertEqual((d["landed"], d["lead_wakeups"]), (1, 0))
+
+    def test_the_session_of_a_record_has_its_main_cost_under_tech_lead_and_its_dispatches_under_their_roles(self):
+        self.log("events-2026-11.jsonl", [ev("%sT10:00:00Z" % DAY, "TaskStarted")])
+        session(self.projects, ALPHA, "a1", "%sT10:00:05.000Z" % DAY, 1000000, [("coder", "claude-haiku-5-5", 1000000, "10:05", "10:10")])
+        roles = lambda: self.build(lambda p: [])["tasks"][0]["cost"]["by_role"]  # noqa: E731
+        self.assertEqual((roles()["lead"], roles()["tech-lead"], roles()["coder"]), (10.0, 0.0, 1.0))
+        self.log("techlead.jsonl", [came_back("%sT12:00:00Z" % DAY, "resolved", 1.0, session="s-a1")])
+        by_role = roles()
+        self.assertEqual((by_role["lead"], by_role["tech-lead"], by_role["coder"]), (0.0, 10.0, 1.0))
+
+
 class SmallTests(Store):
     def test_missing_directory_and_empty_directory(self):
         calls = []
@@ -603,7 +682,7 @@ class MixTests(unittest.TestCase):
         self.assertEqual(self.lead(landed), [("m4", "0.1.0", 0.7), ("m5", "0.1.0", 0.6)])
         point = kaizen._mix(landed)["points"][0]
         self.assertEqual(list(point), ["slug", "version", "share"])
-        self.assertEqual(point["share"], {"lead": 0.7, "coder": 0.3, "reviewer": 0.0, "explorer": 0.0, "lander": 0.0, "other": 0.0})
+        self.assertEqual(point["share"], {"lead": 0.7, "tech-lead": 0.0, "coder": 0.3, "reviewer": 0.0, "explorer": 0.0, "lander": 0.0, "other": 0.0})
         self.assertTrue(all(type(v) is float for v in point["share"].values()))
 
     def test_medians_are_per_role_and_need_not_sum_to_one(self):
@@ -1012,7 +1091,7 @@ class CliTests(Store):
         self.assertEqual((t["started"], t["landed"], t["brief_to_pr_s"], t["pr_to_merge_s"], t["review_rounds"], t["first_pass"]),
                          ("2026-01-06T08:59:00Z", True, 1860, 600, 1, True))
         self.assertEqual(t["cost"], {"total": 0.004366, "unpriced_tokens": 14, "rework": 0.0,
-                                     "by_role": {"lead": 0.004227, "coder": 0.0, "reviewer": 0.000133, "explorer": 6e-06,
+                                     "by_role": {"lead": 0.004227, "tech-lead": 0.0, "coder": 0.0, "reviewer": 0.000133, "explorer": 6e-06,
                                                  "lander": 0.0, "other": 0.0}})
         self.assertEqual(d["prices"], price_file.load(PRICES_PATH).to_dict())
         self.assertEqual(d["summary"]["landed"], 1)
@@ -1066,8 +1145,9 @@ class CliTests(Store):
             _, out, _ = run_cli("kaizen", "--json", *self.args)
         d = json.loads(out)
         self.assertEqual(list(d), ["generated", "factory_dir", "store_found", "prices", "roles", "repos", "versions", "tasks", "summary",
-                                   "stops", "slowed", "rewards", "outbox", "site_manager"])
+                                   "stops", "slowed", "rewards", "outbox", "site_manager", "tech_lead"])
         self.assertEqual(d["site_manager"], SiteManagerTests.EMPTY)
+        self.assertEqual(d["tech_lead"], {**TechLeadTests.EMPTY, "landed": 1})
         self.assertEqual(list(d["tasks"][0]), ["repo", "repo_path", "slug", "version", "started", "state", "pr", "landed",
                                                "brief_to_pr_s", "pr_to_merge_s", "cost", "review_rounds", "first_pass", "authoring", "stops",
                                                "stopped_s", "defects"])

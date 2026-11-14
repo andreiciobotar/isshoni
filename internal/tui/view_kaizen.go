@@ -172,6 +172,8 @@ func (m *model) pulseLines(p paint, w int) block {
 	lines = append(lines, m.defectLines(p, w)...)
 	lines = append(lines, "")
 	lines = append(lines, m.siteManagerLines(p, w)...)
+	lines = append(lines, "")
+	lines = append(lines, m.techLeadLines(p, w)...)
 	acted := 0
 	for _, c := range []data.OutboxCounts{d.Outbox.Issues, d.Outbox.Decisions} {
 		acted += c.Accepted + c.Rejected + c.Done
@@ -949,12 +951,7 @@ func (m *model) siteManagerLines(p paint, w int) block {
 		ratio("precision", s.Precision, fmt.Sprintf("%d acted on of %d with an outcome", s.Acted, s.Acted+s.Ignored), "no outcome recorded yet"),
 		ratio("recall", s.Recall, fmt.Sprintf("%d acted on of %d that needed the human", s.Acted, s.Acted+s.Missed), "nothing acted on or missed yet"),
 	})...)
-	count := func(n int, label string, col color.Color) string {
-		if n == 0 {
-			col = th.Muted
-		}
-		return p.b(strconv.Itoa(n), col) + p.t(" "+label, th.Muted)
-	}
+	count := func(n int, label string, col color.Color) string { return m.kzCount(p, n, label, col) }
 	missed := count(s.Missed, "missed", th.Red)
 	if s.Missed > 0 {
 		missed += p.t(fmt.Sprintf(" (%d suppressed first, %d never fired)", s.MissedSuppressed, s.MissedNeverFired), th.Muted)
@@ -963,6 +960,40 @@ func (m *model) siteManagerLines(p paint, w int) block {
 		count(s.Escalated, "escalated", th.Text), count(s.Acted, "acted on", th.Green), count(s.Ignored, "ignored", th.Orange),
 		count(s.NoOutcome, "no outcome yet", th.Text), count(s.Suppressed, "suppressed", th.Text), missed,
 	})...)
+}
+
+// kzCount is a number in col, muted when it is zero, and its label.
+func (m *model) kzCount(p paint, n int, label string, col color.Color) string {
+	if n == 0 {
+		col = m.th.Muted
+	}
+	return p.b(strconv.Itoa(n), col) + p.t(" "+label, m.th.Muted)
+}
+
+// techLeadLines is what came back from the merge queue, how the tech lead ended each, what a
+// resolution cost and how often a landed task's lead was woken after the hand-over.
+func (m *model) techLeadLines(p paint, w int) block {
+	th := m.th
+	s := m.kz.doc.TechLead
+	lines := block{m.heading(p, w, "tech lead", "what came back from the merge queue, and who resolved it")}
+	if s.CameBack == 0 {
+		return append(lines, p.sp(1)+p.t("nothing came back from the merge queue yet", th.Faint))
+	}
+	lines = append(lines, legend(p, w, []string{
+		m.kzCount(p, s.CameBack, "came back", th.Text), m.kzCount(p, s.Resolved, "resolved", th.Green),
+		m.kzCount(p, s.Escalated, "escalated", th.Orange), m.kzCount(p, s.Stopped, "stopped", th.Red),
+		m.kzCount(p, s.Unstarted, "went to the lead unstarted", th.Text),
+	})...)
+	var facts []string
+	switch {
+	case s.Resolved == 0:
+	case s.CostResolved == nil:
+		facts = append(facts, p.b("unpriced", th.Faint)+p.t(" per resolution", th.Muted))
+	default:
+		facts = append(facts, p.b(m.kzMoney(*s.CostResolved/float64(s.Resolved)), th.Text)+p.t(" per resolution", th.Muted))
+	}
+	facts = append(facts, m.kzCount(p, s.LeadWakeups, fmt.Sprintf("lead wake-ups after hand-over over %d landed tasks", s.Landed), th.Text))
+	return append(lines, legend(p, w, facts)...)
 }
 
 func (m *model) slowedLines(p paint, w int) block {

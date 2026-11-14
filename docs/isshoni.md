@@ -92,7 +92,7 @@ names in display order; every `by_role` and `share` object has exactly these key
 (`repo`, `repo_path`, `prs`: `ok` or the reason, `prs_as_of`: when the pull request data
 used was fetched, `prs_error`: why this run could not refresh it), `versions` (each plugin version by its
 earliest record in any store), `tasks`, `summary`, `stops`, `slowed`, `rewards`, `outbox`,
-`site_manager`.
+`site_manager`, `tech_lead`.
 Times are UTC (`2026-11-14T00:01:02Z`), a task's durations whole seconds, medians floats
 that may be fractional, money in the price file's currency, and a missing value is `null`.
 
@@ -107,7 +107,7 @@ Per task (listed by `started`, tasks without one first, then slug):
 | `pr` | `{number, url, state, opened, merged}` |
 | `landed` | `pr.merged` is set |
 | `brief_to_pr_s`, `pr_to_merge_s` | `pr.opened - started` (null when negative); `pr.merged - pr.opened` |
-| `cost` | from its transcript sessions (same repository and worktree name): `{total, unpriced_tokens, by_role, rework}`; `by_role` has `lead` (the main session), `coder`, `reviewer`, `explorer` (also `Explore`), `lander` and `other` |
+| `cost` | from its transcript sessions (same repository and worktree name): `{total, unpriced_tokens, by_role, rework}`; `by_role` has `lead` (the main session), `tech-lead` (the main session of a tech lead run: its id is the `session` of a `techlead` record), `coder`, `reviewer`, `explorer` (also `Explore`), `lander` and `other` |
 | `cost.rework` | cost of coder and reviewer dispatches that started after the first reviewer dispatch returned. A lower bound: the lead's own rework is not separable |
 | `review_rounds` | reviewer dispatches that ran (not `no-run`); null without sessions |
 | `first_pass` | `review_rounds == 1`; zero reviews is not first-pass |
@@ -209,6 +209,16 @@ With `--since` it counts the firings that fired, and the misses recorded, at or 
 cutoff. Without a log every count is 0 and both ratios are null. The factory keeps
 escalated firings and misses forever, so the two ratios are all-time; `suppressed` covers
 what the log still holds (about a year).
+
+`tech_lead` is what came back from the merge queue, read from the `techlead` log (every
+month file; one record per come-back, `docs/factory.md`, "Tech lead"), the records at or
+after the `--since` cutoff: `came_back` and of those `resolved`, `escalated`, `stopped` and
+`unstarted` (went to the lead without a run); `cost` the sum of `cost_usd` over the records
+that have one and `cost_resolved` the same over the resolved ones, each null when no record
+has one (unpriced, never 0); `landed` the landed tasks of the document; `lead_wakeups` over
+those tasks the `events` of event `UserPromptSubmit`, role `lead`, from `session` or `human`,
+after the task's first `handed-over` record. Without a log every count is 0 and both costs
+are null.
 
 Limits: no landed figure without `gh`; a stop logged before the hook stored a summary has no reason;
 the site manager's firings are counted, not listed (`factory firings` lists a
@@ -431,7 +441,10 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   a column chart per measure, one column per landed task in start order, with the
   plugin versions marked under it; who caught the defects; the site manager's record:
   precision and recall, then what it escalated with the outcomes, suppressed and missed,
-  or one line saying nothing is logged yet), **Flow** (where the money
+  or one line saying nothing is logged yet; the tech lead's record: what came back from
+  the merge queue and how each ended, the cost per resolution (`unpriced` when no
+  resolution has a price), the lead wake-ups after hand-over over the landed tasks, or one
+  line saying nothing came back), **Flow** (where the money
   and the time went; under the money, a line chart of each role's share of a task's cost
   over the landed tasks in start order, each point the median of the five tasks ending
   there (`summary.mix`), one line per role in its colour with its latest value at the
