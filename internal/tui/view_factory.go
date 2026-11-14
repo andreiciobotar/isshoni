@@ -39,7 +39,11 @@ func scrolled(p paint, lines block, top, w, h int) block {
 }
 
 // factoryPositions is how many places the body can be scrolled to.
+// Below the size the frame needs there is one: the small-window screen shows instead.
 func (m *model) factoryPositions() int {
+	if m.w < minWidth || m.h < minHeight {
+		return 1
+	}
 	h := m.h - 3
 	return max(1, len(m.factoryLines(m.th.on(m.th.Bg), m.w, h))-h+1)
 }
