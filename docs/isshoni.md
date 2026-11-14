@@ -404,7 +404,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   is over 2 minutes old. Off the view only the first pass runs, so the dashboard makes
   no GitHub call there. `--snapshot` runs both passes. `c` sets `limits.worktree_cap` (1 to
   999) in `~/.claude/factory/settings.toml` by running `factory settings set`, which
-  leaves every other byte of the file as it was (`factory` must be on the `PATH`). See [factory.md](factory.md).
+  leaves every other byte of the file as it was (`<checkout>/factory/bin/factory`, found from the dashboard's own location; it needs no `PATH`). See [factory.md](factory.md).
 - **Kaizen:** whether the factory is getting better, across all repositories, from what
   `isshoni kaizen --json` reports (see [Kaizen measures](#kaizen-measures)). It loads when
   the view is shown (unless a result under 30 seconds old is held) and when the range

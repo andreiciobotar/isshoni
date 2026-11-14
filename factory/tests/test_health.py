@@ -243,6 +243,23 @@ class CriteriaTests(Home):
             with self.subTest(label):
                 self.assertEqual(check("wrong-model", pic(rows=[row("x")], events=events)), expected)
 
+    def test_wrong_model_compares_with_the_models_the_task_started_with(self):
+        coder = ev("x", "PostToolUse", role="coder", model="claude-sonnet-5-5")
+        for label, started, current, want in (
+                ("recorded at launch beats the current file", ev("x", "TaskStarted", lead_model="fable", models={"coder": "sonnet"}),
+                 {"coder": "haiku"}, []),
+                ("a recorded model that differs", ev("x", "TaskStarted", lead_model="fable", models={"coder": "haiku"}),
+                 {"coder": "sonnet"}, [("x", "x/coder", "claude-sonnet-5-5, configured haiku")]),
+                ("a task from before the record: the current file", ev("x", "TaskStarted", lead_model="fable"),
+                 {"coder": "haiku"}, [("x", "x/coder", "claude-sonnet-5-5, configured haiku")]),
+                ("a full id is equal, not a substring", ev("x", "TaskStarted", lead_model="fable", models={"coder": "claude-sonnet-5"}),
+                 {"coder": "opus"}, [("x", "x/coder", "claude-sonnet-5-5, configured claude-sonnet-5")]),
+                ("a bracket suffix is ignored", ev("x", "TaskStarted", lead_model="fable", models={"coder": "claude-sonnet-5-5[1m]"}),
+                 {"coder": "opus"}, []),
+                ("an alias with a suffix", ev("x", "TaskStarted", lead_model="fable", models={"coder": "sonnet[1m]"}), {"coder": "opus"}, [])):
+            with self.subTest(label):
+                self.assertEqual(check("wrong-model", pic(rows=[row("x")], events=[started, coder], models=current)), want)
+
     def test_wrong_model_compares_with_the_configured_model(self):
         events = [ev("x", "TaskStarted", lead_model="fable"), ev("x", "PostToolUse", role="coder", model="claude-sonnet-5-5")]
         configured = {"coder": "haiku", "explorer": "haiku", "reviewer": "opus"}

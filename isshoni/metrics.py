@@ -83,7 +83,7 @@ def _strip_suffix(m):
 
 
 def model_matches(expected, actual):
-    e = expected.strip().lower()
+    e = _strip_suffix(expected.strip())
     if e in ("", "inherit"):
         return True
     if e in ALIASES:

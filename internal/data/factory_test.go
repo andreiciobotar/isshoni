@@ -226,6 +226,33 @@ func TestReadWorktreeCap(t *testing.T) {
 	}
 }
 
+func TestReadSettingRefusesWhatItCannotClassify(t *testing.T) {
+	for name, content := range map[string]string{
+		"dotted key":        "limits.worktree_cap = 9\n",
+		"quoted key":        "[limits]\n\"worktree_cap\" = 9\n",
+		"quoted header":     "[\"limits\"]\nworktree_cap = 9\n",
+		"inline table":      "limits = { worktree_cap = 9 }\n",
+		"array of tables":   "[limits]\nreserve_percent = 1\n[[foo]]\nx = 1\n",
+		"multi-line string": "[x]\ny = \"\"\"\n[limits]\nworktree_cap = 9\n\"\"\"\n",
+		"literal string":    "[x]\ny = '''\nz\n'''\n",
+		"bare words":        "[limits]\nworktree_cap 9\n",
+		"unclosed header":   "[limits\nworktree_cap = 9\n",
+		"stray list line":   "[limits]\nworktree_cap = 9\n\"a\",\n",
+	} {
+		path := settings(t, content)
+		for _, read := range []func() error{func() error { _, err := ReadWorktreeCap(path); return err }, func() error { _, err := ReadDispatchers(path); return err }} {
+			// the stray line comes after the key the cap reads: only the dispatchers read gets that far
+			if err := read(); name != "stray list line" && (err == nil || !strings.HasPrefix(err.Error(), path+" line ")) {
+				t.Errorf("%s: want an error naming the file and a line, got %v", name, err)
+			}
+		}
+	}
+	got, err := ReadWorktreeCap(settings(t, "[a]\nxs = [\n  1, 2,\n  [3], # c ]\n  \"]\",\n]\n[limits]\nworktree_cap = 4\n"))
+	if err != nil || got != 4 {
+		t.Errorf("another key's list over several lines is skipped whole: %d, %v", got, err)
+	}
+}
+
 func TestReadSettingsFromALegacyJSONWhenThereIsNoTOML(t *testing.T) {
 	for content, want := range map[string]int{`{"worktree_cap": 12}`: 12, `{}`: 5, `{"lead_model":"x"}`: 5} {
 		if got, err := ReadWorktreeCap(settingsNamed(t, "settings.json", content)); err != nil || got != want {
@@ -294,18 +321,29 @@ func TestReadDispatchers(t *testing.T) {
 	}
 }
 
-// stubFactory puts a `factory` that records its arguments (and fails with `fail` on stderr when that is set) first on PATH.
+// stubFactory makes a checkout (ISSHONI_ROOT) whose factory/bin/factory records its arguments, and fails with `fail`
+// on stderr when that is set. Nothing is put on PATH: the dashboard must not need it.
 func stubFactory(t *testing.T, fail string) string {
 	t.Helper()
 	dir := t.TempDir()
+	for _, d := range []string{"isshoni", "factory/bin"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "isshoni", "__init__.py"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	script := "#!/bin/sh\necho \"$@\" > \"" + dir + "/args\"\n"
 	if fail != "" {
 		script += "echo 'noise' >&2\necho '" + fail + "' >&2\nexit 2\n"
 	}
-	if err := os.WriteFile(filepath.Join(dir, "factory"), []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "factory", "bin", "factory"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ISSHONI_ROOT", dir)
+	t.Setenv("PATH", t.TempDir())
+	requireTempFactoryHome(t)
 	return dir
 }
 
@@ -321,9 +359,13 @@ func TestWriteWorktreeCapRunsTheFactoryCommand(t *testing.T) {
 	if err := WriteWorktreeCap(0); err == nil || err.Error() != "limits.worktree_cap must be an integer of at least 1" {
 		t.Fatalf("the command's last stderr line is the error: %v", err)
 	}
-	t.Setenv("PATH", t.TempDir())
-	if err := WriteWorktreeCap(3); err == nil || !strings.Contains(err.Error(), "not on PATH") {
-		t.Fatalf("no factory on PATH: %v", err)
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "isshoni"), 0o755)
+	os.WriteFile(filepath.Join(root, "isshoni", "__init__.py"), nil, 0o644)
+	t.Setenv("ISSHONI_ROOT", root)
+	requireTempFactoryHome(t)
+	if err := WriteWorktreeCap(3); err == nil || err.Error() != "factory command not found: "+filepath.Join(root, "factory", "bin", "factory") {
+		t.Fatalf("a checkout without the script names the path it looked for: %v", err)
 	}
 }
 
@@ -331,17 +373,14 @@ func TestWriteWorktreeCapWithTheRealFactoryChangesOneLine(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 is missing")
 	}
-	script, err := filepath.Abs("../../factory/bin/factory")
+	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bin := t.TempDir()
-	if err := os.Symlink(script, filepath.Join(bin, "factory")); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ISSHONI_ROOT", root)
 	home := t.TempDir()
 	t.Setenv("FACTORY_HOME", home)
+	requireTempFactoryHome(t)
 	path := filepath.Join(home, "settings.toml")
 	if err := os.WriteFile(path, []byte(handEdited), 0o640); err != nil {
 		t.Fatal(err)

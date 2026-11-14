@@ -270,8 +270,7 @@ class WizardFlow(Setup):
         (self.store / "settings.json").write_text('{"worktree_cap": 9}')
         self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
         self.assertEqual(self.settings()["worktree_cap"], 9)
-        self.assertTrue((self.store / "settings.json.migrated").exists())
-        self.assertFalse((self.store / "settings.json").exists())
+        self.assertEqual((self.store / "settings.json").read_text(), '{"worktree_cap": 9}')  # left for older versions
 
     def test_the_plugin_step_reuses_the_marketplace_it_finds(self):
         self.machine.markets.append({"name": "factory", "source": "github", "repo": SOURCE})
@@ -475,7 +474,7 @@ class UninstallFlow(Setup):
 
     def test_the_home_keeps_what_is_not_the_factorys_and_the_directory_with_it(self):
         self.store.mkdir(parents=True)
-        for name in ("settings.toml", "settings.json.migrated", "settings.json", "watch.log", "events.jsonl", "tasks-2026-11.jsonl",
+        for name in ("settings.toml", "settings.json", "watch.log", "events.jsonl", "tasks-2026-11.jsonl",
                      "retros-2026-01.jsonl", ".settings-ab12.tmp"):
             (self.store / name).write_text("x")
         (self.store / "specs" / "repo").mkdir(parents=True)
@@ -487,7 +486,7 @@ class UninstallFlow(Setup):
         (self.store / "notes.txt").write_text("not ours")
         (self.store / "events.jsonl.bak").write_text("not ours")
         self.assertEqual(self.command("uninstall", "--list"), 0)
-        for name in ("settings.toml", "settings.json.migrated", "settings.json", "watch.log", "events.jsonl", "tasks-2026-11.jsonl",
+        for name in ("settings.toml", "settings.json", "watch.log", "events.jsonl", "tasks-2026-11.jsonl",
                      ".settings-ab12.tmp"):
             self.assertIn(str(self.store / name), self.out)
         self.assertIn(f"{self.store / 'specs'} (1 files)", self.out)

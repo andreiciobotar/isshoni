@@ -16,9 +16,23 @@ from pathlib import Path
 from unittest import mock
 
 BIN = Path(__file__).resolve().parent.parent / "bin" / "factory"
+os.environ.pop("FACTORY_HOME", None)  # the tests make their own homes; an ambient one would move the script's store
 _loader = importlib.machinery.SourceFileLoader("factory_bin", str(BIN))
 factory = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_bin", _loader))
 _loader.exec_module(factory)
+
+# No test may write the real settings file: a write to the real ~/.claude/factory (taken before any test changes HOME) fails.
+_REAL_FACTORY_HOME = Path("~/.claude/factory").expanduser().resolve()
+_write_text = factory.write_text
+
+
+def _guarded_write_text(path, content):
+    if Path(os.path.realpath(path)).is_relative_to(_REAL_FACTORY_HOME):
+        raise AssertionError(f"a test is about to write {path} in the real factory home")
+    _write_text(path, content)
+
+
+factory.write_text = _guarded_write_text
 
 ROOT = "/repo"
 WT = f"{ROOT}/.claude/worktrees"
@@ -454,7 +468,8 @@ monitor = "/bin/isshoni"
             self.load('[models]\ncoder = "sonet"\n')
         self.assertEqual(str(raised.exception), 'settings.toml line 2: models.coder: "sonet" is not a model '
                                                 '(an alias: fable, opus, sonnet, haiku; or a full id starting claude-)')
-        for good in ("fable", "opus", "sonnet", "haiku", "claude-opus-4-1", "claude-sonnet-4-5-20250929", "claude-opus-4-1[1m]"):
+        for good in ("fable", "opus", "sonnet", "haiku", "claude-opus-4-1", "claude-sonnet-4-5-20250929", "claude-opus-4-1[1m]",
+                     "opus[1m]", "haiku[200k]"):
             self.assertEqual(self.load(f'[models]\ncoder = "{good}"\n')["models"]["coder"], good)
 
     def test_a_table_where_a_value_is_wrong(self):
@@ -553,6 +568,28 @@ class SetTests(InStore):
                                     '["b"]' if "dispatchers" in text else "8")
             self.assertEqual(self.path.read_text(), text)
 
+    def test_line_endings_are_kept(self):
+        crlf = HAND_EDITED.replace("\n", "\r\n")
+        for key, value, old, new in (("limits.worktree_cap", "8", "worktree_cap = 3  # three", "worktree_cap = 8  # three"),
+                                     ("models.coder", "haiku", "coder = 'sonnet'   # mine", 'coder = "haiku"   # mine')):
+            self.path.write_bytes(crlf.encode())
+            factory.set_setting(key, value)
+            self.assertEqual(self.path.read_bytes(), crlf.replace(old, new).encode())
+        self.set("models.lead", "opus", crlf)  # a key added to a table
+        self.assertEqual(self.path.read_bytes(), crlf.replace("coder = 'sonnet'   # mine\r\n", "coder = 'sonnet'   # mine\r\nlead = \"opus\"\r\n").encode())
+        self.set("merging.lgtm_from_author", "false", crlf)  # a table added
+        self.assertEqual(self.path.read_bytes(), (crlf + "\r\n[merging]\r\nlgtm_from_author = false\r\n").encode())
+        self.set("limits.worktree_cap", "8", HAND_EDITED.rstrip("\n"))  # no newline at the end
+        self.assertEqual(self.path.read_text(), HAND_EDITED.replace("worktree_cap = 3", "worktree_cap = 8"))
+        self.assertEqual(self.load()["worktree_cap"], 8)
+
+    def test_a_table_that_is_not_a_table_is_refused_untouched(self):
+        for text in ("[[limits]]\nworktree_cap = 3\n", "limits = 3\n", "limits = {worktree_cap = 3}\n"):
+            self.path.write_bytes(text.encode())
+            with self.assertRaisesRegex(factory.Fail, "edit the file by hand"):
+                factory.set_setting("limits.worktree_cap", "8")
+            self.assertEqual(self.path.read_text(), text)
+
     def test_a_file_that_is_not_toml_is_refused_untouched(self):
         self.path.write_text("[limits\n")
         with self.assertRaisesRegex(factory.Fail, "edit the file by hand"):
@@ -591,15 +628,28 @@ class MigrationTests(InStore):
     def legacy(self, data):
         (self.dir / "settings.json").write_text(data if isinstance(data, str) else json.dumps(data))
 
+    def old_reader(self):
+        """What a version before settings.toml reads: the JSON, key by key."""
+        return json.loads((self.dir / "settings.json").read_text())
+
     def test_this_machines_shape(self):
         self.legacy({"worktree_cap": 7, "monitor": "/m/isshoni"})
+        before = (self.dir / "settings.json").read_bytes()
         got = self.load()
         self.assertEqual(got, {**DEFAULT_SETTINGS, "worktree_cap": 7, "monitor": "/m/isshoni"})
         self.assertEqual(self.path.read_text(), factory.settings_text({("limits", "worktree_cap"): 7, ("paths", "monitor"): "/m/isshoni"}))
         self.assertIn('\nmonitor = "/m/isshoni"\n', self.path.read_text())
-        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["settings.json.migrated", "settings.toml"])
-        self.assertEqual(json.loads((self.dir / "settings.json.migrated").read_text()), {"worktree_cap": 7, "monitor": "/m/isshoni"})
-        self.assertEqual(self.err, f"factory: moved {self.dir / 'settings.json'} to {self.path} (the old file is now settings.json.migrated)\n")
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["settings.json", "settings.toml"])
+        self.assertEqual((self.dir / "settings.json").read_bytes(), before)  # untouched, not renamed
+        self.assertEqual(self.err, f"factory: wrote {self.path} from {self.dir / 'settings.json'}, which stays for older versions\n")
+
+    def test_the_old_reader_still_gets_the_old_value_after_the_migration_and_after_a_set(self):
+        self.legacy({"worktree_cap": 7, "monitor": "/m"})
+        self.load()
+        self.assertEqual(self.old_reader()["worktree_cap"], 7)
+        with redirect_stderr(io.StringIO()):
+            factory.set_setting("limits.worktree_cap", "9")
+        self.assertEqual((self.old_reader()["worktree_cap"], self.load()["worktree_cap"]), (7, 9))  # not seen by the other version
 
     def test_all_eight_keys_and_the_dispatchers(self):
         old = {"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan", "task_time_limit_hours": 0.5,
@@ -612,6 +662,7 @@ class MigrationTests(InStore):
                                "reserve_percent": 25, "lean_start": False, "dispatchers": ["dispatcher-x"],
                                "models": {**DEFAULT_SETTINGS["models"], "lead": "opus"}})
         self.assertNotIn("not carried", self.err)
+        self.assertNotIn("differs", self.err)
 
     def test_unknown_keys_are_named(self):
         self.legacy({"worktree_cap": 3, "dashboard_theme": "dark", "zeta": 1})
@@ -635,43 +686,87 @@ class MigrationTests(InStore):
                 self.load()
             self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["settings.json"])
 
-    def test_when_both_files_exist_the_json_is_ignored(self):
+    def test_a_migration_that_would_not_read_back_the_same_writes_nothing(self):
+        self.legacy({"worktree_cap": 7})
+        for wrong in ("[limits]\nworktree_cap = 8\n", "[limits\n"):  # text that reads back as other values, or not at all
+            with mock.patch.object(factory, "settings_text", lambda values, wrong=wrong: wrong):
+                with self.assertRaisesRegex(factory.Fail, r"settings\.json would not read back the same as TOML"):
+                    self.load()
+            self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["settings.json"])
+        self.legacy({"worktree_cap": 7, "monitor": "/a b/\u00e9\"x\\y"})  # what json and TOML both escape is fine
+        self.assertEqual(self.load()["monitor"], '/a b/\u00e9"x\\y')
+
+    def test_the_toml_wins_and_a_differing_key_is_reported_once_per_command(self):
+        self.legacy({"worktree_cap": 7, "lead_model": "opus", "reserve_percent": 10})
+        self.path.write_text("[limits]\nworktree_cap = 2\n")  # lead and reserve: the TOML says the defaults
+        self.assertEqual(self.load()["worktree_cap"], 2)
+        self.assertEqual(self.err, "factory: settings.json (read only by older versions) differs from settings.toml in "
+                                   "worktree_cap, lead_model; delete settings.json once no older version runs\n")
+        self.load()
+        self.assertEqual(self.err, "")  # said already
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["settings.json", "settings.toml"])
+
+    def test_no_line_when_the_two_agree_or_there_is_no_json(self):
+        self.legacy({"worktree_cap": 2})
+        self.load("[limits]\nworktree_cap = 2\n")
+        self.assertEqual(self.err, "")
+        (self.dir / "settings.json").unlink()
+        self.load()
+        self.assertEqual(self.err, "")
+
+    def test_a_json_that_cannot_be_read_is_reported_not_fatal(self):
+        for text in ("{not json", "[1]", '{"worktree_cap": 0}'):
+            factory.warned.clear()
+            self.legacy(text)
+            self.assertEqual(self.load("[limits]\nworktree_cap = 2\n")["worktree_cap"], 2)
+            self.assertIn("settings.json (read only by older versions) cannot be used: ", self.err)
+            self.assertTrue(self.err.endswith("; delete it once no older version runs\n"), self.err)
+
+    def test_a_hook_is_silent(self):
+        self.legacy({"worktree_cap": 7})
+        self.path.write_text("[limits]\nworktree_cap = 2\n")
+        with mock.patch.object(factory, "quiet", True):
+            self.load()
+            self.assertEqual(self.err, "")
+        out = io.StringIO()
+        with mock.patch.object(sys, "stdin", io.StringIO("{}")), redirect_stdout(out), redirect_stderr(io.StringIO()):
+            factory.main(["hook"])
+        self.assertTrue(factory.quiet)
+        factory.quiet = False
+
+    def test_when_both_files_exist_the_json_is_not_migrated_over_the_toml(self):
         self.legacy({"worktree_cap": 7})
         self.path.write_text("[limits]\nworktree_cap = 2\n")
         self.assertEqual(self.load()["worktree_cap"], 2)
-        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["settings.json", "settings.toml"])
-        self.assertEqual(self.err, "")
+        self.assertEqual(self.path.read_text(), "[limits]\nworktree_cap = 2\n")
 
     def test_the_second_run_is_a_no_op(self):
         self.legacy({"worktree_cap": 7, "monitor": "/m"})
         first = self.load()
         text, mtime = self.path.read_text(), os.stat(self.path).st_mtime_ns
+        factory.warned.clear()
         self.assertEqual(self.load(), first)
         self.assertEqual((self.path.read_text(), os.stat(self.path).st_mtime_ns, self.err), (text, mtime, ""))
 
-    def test_a_rename_that_finds_the_json_gone_is_ignored(self):
-        self.legacy({"worktree_cap": 7})
-        with mock.patch.object(Path, "rename", side_effect=FileNotFoundError):
-            self.assertEqual(self.load()["worktree_cap"], 7)
-
-    def test_a_racing_process_that_got_there_first_is_read(self):
+    def test_a_racing_process_writes_the_same_file(self):
         self.legacy({"worktree_cap": 7})
         real = factory.migrate_json
 
-        def other_process(path):  # it moves the file between this process's read and its migration
+        def other_process(path):  # it migrates between this process's read and its own migration
             real(path)
-            (self.dir / "settings.json.migrated").rename(self.dir / "settings.json")
             real(path)
 
         with mock.patch.object(factory, "migrate_json", other_process):
             self.assertEqual(self.load()["worktree_cap"], 7)
+        self.assertEqual(self.path.read_text(), factory.settings_text({("limits", "worktree_cap"): 7}))
 
-    def test_set_migrates_first(self):
+    def test_set_migrates_first_and_leaves_the_json(self):
         self.legacy({"worktree_cap": 7, "monitor": "/m"})
+        before = (self.dir / "settings.json").read_bytes()
         with redirect_stderr(io.StringIO()):
             self.assertEqual(factory.set_setting("paths.monitor", "/n"), 'set paths.monitor = "/n"')
         self.assertEqual(self.load(), {**DEFAULT_SETTINGS, "worktree_cap": 7, "monitor": "/n"})
-        self.assertTrue((self.dir / "settings.json.migrated").exists())
+        self.assertEqual((self.dir / "settings.json").read_bytes(), before)
 
 
 class AgentDefinitionTests(unittest.TestCase):
@@ -808,7 +903,9 @@ class NewTests(unittest.TestCase):
             _, _, _, fake = invoke([*self.ARGS, "--lead-model", "opus"], self.answers([], (), self.OK), '[models]\nlead = "haiku"\n')
         argv = fake.calls[-1]
         self.assertEqual(argv[argv.index("--model") + 1], "opus")
-        self.assertEqual(started, [("TaskStarted", "demo-task", {"base": "main", "lead_model": "opus"})])
+        self.assertEqual(started, [("TaskStarted", "demo-task", {
+            "base": "main", "lead_model": "opus",
+            "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet", "reviewer": "opus"}})])
         started.clear()
         with mock.patch.object(factory, "task_event", lambda kind, repo, slug, **kw: started.append((kind, slug, kw))):
             _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), '[models]\nlead = "haiku"\n')
@@ -1783,7 +1880,8 @@ print(os.environ["FAKE_PR"])
         self.argv_file = tmp / "argv.json"
         self.dispatcher = {"sessionId": "sid-d", "name": "dispatcher-repo", "kind": "interactive",
                            "cwd": str(self.repo)}
-        self.env = {**os.environ, "HOME": str(self.home), "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        self.env = {**os.environ, "HOME": str(self.home), "FACTORY_HOME": str(self.home / ".claude" / "factory"),
+                    "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
                     "FAKE_ARGV": str(self.argv_file), "FAKE_AGENTS": json.dumps([self.dispatcher]),
                     "FAKE_PR": "[]", "CLAUDE_CODE_SESSION_ID": "sid-d", "GIT_AUTHOR_NAME": "t",
                     "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}

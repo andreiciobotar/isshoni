@@ -125,6 +125,10 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(metrics.expected_model("factory:explorer", "/nonexistent", AGENTS), "haiku")  # not set: the frontmatter
         self.assertEqual(metrics.expected_model("coder", "/nonexistent", AGENTS), "sonnet")  # not a factory agent
 
+    def test_a_bracket_suffix_on_an_alias_is_ignored(self):
+        self.assertTrue(metrics.model_matches("opus[1m]", "claude-opus-5-5"))
+        self.assertFalse(metrics.model_matches("opus[1m]", "claude-sonnet-5-5"))
+
     def test_expected_model_without_a_settings_file_or_with_one_that_cannot_be_read(self):
         for text in (None, "[models\n", "models = 3\n", "[models]\ncoder = 3\n"):
             self.settings(text)

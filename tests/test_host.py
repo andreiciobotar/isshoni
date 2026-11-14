@@ -21,7 +21,7 @@ SECRET_KEY = "-----BEGIN RSA PRIVATE KEY-----\nSECRETKEYMATERIAL\n-----END RSA P
 TOKEN = "sk-ant-oat01-SECRETTOKEN"
 PUB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItestkey laptop"
 # The server's factory (its own home, not the laptop's FACTORY_HOME): `settings set` is the real script's (the monitor and the dispatchers are written by it), anything else does nothing.
-FACTORY = '#!/bin/sh\ncase "$1" in settings) exec env -u FACTORY_HOME python3 "%s" "$@";; esac\n' % os.path.join(ROOT, "factory", "bin", "factory")
+FACTORY = '#!/bin/sh\ncase "$1" in settings) exec env FACTORY_HOME="$HOME/.claude/factory" python3 "%s" "$@";; esac\n' % os.path.join(ROOT, "factory", "bin", "factory")
 
 # Records every call to the directory $FAKE_LOG (N.target, N.cmd, N.in), then runs the remote command in a local
 # shell: the "server". Plain sh, because the tests make hundreds of calls.
@@ -442,8 +442,7 @@ exec "$(dirname "$0")/claude-real" "$@"
         settings = tomllib.loads((factory / "settings.toml").read_text())
         self.assertEqual((settings["limits"]["worktree_cap"], settings["paths"]["monitor"], settings["sessions"]["dispatchers"]),
                          (3, "/state/home/.isshoni/bin/isshoni", ["dispatcher-widgets", "dispatcher-private-thing"]))
-        self.assertTrue((factory / "settings.json.migrated").exists())
-        self.assertFalse((factory / "settings.json").exists())
+        self.assertEqual(json.loads((factory / "settings.json").read_text()), {"worktree_cap": 3, "monitor": "old"})  # left as it was
         self.assertEqual(keys.read_text(), "ssh-ed25519 AAAAother bob\nwrite " + PUB + "\n")
         self.assertTrue((self.srv / "serving").exists())
         calls = [c["argv"][1] for c in self.calls()]

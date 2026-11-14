@@ -110,6 +110,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	e := &testEnv{t: t, stub: t.TempDir(), home: t.TempDir(), logs: &syncBuf{}}
 	t.Setenv("STUBDIR", e.stub)
 	t.Setenv("HOME", e.home)
+	t.Setenv("FACTORY_HOME", filepath.Join(e.home, ".claude", "factory")) // where the dashboard looks, and the script writes
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
@@ -565,16 +566,12 @@ func TestServeOnlyAWriteKeyChangesTheCap(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 is missing")
 	}
-	script, err := filepath.Abs("../../factory/bin/factory")
+	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bin := t.TempDir()
-	if err := os.Symlink(script, filepath.Join(bin, "factory")); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("FACTORY_HOME", "")
+	t.Setenv("ISSHONI_ROOT", root)
+	requireTempFactoryHome(t)
 	ro, rw := newSigner(t), newSigner(t)
 	e.allow(keyLine(ro, ""), keyLine(rw, "write"))
 	addr, _ := e.start()

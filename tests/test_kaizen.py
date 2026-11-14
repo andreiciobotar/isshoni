@@ -514,7 +514,7 @@ class SiteManagerTests(Store):
             {"ts": "2026-11-10T13:00:00Z", "repo": repo, "miss": "m", "slug": None, "firing": "f2"},
             {"ts": "2026-11-10T13:01:00Z", "repo": repo, "miss": "n", "slug": None, "firing": None}])
         p = subprocess.run([os.path.join(ROOT, "factory", "bin", "factory"), "firings", "--json"], cwd=repo,
-                           env={**os.environ, "HOME": home}, capture_output=True, text=True)
+                           env={**os.environ, "HOME": home, "FACTORY_HOME": os.path.join(home, ".claude", "factory")}, capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
         theirs = json.loads(p.stdout)["summary"]
         self.assertEqual((theirs["escalated"], theirs["missed"]), (3, 2))

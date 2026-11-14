@@ -811,6 +811,7 @@ func factoryStubModel(t *testing.T) (*model, string, *time.Time) {
 	t.Helper()
 	m, dir := stubModel(t)
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FACTORY_HOME", filepath.Dir(data.FactorySettingsPath()))
 	for id, name := range map[string]string{sidA: "one", sidB: "two", "cccccccc-0003": "three"} {
 		repo := filepath.Join(t.TempDir(), name)
 		if name != "three" {
@@ -979,6 +980,7 @@ func settingsFile(t *testing.T, content string) string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	path := data.FactorySettingsPath()
+	t.Setenv("FACTORY_HOME", filepath.Dir(path)) // the script and the dashboard read the same file
 	if content != "" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -993,19 +995,18 @@ func settingsFile(t *testing.T, content string) string {
 // realFactory puts the repository's factory script first on PATH, with its store where the dashboard looks.
 func realFactory(t *testing.T) {
 	t.Helper()
+	if h := os.Getenv("HOME"); h == realHome || h == "" {
+		t.Fatalf("HOME=%q is the real home: make the test's temporary home first", h)
+	}
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 is missing")
 	}
-	script, err := filepath.Abs("../../factory/bin/factory")
+	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bin := t.TempDir()
-	if err := os.Symlink(script, filepath.Join(bin, "factory")); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("FACTORY_HOME", "")
+	t.Setenv("ISSHONI_ROOT", root)
+	requireTempFactoryHome(t) // after the test has made its temporary HOME and FACTORY_HOME
 }
 
 func capModel(t *testing.T, content string) (*model, string) {
@@ -1122,9 +1123,9 @@ func TestCapFieldSwallowsOtherKeys(t *testing.T) {
 }
 
 func TestCapFieldRefusesAFileItCannotRead(t *testing.T) {
-	realFactory(t)
 	for _, content := range []string{"[limits]\nworktree_cap = [1\n"} {
 		m, path := capModel(t, content)
+		realFactory(t)
 		send(m, "c")
 		if want := data.ShortPath(path) + " line 2: the list holds something other than basic strings"; m.fac.editing || m.fac.capErr != want || !strings.Contains(plain(m), data.ShortPath(path)+" line 2") {
 			t.Fatalf("%s: reported by path and line and not opened: editing=%v capErr=%q", content, m.fac.editing, m.fac.capErr)
@@ -1141,9 +1142,9 @@ func TestCapFieldRefusesAFileItCannotRead(t *testing.T) {
 }
 
 func TestCapFieldRepairsAnInvalidValue(t *testing.T) {
-	realFactory(t)
 	for _, bad := range []string{`0`, `"3"`, `true`} {
 		m, path := capModel(t, "[models]\nlead = \"x\"\n[limits]\nworktree_cap = "+bad+"\n")
+		realFactory(t)
 		send(m, "c")
 		if !m.fac.editing || m.fac.field != "5" {
 			t.Fatalf("worktree_cap %s: the field opens prefilled with 5: editing=%v field=%q", bad, m.fac.editing, m.fac.field)

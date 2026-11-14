@@ -184,12 +184,37 @@ func legacySettings(path string) (map[string]json.RawMessage, error) {
 // wrongType is the value of a key that is neither an integer nor a list of strings.
 type wrongType struct{}
 
-var tableLine = regexp.MustCompile(`^\[([^\[\]]+)\]\s*(#.*)?$`)
+var (
+	tableLine = regexp.MustCompile(`^\[\s*([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\s*\](?:\s*#.*)?$`)
+	bareKey   = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+)
+
+// bracketDelta is the number of `[` minus the number of `]` in a line outside its strings and comment.
+func bracketDelta(s string) int {
+	delta, inString := 0, false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case inString && c == '\\':
+			i++
+		case c == '"':
+			inString = !inString
+		case inString:
+		case c == '#':
+			return delta
+		case c == '[':
+			delta++
+		case c == ']':
+			delta--
+		}
+	}
+	return delta
+}
 
 // readSetting is the one reader of the settings file the dashboard has; the factory is the only writer. It finds
 // `key` inside `[table]` and returns its value: an int, a []string (an array of basic strings on one line or
 // over several, comments and a trailing comma allowed), or wrongType for any other single-line value. found is
-// false for no such key. It is not a TOML parser: an array it cannot read is an error naming the file and the line.
+// false for no such key. It is not a TOML parser: a line it cannot classify (a header that is not [bare.name], a key
+// that is not a bare name, a value starting `{`, `"""` or `”'`, a list it cannot read) is an error naming the file and the line.
 // A missing file reads the same key of a legacy settings.json beside it, if there is one.
 func readSetting(path, table, key string) (val any, found bool, err error) {
 	b, err := os.ReadFile(path)
@@ -200,17 +225,41 @@ func readSetting(path, table, key string) (val any, found bool, err error) {
 		return nil, false, shortErr(path, err)
 	}
 	lines, current := strings.Split(string(b), "\n"), ""
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
-		if m := tableLine.FindStringSubmatch(line); m != nil {
-			current = strings.TrimSpace(m[1])
+	unreadable := func(i int, what string) error {
+		return fmt.Errorf("%s line %d: %s", ShortPath(path), i+1, what)
+	}
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		if line[0] == '[' {
+			m := tableLine.FindStringSubmatch(line)
+			if m == nil {
+				return nil, false, unreadable(i, "a table header other than [name] or [name.name]")
+			}
+			current = m[1]
 			continue
 		}
 		name, rest, ok := strings.Cut(line, "=")
-		if !ok || current != table || strings.TrimSpace(name) != key {
+		name, rest = strings.TrimSpace(name), strings.TrimSpace(rest)
+		switch {
+		case !ok || !bareKey.MatchString(name):
+			return nil, false, unreadable(i, "a line that is not a table header, a comment or a plain name = value")
+		case strings.HasPrefix(rest, "{") || strings.HasPrefix(rest, `"""`) || strings.HasPrefix(rest, "'''"):
+			return nil, false, unreadable(i, "an inline table or a multi-line string")
+		}
+		if current != table || name != key {
+			// another key: a list over several lines is skipped whole
+			start := i
+			for depth := bracketDelta(rest); depth > 0; {
+				if i++; i >= len(lines) {
+					return nil, false, unreadable(start, "the list is not closed")
+				}
+				depth += bracketDelta(lines[i])
+			}
 			continue
 		}
-		rest = strings.TrimSpace(rest)
 		if !strings.HasPrefix(rest, "[") {
 			rest, _, _ = strings.Cut(rest, "#")
 			if n, err := strconv.Atoi(strings.TrimSpace(rest)); err == nil {
@@ -321,16 +370,22 @@ func ReadDispatchers(path string) ([]string, error) {
 	return names, nil
 }
 
-// WriteWorktreeCap runs `factory settings set limits.worktree_cap n`: the factory is the only writer of its
-// settings file. Its one-line complaint is the error.
+// WriteWorktreeCap runs `<root>/factory/bin/factory settings set limits.worktree_cap n`, root being the checkout
+// the dashboard runs from (LocateRoot): the factory is the only writer of its settings file, and `factory` is on
+// the PATH only inside Claude Code sessions. Its one-line complaint is the error.
 func WriteWorktreeCap(n int) error {
+	root, err := LocateRoot()
+	if err != nil {
+		return err
+	}
+	script := filepath.Join(root, "factory", "bin", "factory")
+	if _, err := os.Stat(script); err != nil {
+		return fmt.Errorf("factory command not found: %s", script)
+	}
 	var se bytes.Buffer
-	cmd := exec.Command("factory", "settings", "set", "limits.worktree_cap", strconv.Itoa(n))
+	cmd := exec.Command(script, "settings", "set", "limits.worktree_cap", strconv.Itoa(n))
 	cmd.Stderr = &se
 	if err := cmd.Run(); err != nil {
-		if errors.Is(err, exec.ErrNotFound) {
-			return errors.New("the factory command is not on PATH")
-		}
 		return stderrLine(se.String(), err)
 	}
 	return nil

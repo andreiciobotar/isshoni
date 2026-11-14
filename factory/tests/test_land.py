@@ -96,7 +96,8 @@ class LandTests(unittest.TestCase):
             tool.write_text(text)
             tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
         self.bump = bindir / "bump"
-        self.env = {**os.environ, "HOME": str(self.home), "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        self.env = {**os.environ, "HOME": str(self.home), "FACTORY_HOME": str(self.home / ".claude" / "factory"),
+                    "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
                     "FAKE_STATE": str(self.state), "FAKE_LANDER": "stop", "TEST_CMD": "true",
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                     "GIT_COMMITTER_EMAIL": "t@t"}

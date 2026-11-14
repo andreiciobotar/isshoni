@@ -122,7 +122,7 @@ def validate_slug(slug):
 
 
 ALIASES = ("fable", "opus", "sonnet", "haiku")
-MODEL_ID_RE = re.compile(r"claude-[a-z0-9.-]+(\[[0-9a-z]+\])?")
+MODEL_SHAPE_RE = re.compile(r"(fable|opus|sonnet|haiku|claude-[a-z0-9.-]+)(\[[0-9a-z]+\])?")
 TABLE_RE = re.compile(r"\s*\[([^\[\]]+)\]\s*(#.*)?")
 VALUE_RE = r"(\"(?:[^\"\\]|\\.)*\"|'[^']*'|\[[^\]]*\]|[^#\s]+)(.*)"
 
@@ -150,7 +150,7 @@ def permission_mode(v):
 
 
 def a_model(v):
-    ok = isinstance(v, str) and (v in ALIASES or MODEL_ID_RE.fullmatch(v))
+    ok = isinstance(v, str) and MODEL_SHAPE_RE.fullmatch(v)
     return None if ok else (f': "{v}" is not a model (an alias: {", ".join(ALIASES)}; or a full id starting claude-)')
 
 
@@ -206,6 +206,7 @@ TABLES = tuple(dict.fromkeys(s.table for s in SETTINGS))
 SETTINGS_HEADER = ("# The factory's settings. Edit a line and save: no reinstall.\n"
                    "# A model is an alias (fable, opus, sonnet, haiku) or a full id (claude-...).")
 warned = set()
+quiet = False
 
 
 def flat_settings(values):
@@ -259,9 +260,10 @@ def find_line(lines, table, key=None):
 def edit_text(text, table, key, literal):
     """`text` with the line of `table.key` set to `literal`: that line only, its trailing comment kept; a missing key
     is added at the end of its table, a missing table at the end of the file."""
-    lines = text.splitlines(keepends=True)
+    eol = "\r\n" if "\r\n" in text else "\n"
+    lines = re.findall(r"[^\n]*\n|[^\n]+", text)
     if lines and not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
+        lines[-1] += eol
     i = find_line(lines, table, key)
     if i is not None:
         found = re.fullmatch(rf"(\s*{re.escape(key)}\s*=\s*){VALUE_RE}", lines[i], re.S)
@@ -271,11 +273,11 @@ def edit_text(text, table, key, literal):
         return "".join(lines)
     header = find_line(lines, table)
     if header is None:
-        return "".join(lines + (["\n"] if lines else []) + [f"[{table}]\n", f"{key} = {literal}\n"])
+        return "".join(lines + ([eol] if lines else []) + [f"[{table}]{eol}", f"{key} = {literal}{eol}"])
     end = next((j for j in range(header + 1, len(lines)) if TABLE_RE.fullmatch(lines[j].rstrip("\n"))), len(lines))
     while end - 1 > header and not lines[end - 1].strip():
         end -= 1
-    lines.insert(end, f"{key} = {literal}\n")
+    lines.insert(end, f"{key} = {literal}{eol}")
     return "".join(lines)
 
 
@@ -284,7 +286,7 @@ def write_text(path, content):
     real = Path(os.path.realpath(path))
     real.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=real.parent, prefix=".settings-", suffix=".tmp")
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", newline="") as f:
         f.write(content)
     if real.exists():
         shutil.copymode(real, tmp)
@@ -292,7 +294,8 @@ def write_text(path, content):
 
 
 def warn(message):
-    if message not in warned:
+    """One line on stderr, once per command, and none from a hook (it runs on every tool call)."""
+    if message not in warned and not quiet:
         warned.add(message)
         print(f"factory: {message}", file=sys.stderr)
 
@@ -321,40 +324,69 @@ def checked(data, where):
     return values
 
 
-def migrate_json(path):
-    """The legacy settings.json beside `path`, written as the shipped text with its values in place and renamed to
-    settings.json.migrated. Nothing when there is no such file; a racing process that got there first is fine."""
-    old = path.with_name("settings.json")
+CARRIED = {s.key: s for s in SETTINGS if s.table != "models"} | {"lead_model": next(s for s in SETTINGS if s.key == "lead")}
+
+
+def legacy_values(old):
+    """(the JSON object, its values by (table, key)) of the legacy settings.json `old`, each checked."""
     try:
-        raw = old.read_text()
-    except FileNotFoundError:
-        return
-    try:
-        data = json.loads(raw)
+        data = json.loads(old.read_text())
     except ValueError as e:
         raise Fail(f"settings file {old} cannot be read as JSON: {e}")
     if not isinstance(data, dict):
         raise Fail(f"settings file {old} must hold a JSON object")
-    carried = {s.key: s for s in SETTINGS if s.table != "models"} | {"lead_model": next(s for s in SETTINGS if s.key == "lead")}
     values = {}
-    for name, s in carried.items():
+    for name, s in CARRIED.items():
         if name in data:
             if problem := s.check(data[name]):
                 raise Fail(f"{old}: {name}{problem}")
             values[s.table, s.key] = data[name]
-    write_text(path, settings_text(values))
-    with contextlib.suppress(FileNotFoundError):
-        old.rename(old.with_name("settings.json.migrated"))
-    left = [k for k in data if k not in carried]
-    print(f"factory: moved {old} to {path} (the old file is now settings.json.migrated)"
-          + (f"; not carried over: {', '.join(left)}" if left else ""), file=sys.stderr)
+    return data, values
+
+
+def migrate_json(path):
+    """Write the settings.json beside `path`, when it is the only one, as the shipped text with its values in place.
+    The JSON is left as it is: older versions of the factory on this machine still read it, and nothing here ever
+    writes or removes it. Nothing when there is no such file; a racing process that got there first is fine."""
+    old = path.with_name("settings.json")
+    try:
+        data, values = legacy_values(old)
+    except FileNotFoundError:
+        return
+    new = settings_text(values)
+    try:
+        back = tomllib.loads(new)
+        same = all(back.get(s.table, {}).get(s.key) == values[s.table, s.key] for s in SETTINGS if (s.table, s.key) in values)
+    except tomllib.TOMLDecodeError:
+        same = False
+    if not same:
+        raise Fail(f"settings file {old} would not read back the same as TOML: move it by hand into {path.name}")
+    write_text(path, new)
+    left = [k for k in data if k not in CARRIED]
+    warn(f"wrote {path} from {old}, which stays for older versions" + (f"; not carried over: {', '.join(left)}" if left else ""))
+
+
+def report_legacy_differences(path, values):
+    """While a settings.json sits beside the settings.toml, say which of its keys the TOML does not agree with."""
+    old = path.with_name("settings.json")
+    try:
+        data, _ = legacy_values(old)
+    except FileNotFoundError:
+        return
+    except Fail as e:
+        return warn(f"settings.json (read only by older versions) cannot be used: {e}; delete it once no older version runs")
+    differ = [name for name, s in CARRIED.items() if name in data and data[name] != values[s.table, s.key]]
+    if differ:
+        warn(f"settings.json (read only by older versions) differs from settings.toml in {', '.join(differ)}; "
+             "delete settings.json once no older version runs")
 
 
 def read_settings(path):
     """The text of the settings file, migrating settings.json first when only that exists; None when neither does."""
     for _ in range(2):
         try:
-            return path.read_text()
+            with open(path, newline="") as f:
+                return f.read()
         except FileNotFoundError:
             migrate_json(path)
         except OSError as e:
@@ -375,7 +407,9 @@ def load_settings():
     def where(table, key=None):
         i = find_line(lines, table, key)
         return f"{path.name} line {i + 1}" if i is not None else path.name
-    return flat_settings(checked(data, where))
+    values = checked(data, where)
+    report_legacy_differences(path, values)
+    return flat_settings(values)
 
 
 def set_setting(dotted, raw):
@@ -392,7 +426,9 @@ def set_setting(dotted, raw):
     new = edit_text(base, s.table, s.key, toml_value(value))
     try:
         want = tomllib.loads(base)
-        want.setdefault(s.table, {})[s.key] = value
+        if not isinstance(want.setdefault(s.table, {}), dict):
+            raise Fail(f"{s.table} is not a table")
+        want[s.table][s.key] = value
         if tomllib.loads(new) != want:
             raise Fail("the edit would change more than the one line")
     except (tomllib.TOMLDecodeError, Fail) as e:
@@ -435,6 +471,11 @@ def agent_definitions(models):
 
 
 LEAD_TOOLS = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch,SendMessage,WebFetch,WebSearch,TaskStop,Monitor"
+
+
+def agent_models(models):
+    """The configured model of each agent file in factory/agents, by role."""
+    return {f.stem: models[f.stem] for f in sorted((PLUGIN_ROOT / "agents").glob("*.md")) if f.stem in models}
 
 
 def lean_flags():
@@ -1145,7 +1186,8 @@ def cmd_new(args):
         what = "without a `backgrounded` line" if not match else "after printing a `backgrounded` line"
         raise Fail(f"claude exited {rc} {what}; the session may be running, nothing was removed", code=1)
     print(f"started {match.group(2).strip()} (session {match.group(1)})")
-    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"])
+    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"],
+               models=agent_models(settings["models"]))
     try:
         declare(repo, args.slug, "dispatcher", "working")
     except (OSError, ValueError, KeyError):
@@ -1574,8 +1616,7 @@ def gather(repo, dispatcher):
             "monitor": settings["monitor"], "lgtm_from_author": settings["lgtm_from_author"],
             "lean_start": settings["lean_start"],
             "rows": None if sessions is None else collect(repo, sessions, settings["task_time_limit_hours"]),
-            "declared": read_tasks(repo.root), "events": repo_log("events", repo.root), "models": {f.stem: settings["models"][f.stem] for f in (PLUGIN_ROOT / "agents").glob("*.md")
-                      if f.stem in settings["models"]},
+            "declared": read_tasks(repo.root), "events": repo_log("events", repo.root), "models": agent_models(settings["models"]),
             "gh": lambda *args: gh_json(repo, *args)}
 
 
@@ -1717,17 +1758,23 @@ def c_review_loops(p, threshold):
     return found
 
 
+def model_matches(expected, actual):
+    """The monitor's rule (isshoni/metrics.py): an alias matches by substring, a full id by equality, a [..] suffix ignored."""
+    e = re.sub(r"\[[^\]]*\]$", "", expected.strip().lower())
+    return e in ("", "inherit") or (e in ALIASES and e in actual.lower()) or e == re.sub(r"\[[^\]]*\]$", "", actual.lower())
+
+
 def c_wrong_model(p, _):
     if not p["models"]:
         raise NotEvaluated("no agent files in factory/agents")
     found = []
     for r in unfinished(tasks(p)):
         mine, started = since_start(events(p), r["slug"])
-        want = {**p["models"], "lead": started and started.get("lead_model")}
+        want = {**p["models"], **((started or {}).get("models") or {}), "lead": started and started.get("lead_model")}
         wrong = {}
         for e in mine:
             role, model = e.get("role"), e.get("model")
-            if model and want.get(role) and want[role] not in model:
+            if model and want.get(role) and not model_matches(want[role], model):
                 wrong.setdefault(role, model)
         found += [(r["slug"], f"{r['slug']}/{role}", f"{model}, configured {want[role]}") for role, model in wrong.items()]
     return found
@@ -3650,7 +3697,7 @@ def verify_app(identity):
 PLUGIN = "factory@factory"
 SOURCE = "andreiciobotar/isshoni"
 # The names the factory writes at the top of its home; uninstall removes these and nothing else there.
-HOME_FILE_RE = re.compile(r"settings\.(toml|json(\.migrated)?)|watch\.log|identity|specs|deliverables|dashboard|\.settings-.*\.tmp"
+HOME_FILE_RE = re.compile(r"settings\.(toml|json)|watch\.log|identity|specs|deliverables|dashboard|\.settings-.*\.tmp"
                           r"|(events|tasks|feedback|firings|retros)(-\d{4}-\d\d)?\.jsonl")
 Step = collections.namedtuple("Step", "name purpose optional state act recheck", defaults=(False,))
 
@@ -4650,6 +4697,8 @@ def parse_args(argv):
 
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    global quiet
+    quiet = args.cmd == "hook"
     try:
         if not STORE.expanduser().is_absolute():
             if args.cmd == "hook":
