@@ -629,45 +629,50 @@ func TestFactoryPausedLabelShowsAgeAndWaitedTasks(t *testing.T) {
 	}
 }
 
-func TestFactoryPrioritizedPillComesFirst(t *testing.T) {
-	both := prioritizedFor("both", 3*time.Minute)
-	both.Overtime, both.Stale = true, true
-	m := factoryModel(false, 140, 60, factoryRepo{name: "m", st: fstatus(5, prioritizedFor("rush", 3*time.Minute), both)})
-	p, th := m.th.on(m.th.Bg), m.th
-	rows := m.fac.repos[0].st.Rows
-	cols := m.factoryCols(p, 140, rows)
-	if got, want := m.taskRow(p, cols, rows[0], 140)[0], p.pill("prioritized 3m", th.Purple); !strings.Contains(got, want) {
-		t.Errorf("want %q: %q", want, got)
-	}
-	if got, want := m.taskRow(p, cols, rows[1], 140)[0], p.pill("prioritized 3m", th.Purple)+p.sp(1)+p.pill("overtime", th.Red)+p.sp(1)+p.pill("stale", th.Yellow); !strings.Contains(got, want) {
-		t.Errorf("want %q: %q", want, got)
-	}
-	// without room the pill goes and the pills that were there stay whole
-	if got := flagPills(p, both, fakeNow, pillWidth("overtime")+1+pillWidth("stale")); got != p.pill("overtime", th.Red)+p.sp(1)+p.pill("stale", th.Yellow) {
-		t.Errorf("the prioritized pill takes room from the others: %q", got)
+func TestFactoryPrioritizedLabelIsTheShortPhaseNameAndAge(t *testing.T) {
+	review := prioritizedFor("in-review", 3*time.Minute)
+	review.Phase = "review"
+	noAge := prioritizedFor("no-age", 0)
+	noAge.Prioritized.Since = time.Time{}
+	for _, w := range []int{80, 100, 120} {
+		m := factoryModel(false, w, 60, factoryRepo{name: "m", st: fstatus(5, prioritizedFor("rush", 3*time.Minute), review, ftask("plain", "motion"))})
+		p, th := m.th.on(m.th.Bg), m.th
+		rows := m.fac.repos[0].st.Rows
+		cols := m.factoryCols(p, w, rows)
+		for i, c := range []struct {
+			label string
+			col   color.Color
+		}{{"motion · prioritized 3m", th.Blue}, {"review · prioritized 3m", th.Yellow}} {
+			if got := m.taskRow(p, cols, rows[i], w)[0]; !strings.Contains(got, p.t(c.label, c.col)) {
+				t.Errorf("%d columns: want %q in %v: %q", w, c.label, c.col, got)
+			}
+		}
+		if _, label, _ := m.phaseLook(rows[2], w >= 100); label != "motion" && label != "in motion" {
+			t.Errorf("%d columns: a task not prioritized keeps its label: %q", w, label)
+		}
+		if _, label, _ := m.phaseLook(noAge, w >= 100); label != "motion · prioritized" {
+			t.Errorf("%d columns: a flag without a time shows without an age: %q", w, label)
+		}
 	}
 }
 
-func TestFactoryFlagsLeaveEveryOtherColumnAlone(t *testing.T) {
+func TestFactoryPausedAndPrioritizedLabelsKeepTheTable(t *testing.T) {
 	long := strings.Repeat("x", 40)
-	cols := func(w int, flagged bool) factoryCols {
-		paused, rush := onTask(), prioritizedFor("rush-fix", 3*time.Minute)
-		paused.WaitsOn, paused.Size = long, "medium"
-		if flagged {
-			paused.Paused = &data.FactoryFlag{Since: fakeNow.Add(-45 * time.Minute), WaitsOn: []string{long}}
-		} else {
-			rush.Prioritized = nil
-		}
-		m := factoryModel(true, w, 40, factoryRepo{name: "m", st: fstatus(5, paused, rush, ftask("api-rate-limits", "review"))})
+	cols := func(w int, whom string) factoryCols {
+		paused := pausedFor("docs-after-review", 45*time.Minute, whom)
+		paused.Size = "medium"
+		m := factoryModel(true, w, 40, factoryRepo{name: "m", st: fstatus(5, paused, prioritizedFor("rush-fix", 3*time.Minute), ftask("api-rate-limits", "review"))})
 		return m.factoryCols(m.th.on(m.th.Bg), w, m.fac.repos[0].st.Rows)
 	}
 	for _, w := range []int{80, 100, 120} {
-		got, want := cols(w, true), cols(w, false)
+		got, want := cols(w, long), cols(w, "a")
+		if got.phase < 2+width("motion · prioritized 3m") {
+			t.Errorf("%d columns: PHASE %d cuts the prioritized label", w, got.phase)
+		}
 		got.phase, want.phase = 0, 0 // the label is cut to the cell
-		got.size, want.size = 0, 0   // SIZE gives way to a wider PHASE, and the paused label is longer
-		got.flags, want.flags = 0, 0 // the pill takes only room no other column wants
+		got.size, want.size = 0, 0   // SIZE is the first column to give way to a wider PHASE
 		if got != want || got.elapsed == 0 {
-			t.Errorf("%d columns: flags give %+v, none %+v", w, got, want)
+			t.Errorf("%d columns: 40 characters of slugs give %+v, one short slug %+v", w, got, want)
 		}
 	}
 }

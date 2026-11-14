@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"fmt"
 	"image/color"
-	"math"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -18,7 +17,7 @@ const (
 	meterCells  = 20 // beyond this many slots the meter is a bar
 	baseMax     = 24
 	prMax       = 24
-	phaseMax    = 24 // PHASE keeps more than this only when every column fits at it
+	phaseMax    = 25 // (glyph, space and the 23 cells of "review · prioritized 3m") PHASE keeps more than this only when every column fits at it
 	slugLeast   = 16
 	pausedStale = 30 * time.Minute // a pause this old is stale: the script's blocked-unanswered bound
 	nameLeast   = 12               // cells the repository name keeps before the meter shrinks
@@ -422,6 +421,12 @@ func (m *model) phaseLook(t data.FactoryTask, long bool) (glyph, label string, c
 	if t.Phase == "blocked" && !t.WaitsOnHuman() {
 		label = "blocked on " + t.WaitsOn
 	}
+	if f := t.Prioritized; f != nil {
+		label = phaseLabel(t.Phase, false) + " · prioritized"
+		if !f.Since.IsZero() {
+			label += " " + limitSpan(int64(max(0, m.now().Sub(f.Since)).Seconds()))
+		}
+	}
 	stalePause := false
 	if f := t.Paused; f != nil && t.Phase == "blocked" {
 		label = "paused"
@@ -491,24 +496,13 @@ func baseText(base string) (text string, stacked bool) {
 	return strings.TrimPrefix(base, "origin/"), false
 }
 
-// flagPills is a task's FLAGS cell. The prioritized pill goes first, and only when the whole
-// line fits in room cells, so it never costs another pill its place or its column width.
-func flagPills(p paint, t data.FactoryTask, now time.Time, room int) string {
+func flagPills(p paint, t data.FactoryTask) string {
 	var ps []string
 	if t.Overtime {
 		ps = append(ps, p.pill("overtime", p.th.Red))
 	}
 	if t.Stale {
 		ps = append(ps, p.pill("stale", p.th.Yellow))
-	}
-	if f := t.Prioritized; f != nil {
-		text := "prioritized"
-		if !f.Since.IsZero() {
-			text += " " + limitSpan(int64(max(0, now.Sub(f.Since)).Seconds()))
-		}
-		if pill := p.pill(text, p.th.Purple); width(strings.Join(append([]string{pill}, ps...), p.sp(1))) <= room {
-			ps = append([]string{pill}, ps...)
-		}
 	}
 	return strings.Join(ps, p.sp(1))
 }
@@ -554,7 +548,6 @@ func limitSpan(secs int64) string {
 // then drops BASE, PR and ELAPSED in that order.
 func (m *model) factoryCols(p paint, w int, tasks []data.FactoryTask) factoryCols {
 	c := factoryCols{slug: 4, phase: 5, elapsed: elapsedLeast, pr: 2, base: 4, flags: 5, span: true}
-	flagsWant := 0 // FLAGS wide enough for every prioritized pill too
 	for _, t := range tasks {
 		_, label, _ := m.phaseLook(t, m.w >= 100)
 		base, _ := baseText(t.Base)
@@ -566,8 +559,7 @@ func (m *model) factoryCols(p paint, w int, tasks []data.FactoryTask) factoryCol
 		}
 		c.pr = max(c.pr, min(width(prText(t)), prMax))
 		c.base = max(c.base, min(width(base), baseMax))
-		c.flags = max(c.flags, width(flagPills(p, t, m.now(), 0)))
-		flagsWant = max(flagsWant, width(flagPills(p, t, m.now(), math.MaxInt)))
+		c.flags = max(c.flags, width(flagPills(p, t)))
 	}
 	used := func(cc factoryCols) int {
 		n := 2 + cc.phase + cc.flags + 4 // indent, and the gaps before PHASE and FLAGS
@@ -600,7 +592,6 @@ func (m *model) factoryCols(p paint, w int, tasks []data.FactoryTask) factoryCol
 		}
 		if free := w - used(cc); free >= min(c.slug, slugLeast) || step == 5 {
 			cc.slug = max(1, min(c.slug, free))
-			cc.flags += max(0, min(flagsWant-cc.flags, free-cc.slug)) // only room no other column wants
 			return cc
 		}
 	}
@@ -658,7 +649,7 @@ func (m *model) taskRow(p paint, c factoryCols, t data.FactoryTask, w int) block
 		p.t(cell(cmp.Or(t.Size, "-"), c.size, false), th.Faint),
 		p.t(cell(pr, c.pr, false), prCol),
 		p.t(cell(base, c.base, false), baseCol),
-		fit(flagPills(p, t, m.now(), c.flags), c.flags, p))}
+		fit(flagPills(p, t), c.flags, p))}
 	if reason := strings.Join(strings.Fields(t.StopSummary), " "); t.Phase == "blocked" && !t.WaitsOnHuman() && reason != "" {
 		indent := 2 + c.slug + 2
 		row = append(row, fit(p.sp(indent)+p.t(trunc(reason, max(1, w-indent-1)), th.Faint), w, p))

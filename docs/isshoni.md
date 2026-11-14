@@ -414,7 +414,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   `▲N` for the number waiting on every view (in a narrow header the live count then
   shows as `● N`, without the word). A task the site manager paused reads `paused 12m: waits a, b`
   in place of `blocked on a, b`, yellow from 30 minutes on (a stale pause); a task the queue
-  prioritizes has a `prioritized 3m` pill, shown when the FLAGS column has room. It refreshes every 30 seconds while shown, every 2
+  prioritizes reads `motion · prioritized 3m` (or `review · …`) in the phase column. It refreshes every 30 seconds while shown, every 2
   minutes otherwise, in two passes. The first, for every repository, is
   `factory status --json --cached` (10 s limit): it never contacts GitHub, so the rows
   show at once. The second, only while the view is shown, is
