@@ -3796,7 +3796,7 @@ def cmd_uninstall(args):
 LAND_TEST_TIMEOUT = 1800
 LAND_TIMEOUT = 1800
 LAND_TOOLS = ("Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
-              "Bash(gh pr edit *)", "Bash(factory state working)")
+              "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)")
 LAND_REASONS = ("dirty", "conflict", "golden", "tests", "denied", "other")
 LAND_RESULT_RE = re.compile(r"(LANDED, LOOK|LANDED|STOPPED)(?: (\S+))?")
 WORKFLOWS_REFUSAL = "without `workflows` permission"
@@ -3839,6 +3839,78 @@ def lander_sections(text):
         elif lines is not None and line.strip():
             lines.append(line)
     return sections
+
+
+PROSE_GAP = 10
+OVERLAP_QUOTE_LINES = 40
+LOOK_NOTE = ("When you have looked and nothing needs changing: run `factory state handed-over {url}` and end your "
+             "turn. That declaration is your answer: the next watch tick merges the pull request if its approval still "
+             "holds. Do not reply to the session that sent you this; it has ended. Anything the human must hear goes "
+             "to your dispatcher.")
+
+
+def is_prose(path):
+    """Documentation by path alone: a .md, .rst or .txt file named README* or under a docs/ or doc/ directory."""
+    p = Path(path)
+    return p.suffix.lower() in (".md", ".rst", ".txt") and (p.name.startswith("README") or bool({"docs", "doc"} & set(p.parts[:-1])))
+
+
+def hunk_ranges(diff):
+    """The (first, last) old-side lines of each hunk of a `-U0` diff; a pure insertion after line a is (a+1, a)."""
+    ranges = []
+    for m in re.finditer(r"^@@ -(\d+)(?:,(\d+))? ", diff, re.M):
+        a, b = int(m[1]), 1 if m[2] is None else int(m[2])
+        ranges.append((a, a + b - 1) if b else (a + 1, a))
+    return ranges
+
+
+def hunk_gap(one, two):
+    """The unchanged old-side lines between two hunks, from the (first, last) ranges."""
+    return max(two[0] - one[1] - 1, one[0] - two[1] - 1)
+
+
+class Overlap:
+    """What the base and a task both changed, and whether anyone must look: the one owner of the rule in
+    factory/agents/lander.md. `out(*git_args)` gives a git command's stdout. `summary` is the Facts fragment, `look`
+    the verdict, `quoted` the lines for the files that need a look."""
+
+    def __init__(self, out, old_base, old_head, target):
+        sides = {side: {path: status for status, path in (l.split("\t", 1) for l in
+                                                           out("diff", "--no-renames", "--name-status", old_base, ref).splitlines())}
+                 for side, ref in (("base", target), ("task", old_head))}
+        parts, self.quoted = [], []
+        for path in sorted(sides["base"].keys() & sides["task"].keys()):
+            reason, safe = self.judge(out, old_base, sides, path, target, old_head)
+            parts.append(f"{path} ({reason}{', not looked at' if safe else ''})")
+            if not safe:
+                self.quoted.append(f"{path}: {reason}")
+                for what, ref in (("base", target), ("task", old_head)):
+                    shown = out("diff", "--no-renames", old_base, ref, "--", path).splitlines()
+                    more = [f"... ({len(shown) - OVERLAP_QUOTE_LINES} more lines)"] if len(shown) > OVERLAP_QUOTE_LINES else []
+                    self.quoted += [f"the {what} changed:", *shown[:OVERLAP_QUOTE_LINES], *more]
+        self.summary = "; ".join(parts) or "none"
+        self.look = bool(self.quoted)
+
+    @staticmethod
+    def judge(out, old_base, sides, path, target, old_head):
+        """(reason, whether the file is safe) for one file both sides changed."""
+        if sides["base"][path] != "M" or sides["task"][path] != "M":
+            return "added, deleted or renamed on one side", False
+        if not is_prose(path):
+            return "code", False
+        ranges = [hunk_ranges(out("diff", "-U0", "--no-renames", old_base, ref, "--", path)) for ref in (target, old_head)]
+        if not all(ranges):
+            return "no line changes to compare", False
+        gap = max(0, min(hunk_gap(a, b) for a in ranges[0] for b in ranges[1]))
+        return f"prose, {gap} lines apart", gap >= PROSE_GAP
+
+    def text(self):
+        return "\n".join([f"overlap: {self.summary}", f"verdict: {'look' if self.look else 'safe'}", *self.quoted])
+
+
+def cmd_overlap(args):
+    print(Overlap(lambda *a: run(["git", *a])[1].strip(), args.old_base, args.old_head, args.target).text())
+    return 0
 
 
 class Landing:
@@ -3900,7 +3972,7 @@ class Landing:
                      self.pull_request_fact(error)]
             return ("LANDED", facts, "none") if error is None else self.stop("other", error, facts)
         task_files = self.out("diff", "--name-only", old_base, "HEAD").splitlines()
-        overlap = sorted(set(self.out("diff", "--name-only", old_base, self.target).splitlines()) & set(task_files))
+        overlap = Overlap(self.out, old_base, self.old_head, self.target)
         rc, out, err = act_git(self.path, "merge", "--no-edit", self.target)
         if rc != 0:
             return self.conflict(task_files, out + err)
@@ -3931,7 +4003,7 @@ class Landing:
             self.mark_working()
             return self.stop("busy", f"{busy}; the worktree is on the merge commit at {new_head}, unpushed",
                              unpushed)
-        look = bool(overlap)
+        look = overlap.look
         if look:
             self.mark_working()
         rc, out, err = act_git(self.path, "push", self.remote, f"HEAD:{branch}")
@@ -3943,20 +4015,19 @@ class Landing:
                                  + refusal, unpushed)
             return self.stop("other", f"git push failed: {refusal}", unpushed)
         kind = "LANDED, LOOK" if look else "LANDED"
-        details = [f"Overlap with the base: {', '.join(overlap) or 'none'}.", "Conflicts: none.",
+        details = [f"Overlap with the base: {overlap.summary}.", "Conflicts: none.",
                    "Regenerated: nothing.", "Tests: `make test` pass."]
         retarget_error = self.retarget()
         error = "; ".join(e for e in (retarget_error, self.announce(new_head, kind, details, retarget_error)) if e)
         count = self.out("rev-list", "--count", f"{old_base}..{self.target}")
         facts = [f"base: `{self.target}` at `{self.out('rev-parse', self.target)}`, {count} commits since the old base; "
-                 f"overlap: {', '.join(overlap) or 'none'}",
+                 f"overlap: {overlap.summary}",
                  f"head: `{self.old_head}` -> `{new_head}` (merge of {self.target}), pushed; the reviewed commits are unchanged",
                  "conflicts: none", "goldens: not run", "tests: `make test` pass",
                  self.pull_request_fact(retarget_error)]
         if error:
             return self.stop("other", f"pushed {new_head}, but {error}", facts)
-        needs = f"the base changed files the task also changes: {', '.join(overlap)}" if overlap else "none"
-        return kind, facts, needs
+        return kind, facts, "\n".join([*overlap.quoted, LOOK_NOTE.format(url=self.url)]) if look else "none"
 
     def retarget(self):
         """None, or why the pull request could not be moved onto the target branch."""
@@ -4016,7 +4087,8 @@ class Landing:
         if new_head and new_head != self.old_head:
             error = self.announce(new_head, "LANDED, LOOK", facts)
             needs = "\n".join(n for n in (needs if needs != "none" else "",
-                                          f"the conflict resolution: `git show --remerge-diff {new_head}`") if n)
+                                          f"the conflict resolution: `git show --remerge-diff {new_head}`",
+                                          LOOK_NOTE.format(url=self.url)) if n)
             return ("LANDED, LOOK", facts, needs) if not error else self.stop(
                 "other", f"pushed {new_head}, but {error}", facts)
         reason = said.group(2).strip("`") if stopped and said.group(2) else None
@@ -4142,6 +4214,12 @@ def approved_at(pr):
     return max((t for t in times if t), default=None)
 
 
+def notice_key(repo, pr, head, declared):
+    """What the tick has noticed of `pr`: its head, its newest approval and its task's newest declaration, so a new
+    hand-over after a stop starts a run again."""
+    return f"{head}:{approved_at(pr)}:{declared.get(task_slug(repo, pr), {}).get('ts')}"
+
+
 def candidates(repo, snap):
     """The pull requests of `snap` that carry an approval and belong to a task declared handed-over."""
     declared = read_tasks(repo.root)
@@ -4185,6 +4263,7 @@ def run_lander(repo, snap, given, word, name):
     """One merge run of a model lander over the pull requests `given` of the snapshot `snap` (those in `word` on
     the human's word, the rest on GitHub's approval). Prints its result lines, records the stops and what has been
     noticed in lander.json, and tells the human of each stop when no dispatcher is alive. True when all merged."""
+    declared = read_tasks(repo.root)  # read before the run, like the approval stamp: a hand-over during it starts the next
     sessions = list_sessions()
     alive = bool(sessions and live_dispatchers(sessions, repo.root, name))
     tools = [*MERGE_TOOLS, *(f"Bash(factory merge {n})" for n in sorted(word))]
@@ -4213,8 +4292,8 @@ def run_lander(repo, snap, given, word, name):
     # Only this run's pull requests get a new key, with the stamp read before the run: an approval that came
     # during it, or on another pull request, starts the next run.
     state["noticed"] = {**{n: k for n, k in state["noticed"].items() if int(n) in heads},
-                        **{str(pr["number"]): f"{heads[pr['number']]}:{at}" for pr in given
-                           if (at := approved_at(pr)) and pr["number"] in heads}}
+                        **{str(pr["number"]): notice_key(repo, pr, heads[pr["number"]], declared) for pr in given
+                           if approved_at(pr) and pr["number"] in heads}}
     state["stopped"] = {n: s for n, s in state["stopped"].items() if int(n) in heads}
     for n, (kind, text) in results.items():
         if kind == "merged":
@@ -4276,8 +4355,9 @@ def cheap_tick(repo, name):
 
 def notice(repo, name, snap):
     """Pull requests of `snap` approved since last noticed start one lander run."""
-    noticed = read_lander(repo)["noticed"]
-    new = [pr for pr in candidates(repo, snap) if noticed.get(str(pr["number"])) != f"{pr['headRefOid']}:{approved_at(pr)}"]
+    noticed, declared = read_lander(repo)["noticed"], read_tasks(repo.root)
+    new = [pr for pr in candidates(repo, snap)
+           if noticed.get(str(pr["number"])) != notice_key(repo, pr, pr["headRefOid"], declared)]
     if new:
         with lander_lock(repo) as free:
             if free:
@@ -4385,6 +4465,10 @@ def parse_args(argv):
     land = sub.add_parser("land", help="bring a handed-over task up to its base (a model takes part only on a conflict)")
     land.add_argument("slug", nargs="?")
     land.add_argument("--all", action="store_true", help="every handed-over task whose pull request conflicts or whose base merged")
+    overlap = sub.add_parser("overlap", help="what a base and a task both changed, and whether anyone must look (run in the task worktree)")
+    overlap.add_argument("old_base")
+    overlap.add_argument("old_head")
+    overlap.add_argument("target")
     schedule = sub.add_parser("schedule", help="install, remove or show the job that runs watch every 2 minutes")
     schedule.add_argument("action", choices=("install", "remove", "status"))
     schedule.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
@@ -4409,7 +4493,7 @@ def main(argv=None):
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "land": cmd_land, "lander": cmd_lander, "schedule": cmd_schedule, "wizard": cmd_wizard,
+                "land": cmd_land, "overlap": cmd_overlap, "lander": cmd_lander, "schedule": cmd_schedule, "wizard": cmd_wizard,
                 "uninstall": cmd_uninstall, "env": cmd_env}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)
