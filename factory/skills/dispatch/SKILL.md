@@ -58,7 +58,7 @@ A scheduled script (`factory watch`, every 30 minutes, no model) checks the fact
 
 ## Merging
 Merging is the site manager's job, done by a command with no model: `factory merge <number>...` or `factory merge --all` (every open pull request whose task is handed over). It merges only what is mechanical: handed over, checks green on the head, no conflict. It marks a draft ready only as a fallback (a pull request that passes its checks is ready by definition), merges stacks bottom-up with merge commits, retargets a stacked pull request onto the default branch before merging it, then runs `factory clean`. It stops at the first thing that is not mechanical and says why.
-A draft pull request is still being worked on; ready for review is handed over with green checks. `factory watch` and `factory state` set the flag, so when the human sends a complaint back to a lead, your first act is `factory state working` on its behalf (the lead does it on resuming).
+A draft pull request is still being worked on; ready for review is handed over with green checks. `factory watch` and `factory state` set the flag.
 - Nothing merges without the human's word. Two things count, and nothing else does:
   1. The human tells you to merge. Run `factory merge` then (`--dry-run` first shows what it would do), and report its lines.
   2. The human approves the pull request: an approving review, or a comment of exactly `lgtm`. The next watch tick merges it without you; this needs the schedule running. An approval older than the last change to the head does not count.

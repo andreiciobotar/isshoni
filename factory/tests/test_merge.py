@@ -654,7 +654,7 @@ class SyncDraftTests(World):
             "head moved, ready": (dict(prs=[pr(1)], local="other"), [["pr", "ready", "1", "--undo"]],
                                   "#1 back to draft: task t1 has local commits that are not on the pull request\n"),
             "no task worktree": (dict(prs=[pr(1)], tasks=[], checks=FAILED), [], ""),
-            "a fork": (dict(prs=[pr(1, fork=True)], checks=FAILED), [], ""),
+            "a fork": (dict(prs=[pr(1, fork=True)], tasks=["t1"], checks=FAILED), [], ""),
             "settled": (dict(prs=[pr(1)], state="acknowledged", checks=FAILED), [], ""),
         }
         for label, (kw, flips, line) in cases.items():
@@ -699,6 +699,12 @@ class SyncDraftTests(World):
         self.assertIn("#1 draft flag not changed: gh pr checks failed: boom\n", out)
         self.assertIn("#2 ready for review\n", out)
         self.assertEqual(self.flips(), [["pr", "ready", "2"]])
+
+    def test_a_task_whose_head_cannot_be_read_leaves_its_pull_request(self):
+        code, out, _ = self.tick([pr(1)], extra={("git", "log"): (1, "", "bad")})
+        self.assertEqual(code, 0)
+        self.assertIn("#1 draft flag not changed: its task's head cannot be read\n", out)
+        self.assertEqual(self.flips(), [])
 
     def test_an_unreadable_list_changes_nothing(self):
         code, out, _ = self.tick([pr(1, draft=True)], extra={("gh", "pr", "list", "--state", "open"): (1, "", "down")})

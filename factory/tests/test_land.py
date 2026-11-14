@@ -462,6 +462,15 @@ class LandTests(unittest.TestCase):
         self.assertEqual([json.loads(l) for l in ready.read_text().splitlines()],
                          [["pr", "ready", "--undo", "worktree-t1"]])
 
+    def test_declaring_working_on_a_branchless_landing_makes_no_gh_call(self):
+        loader = importlib.machinery.SourceFileLoader("factory_land_nobranch", str(BIN))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_land_nobranch", loader))
+        loader.exec_module(module)
+        with mock.patch.object(module, "declare") as declare, mock.patch.object(module, "run") as run:
+            module.Landing(mock.Mock(), {"path": "/x/t1", "branch": None}).mark_working()
+        declare.assert_called_once()
+        run.assert_not_called()
+
     def test_a_lander_that_exits_non_zero_is_a_stop_with_what_git_shows(self):
         wt, old = self.conflict()
         p = self.land("t1", FAKE_LANDER="fail")

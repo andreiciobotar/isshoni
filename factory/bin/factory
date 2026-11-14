@@ -911,7 +911,7 @@ def cmd_state(args):
             raise Fail(f"state: deliverable {deliverable} is inside the worktree, which clean removes")
     slug = os.path.basename(task["path"])
     declare(repo, slug, "lead", args.state, deliverable)
-    if args.state in ("working", "blocked") and task["branch"]:
+    if args.state in ("working", "blocked"):
         to_draft(repo, task["branch"])
     print(f"{slug}: {args.state}")
     return 0
@@ -2295,6 +2295,9 @@ def sync_drafts(p):
         row, n = task_of(p, pr), str(pr["number"])
         if pr["isCrossRepository"] or row is None or row["phase"] in ("settled", "merged"):
             continue
+        if row["last_commit"] is None:
+            print(f"#{n} draft flag not changed: its task's head cannot be read")
+            continue
         why = handover_reason(p, pr)
         try:
             stop = None if why else checks_stop(p, n)
@@ -2310,7 +2313,8 @@ def sync_drafts(p):
 
 def to_draft(repo, branch):
     """Back to draft at once; the result is ignored (a task often has no pull request yet), the tick reports failures."""
-    run(["gh", "pr", "ready", "--undo", branch], cwd=repo.root)
+    if branch:
+        run(["gh", "pr", "ready", "--undo", branch], cwd=repo.root)
 
 
 def merge_one(p, pr, merged, dry):
