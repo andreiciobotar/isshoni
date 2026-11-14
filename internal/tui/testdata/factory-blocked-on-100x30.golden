@@ -1,7 +1,7 @@
  Isshoni  1 Dash  2 Agents [3 Factory ▲7] 4 Kaizen  5 ✿                  24h [7d] 30d  all   ○ idle 
- Factory  13 motion (6 blocked) · 3 review · 1 merged · 1 settled  · as of 11:00:00                 
-  quiet-refactor     ⠋ in motion                 4m12s  -                                           
+ Factory  14 motion (6 blocked) · 3 review · 1 merged · 1 settled  · as of 11:00:00                 
   rate-limit-docs    ● in motion                     -  #40 closed              [stale]             
+  slow-export        ⠋ in motion                41m00s  -                                           
   stacked-on-login   ● in motion                 1m35s  ?                                           
   api-rate-limits    ◆ waiting for review        1h30m  #42                                         
   old-experiment     ✓ merged, not cleaned       1m01s  #31                                         

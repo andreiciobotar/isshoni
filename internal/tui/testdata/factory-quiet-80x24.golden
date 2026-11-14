@@ -4,9 +4,9 @@
  worktree cap  5  per repo   c edit             ~/.claude/factory/settings.json 
                                                                                 
  calm                                 in motion ●●○○○ 2/5   review 0   merged 0 
-  SLUG     PHASE     ELAPSED  PR  BASE  FLAGS                                   
-  task-00  ⠋ motion    1m00s  -   main                                          
-  task-01  ⠋ motion    2m00s  -   main                                          
+  SLUG     PHASE     ELAPSED  SIZE  PR  BASE  FLAGS                             
+  task-00  ⠋ motion    1m00s  -     -   main                                    
+  task-01  ⠋ motion    2m00s  -     -   main                                    
                                                                                 
                                                                                 
                                                                                 

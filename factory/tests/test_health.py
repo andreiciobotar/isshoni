@@ -714,7 +714,8 @@ class WatchTests(Harness):
         self.assertNotIn("transcript", sent)
         self.assertEqual(sent["task"], {"phase": "motion", "state": None, "session": "working", "elapsed": "3h",
                                         "last_commit": "?", "dirty": None, "ahead": None, "behind": None,
-                                        "pr_state": "none", "pr_url": "", "overtime": True})
+                                        "pr_state": "none", "pr_url": "", "limit": "2h", "size": None,
+                                        "nearing": False, "overtime": True})
         tail = sent["transcript_tail"]
         self.assertEqual(len(tail), 15)
         self.assertEqual(tail[0][:20], "T3 assistant: " + "x" * 6)
