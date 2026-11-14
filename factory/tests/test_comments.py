@@ -40,7 +40,7 @@ class Comments(Home):
     def setUp(self):
         super().setUp()
         self.seed(state="working")
-        for patcher in (mock.patch.object(factory, "now", lambda: "2026-11-14T10:00:00Z"),
+        for patcher in (mock.patch.object(factory, "now", lambda: "2026-01-01T00:00:00Z"),
                         mock.patch.object(factory, "notify_argv", lambda title, text: ["notify", title, text])):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -50,13 +50,13 @@ class Comments(Home):
     def seed(self, state):
         (self.store / "tasks.jsonl").write_text(json.dumps({"repo": ROOT, "slug": "t1", "state": state}) + "\n")
 
-    def tick(self, prs, lines=(), sessions=(LEAD, DISPATCHER_SESSION), permission=None, courier=SENT, gh=None):
+    def tick(self, prs, lines=(), sessions=(LEAD, DISPATCHER_SESSION), permission=None, courier=SENT, gh=None, app=False):
         answers = {("gh", "pr", "list"): gh or (0, json.dumps(prs), ""),
                    ("gh", "api", "--paginate", "--slurp", LINES): (0, json.dumps([list(lines)]), ""),
                    ("claude", "agents"): (0, json.dumps(list(sessions)), ""), ("claude", "-p"): courier,
                    ("notify",): (0, "", "")}
         for login, level in (permission or {"andrei": "admin"}).items():
-            answers[("gh", "api", PERMISSION % login)] = (0, json.dumps({"permission": level}), "")
+            answers[("gh", "api", PERMISSION % login)] = (0, json.dumps({"permission": level, "user": {"type": "Bot" if app else "User"}}), "")
         self.fake = FakeRun(answers)
         out = io.StringIO()
         with mock.patch.object(factory, "run", self.fake), redirect_stdout(out):
@@ -96,6 +96,18 @@ class WatchCommentsTests(Comments):
         self.assertIn("fix this", self.batches()[0].read_text())
         self.assertIn("review by andrei (OWNER) · CHANGES_REQUESTED", self.batches()[0].read_text())
         self.assertEqual(self.decisions(), {"PRR_1": "forward"})
+
+    def test_line_comment_older_than_the_first_run_is_history(self):
+        self.prime()
+        self.tick([pr(reviews=[review("PRR_1", "CHANGES_REQUESTED", "x")])],
+                  lines=[line(7, "old", created_at="2025-12-31T23:59:59Z"), line(8, "new")])
+        self.assertEqual(self.decisions(), {"PRR_1": "forward", "line:8": "forward"})
+        self.assertNotIn("```\nold\n```", self.batches()[0].read_text())
+
+    def test_app_with_write_access_is_not_the_human(self):
+        self.prime()
+        self.tick([pr(comments=[comment("IC_1")])], permission={"andrei": "admin"}, app=True)
+        self.assertEqual((self.decisions(), self.couriers()), ({"IC_1": "not-human"}, []))
 
     def test_human_plain_comment_is_forwarded(self):
         self.prime()

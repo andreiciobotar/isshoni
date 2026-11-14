@@ -2566,14 +2566,18 @@ def paged(p, path):
     return [x for g in pages for x in g]
 
 
-def has_write(p, login, permission):
-    """Whether `login` has admin or write access to the repository; looked up once per login, into `permission`."""
-    if login not in permission:
-        found = p["gh"](dict, "api", f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission").get("permission")
-        if not isinstance(found, str):
+def collaborator(p, login, cache):
+    """GitHub's collaborator permission record of `login`; looked up once per login, into `cache`."""
+    if login not in cache:
+        found = p["gh"](dict, "api", f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission")
+        if not isinstance(found.get("permission"), str):
             raise NotEvaluated(f"gh api could not read the permission of {login}")
-        permission[login] = found
-    return permission[login] in ("admin", "write")
+        cache[login] = found
+    return cache[login]
+
+
+def has_write(p, login, permission):
+    return collaborator(p, login, permission)["permission"] in ("admin", "write")
 
 
 def approver(p, pr, x, permission, author=False):
@@ -2721,11 +2725,13 @@ def line_items(p, pr):
 
 def author_kind(p, item, permission):
     """bot, human or other, from GitHub's records of the author: the human has an association that can write
-    and the repository's `write` or `admin` permission."""
+    and the repository's `write` or `admin` permission, and is a `User` (an App with write access is not one)."""
     if item["bot"]:
         return "bot"
-    if item["association"] in HUMAN_ASSOCIATIONS and item["author"] and has_write(p, item["author"], permission):
-        return "human"
+    if item["association"] in HUMAN_ASSOCIATIONS and item["author"]:
+        found = collaborator(p, item["author"], permission)
+        if found["permission"] in ("admin", "write") and (found.get("user") or {}).get("type") == "User":
+            return "human"
     return "other"
 
 
@@ -2801,9 +2807,10 @@ def watch_comments(repo, dispatcher):
         return
     path = repo_state(repo, "comments", "json")
     try:
-        seen = json.loads(path.read_text())["seen"]
+        state = json.loads(path.read_text())
+        seen, since = state["seen"], state["since"]
     except (OSError, ValueError, KeyError, TypeError):
-        seen = None
+        seen, since = None, now()
     p, permission, kept = {"gh": lambda *args: gh_json(repo, *args)}, {}, {}
     first = not isinstance(seen, dict)
     if first:  # what is there is history, not news
@@ -2813,9 +2820,10 @@ def watch_comments(repo, dispatcher):
         old = set(seen.get(n, ()))
         current = pr_items(pr)
         try:
-            if any(i["kind"] == "review" and i["id"] not in old for i in current):
+            news = lambda items: [i for i in items if i["id"] not in old and i["at"] >= since]
+            if any(i["kind"] == "review" for i in news(current)):
                 current += line_items(p, pr)
-            new = [i for i in current if i["id"] not in old]
+            new = news(current)
             for i in new:
                 i["author_kind"] = author_kind(p, i, permission)
                 i["decision"] = decide(i)
@@ -2837,7 +2845,7 @@ def watch_comments(repo, dispatcher):
             print(f"comments: #{n} {len(sent)} forwarded to {to or 'no one'}, {len(new)} logged")
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + ".tmp")
-    temp.write_text(json.dumps({"seen": kept}))
+    temp.write_text(json.dumps({"since": since, "seen": kept}))
     os.replace(temp, path)
 
 
