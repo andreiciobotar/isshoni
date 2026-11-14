@@ -431,9 +431,9 @@ REAL_STORE = Path("~/.claude/factory").expanduser()
 
 
 def leaked(tmp):
-    """Lines of the real store's events and tasks logs that name this run's temp directory."""
+    """Lines of every `*.jsonl` of the real store (the gh log included) that name this run's temp directory."""
     name = os.path.basename(tmp)
-    return sum(name in line for pattern in ("events-*.jsonl", "tasks-*.jsonl") for path in REAL_STORE.glob(pattern)
+    return sum(name in line for path in REAL_STORE.glob("*.jsonl")
                for line in path.read_text(errors="replace").splitlines())
 
 
@@ -459,7 +459,7 @@ def main():
             say(f"kept: {tmp}")
         else:
             shutil.rmtree(tmp, ignore_errors=True)
-    check(leaked(tmp) == 0, f"no line of the real store's events or tasks logs names {os.path.basename(tmp)}")
+    check(leaked(tmp) == 0, f"no line of the real store's logs names {os.path.basename(tmp)}")
     say("FAILED: " + "; ".join(failures) if failures else "all expectations met")
     if args.out:
         Path(args.out).expanduser().parent.mkdir(parents=True, exist_ok=True)

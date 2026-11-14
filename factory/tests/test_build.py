@@ -40,7 +40,10 @@ class BuildCase(Case):
         self.handover = self.spec.with_suffix(".handover.md")
 
     def build(self, *flags, **machine):
-        m = self.use(Build(self.root, **machine))
+        return self.build_with(Build, *flags, **machine)
+
+    def build_with(self, machine_class, *flags, **machine):
+        m = self.use(machine_class(self.root, **machine))
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
             code = factory.main(["build", SLUG, "--run", "--dispatcher", "dispatcher-repo", *flags])
@@ -78,6 +81,12 @@ class LaunchTests(BuildCase):
         self.assertEqual(m.tech_lead_calls()[0][-1], (
             f"Task slug: {SLUG}. The spec is {self.spec}. The base branch is main, on remote origin. "
             f"The hand-over file is {self.handover}: earlier runs: read it first."))
+
+    def test_a_base_that_has_merged_is_not_named_as_the_base(self):
+        with mock.patch.object(factory, "land_base", return_value=("worktree-other", True)):
+            *_, m = self.build()
+        self.assertIn("The base branch is main (the recorded base worktree-other has merged), on remote origin.",
+                      m.tech_lead_calls()[0][-1])
 
     def test_the_model_and_the_permission_mode_come_from_the_settings(self):
         (self.store / "settings.json").write_text('{"tech_lead_model": "sonnet", "lead_permission_mode": "plan", "lean_start": false}')
@@ -131,7 +140,7 @@ class OutcomeTests(BuildCase):
     def test_built_with_every_check_passing_tells_the_lead_and_declares_nothing_further(self):
         code, out, _, m = self.build()
         self.assertEqual(code, 0)
-        self.assertEqual(m.lines, [f"TECH LEAD: {SLUG}: {SLUG} build run 1 built. Read {self.handover} (the last section)."])
+        self.assertEqual(m.lines, [f"TECH LEAD: {SLUG}: build run 1 built. Read {self.handover} (the last section)."])
         self.assertEqual(self.declared(), [("working", "tech-lead", None)])
         self.assertEqual(out, f"{SLUG} build run 1 built\n")
         self.assertEqual((m.pushes, m.comments), ([], []))
@@ -162,6 +171,13 @@ class OutcomeTests(BuildCase):
         self.spec.write_text("another spec")
         return {}
 
+    def test_a_pull_request_that_cannot_be_read_is_said_so_and_not_called_missing(self):
+        class Unreadable(Build):
+            def resolve(self, a):
+                return (1, "", "boom") if a[:3] == ["gh", "pr", "list"] else super().resolve(a)
+        code, *_ = self.build_with(Unreadable)
+        self.assertEqual((code, self.only_record()["reason"]), (1, f"cannot check for a pull request on worktree-{SLUG}"))
+
     def test_a_closed_pull_request_is_not_an_open_one(self):
         code, *_ = self.build(pr="MERGED")
         self.assertEqual((code, self.only_record()["outcome"]), (1, "stopped"))
@@ -172,7 +188,7 @@ class OutcomeTests(BuildCase):
                 code, _, _, m = self.build(claude=built(outcome, "### Questions\nwhich one?"), after={"dirty": True}, pr=None)
                 r = self.records("techlead")[-1]
                 self.assertEqual((code, r["outcome"], r["reason"]), (1, outcome, None))
-                self.assertTrue(m.lines[-1].startswith(f"TECH LEAD: {SLUG}: {SLUG} build run {len(self.records('techlead'))} {outcome}. Read"))
+                self.assertTrue(m.lines[-1].startswith(f"TECH LEAD: {SLUG}: build run {len(self.records('techlead'))} {outcome}. Read"))
 
     def test_a_timeout_a_budget_stop_and_a_garbled_answer_each_say_what_happened(self):
         budget = (1, json.dumps({"subtype": "error_max_budget_usd", "is_error": True, "session_id": "sid-b",
@@ -188,7 +204,7 @@ class OutcomeTests(BuildCase):
                 self.assertEqual((code, r["outcome"], r["reason"], r["cost_usd"]), (1, "stopped", reason, cost))
                 self.assertIn(f"stopped: {reason}. Read", m.lines[-1])
 
-    def test_a_failure_after_the_lock_is_a_stopped_record_and_a_line_and_no_section(self):
+    def test_a_failure_after_the_lock_is_a_stopped_record_a_section_and_a_line(self):
         with mock.patch.object(factory, "build_argv", side_effect=OSError("no role file")):
             code, out, _, m = self.build()
         self.assertEqual(code, 1)
@@ -196,7 +212,10 @@ class OutcomeTests(BuildCase):
         self.assertEqual((r["kind"], r["outcome"], r["pr"], r["evidence"]), ("build", "stopped", None, "build"))
         self.assertIn("the run failed: OSError: no role file", r["reason"])
         self.assertIn("build run 1 stopped: the run failed: OSError: no role file. Read", m.lines[0])
-        self.assertFalse(self.handover.exists())
+        self.assertRegex(self.handover.read_text().splitlines()[0], r"^## Run 1: stopped \(.*, unpriced USD, 0 min, head a{7}\)$")
+        self.assertIn("Reason: the run failed: OSError: no role file\n\nNo hand-over was written.", self.handover.read_text())
+        self.build(claude=built())
+        self.assertIn("## Run 2: built", self.handover.read_text())
 
     def test_a_record_that_cannot_be_written_still_tells_the_lead(self):
         with mock.patch.object(factory, "build_argv", side_effect=OSError("x")), \
