@@ -1,0 +1,30 @@
+ Isshoni  1 Dash  2 Agents  3 Factory [4 Kaizen] 5 ✿                     24h [7d] 30d  all   ○ idle 
+ Kaizen   Pulse [Friction] Flow  Anatomy  Board   ←→  · as of 11:00:00                              
+                                                                                                    
+ DISPATCHER                     $0.18* / call  n=400 calls  median context 450k                     
+ COST AFTER THE FIRST REVIEW    40% of task cost  $48.00 of $120  median $2.50 / task  n=10  (subag…
+ DEFECT CAUSES                  spec 40% 2  brief 0  conflict 20% 1  scope 0  code 40% 2  n=5 state…
+ REFUSED BASH CALLS             role          refused           guard  classifier  next 3 calls     
+                                lead          2.4% 12/500       10     2           $1.50            
+                                coder         6.7% 20/300       12     8           $2.25            
+                                explorer      - 1/0             1      0           $0.20            
+                                dispatcher    0.0% 0/40         0      0           $0               
+                                                                                                    
+ LEAD PROMPTS AFTER HAND-OVER   30 in 12 tasks  $14.20 after them  $0.47 / prompt                   
+ QUEUE ATTEMPTS / MERGED PR     1.00  n=3  updates 2 · re-runs 0 · send-backs 1 · stops 0  (queue l…
+                                                                                                    
+ QUEUE SEND-BACKS AND PAUSES    task                                send-backs  pauses   paused     
+                                fixture-alpha/fx-held-00            10          1        14m        
+                                fixture-alpha/fx-held-01            9           0        -          
+                                fixture-alpha/fx-held-02            8           1        14m        
+                                fixture-alpha/fx-held-03            7           0        -          
+                                fixture-alpha/fx-held-04            6           1        14m        
+                                fixture-alpha/fx-held-05            5           0        -          
+                                fixture-alpha/fx-held-06            4           1        14m        
+                                fixture-alpha/fx-held-07            3           0        -          
+                                +2 more                                                             
+                                                                                                    
+ LATE CONFLICTS                           task / file                  queue log  git history (back…
+                                by task   fixture-alpha/fx-late-00     2          12               …
+ +15 more lines · ↓ to scroll                                                                       
+ ←→/hl kaizen page  ·  ↑↓/jk move  ·  r range  ·  tab next view  ·  ? help  ·  q quit               

@@ -21,7 +21,118 @@ type Kaizen struct {
 	Outbox      KaizenOutbox  `json:"outbox"`
 	SiteManager SiteManager   `json:"site_manager"`
 	TechLead    TechLead      `json:"tech_lead"`
-	Pulse       *Pulse        `json:"pulse"` // nil from a producer that does not write it
+	Pulse       *Pulse        `json:"pulse"`    // nil from a producer that does not write it
+	Friction    *Friction     `json:"friction"` // likewise
+}
+
+// Friction is where the factory loses money and time, over the selected range. A nil
+// number is unknown, not zero; Queue is nil when there is no queue log.
+type Friction struct {
+	Dispatcher    FrictionDispatcher `json:"dispatcher"`
+	Rework        FrictionRework     `json:"rework"`
+	Causes        FrictionCauses     `json:"causes"`
+	Refusals      FrictionRefusals   `json:"refusals"`
+	Wakeups       FrictionWakeups    `json:"wakeups"`
+	Queue         *FrictionQueue     `json:"queue"`
+	Held          []FrictionHeld     `json:"held"`
+	LateConflicts FrictionLate       `json:"late_conflicts"`
+}
+
+// FrictionDispatcher is the dispatcher's main thread: its priced calls and the median context of a call.
+type FrictionDispatcher struct {
+	Calls          int      `json:"calls"`
+	Cost           float64  `json:"cost"`
+	PerCall        *float64 `json:"per_call"`
+	ContextMedian  *float64 `json:"context_median"`
+	UnpricedTokens int64    `json:"unpriced_tokens"`
+}
+
+// FrictionRework is the cost of every call after a task's first review; PerTaskMedian and N are over the tasks that had one.
+type FrictionRework struct {
+	Cost          float64  `json:"cost"`
+	TaskCost      float64  `json:"task_cost"`
+	Share         *float64 `json:"share"`
+	PerTaskMedian *float64 `json:"per_task_median"`
+	N             int      `json:"n"`
+}
+
+// FrictionCauses counts the defects of the latest retros by cause; Unstated is every other value or none.
+type FrictionCauses struct {
+	Spec     int `json:"spec"`
+	Brief    int `json:"brief"`
+	Conflict int `json:"conflict"`
+	Scope    int `json:"scope"`
+	Code     int `json:"code"`
+	Unstated int `json:"unstated"`
+}
+
+// FrictionRefusals is the Bash calls a guard or the auto mode classifier refused, by role.
+type FrictionRefusals struct {
+	AfterCalls int               `json:"after_calls"`
+	Roles      []FrictionRefusal `json:"roles"`
+}
+
+// FrictionRefusal is one role; Share is nil when it made no Bash call, AfterCost is the spend in the calls after the refusals.
+type FrictionRefusal struct {
+	Role       string   `json:"role"`
+	Bash       int      `json:"bash"`
+	Guard      int      `json:"guard"`
+	Classifier int      `json:"classifier"`
+	Share      *float64 `json:"share"`
+	AfterCost  float64  `json:"after_cost"`
+}
+
+// FrictionWakeups is the lead prompts from a session after hand-over, and the spend after them.
+type FrictionWakeups struct {
+	Prompts   int      `json:"prompts"`
+	Tasks     int      `json:"tasks"`
+	Cost      float64  `json:"cost"`
+	PerPrompt *float64 `json:"per_prompt"`
+}
+
+// FrictionQueue is the queue steps taken per merged pull request, from Since, the oldest queue record.
+type FrictionQueue struct {
+	Since     string   `json:"since"`
+	Merged    int      `json:"merged"`
+	Updated   int      `json:"updated"`
+	Rerun     int      `json:"rerun"`
+	SentBack  int      `json:"sent_back"`
+	Stopped   int      `json:"stopped"`
+	PerMerged *float64 `json:"per_merged"`
+}
+
+// FrictionHeld is one task's queue send-backs and pauses.
+type FrictionHeld struct {
+	Repo          string `json:"repo"`
+	Slug          string `json:"slug"`
+	SentBack      int    `json:"sent_back"`
+	Paused        int    `json:"paused"`
+	PausedMinutes int    `json:"paused_minutes"`
+	Prioritized   int    `json:"prioritized"`
+}
+
+// FrictionLate is the conflicts after hand-over from two sources that are never added: the
+// queue log (Log is nil without one) and the history of the base merges the Pulse looked up.
+type FrictionLate struct {
+	Tasks    []FrictionLateTask `json:"tasks"`
+	Files    []FrictionLateFile `json:"files"`
+	LogTasks int                `json:"log_tasks"`
+	GitTasks int                `json:"git_tasks"`
+	GitPRs   int                `json:"git_prs"`
+}
+
+type FrictionLateTask struct {
+	Repo string `json:"repo"`
+	Slug string `json:"slug"`
+	Log  *int   `json:"log"`
+	Git  int    `json:"git"`
+}
+
+type FrictionLateFile struct {
+	Repo string `json:"repo"`
+	File string `json:"file"`
+	Log  *int   `json:"log"`
+	Git  int    `json:"git"`
 }
 
 // Pulse is today against yesterday: the day's figures over all tasks, whatever the range.
@@ -151,10 +262,11 @@ type Defects struct {
 }
 
 type KaizenCost struct {
-	Total          float64 `json:"total"`
-	UnpricedTokens int64   `json:"unpriced_tokens"`
-	ByRole         Roles   `json:"by_role"`
-	Rework         float64 `json:"rework"`
+	Total          float64  `json:"total"`
+	UnpricedTokens int64    `json:"unpriced_tokens"`
+	ByRole         Roles    `json:"by_role"`
+	Rework         float64  `json:"rework"`
+	AfterReview    *float64 `json:"after_review"` // every call after the first review; nil without one
 }
 
 type KaizenPR struct {
