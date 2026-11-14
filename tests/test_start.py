@@ -69,7 +69,8 @@ class StartScript(unittest.TestCase):
                 if dashboard:
                     self.dashboard()
                 done = self.start()
-                self.assertEqual((done.returncode, done.stderr), (0, ""))
+                # Linux's sh reports the dashboard child that the stop killed; nothing else may be said.
+                self.assertEqual((done.returncode, done.stderr.replace("Terminated\n", "")), (0, ""))
                 self.assertEqual(self.bg(), [{"argv": ["--bg", "-n", "dispatcher-b", "--permission-mode", "auto", "/factory:dispatch"],
                                               "cwd": str(self.home / "code/b")}])
 
