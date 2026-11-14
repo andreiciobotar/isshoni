@@ -810,9 +810,9 @@ def cmd_new(args):
                           declared.get(name, {}).get("state"))
             if where in ("motion", "blocked"):
                 held.append(name + (" (blocked)" if where == "blocked" else ""))
+        if len(held) >= cap:
+            raise Fail(f"at the cap of {cap} tasks in motion: {', '.join(held)}")
         if len(held) >= limit:
-            if limit == cap:
-                raise Fail(f"at the cap of {cap} tasks in motion: {', '.join(held)}")
             raise Fail(f"at the limit of {limit} ordinary tasks in motion ({held_back} of the cap of {cap} "
                        f"held in reserve for critical work; start one with --critical): {', '.join(held)}")
     old_pr = pull_request(repo, branch)[0]

@@ -410,7 +410,7 @@ class NewTests(unittest.TestCase):
             "branch exists": (self.ARGS, self.answers([], (), self.OK, {("git", "rev-parse"): (0, "sha\n", "")}), "branch already exists"),
             "session exists": (self.ARGS, self.answers([], [{"name": "demo-task", "cwd": "/elsewhere"}], self.OK), "session named"),
             "session inside the worktree": (self.ARGS, self.answers([], [{"cwd": f"{WT}/demo-task/sub"}], self.OK), "session named"),
-            "limit": (self.ARGS, self.answers([task_entry(s) for s in "abcde"], (), self.OK), "limit of 4.*a, b, c, d, e"),
+            "limit": (self.ARGS, self.answers([task_entry(s) for s in "abcde"], (), self.OK), "at the cap of 5.*a, b, c, d, e"),
             "no repo": (self.ARGS, {("git",): (128, "", "not a repo")}, "not inside a git repository"),
             "agents unlistable": (self.ARGS, self.answers([], (), self.OK, {("claude", "agents"): (1, "", "boom")}), "cannot list sessions"),
             "wrong dispatcher name": (self.ARGS, self.answers([], (), self.OK, dispatcher="other"), "/rename d1"),
@@ -575,6 +575,11 @@ class NewTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertTrue(fake.ran("claude", "--bg"))
         answers = self.answers([task_entry(s) for s in "abcdefghij"], (), self.OK)
+        code, _, err, fake = invoke(self.ARGS, answers, settings)
+        self.assertEqual(code, 2)
+        self.assertRegex(err, "^factory: at the cap of 10 tasks in motion: a, b, c, d, e, f, g, h, i, j$")
+        self.assertNotIn("--critical", err)
+        self.assertFalse(fake.ran("claude", "--bg"))
         code, _, err, fake = invoke(self.ARGS + ["--critical"], answers, settings)
         self.assertEqual(code, 2)
         self.assertRegex(err, "at the cap of 10 tasks in motion: a, b, c, d, e, f, g, h, i, j$")

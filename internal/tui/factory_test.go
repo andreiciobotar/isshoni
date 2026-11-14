@@ -218,10 +218,12 @@ func TestFactoryMeter(t *testing.T) {
 		{11, func(th *Theme) color.Color { return th.Red }},
 	} {
 		m := factoryModel(false, 140, 40, factoryRepo{name: "r", path: "/r", st: withReserve(10, 1, c.n)})
-		if c.n > 0 {
-			if want := m.th.on(m.th.Bg).t(strings.Repeat("●", c.n), c.col(m.th)); !strings.Contains(m.Render(), want) {
-				t.Errorf("reserve 1 of 10, %d in motion: filled cells are not painted as expected", c.n)
-			}
+		p, out := m.th.on(m.th.Bg), m.Render()
+		if want := p.b(fmt.Sprintf("%d/9+1", c.n), c.col(m.th)); !strings.Contains(out, want) {
+			t.Errorf("reserve 1 of 10, %d in motion: the label is not painted as expected", c.n)
+		}
+		if want := p.t(strings.Repeat("●", c.n), c.col(m.th)); c.n > 0 && !strings.Contains(out, want) {
+			t.Errorf("reserve 1 of 10, %d in motion: filled cells are not painted as expected", c.n)
 		}
 	}
 	m := factoryModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: fstatus(40, manyTasks(10)...)})
