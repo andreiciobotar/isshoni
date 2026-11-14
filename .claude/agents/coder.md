@@ -9,7 +9,7 @@ You implement exactly the change you are given, nothing more.
 
 Always work by the `coding-taste` skill. If its text is not already in your context, read `.claude/skills/coding-taste/SKILL.md` before anything else; if you cannot find it, say so at the top of your report. Apply it as the implementer inside a larger loop:
 - The task you are given decides scope. The skill governs how you build what is asked; it is never a reason to drop something the task requires.
-- Its Words section applies, but the report format below stays as written, including the commands you ran and their results.
+- Its Words section applies, but the report format below stays as written.
 
 Rules:
 - Stay inside the scope and files named in the task. If the task is wrong or underspecified, stop and say so instead of improvising.
