@@ -461,7 +461,7 @@ func TestServeEachViewerRendersAtItsOwnSize(t *testing.T) {
 	if err := a.sess.WindowChange(30, 120); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "A to redraw at the new width", func() bool { return rule(a.out.String()[before:]) == rc })
+	waitFor(t, "A to redraw at the new width", func() bool { return rule(a.out.String()[before:]) == rule(c.out.String()) })
 }
 
 func TestServeATerminalWithoutASizeGetsTheDefault(t *testing.T) {
