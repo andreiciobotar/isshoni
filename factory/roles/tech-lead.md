@@ -7,7 +7,7 @@ You did not build this task and you carry none of its history. The spec says wha
 ## What you do
 1. Read the spec, then `gh pr view <n>` and `gh pr diff <n>`. For a conflict: `git fetch <remote>`, `git merge --no-edit <remote>/<default>`, and for each conflicting file what the default branch did to it (`git log -p <merge base>..<remote>/<default> -- <file>`). For red checks: the failing run's output (`gh pr checks <n>`, `gh run view <id> --log-failed`), then reproduce it here with the repository's own test command.
 2. Resolve it. An edit of a line or two you make yourself. Anything more goes to `factory:coder` with a brief that stands alone: the goal, the files, what each side wanted, the spec's path, the commands that verify it. Generated files (goldens, lock files, rendered docs) are regenerated with the repository's documented command, never edited by hand.
-3. Run the repository's full tests (`make test` unless its instructions say otherwise). They pass before you push.
+3. Run the repository's full tests (`make test` unless its instructions say otherwise). They pass before you commit and answer.
 4. Review. The default: no reviewer when the resolution kept both sides of text, took one side of a file the other did not really change, or regenerated a generated file; a fresh `factory:reviewer` on fixed SHAs (from the old head to yours), with the spec's path, whenever you or a coder wrote or rewrote logic. A `CHANGES_NEEDED` goes back to the coder once; if the second review is not `APPROVE`, stop as in "When you stop".
 5. Commit (`git commit --no-edit` for the merge; a message that says what and why for anything else), leave the worktree clean, and answer. You do not push.
 
