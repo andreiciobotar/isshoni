@@ -79,22 +79,51 @@ type KaizenPR struct {
 }
 
 type KaizenTask struct {
-	Repo      string      `json:"repo"`
-	RepoPath  string      `json:"repo_path"`
-	Slug      string      `json:"slug"`
-	Version   string      `json:"version"`
-	Started   string      `json:"started"`
-	State     string      `json:"state"`
-	PR        *KaizenPR   `json:"pr"`
-	Landed    bool        `json:"landed"`
-	BriefToPR *float64    `json:"brief_to_pr_s"`
-	PRToMerge *float64    `json:"pr_to_merge_s"`
-	Cost      *KaizenCost `json:"cost"`
-	Rounds    *int        `json:"review_rounds"`
-	FirstPass *bool       `json:"first_pass"`
-	Stops     int         `json:"stops"`
-	StoppedS  float64     `json:"stopped_s"`
-	Defects   *Defects    `json:"defects"`
+	Repo      string        `json:"repo"`
+	RepoPath  string        `json:"repo_path"`
+	Slug      string        `json:"slug"`
+	Version   string        `json:"version"`
+	Started   string        `json:"started"`
+	State     string        `json:"state"`
+	PR        *KaizenPR     `json:"pr"`
+	Landed    bool          `json:"landed"`
+	BriefToPR *float64      `json:"brief_to_pr_s"`
+	PRToMerge *float64      `json:"pr_to_merge_s"`
+	Cost      *KaizenCost   `json:"cost"`
+	Rounds    *int          `json:"review_rounds"`
+	FirstPass *bool         `json:"first_pass"`
+	Stops     int           `json:"stops"`
+	StoppedS  float64       `json:"stopped_s"`
+	Defects   *Defects      `json:"defects"`
+	Authoring TaskAuthoring `json:"authoring"`
+}
+
+// TaskAuthoring is the product code and test lines and calls each role made in a task; LeadShare
+// is nil when nobody wrote any.
+type TaskAuthoring struct {
+	Lines     map[string]int `json:"lines"`
+	Calls     map[string]int `json:"calls"`
+	LeadShare *float64       `json:"lead_share"`
+}
+
+// Authoring is the product code and test lines over a version's landed tasks or a point's window:
+// Tasks are those in which any role wrote some, LeadTasks those in which the lead did. Share is each
+// role's part of the lines (pooled), nil when Tasks is 0.
+type Authoring struct {
+	Tasks     int                `json:"tasks"`
+	LeadTasks int                `json:"lead_tasks"`
+	Lines     map[string]int     `json:"lines"`
+	Share     map[string]float64 `json:"share"`
+}
+
+// Overhead is what the dispatcher and the site manager cost in the period, USD, over the landed tasks.
+type Overhead struct {
+	Dispatcher     float64  `json:"dispatcher"`
+	SiteManager    float64  `json:"site_manager"`
+	Sessions       int      `json:"sessions"`
+	UnpricedTokens int64    `json:"unpriced_tokens"`
+	Landed         int      `json:"landed"`
+	PerLanded      *float64 `json:"per_landed"`
 }
 
 // Median is a median over the n landed tasks that have the value; nil when n is 0.
@@ -148,9 +177,10 @@ type AnatomyMedians struct {
 // AnatomyPoint is the role medians over the Window landed tasks ending at Slug; a role
 // that ran in fewer than three of them is nil.
 type AnatomyPoint struct {
-	Slug    string                     `json:"slug"`
-	Version string                     `json:"version"`
-	Roles   map[string]*AnatomyMedians `json:"roles"`
+	Slug      string                     `json:"slug"`
+	Version   string                     `json:"version"`
+	Roles     map[string]*AnatomyMedians `json:"roles"`
+	Authoring Authoring                  `json:"authoring"`
 }
 
 // AnatomyClasses is the share of a role's cost in each token class; they sum to 1.
@@ -178,9 +208,10 @@ type AnatomyRole struct {
 // AnatomyVersion is one plugin version over its landed tasks with a cost; a role that did
 // not run in any of them is nil.
 type AnatomyVersion struct {
-	Version string                  `json:"version"`
-	Tasks   int                     `json:"tasks"`
-	Roles   map[string]*AnatomyRole `json:"roles"`
+	Version   string                  `json:"version"`
+	Tasks     int                     `json:"tasks"`
+	Roles     map[string]*AnatomyRole `json:"roles"`
+	Authoring Authoring               `json:"authoring"`
 }
 
 // KaizenAnatomy is what drives a task's cost, per role, over time and per plugin version.
@@ -208,6 +239,7 @@ type KaizenSummary struct {
 	ByRole      Roles         `json:"by_role"`
 	Mix         KaizenMix     `json:"mix"`
 	Anatomy     KaizenAnatomy `json:"anatomy"`
+	Overhead    Overhead      `json:"overhead"`
 	Time        KaizenTime    `json:"time"`
 	Defects     Defects       `json:"defects"`
 	TrendMin    int           `json:"trend_min"`

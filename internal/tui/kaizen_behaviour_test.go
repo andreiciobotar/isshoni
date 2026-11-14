@@ -911,7 +911,7 @@ func TestAnatomyChangeColumnNeedsTheMinimumOnBothSides(t *testing.T) {
 	} {
 		m := fakeModel(true, 140, 100)
 		setKaizen(m, c.doc, pageAnatomy)
-		out := plain(m)
+		out, _, _ := strings.Cut(plain(m), "who wrote the product code and tests")
 		if !strings.Contains(out, c.want) || strings.Contains(out, "change") || strings.Contains(out, " pts") {
 			t.Fatalf("%s: the numbers show without a change column:\n%s", name, out)
 		}
@@ -1017,5 +1017,111 @@ func TestAnatomyShowsAVersionWithoutTasksBetweenOthers(t *testing.T) {
 	setKaizen(m, doc, pageAnatomy)
 	if out := plain(m); !strings.Contains(out, "0.2.0") || !strings.Contains(out, "n=0") {
 		t.Fatalf("the empty version in the middle shows as -, n=0:\n%s", out)
+	}
+}
+
+// authoringBlock is the authoring block of the Anatomy page: its table and the line under it.
+func authoringBlock(t *testing.T, m *model) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(plain(m), "who wrote the product code and tests")
+	if !ok {
+		t.Fatal("the authoring block is missing")
+	}
+	block, _, _ := strings.Cut(rest, "share of product code and test lines")
+	return block
+}
+
+func TestAnatomyAuthoringShowsTheShiftAndItsCounts(t *testing.T) {
+	m := kaizenModel(t, true, 140, 100, pageAnatomy)
+	out := authoringBlock(t, m)
+	for _, want := range []string{"landed tasks only", "0.1.0", "68%", "6 of 6 tasks", "0.2.0", "18%", "81%", "1%", "6 of 8 tasks", "0.3.0", "0 of 5 tasks", "↓ 18 pts",
+		"fx-session-ttl 0% · fx-feature-flags 0% · fx-email-digest 0%", "fx-quiet-refactor 0%"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q is missing:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(plain(m), "share of product code and test lines") {
+		t.Error("the chart is missing")
+	}
+}
+
+func TestAnatomyAuthoringChangeNeedsTheMinimumOnBothSides(t *testing.T) {
+	for name, task := range map[string]func(*data.Kaizen){
+		"latest is short": func(d *data.Kaizen) { d.Summary.Anatomy.Versions[2].Authoring.Tasks = 4 },
+		"before is short": func(d *data.Kaizen) { d.Summary.Anatomy.Versions[1].Authoring.Tasks = 4 },
+	} {
+		doc := kaizenDoc(t)
+		task(doc)
+		m := fakeModel(true, 140, 100)
+		setKaizen(m, doc, pageAnatomy)
+		if out := authoringBlock(t, m); strings.Contains(out, "change") || strings.Contains(out, "pts") {
+			t.Errorf("%s: no change column below the minimum:\n%s", name, out)
+		}
+	}
+}
+
+func TestAnatomyAuthoringIsFaintBelowTheMinimum(t *testing.T) {
+	doc := kaizenDoc(t)
+	doc.Summary.Anatomy.Versions[2].Authoring.Tasks = 4
+	m := fakeModel(false, 140, 100)
+	setKaizen(m, doc, pageAnatomy)
+	p := m.th.on(m.th.Bg)
+	seq := func(c color.Color) string { s := p.t("X", c); return s[:strings.Index(s, "X")] }
+	var rows = map[string]string{}
+	for _, l := range strings.Split(m.Render(), "\n") {
+		for _, v := range []string{"0.2.0  ", "0.3.0  "} {
+			if s := ansi.Strip(l); strings.Contains(s, v) && strings.Contains(s, " of ") && strings.Contains(s, " tasks") {
+				rows[strings.TrimSpace(v)] = l
+			}
+		}
+	}
+	if !strings.Contains(rows["0.3.0"], seq(m.th.Faint)+"   99%") || !strings.Contains(rows["0.2.0"], seq(m.th.Text)+"   81%") {
+		t.Fatalf("0.3.0 (4 tasks) is faint, 0.2.0 (8) is not:\n%q\n%q", rows["0.2.0"], rows["0.3.0"])
+	}
+}
+
+func TestAnatomyAuthoringNullShareShowsDashes(t *testing.T) {
+	doc := kaizenDoc(t)
+	au := &doc.Summary.Anatomy.Versions[2].Authoring
+	au.Tasks, au.LeadTasks, au.Share = 0, 0, nil
+	for i := range doc.Tasks {
+		doc.Tasks[i].Authoring.LeadShare = nil
+	}
+	for i := range doc.Summary.Anatomy.Points {
+		doc.Summary.Anatomy.Points[i].Authoring.Share = nil
+	}
+	m := fakeModel(true, 140, 100)
+	setKaizen(m, doc, pageAnatomy)
+	out := authoringBlock(t, m)
+	for _, want := range []string{"0.3.0              -       -       -  0 of 0 tasks", "fx-quiet-refactor -"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q is missing:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "change") || strings.Contains(out, "pts") {
+		t.Errorf("no share, no change:\n%s", out)
+	}
+	checkFrame(t, "null authoring", m, true)
+}
+
+func TestPulseOverheadPerLandedTask(t *testing.T) {
+	out := plain(kaizenModel(t, true, 140, 40, pagePulse))
+	for _, want := range []string{"OVERHEAD", "$2.06", "20 landed", "overhead: $38.40 dispatcher + $2.70 site manager over 20 landed tasks"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("pulse lacks %q:\n%s", want, out)
+		}
+	}
+	doc := kaizenDoc(t)
+	doc.Summary.Overhead.PerLanded, doc.Summary.Overhead.Landed = nil, 0
+	m := fakeModel(true, 140, 40)
+	setKaizen(m, doc, pagePulse)
+	out = plain(m)
+	if !strings.Contains(out, "overhead: - (no landed task); $38.40 dispatcher + $2.70 site manager") || strings.Contains(out, "$2.06") {
+		t.Errorf("no landed task, no figure:\n%s", out)
+	}
+	doc.Summary.Overhead.PerLanded, doc.Summary.Overhead.Landed, doc.Summary.Overhead.UnpricedTokens = &doc.Summary.Overhead.Dispatcher, 20, 1500
+	setKaizen(m, doc, pagePulse)
+	if out := plain(m); !strings.Contains(out, "* excludes 1.5k unpriced tokens") {
+		t.Errorf("unpriced tokens are named:\n%s", out)
 	}
 }

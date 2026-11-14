@@ -1,4 +1,4 @@
-.PHONY: install up build test fmt-check test-factory wizard snapshot screenshot strip clean FORCE
+.PHONY: install up build test fmt-check test-factory wizard uninstall snapshot screenshot strip clean FORCE
 
 BIN := bin/isshoni-tui
 VIEW ?= dashboard
@@ -48,9 +48,13 @@ fmt-check:
 test-factory:
 	python3 -m unittest discover -s factory/tests
 
-# Create and install the factory's own GitHub App, or verify the stored one (optional), e.g. make wizard ARGS="--owner my-org"
+# Set everything up (dependencies, dashboard, plugin, settings, cost alerts, GitHub App) and rerun to repair, e.g. make wizard ARGS="--yes --owner my-org"
 wizard:
 	factory/bin/factory wizard $(ARGS)
+
+# Remove what the wizard and the factory put on this machine, e.g. make uninstall ARGS="--list"
+uninstall:
+	factory/bin/factory uninstall $(ARGS)
 
 # Render one frame to stdout without a TTY, e.g. make snapshot VIEW=session ARGS="--session 04ca0148 --no-color"
 snapshot: build $(FIXDIR)
