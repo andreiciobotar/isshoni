@@ -170,7 +170,7 @@ class HookTests(StoreCase):
         self.event({"hook_event_name": "Mystery", "tool_name": "x"}, event="Mystery")
 
     def run_subprocess(self, stdin, home):
-        env = {**os.environ, "HOME": str(home), "CLAUDE_PROJECT_DIR": TASK}
+        env = {**os.environ, "HOME": str(home), "FACTORY_HOME": str(Path(home) / ".claude" / "factory"), "CLAUDE_PROJECT_DIR": TASK}
         return subprocess.run([sys.executable, str(BIN), "hook"], input=stdin, capture_output=True, text=True, env=env)
 
     def test_invalid_json_exits_silently(self):
@@ -405,6 +405,20 @@ class RetroTests(StoreCase):
                 self.assertEqual(len(err.splitlines()), 1)
         self.assertEqual(self.lines("retros"), [])
 
+    def test_a_defect_may_carry_a_known_cause_and_needs_none(self):
+        for cause in factory.CAUSES:
+            with self.subTest(cause):
+                doc = {**self.GOOD, "defects": [{"caught_by": "ci", "what": "x", "cause": cause}]}
+                self.assertEqual(self.retro(doc)[0], 0)
+        self.assertEqual([d["cause"] for line in self.lines("retros") for d in line["defects"]], list(factory.CAUSES))
+        self.assertEqual(self.retro(self.GOOD)[0], 0)
+
+    def test_an_unknown_cause_is_refused_naming_the_allowed_values(self):
+        doc = {**self.GOOD, "defects": [{"caught_by": "ci", "what": "x", "cause": "luck"}]}
+        code, out, err = self.retro(doc)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("spec|brief|conflict|scope|code", err)
+
     def test_empty_lists_are_valid(self):
         empty = {"defects": [], **{k: [] for k in factory.RETRO_LISTS}}
         self.assertEqual(self.retro(empty)[0], 0)
@@ -437,7 +451,8 @@ class TaskEventTests(StoreCase):
         (e,) = self.lines()
         self.assertEqual({k: v for k, v in e.items() if k != "ts"},
                          {"repo": tf.ROOT, "slug": "demo-task", "role": "dispatcher", "model": None, "version": VERSION,
-                          "session": "sid-d", "event": "TaskStarted", "base": "main", "lead_model": "fable"})
+                          "session": "sid-d", "event": "TaskStarted", "base": "main", "lead_model": "fable",
+                          "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet", "reviewer": "opus"}})
 
     def test_clean_records_task_removed(self):
         code, out, _, _ = self.clean()

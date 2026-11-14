@@ -9,7 +9,7 @@
 {"name": "handover-unacknowledged", "escalate": "judgment", "threshold": 24, "what": "A lead handed its work over more than the threshold, in hours, ago and nobody has acknowledged it."},
 {"name": "busy-after-handover", "escalate": "judgment", "threshold": 6, "what": "A lead declared a hand-over more than the threshold, in minutes, ago and its session is still not finished; the finding names the processes below it. Checked on every tick."},
 {"name": "review-loops", "escalate": "judgment", "threshold": 3, "what": "A task has had at least the threshold number of reviewer dispatches since it started."},
-{"name": "wrong-model", "escalate": "judgment", "threshold": null, "what": "A subagent or lead ran on a model other than the one pinned for its role."},
+{"name": "wrong-model", "escalate": "judgment", "threshold": null, "what": "A subagent or lead ran on a model other than the one configured for its role."},
 {"name": "ci-red-handover", "escalate": "judgment", "threshold": null, "what": "A task handed over a pull request that has a failing check."},
 {"name": "deep-stack", "escalate": "judgment", "threshold": 3, "what": "A task's stack, counting the task itself, is more than the threshold tasks deep."},
 {"name": "merged-not-cleaned", "escalate": "judgment", "threshold": 2, "what": "A task's pull request was merged, or the task was settled, more than the threshold, in hours, ago and it has not been cleaned."},

@@ -20,7 +20,7 @@ URL = f"https://x/pull/{N}"
 CONFLICT = "it conflicts with main in a.txt"
 RED = "red checks: test https://x/run/2"
 COURIER_LINE = re.compile(r"nothing else: (.*)\. Then reply", re.S)
-SETTINGS = {"tech_lead_model": "opus"}
+SETTINGS = {"models": {"tech_lead": "opus"}}
 ANSWER = {"outcome": "resolved", "note": "Kept both paragraphs in docs/factory.md; make test passes; no reviewer."}
 
 
@@ -229,16 +229,16 @@ class RunTests(Case):
                          (f"{self.root}/.claude/worktrees/{SLUG}", 1800, "tech-lead", True))
 
     def test_the_model_comes_from_the_settings(self):
-        (self.store / "settings.json").write_text('{"tech_lead_model": "sonnet"}')
+        (self.store / "settings.toml").write_text('[models]\ntech_lead = "sonnet"\n')
         *_, m = self.go()
         self.assertEqual(m.tech_lead_calls()[0][3], "sonnet")
         self.assertEqual(self.records("techlead")[0]["model"], "sonnet")
 
     def test_a_setting_that_is_not_a_model_is_refused(self):
-        (self.store / "settings.json").write_text('{"tech_lead_model": ""}')
+        (self.store / "settings.toml").write_text('[models]\ntech_lead = ""\n')
         code, _, err, m = self.go()
         self.assertEqual(code, 2)
-        self.assertIn("tech_lead_model must be a non-empty string", err)
+        self.assertIn("settings.toml line 2: models.tech_lead: \"\" is not a model", err)
         self.assertEqual(m.tech_lead_calls(), [])
 
     def test_resolved_comments_hands_over_and_tells_nobody(self):

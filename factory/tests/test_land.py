@@ -106,7 +106,8 @@ class LandTests(unittest.TestCase):
             tool.write_text(text)
             tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
         self.bump = bindir / "bump"
-        self.env = {**os.environ, "HOME": str(self.home), "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        self.env = {**os.environ, "HOME": str(self.home), "FACTORY_HOME": str(self.home / ".claude" / "factory"),
+                    "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
                     "FAKE_STATE": str(self.state), "FAKE_LANDER": "stop", "TEST_CMD": "true",
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                     "GIT_COMMITTER_EMAIL": "t@t"}
@@ -337,15 +338,23 @@ class LandTests(unittest.TestCase):
 
     def test_lean_start_off_gives_the_lander_its_old_argv(self):
         (self.home / ".claude" / "factory").mkdir(parents=True)
-        (self.home / ".claude" / "factory" / "settings.json").write_text('{"lean_start": false}')
+        (self.home / ".claude" / "factory" / "settings.toml").write_text('[sessions]\nlean_start = false\n')
         self.conflict()
         self.land("t1")
         (call,) = self.claude_calls()
         self.assertFalse(any(a.startswith("--strict") or a == "--settings" for a in call["argv"]))
 
+    def test_the_lander_runs_on_the_configured_model(self):
+        (self.home / ".claude" / "factory").mkdir(parents=True)
+        (self.home / ".claude" / "factory" / "settings.toml").write_text('[models]\nlander = "claude-haiku-4-5"\n')
+        self.conflict()
+        self.land("t1")
+        (call,) = self.claude_calls()
+        self.assertEqual(call["argv"][call["argv"].index("--model") + 1], "claude-haiku-4-5")
+
     def test_a_broken_settings_file_stops_the_land_before_anything_is_declared(self):
         (self.home / ".claude" / "factory").mkdir(parents=True)
-        (self.home / ".claude" / "factory" / "settings.json").write_text('{"lean_start": "no"}')
+        (self.home / ".claude" / "factory" / "settings.toml").write_text('[sessions]\nlean_start = "no"\n')
         self.conflict()
         p = self.land("t1")
         self.assertEqual(p.returncode, 2)
@@ -384,6 +393,33 @@ class LandTests(unittest.TestCase):
         self.assertEqual(self.last_state(), "working")
         (comment,) = self.gh_calls()
         self.assertIn("conflicts: a.txt - merged by hand", comment["body"])
+
+    def queued(self):
+        """The `queue` records of the run, without their `ts`, in the temporary store."""
+        files = sorted((self.home / ".claude/factory").glob("queue-*.jsonl"))
+        return [{k: v for k, v in json.loads(line).items() if k != "ts"} for f in files for line in f.read_text().splitlines()]
+
+    def number_the_pull_request(self, number=12):
+        self.prs["worktree-t1"][0]["url"] = f"https://x/pull/{number}"
+        self.write_state()
+
+    def test_the_queue_records_a_clean_base_merge_and_nothing_when_the_base_has_not_moved(self):
+        wt = self.task("t1")
+        self.number_the_pull_request()
+        self.land("t1")
+        self.assertEqual(self.queued(), [])
+        self.advance_main(1, "main line", "b.txt")
+        old = self.git("rev-parse", "HEAD", cwd=wt)
+        self.land("t1")
+        self.assertEqual(self.queued(), [{"repo": str(self.repo), "slug": "t1", "pr": 12, "head": old,
+                                          "step": "land-updated", "base": "origin/main"}])
+
+    def test_the_queue_records_a_conflicting_base_merge_with_its_files(self):
+        wt, old = self.conflict()
+        self.number_the_pull_request()
+        self.land("t1")
+        self.assertEqual(self.queued(), [{"repo": str(self.repo), "slug": "t1", "pr": 12, "head": old,
+                                          "step": "land-conflict", "base": "origin/main", "files": ["a.txt"]}])
 
     def test_a_lander_that_stops_pushes_nothing(self):
         wt, old = self.conflict()

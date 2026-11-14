@@ -6,7 +6,7 @@ import (
 )
 
 func TestReadOnlyRefusesTheCapField(t *testing.T) {
-	path := settingsFile(t, `{"worktree_cap": 12}`)
+	path := settingsFile(t, "[limits]\nworktree_cap = 12\n")
 	m := factoryModel(true, 100, 30, alpha())
 	m.opts.ReadOnly = true
 	send(m, "c")

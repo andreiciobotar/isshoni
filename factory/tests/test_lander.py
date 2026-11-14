@@ -236,6 +236,41 @@ class MergeInOrderTests(Loop):
         self.go("lander")
         self.assertEqual((self.sim.lines, self.sim.events("undo")), ([], []))
 
+    def queued(self, *steps):
+        """The `queue` records of these steps, without their `ts`."""
+        return [{k: v for k, v in r.items() if k != "ts"} for r in self.records("queue") if r["step"] in steps]
+
+    def test_the_queue_records_the_update_with_the_tip_it_merged_in(self):
+        self.sim.add(1)
+        self.go("lander")
+        self.assertEqual(self.queued("updated"), [
+            {"repo": ROOT, "slug": "t1", "pr": 1, "head": "h1", "step": "updated", "tip": "tip0"}])
+
+    def test_the_queue_records_a_rerun_with_its_line(self):
+        self.sim.add(1, behind=False, checks=[RED])
+        self.rerun_answer = (True, "rerun: attempt 2 started", [GREEN])
+        self.go("lander")
+        self.assertEqual(self.queued("rerun"), [
+            {"repo": ROOT, "slug": "t1", "pr": 1, "head": "h1", "step": "rerun", "text": "rerun: attempt 2 started"}])
+
+    def test_the_queue_records_a_send_back_with_who_was_told_and_the_conflicting_files(self):
+        self.sim.add(1, conflicts=["a.txt", "b.txt"])
+        self.sim.add(2, behind=False, checks=[RED])
+        self.go("lander")
+        self.assertEqual(sorted(self.queued("sent-back"), key=lambda r: r["pr"]), [
+            {"repo": ROOT, "slug": "t1", "pr": 1, "head": "h1", "step": "sent-back", "kind": "conflict",
+             "text": "conflicts with main in a.txt, b.txt", "told": "lead", "files": ["a.txt", "b.txt"]},
+            {"repo": ROOT, "slug": "t2", "pr": 2, "head": "h2", "step": "sent-back", "kind": "ci",
+             "text": "failed or cancelled checks: test; no rerun: test double", "told": "lead"}])
+        self.assertEqual(self.queued("rerun"), [])
+
+    def test_the_queue_records_a_stop_with_who_was_told(self):
+        self.sim.add(1, base="elsewhere", behind=False)
+        self.go("lander")
+        [record] = self.queued("stopped")
+        self.assertEqual((record["pr"], record["kind"], record["told"], "files" in record), (1, "base", "dispatcher", False))
+        self.assertEqual(self.queued("sent-back"), [])
+
     def test_a_stop_is_reported_once_per_number_head_and_kind(self):
         self.sim.add(1, base="elsewhere", behind=False)
         self.go("lander")
