@@ -29,7 +29,7 @@ Isshoni is two tools for people who run [Claude Code](https://claude.com/claude-
 | | What it does | You run |
 |---|---|---|
 | **Monitor** | Shows where the money and tokens went: per repository, task, session, agent and model | `isshoni`, `isshoni-tui` |
-| **Factory** | Orchestrates Claude Code agents: several tasks in parallel, each in its own git worktree, each ending in a draft pull request | `/factory:dispatch`, from the `factory` plugin |
+| **Factory** | Orchestrates Claude Code agents: several tasks in parallel, each in its own git worktree, each ending in a reviewed pull request | `/factory:dispatch`, from the `factory` plugin |
 
 ## Setup
 
@@ -49,11 +49,11 @@ Factory: `make wizard` in the clone checks the tools, builds the dashboard, inst
 /factory:dispatch
 ```
 
-Describe a task; ask for progress whenever you like. By default leads run unattended on Fable in `auto` permission mode, five tasks at a time per repository, one of them held for emergencies ([settings](docs/factory.md#settings)).
+Describe a task; ask for progress whenever you like. By default leads run unattended on Fable in `auto` permission mode, five tasks at a time per repository, one of them held for emergencies, each against a time limit set by its size (45 min, 90 min or 2 h) ([settings](docs/factory.md#settings)).
 
 Optional:
 
-- [Always on](docs/container.md): `make wizard-remote` asks for what it needs and runs the factory in a container on a Linux host that has Docker.
+- [Always on](docs/container.md): `make wizard-remote` asks for what it needs and runs the factory in a container on a Linux host that has Docker. One SSH address shows the dashboard, and `d` there opens the dispatcher.
 
 `make uninstall` removes what the wizard put on this machine, `make uninstall-remote` a server's install.
 
@@ -62,16 +62,16 @@ Optional:
 <p align="center">
   <picture>
     <source media="(max-width: 600px)" srcset="assets/diagrams/factory-narrow.svg">
-    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief; it starts one lead per task in its own worktree. The lead has an explorer, a coder and a reviewer work until the reviewer approves. The lander tests and pushes a pull request, a draft until handed over and green; you approve and the lander merges to main. A courier carries your comments to the lead; a site manager watches and escalates to the dispatcher. Every task leaves feedback and a retrospective; the dispatcher proposes rule edits, you decide. Models are defaults.">
+    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief; it starts one lead per task in its own worktree. The lead has an explorer, a coder and a reviewer work until the reviewer approves. The lander tests and pushes a pull request, a draft until it is handed over, green and free of conflicts. You approve; a script merges approved pull requests to main in order. What conflicts or goes red there goes to a tech lead, which resolves it and hands over again, and asks the lead only if behaviour would change. A site manager watches and tells the dispatcher or a lead. Every task leaves feedback and a retrospective; the dispatcher proposes rule edits, you decide. Models are defaults.">
   </picture>
 </p>
 
-A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`.
+A lead asks you only what it cannot decide itself; comment on its pull request and it answers or acts. The pull request is a draft until it is handed over, green and free of conflicts. Nothing merges without you: approve with a review (or a comment `lgtm`), and a script merges what you approved, in order.
 
-A pull request that conflicts with the default branch or goes red in the merge queue is resolved by a tech lead session, not by waking its lead; the lead hears only when the fix is a behaviour question.
+What the merge queue cannot merge cleanly goes to a tech lead (Opus): it resolves the conflict, notes it on the pull request and hands over again, and wakes the lead only when the resolution would change the behaviour that was asked for.
 
 <p align="center">
-  <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap and its reserve">
+  <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time against its limit and pull request, within the cap and its reserve">
 </p>
 
 ## Kaizen (改善), built in
@@ -93,9 +93,7 @@ On day one, agents reported the same shell friction eleven times and counting. I
 
 ## Monitor
 
-`isshoni` reads the transcripts Claude Code already keeps in `~/.claude/projects` and never writes there. Beyond cost and tokens it shows the signs of wasted work: repeated dispatches, review loops, agents on a model other than the one pinned for them.
-
-Parsing a transcript is slow, so parsed sessions are cached, one file per transcript, in `$XDG_CACHE_HOME/isshoni/sessions` (else `~/.cache/isshoni/sessions`). Set `ISSHONI_CACHE_DIR` to another directory, or to an empty value to turn the cache off. An entry is dropped when its transcript or its `subagents/` files change, or when the parser or the price file does. Each run deletes the entries of transcripts that no longer exist, so the cache stays a small fraction of the transcripts' size; only a projects directory you stop using leaves its folder behind. Deleting the whole cache is always safe and costs one slow run. Entries are Python pickles, trusted like the code itself: the cache directory and its files are private to you (0700 and 0600), and anything that can write there can run code as you. The cache lives outside `~/.claude/projects`, which is still only read.
+`isshoni` reads the transcripts Claude Code already keeps in `~/.claude/projects` and never writes there. Beyond cost and tokens it shows the signs of wasted work: repeated dispatches, review loops, agents on a model other than the one pinned for them. Parsed sessions are cached outside that directory ([cache](docs/isshoni.md#cache)).
 
 Cost is the API list price, from [isshoni/prices.toml](isshoni/prices.toml). `isshoni-tui` is the same data live, plus the factory's tasks and whether it is getting better. Its fifth view, [Hanami (花見)](docs/isshoni.md#hanami-花見-the-work-as-something-to-watch), draws the work as motion: something to leave on a second screen.
 
@@ -108,7 +106,7 @@ Every view, the Agents one too, and its keys: [docs/isshoni.md](docs/isshoni.md#
 ## More
 
 - [docs/factory.md](docs/factory.md): commands, states, settings, logs, the site manager
-- [docs/isshoni.md](docs/isshoni.md): the monitor's options and the dashboard's keys, and `isshoni-tui --serve`, which also opens the dispatcher's conversation over SSH for a `write` key
+- [docs/isshoni.md](docs/isshoni.md): the monitor's options, the dashboard's keys and serving it over SSH
 - [docs/shutdown.md](docs/shutdown.md): what ends each process and what each leaves behind
 - `make test` runs everything
 
