@@ -62,31 +62,15 @@ Optional:
 
 ```mermaid
 flowchart TD
-    you([You])
-    disp[Dispatcher]
-    subgraph task [One lead per task, in its own worktree]
-        lead[Lead · Fable]
-        lead --> explorer[explorer · Haiku]
-        lead --> coder[coder · Sonnet]
-        lead --> reviewer[reviewer · Opus]
-        lead --> lander[lander · Sonnet]
-    end
-    pr[Draft pull request]
-    sm[Site manager · every 30 min]
-    log[(Feedback, decisions,<br>retrospectives, cost)]
-    rules[The factory's rules]
-
-    you <-- tasks, questions --> disp
+    you([You]) <-- tasks, questions --> disp[Dispatcher]
     disp <-- brief, questions --> lead
-    lander -- opens --> pr
+    subgraph task [One per task, in its own worktree]
+        lead[Lead · Fable] --> subs[explorer · Haiku<br>coder · Sonnet<br>reviewer · Opus<br>lander · Sonnet]
+    end
+    subs -- opens --> pr[Draft pull request]
     you -- approves --> pr
+    sm[Site manager<br>every 30 min] -- alerts --> disp
     sm -- merges --> pr
-    sm -- alerts --> disp
-    task -.-> log
-    log -.-> disp
-    disp -. proposes edits .-> rules
-    you -. decides .-> rules
-    rules -.-> task
 ```
 
 A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the site manager merges it once checks are green.
@@ -103,6 +87,14 @@ Most agent setups run on day 100 the way they ran on day 1. Isshoni's factory le
 - Every site manager alert is marked acted-on or noise, so its precision and recall are measured.
 
 The dispatcher reads it all and proposes edits to the factory's own rules; you decide.
+
+```mermaid
+flowchart TD
+    tasks[Every task] -. feedback, decisions,<br>retrospectives, cost .-> disp[Dispatcher]
+    disp -. proposes edits .-> you([You])
+    you -. accepts .-> rules[The factory's rules]
+    rules -.-> tasks
+```
 
 On day one, agents reported the same shell friction eleven times and counting. It became a rule that day ([#8](https://github.com/andreiciobotar/isshoni/pull/8)).
 
