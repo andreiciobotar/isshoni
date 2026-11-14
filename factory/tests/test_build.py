@@ -60,7 +60,8 @@ class LaunchTests(BuildCase):
         [argv] = m.tech_lead_calls()
         role = (BIN.parent.parent / "roles" / "tech-lead-build.md").read_text()
         self.assertEqual(argv[:-1], [
-            "claude", "-p", "--model", "opus", "--permission-mode", "auto", "--plugin-dir", str(BIN.parent.parent),
+            "claude", "-p", "--model", "opus", "--agents", json.dumps(factory.agent_definitions(factory.SETTINGS_DEFAULTS["models"])),
+            "--permission-mode", "auto", "--plugin-dir", str(BIN.parent.parent),
             "--strict-mcp-config", "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}",
             "--disallowedTools", "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)",
             "Bash(git commit --amend*)", "Bash(git worktree*)",
@@ -89,10 +90,14 @@ class LaunchTests(BuildCase):
                       m.tech_lead_calls()[0][-1])
 
     def test_the_model_and_the_permission_mode_come_from_the_settings(self):
-        (self.store / "settings.json").write_text('{"tech_lead_model": "sonnet", "lead_permission_mode": "plan", "lean_start": false}')
+        (self.store / "settings.toml").write_text(
+            '[models]\ntech_lead = "sonnet"\ncoder = "haiku"\n[sessions]\nlead_permission_mode = "plan"\nlean_start = false\n')
         *_, m = self.build()
         argv = m.tech_lead_calls()[0]
-        self.assertEqual((argv[3], argv[5], "--strict-mcp-config" in argv), ("sonnet", "plan", False))
+        self.assertEqual((argv[3], argv[argv.index("--permission-mode") + 1], "--strict-mcp-config" in argv), ("sonnet", "plan", False))
+        agents = json.loads(argv[argv.index("--agents") + 1])
+        self.assertEqual(agents, factory.agent_definitions({**factory.SETTINGS_DEFAULTS["models"], "coder": "haiku", "tech_lead": "sonnet"}))
+        self.assertEqual((agents["factory:coder"]["model"], agents["factory:reviewer"]["model"]), ("haiku", "opus"))
         self.assertEqual(self.only_record()["model"], "sonnet")
 
     def test_the_command_starts_a_detached_run_and_returns(self):
@@ -266,8 +271,8 @@ class MergeRecordTests(unittest.TestCase):
         with mock.patch.object(factory, "log", lambda name, rec: records.append(rec)), \
                 mock.patch.object(factory, "record", lambda *a: {}):
             repo = mock.Mock(root="/r")
-            factory.log_tech_lead(repo, {"tech_lead_model": "opus"}, "x", 7, "e", "resolved")
-            factory.log_tech_lead(repo, {"tech_lead_model": "opus"}, "x", None, "build", "built", kind="build")
+            factory.log_tech_lead(repo, {"models": {"tech_lead": "opus"}}, "x", 7, "e", "resolved")
+            factory.log_tech_lead(repo, {"models": {"tech_lead": "opus"}}, "x", None, "build", "built", kind="build")
         self.assertEqual([r["kind"] for r in records], ["merge", "build"])
 
 
