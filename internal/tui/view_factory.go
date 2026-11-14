@@ -507,7 +507,7 @@ func elapsedText(t data.FactoryTask, span bool) string {
 	return FmtDuration(time.Duration(*t.Elapsed) * time.Second)
 }
 
-// spanText renders seconds to the minute: 41m, 1h30m, 2h.
+// limitSpan renders seconds to the minute: 41m, 1h30m, 2h.
 func limitSpan(secs int64) string {
 	h, m := secs/3600, secs/60%60
 	s := ""
@@ -520,18 +520,21 @@ func limitSpan(secs int64) string {
 	return s
 }
 
-// factoryCols sizes the columns to the widest cell of any task. When the slug would get
+// factoryCols sizes the columns to the widest cell of any task; SIZE shows only when some
+// task has a size. When the slug would get
 // less than slugLeast cells it drops SIZE, then shows ELAPSED as the elapsed time alone,
 // then drops BASE, PR and ELAPSED in that order.
 func (m *model) factoryCols(p paint, w int, tasks []data.FactoryTask) factoryCols {
-	c := factoryCols{slug: 4, phase: 5, elapsed: elapsedLeast, size: 4, pr: 2, base: 4, flags: 5, span: true}
+	c := factoryCols{slug: 4, phase: 5, elapsed: elapsedLeast, pr: 2, base: 4, flags: 5, span: true}
 	for _, t := range tasks {
 		_, label, _ := m.phaseLook(t, m.w >= 100)
 		base, _ := baseText(t.Base)
 		c.slug = max(c.slug, width(t.Slug))
 		c.phase = max(c.phase, 2+width(label))
 		c.elapsed = max(c.elapsed, width(elapsedText(t, true)))
-		c.size = max(c.size, width(t.Size))
+		if t.Size != "" {
+			c.size = max(c.size, 4, width(t.Size))
+		}
 		c.pr = max(c.pr, min(width(prText(t)), prMax))
 		c.base = max(c.base, min(width(base), baseMax))
 		c.flags = max(c.flags, width(flagPills(p, t)))

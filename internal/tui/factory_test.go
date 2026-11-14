@@ -583,11 +583,14 @@ func TestFactoryBlockedOnSomeoneElseIsLighter(t *testing.T) {
 func TestFactoryColsKeepTheTableWhenAWhomIsLong(t *testing.T) {
 	cols := func(w int, whom string) factoryCols {
 		x := onTask()
-		x.WaitsOn = whom
+		x.WaitsOn, x.Size = whom, "medium"
 		m := factoryModel(true, w, 40, factoryRepo{name: "m", st: fstatus(5, x, ftask("quiet-refactor", "motion"), ftask("api-rate-limits", "review"))})
 		return m.factoryCols(m.th.on(m.th.Bg), w, m.fac.repos[0].st.Rows)
 	}
 	long := strings.Repeat("x", 40)
+	if c := cols(100, long); c.phase != 53 {
+		t.Errorf("100 columns: PHASE is %d cells, it was clamped to make room for SIZE and the wider ELAPSED", c.phase)
+	}
 	for _, w := range []int{80, 100} {
 		got, want := cols(w, long), cols(w, "dispatcher")
 		got.phase, want.phase = 0, 0 // the label is cut to the cell
@@ -604,6 +607,25 @@ func TestFactoryColsKeepTheTableWhenAWhomIsLong(t *testing.T) {
 	m := factoryModel(true, 130, 40, factoryRepo{name: "m", st: fstatus(5, wide)})
 	if c := m.factoryCols(m.th.on(m.th.Bg), 130, m.fac.repos[0].st.Rows); c.slug != 40 || c.phase != phaseMax {
 		t.Errorf("130 columns: a long whom may not cut a long slug: %+v", c)
+	}
+}
+
+func TestFactoryColsShowSizeOnlyWhenSomeTaskHasOne(t *testing.T) {
+	sized := ftask("sized", "motion")
+	sized.Size = "small"
+	for _, c := range []struct {
+		name  string
+		tasks []data.FactoryTask
+		size  int
+	}{
+		{"none", []data.FactoryTask{ftask("a", "motion"), ftask("b", "review")}, 0},
+		{"one", []data.FactoryTask{ftask("a", "motion"), sized}, 5},
+	} {
+		m := factoryModel(true, 140, 40, factoryRepo{name: "m", st: fstatus(5, c.tasks...)})
+		got := m.factoryCols(m.th.on(m.th.Bg), 140, c.tasks)
+		if got.size != c.size {
+			t.Errorf("%s sized: SIZE is %d cells, want %d", c.name, got.size, c.size)
+		}
 	}
 }
 

@@ -203,13 +203,14 @@ def brief_size(brief):
 def task_limit(size, limit_hours):
     """The one place a task's time limit, in seconds, is computed: the size's, never above the setting."""
     ceiling = limit_hours * 3600
-    return min(SIZE_LIMIT_MINUTES[size] * 60, ceiling) if size in SIZE_LIMIT_MINUTES else ceiling
+    return int(min(SIZE_LIMIT_MINUTES[size] * 60, ceiling) if size in SIZE_LIMIT_MINUTES else ceiling)
 
 
 def nearing_percent():
     """The threshold of the `nearing-limit` criterion, None when criteria.json cannot say."""
     try:
-        for c in json.loads(CRITERIA_PATH.read_text()):
+        criteria = json.loads(CRITERIA_PATH.read_text())
+        for c in criteria if isinstance(criteria, list) else []:
             if c.get("name") == "nearing-limit":
                 t = c.get("threshold")
                 return t if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0 else None

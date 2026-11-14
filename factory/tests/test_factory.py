@@ -641,6 +641,10 @@ class NewTests(unittest.TestCase):
         (rec,) = fake.tasks
         self.assertEqual((rec["repo"], rec["slug"], rec["state"], rec["role"]), (ROOT, "demo-task", "working", "dispatcher"))
 
+    def test_a_fractional_setting_is_told_in_whole_minutes(self):
+        _, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK), '{"task_time_limit_hours": 1.5}')
+        self.assertIn("Your time limit is 90 minutes.", next(c for c in fake.calls if c[:2] == ["claude", "--bg"])[-1], err)
+
     def test_a_sized_brief_sets_the_limit_and_is_recorded(self):
         args = ["new", "demo-task", "--brief", "go\nExpected size: Small", "--dispatcher", "d1"]
         with mock.patch.object(factory, "task_event") as event:
@@ -1212,8 +1216,14 @@ class StatusTests(unittest.TestCase):
         row = self.rows_for(10, "large", hours=1)
         self.assertEqual(row["limit"], 3600)
 
+    def test_a_fractional_setting_gives_whole_seconds(self):
+        row = self.rows_for(10, hours=1.5)
+        self.assertEqual(row["limit"], 5400)
+        self.assertIsInstance(row["limit"], int)
+        self.assertEqual(factory.span(row["limit"]), "1h30m")
+
     def test_nothing_is_nearing_without_the_criteria_entry(self):
-        for criteria in (None, "not json", "{}", "[1]", "[]", '[{"name": "nearing-limit"}]',
+        for criteria in (None, "not json", "{}", "[1]", "[]", "5", "null", '[{"name": "nearing-limit"}]',
                          '[{"name": "nearing-limit", "threshold": true}]', '[{"name": "nearing-limit", "threshold": 0}]'):
             with self.subTest(criteria=criteria):
                 self.assertFalse(self.rows_for(40, "small", criteria)["nearing"])
