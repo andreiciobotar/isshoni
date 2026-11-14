@@ -1,0 +1,30 @@
+ Isshoni  1 Dash  2 Sess  3 Agents  4 Factory [5 Kaizen]                 24h [7d] 30d  all   ○ idle 
+ Kaizen   Pulse [Flow] Board   ←→  · 20 landed of 24 tasks in 7d  · as of 11:00:00                  
+ where the money went  landed tasks ─────────────────────────────────────────────────────────────── 
+ ████████████████████████████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░░##### 
+ █ lead $35.85 28%   ▓ coder $48.44 38%   ▒ reviewer $24.96 20%   ░ explorer $10.36 8%              
+ # other $6.46 5%                                                                                   
+ rework 9% (subagent runs after the first review)                                                   
+                                                                                                    
+ the mix over time  role share of task cost · median of 5 tasks ─────────────────────────────────── 
+ 40% ⠤⠔⠒⠒⠊⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠒⠒⠒⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠄    coder 38%    
+     ⣀⡀                 ⢀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀                                          
+      ⠈⠉⠉⠑⠒⠒⠒⠒⠒⠒⠒⠒⠒⠉⠉⠉⠉⠉⠁                                ⠈⠉⠉⠉⠉⠉⠉⠉⠉⠢⡀                                
+     ⣀⣀⣀                ⢀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣈⣒⣄⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀    reviewer 20% 
+        ⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠁                                             ⢑⠤⠤⠤⣒⣒⣒⣒⣒⣒⣒⣒⡂    other 18%    
+                                                                    ⢀⠔⠁                lead 15%     
+     ⠒⠒⠒⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠑⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⢒⠖⠓⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠂    explorer 8%  
+  0% ⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠁                                 
+     ───────────▲───────────────────────────────────────────▲─────────────────────────              
+     v0.1.0     v0.2.0                                      v0.3.0                                  
+                                                                                                    
+ where the time went  brief to merge, landed tasks ──────────────────────────────────────────────── 
+ ████████████████████████████████████████████████████████████████████▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ 
+ █ building 8h19m 69%   ▓ stopped 1h24m 12%   ▒ waiting for merge 2h16m 19%                         
+                                                                                                    
+ tasks  newest first ────────────────────────────────────────────────────────────────────────────── 
+ fixture-alpha  18 tasks                                                                            
+  SLUG                VER     STATE           BUILD   MERGE    COST  ROLES       REV  REWORK  STOPS 
+  fx-metrics-tab      v0.3.0  ▲ blocked      25m00s       -   $2.00  █▓▓▓▓▒▒░##    1      0%      0 
+ +50 more lines · ↓ to scroll                                                                       
+ ←→/hl kaizen page  ·  ↑↓/jk move  ·  r range  ·  tab next view  ·  ? help  ·  q quit               

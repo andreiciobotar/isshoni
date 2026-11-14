@@ -249,6 +249,7 @@ class DocumentTests(FixtureStore):
             "pr_to_merge_s": {"median": 600.0, "n": 1}, "review_rounds": {"median": 1.0, "n": 1},
             "first_pass": {"yes": 1, "of": 1}, "rework_share": 0.095238,
             "by_role": {"lead": 10.0, "coder": 3.0, "reviewer": 5.0, "explorer": 2.0, "other": 1.0},
+            "mix": {"window": 5, "points": []},
             "time": {"building_s": 2880, "stopped_s": 120, "merge_wait_s": 600},
             "defects": {"tests": 1, "reviewer": 2, "lead": 1, "ci": 0, "human": 0, "other": 2},
             "trend_min": 10, "trend": None})
@@ -305,7 +306,8 @@ def shapes(d):
     s, o, tasks = d["summary"], d["outbox"], d["tasks"]
     add("doc", [d]), add("repo", d["repos"]), add("version", d["versions"]), add("task", tasks)
     add("pr", [t["pr"] for t in tasks]), add("cost", [t["cost"] for t in tasks])
-    add("by_role", [t["cost"]["by_role"] for t in tasks if t["cost"]] + [s["by_role"]])
+    add("by_role", [t["cost"]["by_role"] for t in tasks if t["cost"]] + [s["by_role"]] + [p["share"] for p in s["mix"]["points"]])
+    add("mix", [s["mix"]]), add("point", s["mix"]["points"])
     add("defects", [t["defects"] for t in tasks] + [s["defects"]])
     add("summary", [s]), add("time", [s["time"]]), add("first_pass", [s["first_pass"]]), add("trend", [s["trend"]])
     add("median", [s[m] for m in ("cost", "brief_to_pr_s", "pr_to_merge_s", "review_rounds")])
@@ -320,14 +322,18 @@ class DashboardFixtureTests(FixtureStore):
 
     def test_fixture_matches_the_command(self):
         with open(os.path.join(ROOT, "internal", "tui", "testdata", "kaizen-fixture.json")) as f:
-            fixture = shapes(json.load(f))
+            fixture_doc = json.load(f)
+        fixture = shapes(fixture_doc)
         ours = shapes(self.doc)
         self.assertEqual({n for n, v in fixture.items() if len(v) != 1}, set())
         self.assertLessEqual({"doc", "repo", "version", "task", "pr", "cost", "by_role", "defects", "summary", "time",
                               "first_pass", "median", "stop", "slowed", "outbox", "counts", "topic", "entry",
-                              "site_manager"}, set(ours))
+                              "site_manager", "mix"}, set(ours))
         for name in ours:
             self.assertEqual(fixture[name], ours[name], name)
+        landed = [t for t in fixture_doc["tasks"] if t["landed"]]
+        self.assertEqual((fixture_doc["roles"], fixture_doc["summary"]["mix"]), (list(kaizen.ROLES), kaizen._mix(landed)))
+        self.assertEqual(fixture["point"], {frozenset(kaizen._mix(mixed([0.5] * 5))["points"][0])})
         self.assertEqual(fixture["trend"], {frozenset(kaizen._trend([task("t", "2026-11-01T00:00:00Z")] * 10))})
         self.assertEqual(fixture["reward"], {frozenset(kaizen._rewards(days(9, 8, 7, 6, 5))[0])})
 
@@ -510,6 +516,49 @@ def days(*values, **kw):
     return [task("t%d" % i, "2026-11-%02dT00:00:00Z" % (i + 1), v, **kw) for i, v in enumerate(values)]
 
 
+def mixed(lead_shares, version="0.1.0", start=0):
+    """Landed tasks costing 10 each: the lead has the share given, the coder the rest."""
+    zero = dict.fromkeys(kaizen.ROLES, 0.0)
+    return [{"slug": "m%d" % (start + i), "version": version, "landed": True,
+             "cost": {"total": 10.0, "by_role": {**zero, "lead": 10.0 * x, "coder": 10.0 * (1 - x)}}}
+            for i, x in enumerate(lead_shares)]
+
+
+class MixTests(unittest.TestCase):
+    def lead(self, landed):
+        return [(p["slug"], p["version"], p["share"]["lead"]) for p in kaizen._mix(landed)["points"]]
+
+    def test_no_points_below_the_window(self):
+        self.assertEqual(kaizen._mix(mixed([0.5] * 4)), {"window": 5, "points": []})
+        self.assertEqual(kaizen._mix([]), {"window": 5, "points": []})
+
+    def test_a_point_is_the_median_share_of_the_five_tasks_ending_at_it(self):
+        landed = mixed([0.9, 0.1, 0.8, 0.7, 0.6, 0.2])
+        self.assertEqual(self.lead(landed), [("m4", "0.1.0", 0.7), ("m5", "0.1.0", 0.6)])
+        point = kaizen._mix(landed)["points"][0]
+        self.assertEqual(list(point), ["slug", "version", "share"])
+        self.assertEqual(point["share"], {"lead": 0.7, "coder": 0.3, "reviewer": 0.0, "explorer": 0.0, "other": 0.0})
+        self.assertTrue(all(type(v) is float for v in point["share"].values()))
+
+    def test_medians_are_per_role_and_need_not_sum_to_one(self):
+        zero = dict.fromkeys(kaizen.ROLES, 0.0)
+        landed = [{"slug": "s%d" % i, "version": None, "cost": {"total": 10.0, "by_role": {**zero, **by}}} for i, by in enumerate((
+            {"lead": 10.0}, {"lead": 10.0}, {"coder": 10.0}, {"coder": 10.0}, {"reviewer": 10.0}))]
+        self.assertEqual(kaizen._mix(landed)["points"], [{"slug": "s4", "version": None, "share": zero}])
+
+    def test_tasks_without_a_cost_take_no_place_in_the_window(self):
+        landed = mixed([0.9, 0.1, 0.8, 0.7, 0.6])
+        landed[1:1] = [{"slug": "none", "version": "0.1.0", "cost": None},
+                       {"slug": "free", "version": "0.1.0", "cost": {"total": 0.0, "by_role": dict.fromkeys(kaizen.ROLES, 0.0)}}]
+        self.assertEqual(self.lead(landed), [("m4", "0.1.0", 0.7)])
+
+    def test_a_shift_at_a_version_shows_in_full_three_tasks_after_it(self):
+        landed = mixed([0.8] * 6) + mixed([0.4] * 5, "0.2.0", 6)
+        self.assertEqual(self.lead(landed), [
+            ("m4", "0.1.0", 0.8), ("m5", "0.1.0", 0.8), ("m6", "0.2.0", 0.8), ("m7", "0.2.0", 0.8),
+            ("m8", "0.2.0", 0.4), ("m9", "0.2.0", 0.4), ("m10", "0.2.0", 0.4)])
+
+
 class RewardTests(unittest.TestCase):
     def kinds(self, landed):
         return [(r["kind"], r["slug"], r["text"]) for r in kaizen._rewards(landed)]
@@ -646,14 +695,15 @@ class CliTests(Store):
         with mock.patch.object(kaizen, "gh_prs", side_effect=self.gh):
             _, out, _ = run_cli("kaizen", "--json", *self.args)
         d = json.loads(out)
-        self.assertEqual(list(d), ["generated", "factory_dir", "store_found", "prices", "repos", "versions", "tasks", "summary",
+        self.assertEqual(list(d), ["generated", "factory_dir", "store_found", "prices", "roles", "repos", "versions", "tasks", "summary",
                                    "stops", "slowed", "rewards", "outbox", "site_manager"])
         self.assertEqual(d["site_manager"], SiteManagerTests.EMPTY)
         self.assertEqual(list(d["tasks"][0]), ["repo", "repo_path", "slug", "version", "started", "state", "pr", "landed",
                                                "brief_to_pr_s", "pr_to_merge_s", "cost", "review_rounds", "first_pass", "stops",
                                                "stopped_s", "defects"])
         self.assertEqual(list(d["summary"]), ["tasks", "landed", "in_flight", "cost", "brief_to_pr_s", "pr_to_merge_s",
-                                              "review_rounds", "first_pass", "rework_share", "by_role", "time", "defects",
+                                              "review_rounds", "first_pass", "rework_share", "by_role", "mix", "time",
+                                              "defects",
                                               "trend_min", "trend"])
         self.assertEqual(list(d["outbox"]), ["issues", "decisions", "topics", "entries"])
 

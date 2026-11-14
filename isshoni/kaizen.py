@@ -16,6 +16,7 @@ DEFECT_KINDS = ("tests", "reviewer", "lead", "ci", "human", "other")
 STOP_KINDS = ("QUESTION", "BLOCKED", "OVERTIME")
 STATUSES = ("open", "accepted", "rejected", "done")
 TREND_MIN = 10
+MIX_WINDOW = 5
 GH_FIELDS = "number,url,state,headRefName,createdAt,mergedAt"
 TOPICS = [(name, re.compile(pat, re.I)) for name, pat in (
     ("permissions", r"permission|denied|refus|sandbox|isolation|not allowed"),
@@ -246,6 +247,17 @@ def _trend(landed):
     return out
 
 
+def _mix(landed):
+    """Each role's share of a task's cost over time: per landed task with a cost, in start order,
+    the median share over the MIX_WINDOW tasks ending at it. Medians need not sum to 1."""
+    costed = [t for t in landed if t["cost"] and t["cost"]["total"] > 0]
+    shares = [{r: t["cost"]["by_role"][r] / t["cost"]["total"] for r in ROLES} for t in costed]
+    return {"window": MIX_WINDOW, "points": [
+        {"slug": t["slug"], "version": t["version"],
+         "share": {r: _median(s[r] for s in shares[i + 1 - MIX_WINDOW:i + 1]) for r in ROLES}}
+        for i, t in enumerate(costed) if i + 1 >= MIX_WINDOW]}
+
+
 def _rewards(landed):
     landed = sorted(landed, key=lambda t: (t["pr"]["merged"], t["slug"]))
     if not landed:
@@ -283,7 +295,7 @@ def _summary(tasks):
         "review_rounds": med("review_rounds"),
         "first_pass": {"yes": sum(first_pass), "of": len(first_pass)},
         "rework_share": round(sum(c["rework"] for c in costed) / total, 6) if total else None,
-        "by_role": {r: round(sum(c["by_role"][r] for c in costed), 6) for r in ROLES},
+        "by_role": {r: round(sum(c["by_role"][r] for c in costed), 6) for r in ROLES}, "mix": _mix(landed),
         "time": {"building_s": sum(max(0, t["brief_to_pr_s"] - t["stopped_s"]) for t in landed if t["brief_to_pr_s"] is not None),
                  "stopped_s": sum(t["stopped_s"] for t in landed),
                  "merge_wait_s": sum(t["pr_to_merge_s"] for t in landed if t["pr_to_merge_s"] is not None)},
@@ -423,7 +435,7 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None):
         t["started"] = _iso(t["started"])
     return {
         "generated": _iso(now or datetime.now(timezone.utc)), "factory_dir": factory_dir,
-        "store_found": os.path.isdir(factory_dir), "prices": prices.to_dict(), "repos": repos,
+        "store_found": os.path.isdir(factory_dir), "prices": prices.to_dict(), "roles": list(ROLES), "repos": repos,
         "versions": [{"version": v, "first_seen": _iso(t)} for v, t in sorted(versions.items(), key=lambda x: (x[1], x[0]))],
         "tasks": tasks, "summary": _summary(tasks),
         "stops": [{k: v for k, v in s.items() if k != "_key"} for s in stops if s["_key"] in kept],

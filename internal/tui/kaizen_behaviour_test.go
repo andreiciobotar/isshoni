@@ -6,9 +6,11 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -248,7 +250,7 @@ func TestKaizenNullsShowDashes(t *testing.T) {
 		doc.Tasks[i].Cost, doc.Tasks[i].Rounds, doc.Tasks[i].BriefToPR, doc.Tasks[i].PRToMerge, doc.Tasks[i].Version = nil, nil, nil, nil, ""
 	}
 	doc.Summary.Cost.Median, doc.Summary.BriefToPR.Median, doc.Summary.PRToMerge.Median, doc.Summary.ReworkShare, doc.Summary.Trend = nil, nil, nil, nil, nil
-	m := fakeModel(true, 140, 40)
+	m := fakeModel(true, 140, 100)
 	setKaizen(m, doc, pageFlow)
 	out := plain(m)
 	if !strings.Contains(out, "v?") || !strings.Contains(out, "fx-login-flow") {
@@ -354,8 +356,8 @@ func TestKaizenStopReasonIsShownInFull(t *testing.T) {
 }
 
 func TestKaizenFlowSections(t *testing.T) {
-	out := plain(kaizenModel(t, true, 140, 40, pageFlow))
-	for _, want := range []string{"where the money went", "lead $38.53 31%", "rework 9% (subagent runs after the first review)", "where the time went", "building 8h19m 69%", "waiting for merge 2h16m 19%",
+	out := plain(kaizenModel(t, true, 140, 100, pageFlow))
+	for _, want := range []string{"where the money went", "lead $35.85 28%", "rework 9% (subagent runs after the first review)", "where the time went", "building 8h19m 69%", "waiting for merge 2h16m 19%",
 		"fixture-alpha  18 tasks", "SLUG", "ROLES", "✓ landed", "▲ blocked", "◆ handed-over", "· dismissed", "● working"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("flow lacks %q:\n%s", want, out)
@@ -393,7 +395,7 @@ func TestKaizenFlowSections(t *testing.T) {
 		{80, []string{"ROLES", "VER"}, []string{"REWORK", "MERGE", "STOPS"}},
 		{60, []string{"ROLES", "VER", "REWORK"}, []string{"BUILD", "COST", "STOPS"}},
 	} {
-		out := plain(kaizenModel(t, true, c.w, 40, pageFlow))
+		out := plain(kaizenModel(t, true, c.w, 100, pageFlow))
 		for _, g := range c.gone {
 			if strings.Contains(out, " "+g+" ") {
 				t.Errorf("%d columns should drop %s:\n%s", c.w, g, out)
@@ -520,7 +522,7 @@ func TestChartVersionMarkers(t *testing.T) {
 	p := m.th.on(nil)
 	vers := []string{"0.1.0", "0.1.0", "0.1.0", "0.2.0", "0.2.0", "0.2.0", "0.3.0", "0.3.0", "0.3.0"}
 	out, _ := chartText(t, []float64{1, 2, 3, 4, 5, 6, 7, 8, 9}, 3, 40)
-	axis, labels := m.versionAxis(p, vers, out, 40)
+	axis, labels := m.versionAxis(p, vers, out.first, out.gutter, 40, func(i int) int { return out.gutter + (i-out.first)*out.stride })
 	a, l := ansi.Strip(axis), ansi.Strip(labels)
 	if x := len([]rune(a[:strings.Index(a, "▲")])); x != out.gutter+3*out.stride {
 		t.Fatalf("▲ under the first task of v0.2.0: at %d in %q", x, a)
@@ -560,6 +562,187 @@ func TestChartLayoutAcrossWidths(t *testing.T) {
 		if got := len(strings.Split(out, "\n")) / chartH; got != rows {
 			t.Errorf("%d columns: %d rows of charts, want %d", w, got, rows)
 		}
+	}
+}
+
+// ---- the mix over time ------------------------------------------------------------
+
+func mixText(t *testing.T, doc *data.Kaizen, w int) string {
+	t.Helper()
+	m := fakeModel(true, w, 200)
+	setKaizen(m, doc, pageFlow)
+	out := plain(m)
+	return out[strings.Index(out, "the mix over time"):strings.Index(out, "where the time went")]
+}
+
+func TestKaizenFlowMixChart(t *testing.T) {
+	for _, w := range []int{140, 100, 80} {
+		out := mixText(t, kaizenDoc(t), w)
+		for _, want := range []string{"the mix over time", "role share of task cost · median of 5 tasks", "v0.1.0", "v0.2.0", "v0.3.0",
+			"lead 15%", "coder 38%", "reviewer 20%", "explorer 8%", "other 18%", "0%"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%d columns lack %q:\n%s", w, want, out)
+			}
+		}
+		if got := strings.Count(out, "▲"); got != 2 {
+			t.Errorf("%d columns: %d version marks, want 2:\n%s", w, got, out)
+		}
+		if strings.Contains(out, "last ") {
+			t.Errorf("%d columns: every point fits:\n%s", w, out)
+		}
+	}
+}
+
+func TestKaizenFlowMixShowsAnAddedRole(t *testing.T) {
+	doc := kaizenDoc(t)
+	doc.Roles = append(doc.Roles, "lander")
+	doc.Summary.ByRole["lander"] = 5
+	for i := range doc.Summary.Mix.Points {
+		doc.Summary.Mix.Points[i].Share["lander"] = 0.05
+	}
+	for i := range doc.Tasks {
+		if c := doc.Tasks[i].Cost; c != nil {
+			c.ByRole["lander"] = c.Total // the ROLES cell draws a role it has no colour rule for
+		}
+	}
+	m := fakeModel(true, 140, 200)
+	setKaizen(m, doc, pageFlow)
+	out := plain(m)
+	for _, want := range []string{"lander $5.00", "lander 5%", "lead $35.85", "other $6.46", "coder 38%", "reviewer 20%", "other 18%", "lead 15%", "explorer 8%"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("the legend and the chart name the new role beside the others: no %q\n%s", want, out)
+		}
+	}
+}
+
+func TestKaizenFlowMixNeedsPoints(t *testing.T) {
+	out := mixText(t, fewDoc(t), 100)
+	if !strings.Contains(out, "2 landed tasks with a cost: the line starts at 6 (each point is the median of 5 tasks)") || strings.ContainsAny(out, "⠁⠂⠄⡀⠈⠐⠠⢀") {
+		t.Fatalf("no chart, one line:\n%s", out)
+	}
+	doc := kaizenDoc(t)
+	doc.Summary.Mix.Points = doc.Summary.Mix.Points[:1]
+	if out := mixText(t, doc, 100); !strings.Contains(out, "5 landed tasks with a cost: the line starts at 6") {
+		t.Fatalf("one point is not a line:\n%s", out)
+	}
+}
+
+func TestKaizenFlowMixKeepsTheNewestPointsThatFit(t *testing.T) {
+	doc := kaizenDoc(t)
+	pts := doc.Summary.Mix.Points
+	for len(pts) < 300 {
+		pts = append(pts, pts[len(pts)-1])
+	}
+	doc.Summary.Mix.Points = pts
+	out := mixText(t, doc, 80)
+	pw := 78 - 4 - 13
+	if want := fmt.Sprintf("last %d/300", 2*pw); !strings.Contains(out, want) || !strings.Contains(out, "median of 5 tasks") {
+		t.Fatalf("want %q:\n%s", want, out)
+	}
+}
+
+// ---- line chart -------------------------------------------------------------------
+
+func testSeries(vals ...[]float64) []lineSeries {
+	var s []lineSeries
+	for i, v := range vals {
+		s = append(s, lineSeries{name: fmt.Sprintf("s%d", i), color: NewTheme(false).AgentColor(fmt.Sprintf("s%d", i)), vals: v})
+	}
+	return s
+}
+
+func percent(v float64) string { return fmt.Sprintf("%.0f%%", v*100) }
+
+func TestLineChartLinesAreExactlyAsWide(t *testing.T) {
+	p := NewTheme(true).on(nil)
+	for _, n := range []int{2, 5, 15, 300} {
+		vals := make([]float64, n)
+		for i := range vals {
+			vals[i] = float64(i%7) / 10
+		}
+		for _, w := range []int{1, 20, 30, 60, 78, 138} {
+			out := p.lineChart(lineOpts{series: testSeries(vals, vals), label: percent}, w)
+			if len(out.lines) != lineRows {
+				t.Fatalf("%d lines", len(out.lines))
+			}
+			for _, l := range out.lines {
+				if width(l) != w {
+					t.Fatalf("n=%d w=%d: a line of %d cells: %q", n, w, width(l), l)
+				}
+			}
+		}
+	}
+}
+
+func TestLineChartRisingSeriesRunsCornerToCorner(t *testing.T) {
+	p := NewTheme(true).on(nil)
+	out := p.lineChart(lineOpts{series: testSeries([]float64{0, 0.5, 1}), label: percent}, 40)
+	var rows [][]rune
+	for _, l := range out.lines {
+		rows = append(rows, []rune(ansi.Strip(l)))
+	}
+	braille := func(r rune) bool { return r > 0x2800 && r <= 0x28FF }
+	last := out.gutter + 2*out.step/2
+	if !braille(rows[lineRows-1][out.gutter]) || braille(rows[0][out.gutter]) || !braille(rows[0][last]) || braille(rows[lineRows-1][last]) {
+		t.Fatalf("first dot at the bottom, last at the top:\n%s", ansi.Strip(strings.Join(out.lines, "\n")))
+	}
+	if !strings.HasPrefix(string(rows[0]), "100% ") || !strings.HasPrefix(strings.TrimLeft(string(rows[lineRows-1]), " "), "0% ") {
+		t.Fatalf("the scale runs 0 to the top value:\n%s", ansi.Strip(strings.Join(out.lines, "\n")))
+	}
+}
+
+func TestLineChartSharedCellsBelongToTheEarlierSeries(t *testing.T) {
+	p := NewTheme(false).on(nil)
+	s := testSeries([]float64{0, 1}, []float64{0, 1})
+	out := p.lineChart(lineOpts{series: s, label: percent}, 40)
+	later := strings.SplitN(p.t("x", s[1].color), "x", 2)[0]
+	for _, l := range out.lines {
+		for _, run := range strings.Split(l, later)[1:] {
+			if r, _ := utf8.DecodeRuneInString(run); r >= 0x2800 && r < 0x2900 {
+				t.Fatalf("a cell both lines cross is the later series' colour: %q", l)
+			}
+		}
+	}
+}
+
+func TestLineChartAZeroSeriesIsNotDrawnOrLabelled(t *testing.T) {
+	p := NewTheme(true).on(nil)
+	out := p.lineChart(lineOpts{series: testSeries([]float64{0.2, 0.4, 0.3}, []float64{0, 0, 0}), label: percent}, 40)
+	text := ansi.Strip(strings.Join(out.lines, "\n"))
+	if !strings.Contains(text, "s0 30%") || strings.Contains(text, "s1") {
+		t.Fatalf("only the drawn series has an end label:\n%s", text)
+	}
+}
+
+func TestLineChartEndLabelsReadInTheLinesOrder(t *testing.T) {
+	p := NewTheme(true).on(nil)
+	// s0 and s2 end on the baseline, s3 just above it, s1 at the top: three labels crowd the bottom
+	s := testSeries([]float64{0.1, 0}, []float64{0.5, 0.9}, []float64{0.2, 0}, []float64{0.1, 0.05})
+	out := p.lineChart(lineOpts{series: s, label: percent}, 40)
+	var got []string
+	for _, l := range out.lines {
+		if f := strings.Fields(ansi.Strip(l)); len(f) >= 2 && strings.HasPrefix(f[len(f)-2], "s") {
+			got = append(got, f[len(f)-2])
+		} else {
+			got = append(got, "")
+		}
+	}
+	if want := []string{"s1", "", "", "", "", "s3", "s0", "s2"}; !slices.Equal(got, want) {
+		t.Fatalf("labels by row: %q, want %q\n%s", got, want, ansi.Strip(strings.Join(out.lines, "\n")))
+	}
+}
+
+func TestLineChartKeepsTheNewestPointsWhenOneDotEachDoesNotFit(t *testing.T) {
+	p := NewTheme(true).on(nil)
+	vals := make([]float64, 300)
+	vals[299] = 1 // only the newest point is off the baseline
+	out := p.lineChart(lineOpts{series: testSeries(vals), label: percent}, 40)
+	if out.step != 1 || out.first != 300-2*out.plot {
+		t.Fatalf("step %d first %d plot %d", out.step, out.first, out.plot)
+	}
+	top := []rune(ansi.Strip(out.lines[0]))
+	if last := top[out.gutter+out.plot-1]; last != '⢸' ||strings.ContainsFunc(string(top[out.gutter:out.gutter+out.plot-1]), func(r rune) bool { return r != ' ' }) {
+		t.Fatalf("the rise to the newest point is the right dot column of the plot's last cell: %q", string(top))
 	}
 }
 

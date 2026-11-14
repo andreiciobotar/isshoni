@@ -7,6 +7,13 @@
   "as_of": "2026-11-14",
   "path": "/fixture/prices.toml"
  },
+ "roles": [
+  "lead",
+  "coder",
+  "reviewer",
+  "explorer",
+  "other"
+ ],
  "repos": [
   {
    "repo": "fixture-alpha",
@@ -682,11 +689,11 @@
     "total": 4.4,
     "unpriced_tokens": 0,
     "by_role": {
-     "lead": 1.36,
+     "lead": 0.68,
      "coder": 1.67,
      "reviewer": 0.88,
      "explorer": 0.35,
-     "other": 0.13
+     "other": 0.81
     },
     "rework": 0.18
    },
@@ -724,11 +731,11 @@
     "total": 3.9,
     "unpriced_tokens": 0,
     "by_role": {
-     "lead": 1.05,
+     "lead": 0.52,
      "coder": 1.64,
      "reviewer": 0.7,
      "explorer": 0.39,
-     "other": 0.12
+     "other": 0.65
     },
     "rework": 0.0
    },
@@ -766,11 +773,11 @@
     "total": 3.6,
     "unpriced_tokens": 0,
     "by_role": {
-     "lead": 1.19,
+     "lead": 0.6,
      "coder": 1.3,
      "reviewer": 0.76,
      "explorer": 0.25,
-     "other": 0.11
+     "other": 0.7
     },
     "rework": 0.0
    },
@@ -808,11 +815,11 @@
     "total": 3.2,
     "unpriced_tokens": 0,
     "by_role": {
-     "lead": 0.93,
+     "lead": 0.46,
      "coder": 1.28,
      "reviewer": 0.61,
      "explorer": 0.29,
-     "other": 0.1
+     "other": 0.57
     },
     "rework": 0.0
    },
@@ -843,11 +850,11 @@
     "total": 2.31,
     "unpriced_tokens": 0,
     "by_role": {
-     "lead": 0.81,
+     "lead": 0.4,
      "coder": 0.79,
      "reviewer": 0.51,
      "explorer": 0.14,
-     "other": 0.07
+     "other": 0.48
     },
     "rework": 0.0
    },
@@ -885,11 +892,11 @@
     "total": 1.4,
     "unpriced_tokens": 0,
     "by_role": {
-     "lead": 0.43,
+     "lead": 0.22,
      "coder": 0.53,
      "reviewer": 0.28,
      "explorer": 0.11,
-     "other": 0.04
+     "other": 0.25
     },
     "rework": 0.0
    },
@@ -920,11 +927,11 @@
     "total": 2.0,
     "unpriced_tokens": 0,
     "by_role": {
-     "lead": 0.54,
+     "lead": 0.27,
      "coder": 0.84,
      "reviewer": 0.36,
      "explorer": 0.2,
-     "other": 0.06
+     "other": 0.33
     },
     "rework": 0.0
    },
@@ -949,11 +956,11 @@
     "total": 2.6,
     "unpriced_tokens": 0,
     "by_role": {
-     "lead": 0.86,
+     "lead": 0.43,
      "coder": 0.94,
      "reviewer": 0.55,
      "explorer": 0.18,
-     "other": 0.08
+     "other": 0.51
     },
     "rework": 0.0
    },
@@ -990,11 +997,181 @@
   },
   "rework_share": 0.0911,
   "by_role": {
-   "lead": 38.53,
+   "lead": 35.85,
    "coder": 48.44,
    "reviewer": 24.96,
    "explorer": 10.36,
-   "other": 3.78
+   "other": 6.46
+  },
+  "mix": {
+   "window": 5,
+   "points": [
+    {
+     "slug": "fx-schema-v2",
+     "version": "0.1.0",
+     "share": {
+      "lead": 0.309836,
+      "coder": 0.380328,
+      "reviewer": 0.2,
+      "explorer": 0.080328,
+      "other": 0.029787
+     }
+    },
+    {
+     "slug": "fx-search-index",
+     "version": "0.1.0",
+     "share": {
+      "lead": 0.290179,
+      "coder": 0.4,
+      "reviewer": 0.190179,
+      "explorer": 0.090179,
+      "other": 0.029703
+     }
+    },
+    {
+     "slug": "fx-audit-log",
+     "version": "0.2.0",
+     "share": {
+      "lead": 0.290179,
+      "coder": 0.4,
+      "reviewer": 0.190179,
+      "explorer": 0.090179,
+      "other": 0.029703
+     }
+    },
+    {
+     "slug": "fx-webhooks",
+     "version": "0.2.0",
+     "share": {
+      "lead": 0.290541,
+      "coder": 0.4,
+      "reviewer": 0.190541,
+      "explorer": 0.090179,
+      "other": 0.029703
+     }
+    },
+    {
+     "slug": "fx-pagination",
+     "version": "0.2.0",
+     "share": {
+      "lead": 0.309836,
+      "coder": 0.380328,
+      "reviewer": 0.2,
+      "explorer": 0.080328,
+      "other": 0.029703
+     }
+    },
+    {
+     "slug": "fx-dark-mode",
+     "version": "0.2.0",
+     "share": {
+      "lead": 0.310606,
+      "coder": 0.380303,
+      "reviewer": 0.2,
+      "explorer": 0.080303,
+      "other": 0.02973
+     }
+    },
+    {
+     "slug": "fx-billing-page",
+     "version": "0.2.0",
+     "share": {
+      "lead": 0.310606,
+      "coder": 0.380303,
+      "reviewer": 0.2,
+      "explorer": 0.080303,
+      "other": 0.030303
+     }
+    },
+    {
+     "slug": "fx-health-checks",
+     "version": "0.2.0",
+     "share": {
+      "lead": 0.310606,
+      "coder": 0.380303,
+      "reviewer": 0.2,
+      "explorer": 0.080303,
+      "other": 0.030303
+     }
+    },
+    {
+     "slug": "fx-bulk-import",
+     "version": "0.2.0",
+     "share": {
+      "lead": 0.310606,
+      "coder": 0.380303,
+      "reviewer": 0.2,
+      "explorer": 0.080303,
+      "other": 0.03038
+     }
+    },
+    {
+     "slug": "fx-api-docs",
+     "version": "0.2.0",
+     "share": {
+      "lead": 0.310606,
+      "coder": 0.380303,
+      "reviewer": 0.2,
+      "explorer": 0.080303,
+      "other": 0.030303
+     }
+    },
+    {
+     "slug": "fx-session-ttl",
+     "version": "0.3.0",
+     "share": {
+      "lead": 0.290323,
+      "coder": 0.379545,
+      "reviewer": 0.2,
+      "explorer": 0.079545,
+      "other": 0.03038
+     }
+    },
+    {
+     "slug": "fx-feature-flags",
+     "version": "0.3.0",
+     "share": {
+      "lead": 0.290323,
+      "coder": 0.379545,
+      "reviewer": 0.2,
+      "explorer": 0.079545,
+      "other": 0.030645
+     }
+    },
+    {
+     "slug": "fx-email-digest",
+     "version": "0.3.0",
+     "share": {
+      "lead": 0.166667,
+      "coder": 0.379545,
+      "reviewer": 0.2,
+      "explorer": 0.079545,
+      "other": 0.166667
+     }
+    },
+    {
+     "slug": "fx-profile-edit",
+     "version": "0.3.0",
+     "share": {
+      "lead": 0.154545,
+      "coder": 0.379545,
+      "reviewer": 0.2,
+      "explorer": 0.079545,
+      "other": 0.178125
+     }
+    },
+    {
+     "slug": "fx-quiet-refactor",
+     "version": "0.3.0",
+     "share": {
+      "lead": 0.154545,
+      "coder": 0.379545,
+      "reviewer": 0.2,
+      "explorer": 0.079545,
+      "other": 0.184091
+     }
+    }
+   ]
   },
   "time": {
    "building_s": 29980,
