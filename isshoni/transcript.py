@@ -501,15 +501,13 @@ def load_session(path, prices):
     scans = [main]
     agent_files = []  # (agent_id, meta, scan)
     sub_dir = os.path.splitext(path)[0] + os.sep + "subagents"
-    metas = {}
+    found = []  # (spawn depth, path, meta)
     for ap in glob.glob(os.path.join(glob.escape(sub_dir), "agent-*.jsonl")):
-        meta = metas[ap] = _read_meta(ap[:-len(".jsonl")] + ".meta.json")
+        meta = _read_meta(ap[:-len(".jsonl")] + ".meta.json")
         sd = meta.get("spawnDepth")
-        meta["_depth"] = sd if isinstance(sd, int) and not isinstance(sd, bool) else 1
-    for ap in sorted(metas, key=lambda ap: (metas[ap]["_depth"], ap)):  # a fork copies its parent's messages: parents first
+        found.append((sd if isinstance(sd, int) and not isinstance(sd, bool) else 1, ap, meta))
+    for sd, ap, meta in sorted(found, key=lambda f: f[:2]):  # a fork copies its parent's messages: parents first
         aid = os.path.basename(ap)[len("agent-"):-len(".jsonl")]
-        meta = metas[ap]
-        sd = meta["_depth"]
         sc = _scan(ap, seen, sd + 1, aid, prices)
         s.malformed += sc.malformed
         scans.append(sc)
