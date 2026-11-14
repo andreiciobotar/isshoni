@@ -126,6 +126,36 @@ class RunLifetimeTests(Fakes):
         with mock.patch.object(factory, "RUN_TIMEOUT", 0.3):
             self.assertEqual(factory.run(["sleep", "60"]), (124, "", "timed out"))
 
+    def run_with_a_signal_inside_popen(self, argv, group):
+        """`run()` of `argv` when SIGHUP is handled between the fork and the return of `Popen`."""
+        real, made = subprocess.Popen, []
+
+        def popen(*args, **kw):
+            p = real(*args, **kw)
+            made.append(p)
+            self.addCleanup(p.kill)
+            if group:
+                self.started()
+            factory.stop_on_signal(signal.SIGHUP, None)
+            return p
+
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            self.addCleanup(signal.signal, sig, signal.getsignal(sig))
+        env = {**os.environ, "GRANDCHILD": str(self.grandchild)}
+        with mock.patch.object(factory.subprocess, "Popen", popen), self.assertRaises(SystemExit) as raised:
+            factory.run(argv, env=env, group=group)
+        self.assertEqual(raised.exception.code, 129)
+        self.assertEqual(factory.GROUPS, set())
+        return made[0]
+
+    def test_a_signal_inside_popen_ends_the_group_child(self):
+        self.run_with_a_signal_inside_popen([str(self.bin / "claude"), "-p"], group=True)
+        self.assertTrue(gone(self.started()))
+
+    def test_a_signal_inside_popen_ends_an_ordinary_child(self):
+        child = self.run_with_a_signal_inside_popen(["sleep", "60"], group=False)
+        self.assertIsNotNone(child.poll())
+
     def run_script(self, env):
         """The script `lander 1` in a throwaway repository, in a process group of its own."""
         repo, home = self.tmp / "repo", self.tmp / "home"

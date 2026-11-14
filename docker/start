@@ -42,9 +42,11 @@ if ! { [ -s "$keys" ] && [ -x "$tui" ]; }; then
 	exec supercronic "$HOME/.crontab"
 fi
 
-# reap waits for a child that a signal may have interrupted the wait for.
-reap() {
-	while kill -0 "$1" 2>/dev/null; do wait "$1" || :; done
+# end stops a child and waits for it. A TERM that reaches a child the shell has just forked is lost (it still has
+# the shell's handler, not yet its own), so it is sent every 0.1 s until the child is gone.
+end() {
+	while kill -TERM "$1" 2>/dev/null; do sleep 0.1; done
+	wait "$1" 2>/dev/null || :
 }
 
 # serve_loop runs in the background; on TERM it stops the current child and ends.
@@ -54,16 +56,16 @@ serve_loop() {
 	while [ -z "$stopping" ]; do
 		"$tui" --serve 0.0.0.0:2222 &
 		child=$!
-		[ -z "$stopping" ] || kill -TERM "$child" 2>/dev/null || :
 		status=0
-		wait "$child" || status=$?
-		reap "$child"
+		[ -n "$stopping" ] || wait "$child" || status=$?
+		end "$child"
 		child=
 		[ -z "$stopping" ] || break
 		echo "dashboard server ended (status $status), restarting in 2 s" >&2
 		sleep 2 &
 		child=$!
-		wait "$child" || :
+		[ -n "$stopping" ] || wait "$child" || :
+		end "$child"
 		child=
 	done
 }
@@ -83,12 +85,10 @@ loop=$!
 [ -z "$stopping" ] || stop
 
 status=0
-wait "$cron" || status=$?
+[ -n "$stopping" ] || wait "$cron" || status=$?
 if [ -n "$stopping" ]; then
-	reap "$cron"
+	end "$cron"
 	status=0
-else
-	kill -TERM "$loop" 2>/dev/null || :
 fi
-reap "$loop"
+end "$loop"
 exit "$status"
