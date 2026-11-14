@@ -759,10 +759,10 @@ func TestHanamiHorizonTellsTheHour(t *testing.T) {
 			}
 		}
 	}
-	if foot, top := cv.cells[(g.staffTop-1)*s.w].light.r, cv.cells[(g.staffTop-horizonRows)*s.w].light.r; foot <= top || top > foot/3 {
+	if foot, top := cv.cells[(g.staffTop-1)*s.w].light[1].r, cv.cells[(g.staffTop-horizonRows)*s.w].light[0].r; foot <= top || top > foot/3 {
 		t.Fatal("the glow is not strongest at the foot, easing to almost nothing above")
 	}
-	if cv.cells[(g.staffTop-horizonRows-1)*s.w].light != (hrgb{}) {
+	if cv.cells[(g.staffTop-horizonRows-1)*s.w].light != [2]hrgb{} {
 		t.Fatal("the glow has an edge above its rows")
 	}
 }
@@ -1011,5 +1011,57 @@ func TestHanamiWordsFindFreeCells(t *testing.T) {
 	cv.word(4, 1, "abc", hrgb{})
 	if cv.cells[1*20+4].ch != 0 || cv.cells[1*20+6].ch != 0 {
 		t.Fatal("a word with no free row was drawn anyway")
+	}
+}
+
+// Light and fill have two samples a cell: a glow centred on a cell boundary gives half blocks whose top and
+// bottom differ in the right direction; where a glyph or dots sit there is one colour; no colour has none.
+func TestHanamiHalfBlocks(t *testing.T) {
+	th := NewTheme(false)
+	cv := &hCanvas{w: 10, h: 8, maxY: 32, cells: make([]hCell, 80)}
+	cv.glow(10, 8, 6, hrgb{200, 100, 50}, 0.8) // the boundary between the cell rows 1 and 2
+	top, bottom := cv.cells[1*10+5].light, cv.cells[2*10+5].light
+	if top[0].r >= top[1].r || bottom[0].r <= bottom[1].r {
+		t.Fatalf("a glow centred between two cell rows is not brighter towards the centre: %v / %v", top, bottom)
+	}
+	cv.cells[3*10+5].ch, cv.cells[3*10+5].c = 'x', hrgb{255, 255, 255}
+	cv.cells[1*10+4].mask, cv.cells[1*10+4].a, cv.cells[1*10+4].c = 0x0f, 1, hrgb{255, 255, 255}
+	cv.glow(10, 14, 12, hrgb{200, 100, 50}, 0.9)
+	lines := cv.lines(th)
+	if !strings.Contains(strings.Join(lines, ""), "▀") {
+		t.Fatal("a glow gives no half blocks")
+	}
+	for y, l := range lines {
+		cells := []rune(ansi.Strip(l))
+		if len(cells) != 10 || ansi.StringWidth(l) != 10 {
+			t.Fatalf("row %d is not 10 cells wide", y)
+		}
+		for x, c := range cells {
+			if c == '▀' && (cv.cells[y*10+x].ch != 0 || cv.cells[y*10+x].mask != 0) {
+				t.Fatalf("a half block over a glyph or dots at %d,%d", x, y)
+			}
+		}
+	}
+	// the upper half block's foreground is the top sample, its background the bottom
+	row := lines[1]
+	i := strings.Index(row, "▀")
+	if i < 0 {
+		t.Fatal("no half block on the glow's upper row")
+	}
+	if !strings.Contains(row[:i], "\x1b[48;2;") || !strings.Contains(row[:i], "38;2;") {
+		t.Fatal("a half block without a foreground and a background")
+	}
+
+	plain := &hCanvas{w: 10, h: 8, maxY: 32, cells: make([]hCell, 80)}
+	plain.glow(10, 8, 6, hrgb{200, 100, 50}, 0.8)
+	for _, l := range plain.lines(NewTheme(true)) {
+		if strings.ContainsAny(l, "▀\x1b") {
+			t.Fatal("no-colour output has half blocks or escapes")
+		}
+	}
+	s := newHanamiScene(NewTheme(true))
+	stepFor(s, goldenNow, time.Second)
+	if strings.Contains(strings.Join(s.draw(false), ""), "▀") {
+		t.Fatal("a no-colour scene has half blocks")
 	}
 }

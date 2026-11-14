@@ -1131,9 +1131,9 @@ type hCell struct {
 	ch     rune
 	c      hrgb // of the glyph, or of the dots
 	bold   bool
-	skip   bool // the right half of a double-width glyph
-	light  hrgb // glow falling on the cell: added to its background
-	fill   hrgb // a solid body behind the cell (the disc, the legend), in place of background and glow
+	skip   bool    // the right half of a double-width glyph
+	light  [2]hrgb // glow falling on the top and the bottom half of the cell: added to its background
+	fill   [2]hrgb // a solid body behind the cell (the disc, the legend), in place of background and glow
 	filled bool
 }
 
@@ -1162,18 +1162,21 @@ func (cv *hCanvas) plot(x, y float64, c hrgb, a float64) {
 	cell.layer, cell.c, cell.a = cv.layer, c, math.Min(1, a)
 }
 
-// glow lights the cells around a point in the field (dots), strongest at the point, nothing at radius r.
+// glow lights the field around a point (dots), strongest at the point, nothing at radius r. Each cell has two
+// samples, its top and bottom half, so the light has pixels of 2 dots by 2 (square), not cells of 2 by 4.
 func (cv *hCanvas) glow(x, y, r float64, c hrgb, k float64) {
 	if r <= 0 || k <= 0 {
 		return
 	}
 	for cy := max(0, int((y-r)/4)); cy <= min(cv.maxY/4-1, int((y+r)/4)); cy++ {
 		for cx := max(0, int((x-r)/2)); cx <= min(cv.w-1, int((x+r)/2)); cx++ {
-			d := math.Hypot(float64(2*cx+1)-x, float64(4*cy+2)-y) / r
-			if d < 1 {
-				f := k * (1 - d) * (1 - d)
-				l := &cv.cells[cy*cv.w+cx].light
-				l.r, l.g, l.b = l.r+c.r*f, l.g+c.g*f, l.b+c.b*f
+			for half := 0; half < 2; half++ {
+				d := math.Hypot(float64(2*cx+1)-x, float64(4*cy+1+2*half)-y) / r
+				if d < 1 {
+					f := k * (1 - d) * (1 - d)
+					l := &cv.cells[cy*cv.w+cx].light[half]
+					l.r, l.g, l.b = l.r+c.r*f, l.g+c.g*f, l.b+c.b*f
+				}
 			}
 		}
 	}
@@ -1270,22 +1273,33 @@ func (cv *hCanvas) lines(th *Theme) []string {
 			if cell.skip {
 				continue
 			}
-			bg := base.lit(cell.light)
-			if cell.filled {
-				bg = cell.fill
+			// two samples a cell, stepped: a glow that breathes, or dots that brighten as the stage gets louder, then
+			// change a cell every few frames, not every frame, and the terminal has a fraction of the cells to repaint
+			var half [2]hrgb
+			for i := range half {
+				half[i] = base.lit(cell.light[i])
+				if cell.filled {
+					half[i] = cell.fill[i]
+				} else if l := cell.light[i]; l.r+l.g+l.b < 9 {
+					half[i] = base // too faint to see: not worth a colour change on the line
+				}
+				step := 6.0
+				if !cell.filled {
+					step = 8 // light is soft: coarser steps repaint fewer cells
+				}
+				half[i] = half[i].stepped(step)
 			}
-			// colours in steps: a glow that breathes, or dots that brighten as the stage gets louder, then change a
-			// cell every few frames, not every frame, and the terminal has a fraction of the cells to repaint
-			if l := cell.light; !cell.filled && l.r+l.g+l.b < 9 {
-				bg = base // too faint to see: not worth a colour change on the line
-			}
-			bg = bg.stepped(6)
+			bg := half[1]
 			ch, c, bold := cell.ch, cell.c, cell.bold
 			switch {
-			case ch != 0:
-			case cell.mask != 0:
-				ch = rune(0x2800 + int(cell.mask))
-				c = bg.mix(c, cell.a).stepped(8)
+			case ch != 0 || cell.mask != 0: // a glyph or dots need the foreground: one colour behind them
+				bg = half[0].mix(half[1], 0.5).stepped(6)
+				if ch == 0 {
+					ch = rune(0x2800 + int(cell.mask))
+					c = bg.mix(c, cell.a).stepped(8)
+				}
+			case !th.NoColor && key(half[0], 0) != key(half[1], 0): // only light: the upper half block, top over bottom
+				ch, c = '\u2580', half[0]
 			default:
 				ch = ' '
 			}
@@ -1334,7 +1348,8 @@ func (s *hanamiScene) draw(legend bool) []string {
 	// a merge lights the whole stage for a moment
 	if forte > 0.02 {
 		for i := range cv.cells[:g.staffTop*w] {
-			cv.cells[i].light = pink.mix(text, 0.5).times(0.16 * forte)
+			l := pink.mix(text, 0.5).times(0.16 * forte)
+			cv.cells[i].light = [2]hrgb{l, l}
 		}
 	}
 
@@ -1544,20 +1559,24 @@ func (s *hanamiScene) draw(legend bool) []string {
 	for cy := max(0, int((g.cy-rim)/4)-1); cy <= min(g.staffTop-1, int((g.cy+rim)/4)+1); cy++ {
 		for cx := max(0, int((g.cx-rim)/2)-1); cx <= min(w-1, int((g.cx+rim)/2)+1); cx++ {
 			cell := &cv.cells[cy*w+cx]
-			inside := 0
+			light := cell.light
+			var in [2]int // dots of each half (four a half) inside the rim
 			for d := 0; d < 8; d++ {
 				x, y := float64(2*cx+d%2)+0.5, float64(4*cy+d/2)+0.5
 				if math.Hypot(x-g.cx, y-g.cy) <= rim {
-					inside++
+					in[d/4]++
 				}
 			}
-			if inside == 0 {
+			if in[0]+in[1] == 0 {
 				continue
 			}
-			nx, ny := (float64(2*cx+1)-g.cx)/rim, (float64(4*cy+2)-g.cy)/rim
-			body := bg.mix(grad(nx, ny), 0.5+0.2*math.Min(1, level)+0.12*(-nx-ny)).mix(s.flashCol, 0.55*fl).mix(text, 0.3*forte).mix(s.homeCol, 0.8*s.home*math.Max(0, (math.Hypot(nx, ny)-0.6)/0.4))
-			if !th.NoColor { // the edge is shaded by how much of the cell the disc covers
-				*cell = hCell{fill: bg.lit(cell.light).mix(body, float64(inside)/8), filled: true}
+			if !th.NoColor { // the edge is shaded by how much of each half the disc covers
+				*cell = hCell{filled: true}
+				for half := range in {
+					nx, ny := (float64(2*cx+1)-g.cx)/rim, (float64(4*cy+1+2*half)-g.cy)/rim
+					body := bg.mix(grad(nx, ny), 0.5+0.2*math.Min(1, level)+0.12*(-nx-ny)).mix(s.flashCol, 0.55*fl).mix(text, 0.3*forte).mix(s.homeCol, 0.8*s.home*math.Max(0, (math.Hypot(nx, ny)-0.6)/0.4))
+					cell.fill[half] = bg.lit(light[half]).mix(body, float64(in[half])/4)
+				}
 				continue
 			}
 			*cell = hCell{}
@@ -1686,9 +1705,10 @@ func (s *hanamiScene) draw(legend bool) []string {
 			v := math.Max(0, math.Min(1, s.voice[i].x))
 			for x := 0; x < w; x++ {
 				cell := &cv.cells[y*w+x]
-				*cell = hCell{fill: sheet, filled: true}
+				*cell = hCell{fill: [2]hrgb{sheet, sheet}, filled: true}
 				if d := float64(head - x); d >= 0 && d < 26 { // the voice glows at the playhead as loud as it is
-					cell.fill = sheet.mix(s.voiceCol[i], (0.1+0.3*v)*(1-d/26)*(0.4+0.6*math.Max(v, math.Max(s.beat[i], s.pulse))))
+					lit := sheet.mix(s.voiceCol[i], (0.1+0.3*v)*(1-d/26)*(0.4+0.6*math.Max(v, math.Max(s.beat[i], s.pulse))))
+					cell.fill = [2]hrgb{lit, lit}
 				}
 				if x >= 3 && x < head {
 					cell.ch, cell.c = '─', line
@@ -1723,14 +1743,18 @@ func (s *hanamiScene) draw(legend bool) []string {
 }
 
 // horizon is a glow rising from the bottom edge of the field, in the colour of the hour: the calm base of the
-// stage, the same along a row, easing to nothing over horizonRows rows.
+// stage, the same along a row, easing to nothing over horizonRows rows (sampled at each half of a cell).
 func (s *hanamiScene) horizon(cv *hCanvas, g hGeo, hour hHour) {
 	for i := 0; i < horizonRows && i < g.staffTop; i++ {
-		fall := 1 - float64(i)/horizonRows
-		band := hour.c.times(0.375 * fall * fall)
+		row := g.staffTop - 1 - i
+		var band [2]hrgb
+		for half := range band {
+			fall := math.Max(0, 1-(g.H-float64(4*row+1+2*half))/(4*horizonRows))
+			band[half] = hour.c.times(0.375 * fall * fall)
+		}
 		for x := 0; x < cv.w; x++ {
-			c := &cv.cells[(g.staffTop-1-i)*cv.w+x]
-			c.light = c.light.lit(band)
+			c := &cv.cells[row*cv.w+x]
+			c.light[0], c.light[1] = c.light[0].lit(band[0]), c.light[1].lit(band[1])
 		}
 	}
 }
@@ -1785,7 +1809,7 @@ func (s *hanamiScene) drawLegend(cv *hCanvas) {
 			case x == x0 || x == x0+bw-1:
 				ch = '│'
 			}
-			cv.cells[y*cv.w+x] = hCell{ch: ch, c: border, fill: panel, filled: true}
+			cv.cells[y*cv.w+x] = hCell{ch: ch, c: border, fill: [2]hrgb{panel, panel}, filled: true}
 		}
 	}
 	cv.text(x0+2, y0, " legend ", border, true)
