@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import re
 import shlex
 import subprocess
@@ -22,12 +23,16 @@ ROOT = Path(__file__).resolve().parent.parent
 CONTAINER = IMAGE = PROJECT = "isshoni-factory"
 MONITOR = "/state/home/.isshoni/bin/isshoni"
 NAME_RE = re.compile(r"[^A-Za-z0-9_-]")
-REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+REPO_RE = re.compile(r"(?!\.{1,2}/)[A-Za-z0-9_.][A-Za-z0-9_.-]*/(?!\.{1,2}$)[A-Za-z0-9_.][A-Za-z0-9_.-]*")
+HOST_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 ALIAS_RE = re.compile(r"[A-Za-z0-9_.-]+")
 SERVER_CHECK = """docker info >/dev/null 2>&1 || echo docker
 docker compose version >/dev/null 2>&1 || echo compose
 case "$(uname -m)" in x86_64|aarch64) ;; *) echo arch;; esac
-docker port isshoni-factory 2222/tcp 2>/dev/null | grep -q ":$1\\$" || ! { command -v ss >/dev/null && ss -ltn | grep -q ":$1 "; } || echo port
+if docker port isshoni-factory 2222/tcp 2>/dev/null | grep -q ":$1\\$"; then :
+elif command -v ss >/dev/null; then ss -ltn | grep -q ":$1 " && echo port
+else echo noss; fi
+exit 0
 """
 SERVER_PROBLEMS = {
     "docker": "docker does not run for this user without sudo: the ssh user must be able to run docker.",
@@ -84,16 +89,48 @@ claude plugin marketplace list --json | grep -q '"name": *"factory"' && claude p
 claude plugin list --json | grep -q '"factory@factory"' && claude plugin update factory@factory || claude plugin install factory@factory
 echo "$1" > "$d/.rev"
 """
-KEYS_PUT = 'set -eu; umask 077; d=$HOME/.claude/factory/dashboard; mkdir -p "$d"; cat > "$d/authorized_keys"'
+KEYS_PY = r"""
+import os, sys
+path = os.path.expanduser("~/.claude/factory/dashboard/authorized_keys")
+pub = sys.argv[1]
+try:
+    with open(path) as f:
+        have = [l for l in f.read().splitlines() if l.strip()]
+except FileNotFoundError:
+    have = []
+new = list(have)
+for i, line in enumerate(have):
+    if pub.split()[1] in line.split():
+        if line.split()[0] != "write":
+            new[i] = "write " + pub
+        break
+else:
+    new.append("write " + pub)
+if new != have:
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    with os.fdopen(os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        f.write("\n".join(new) + "\n")
+    os.replace(path + ".tmp", path)
+    print("changed")
+"""
+KEYS = 'exec python3 -c "$1" "$2"'
+# `docker/start` serves the dashboard only if the key file and the binary exist when the container starts.
+# Here they came later, and a restart would kill the sessions: start it in place.
+SERVE = "docker exec -d %s sh -c 'exec \"$HOME/.isshoni/bin/isshoni-tui\" --serve 0.0.0.0:2222'" % CONTAINER
 CLONE = """set -eu
 mkdir -p "$HOME/code"; cd "$HOME/code"
-if GIT_TERMINAL_PROMPT=0 git clone "https://github.com/$1" "$2"; then exit 0; fi
-rm -rf "$2"; git init -q "$2"; cd "$2"
-git remote add origin "https://github.com/$1"
-eval "$("$HOME/.isshoni/factory/bin/factory" env)"
-branch=$(git ls-remote --symref origin HEAD | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2}')
-git fetch origin
-git checkout -B "$branch" "origin/$branch"
+if [ -e "$2" ]; then echo "~/code/$2 exists and is not a checkout: move it away and run this again." >&2; exit 1; fi
+rm -rf "$2.new"; trap 'rm -rf "$HOME/code/$2.new"' EXIT
+if ! GIT_TERMINAL_PROMPT=0 git clone "https://github.com/$1" "$2.new"; then
+  rm -rf "$2.new"; git init -q "$2.new"; cd "$2.new"
+  git remote add origin "https://github.com/$1"
+  eval "$("$HOME/.isshoni/factory/bin/factory" env)"
+  branch=$(git ls-remote --symref origin HEAD | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2}')
+  git fetch origin
+  git checkout -B "$branch" "origin/$branch"
+  cd ..
+fi
+mv "$2.new" "$2"
 """
 
 
@@ -103,9 +140,14 @@ class Stop(Exception):
 
 # ---- remote ---------------------------------------------------------------------
 
+def ssh_env():
+    """The laptop's environment without the Claude token: no ssh child needs it."""
+    return {k: v for k, v in os.environ.items() if k != TOKEN_VAR}
+
+
 def ssh(target, command, stdin=b""):
     try:
-        p = subprocess.run(["ssh", target, command], input=stdin, capture_output=True)
+        p = subprocess.run(["ssh", target, command], input=stdin, capture_output=True, env=ssh_env())
     except FileNotFoundError:
         raise Stop("ssh is not installed on this machine; install an OpenSSH client.") from None
     return p.returncode, p.stdout.decode(errors="replace"), p.stderr.decode(errors="replace")
@@ -203,7 +245,7 @@ def public_key(target, given):
     if given:
         paths = [Path(given).expanduser()]
     else:
-        out = subprocess.run(["ssh", "-G", target], capture_output=True, text=True).stdout
+        out = subprocess.run(["ssh", "-G", target], capture_output=True, text=True, env=ssh_env()).stdout
         paths = [Path(l.split(None, 1)[1] + ".pub").expanduser() for l in out.splitlines() if l.lower().startswith("identityfile ")]
     for p in paths:
         if p.is_file():
@@ -268,6 +310,8 @@ def prerequisites(c):
     else:
         found = need(ssh(c.target, "sh -c %s sh %s" % (shlex.quote(SERVER_CHECK), c.port)), "checking the server").split()
         missing += [text % c.port if "%s" in text else text for word, text in SERVER_PROBLEMS.items() if word in found]
+        if "noss" in found:
+            print("note: port %s could not be checked, `ss` is missing on the server." % c.port)
     if missing:
         raise Stop("cannot start, missing:\n  - " + "\n  - ".join(missing))
     return False
@@ -377,48 +421,34 @@ def repositories(c):
     done = False
     for repo in c.repos:
         name = repo.split("/")[1]
-        if box(c.target, 'test -d "$HOME/code/$1/.git"', name)[0] == 0:
+        if box(c.target, 'git -C "$HOME/code/$1" rev-parse --verify -q HEAD >/dev/null', name)[0] == 0:
             continue
         need(box(c.target, CLONE, repo, name), "cloning %s" % repo)
         done = True
     return done
 
 
-def authorised(lines, pub):
-    """The authorized_keys lines with `pub` listed as a `write` key."""
-    blob = pub.split()[1]
-    want = "write " + pub
-    for i, line in enumerate(lines):
-        if blob in line.split():
-            if line.split()[0] == "write":
-                return lines
-            return lines[:i] + [want] + lines[i + 1:]
-    return lines + [want]
-
-
 def dashboard_key(c):
-    have = box(c.target, "cat ~/.claude/factory/dashboard/authorized_keys")[1].splitlines()
-    lines = authorised([l for l in have if l.strip()], c.pub)
-    changed = lines != have
-    if changed:
-        need(box(c.target, KEYS_PUT, stdin=("\n".join(lines) + "\n").encode()), "authorising the key")
+    changed = need(box(c.target, KEYS, KEYS_PY, c.pub), "authorising the key").strip() == "changed"
     if box(c.target, DASHBOARD_SERVING)[0] == 0:
         return changed
-    need(ssh(c.target, "docker restart %s" % CONTAINER), "restarting the container")
+    need(ssh(c.target, SERVE), "starting the dashboard")
     for _ in range(30):
         if box(c.target, DASHBOARD_SERVING)[0] == 0:
             return True
         time.sleep(1)
-    raise Stop("the dashboard is not serving after a restart; see `ssh %s docker logs %s`." % (c.target, CONTAINER))
+    raise Stop("the dashboard is not serving; see `ssh %s docker logs %s`." % (c.target, CONTAINER))
 
 
 def running_dispatchers(target):
-    """The names of the sessions `claude agents --json` lists in the container, or None when it cannot say."""
-    rc, out, _ = box(target, "claude agents --json")
+    """The names of the sessions `claude agents --json` lists in the container; Stop when it cannot say."""
+    rc, out, err = box(target, "claude agents --json")
     try:
-        return {a["name"] for a in json.loads(out) if "name" in a} if rc == 0 else None
+        if rc == 0:
+            return {a["name"] for a in json.loads(out) if "name" in a}
     except (ValueError, TypeError):
-        return None
+        pass
+    raise Stop("cannot tell which dispatchers run: `claude agents --json` printed:\n%s" % tail(out + err))
 
 
 def dispatchers(c):
@@ -428,11 +458,11 @@ def dispatchers(c):
     started = False
     for repo in c.repos:
         name = "dispatcher-" + repo.split("/")[1]
-        if name in (running_dispatchers(c.target) or ()):
+        if name in running_dispatchers(c.target):
             continue
         need(box(c.target, 'cd "$HOME/code/$1" && claude --bg -n "$2" --permission-mode auto "/factory:dispatch"',
                  repo.split("/")[1], name), "starting %s" % name)
-        if name not in (running_dispatchers(c.target) or ()):
+        if name not in running_dispatchers(c.target):
             raise Stop("%s was started but `claude agents --json` does not list it; see `ssh %s docker exec %s claude agents`."
                        % (name, c.target, CONTAINER))
         started = True
@@ -470,12 +500,15 @@ def cmd_add(args):
     reg = load_registry()
     name = args.name or NAME_RE.sub("-", args.target)
     entry = reg.get(name, {})
-    if args.target.startswith("-"):
+    if args.target.startswith("-") or re.search(r"\s", args.target):
         raise Stop("%r is not an ssh target." % args.target)
+    if not HOST_NAME_RE.fullmatch(name):
+        raise Stop("%r is not a usable name: use letters, digits, _ and -." % name)
+    given_state = posixpath.normpath(args.state) if args.state else None
     if entry and entry["target"] != args.target:
         raise Stop("host %s is recorded for target %s, not %s; use --name for another host." % (name, entry["target"], args.target))
     values = {}
-    for key, given in (("state", args.state), ("dashboard_port", args.dashboard_port)):
+    for key, given in (("state", given_state), ("dashboard_port", args.dashboard_port)):
         if entry and given is not None and given != entry[key]:
             raise Stop("host %s has %s %s and it cannot move: `isshoni host remove %s`, then add it again." % (name, key.replace("_", " "), entry[key], name))
         values[key] = entry.get(key) if entry else given
@@ -517,14 +550,19 @@ def host_status(name, e, head):
     state = ssh(target, "docker inspect -f '{{.State.Status}}' %s" % CONTAINER)[1].strip() or "missing"
     rev = box(target, "cat ~/.isshoni/.rev")[1].strip()
     serving = box(target, DASHBOARD_SERVING)[0] == 0
-    listed = running_dispatchers(target) or set()
+    try:
+        listed, why = running_dispatchers(target), None
+    except Stop as stop:
+        listed, why = set(), str(stop)
     lines = ["%s: container %s" % (name, state),
              "  rev %s (laptop HEAD %s)%s" % (rev[:7] or "none", head[:7], "" if rev == head else ": not current, run `isshoni host add %s`" % target),
              "  dashboard %s" % ("serving" if serving else "not serving")]
     missing = [r for r in e["repos"] if "dispatcher-" + r.split("/")[1] not in listed]
     for r in e["repos"]:
         lines.append("  dispatcher-%s %s" % (r.split("/")[1], "missing" if r in missing else "running"))
-    return lines, state == "running" and serving and not missing
+    if why:
+        lines.append("  " + why.replace("\n", "\n  "))
+    return lines, state == "running" and serving and not missing and not why
 
 
 def cmd_status(args):
@@ -552,7 +590,7 @@ def cmd_remove(args):
     need(ssh(target, "%s docker compose -p %s -f - down" % (env, PROJECT), git("show", "HEAD:docker/compose.yaml")), "removing the container")
     need(ssh(target, "if docker image inspect %s >/dev/null 2>&1; then docker image rm %s; fi" % (IMAGE, IMAGE)), "removing the image")
     if args.purge_state:
-        need(ssh(target, "chmod -R u+w %s && rm -rf %s" % (shlex.quote(state), shlex.quote(state))), "deleting the state directory")
+        need(ssh(target, "test ! -e %s || { chmod -R u+w %s && rm -rf %s; }" % ((shlex.quote(state),) * 3)), "deleting the state directory")
     text = read_ssh_config()
     if block_re(args.name).search(text):
         write_ssh_config(block_re(args.name).sub("", text))

@@ -23,7 +23,7 @@ bin/isshoni host add nas --state /srv/factory --repo owner/name
 
 The laptop keeps its records in `~/.claude/factory/hosts.json` (`$FACTORY_HOME` moves it), mode 0600. Each step first looks at the server and does only what is missing, so **a rerun is also the update**: it ships `HEAD` of your clone again when the server has another revision, and resumes where an earlier run stopped. Each prints `[k/12] <step>: done` or `already`. What the steps do to the server:
 
-1. **Prerequisites.** Checks, and reports everything missing at once: this clone is a git repository (what is shipped is `HEAD`, not uncommitted changes); the App's identity is on the laptop (otherwise `make wizard`); a public key; the server answers `ssh <target> true`, runs `docker` without sudo and has `docker compose`, is x86-64 or arm64, and the dashboard port is free.
+1. **Prerequisites.** Checks, and reports everything missing at once: this clone is a git repository (what is shipped is `HEAD`, not uncommitted changes); the App's identity is on the laptop (otherwise `make wizard`); a public key; the server answers `ssh <target> true`, runs `docker` without sudo and has `docker compose`, is x86-64 or arm64, and the dashboard port is free (checked when the server has `ss`; otherwise it says so).
 2. **State directory.** `mkdir -p` of `--state`, and the SSH user's user and group id, which the image takes so that files in it are yours.
 3. **Image.** Built on the server from `git archive HEAD:docker` sent over SSH, labelled with the git tree id of `docker/`; skipped when the image carries that label. No registry, no clone on the server.
 4. **Container.** `docker compose up -d --no-build` with [docker/compose.yaml](../docker/compose.yaml) from `HEAD`, which stays the one definition of mounts, limits and hardening. Recreated when the image changed.
@@ -32,7 +32,7 @@ The laptop keeps its records in `~/.claude/factory/hosts.json` (`$FACTORY_HOME` 
 7. **Claude login.** See below.
 8. **Settings.** Merges `"monitor"` and `"dispatchers"` into the container's `~/.claude/factory/settings.json`; every other key is kept.
 9. **Repositories.** `git clone https://github.com/owner/name` into `~/code/<name>`; a private repository is instead fetched as the App (`factory env`). The factory's own tooling lives apart, in `~/.isshoni`, so a repository of this name can be one of them.
-10. **Dashboard key.** Lists your public key in `~/.claude/factory/dashboard/authorized_keys` with `write` (an existing line without it is upgraded). The dashboard is started by the container's start script only when the file exists, so the container is restarted once if it was not serving.
+10. **Dashboard key.** Lists your public key in `~/.claude/factory/dashboard/authorized_keys` with `write` (an existing line without it is upgraded). The container's start script serves the dashboard only if the file and the binary exist when the container starts; when it is not serving, `host add` starts it in place with `docker exec -d` and never restarts the container, which would stop the running sessions.
 11. **Dispatchers.** For each repository with no `dispatcher-<name>` in `claude agents --json`: `claude --bg -n dispatcher-<name> --permission-mode auto "/factory:dispatch"` in `~/code/<name>`.
 12. **Connect.** Prints how to reach the dashboard.
 
@@ -68,7 +68,7 @@ Host factory
 
 A `Host factory` of your own is never touched: that is an error and nothing is written. Your key is a `write` key: it may also change the worktree cap; the dashboard is not a shell.
 
-The dispatcher and the leads are background sessions in the container: `ssh nas docker exec -it isshoni-factory claude agents` lists them and attaches.
+The dispatcher and the leads are background sessions in the container: `ssh -t nas docker exec -it isshoni-factory claude agents` lists them and attaches.
 
 ## Status, remove, update
 - `host list`: the recorded hosts, without network.
@@ -96,7 +96,7 @@ Everything that must survive is under the state directory, mounted at `/state`. 
         identity/            the App's key and app.json
         dashboard/           the dashboard over SSH: authorized_keys, host_key
     .claude.json             Claude Code: account and per-project trust
-    .config/gh/              gh's token
+    .config/gh/              gh's login, only if you made one: `host add` makes none
     .gitconfig
     .crontab                 the site manager's job
     code/<repository>/       the repositories; task worktrees under .claude/worktrees/
@@ -129,10 +129,10 @@ Leads run unattended in `auto` permission mode as the container's only user. One
 - **cannot** write to the image or to Docker's storage on the system disk, apart from the capped log.
 
 ## GitHub identity
-Pull requests come from the App's bot, so you approve them with GitHub's Approve and `factory watch` merges on that ([factory.md](factory.md#identity)). `host add` copies the identity `make wizard` made: leads, their subagents and the script's own `gh` calls then act as the App in repositories of its owner, with a token scoped to the repository they run in ([factory.md](factory.md#how-the-identity-is-used)). The container's `gh` login is for anything elsewhere.
+Pull requests come from the App's bot, so you approve them with GitHub's Approve and `factory watch` merges on that ([factory.md](factory.md#identity)). `host add` copies the identity `make wizard` made: leads, their subagents and the script's own `gh` calls then act as the App in repositories of its owner, with a token scoped to the repository they run in ([factory.md](factory.md#how-the-identity-is-used)). There is no `gh` login in the container unless you make one yourself (`docker exec -it`); in repositories of other owners the factory falls back to it.
 
 ## Not verified
 - Anything that needs a real Claude login: background sessions and their supervisor in the container (`factory new`, `claude attach`), `auto` permission mode, the site manager's Sonnet run.
 - A real `gh` login, and the App's tokens minted from inside the container (the image has the `openssl` they need).
-- An arm64 server: an arm64 build passed the same steps by hand, once.
+- An x86-64 server by hand: the end-to-end test passed locally on an arm64 Docker host, and x86-64 is what CI runs.
 - Memory use of a working factory: the 4g default is a guess (Anthropic lists 4 GB as Claude Code's own requirement).

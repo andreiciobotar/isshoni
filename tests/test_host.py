@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -22,6 +23,7 @@ PUB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItestkey laptop"
 # Records every call to the directory $FAKE_LOG (N.target, N.cmd, N.in), then runs the remote command in a local
 # shell: the "server". Plain sh, because the tests make hundreds of calls.
 FAKE_SSH = r"""#!/bin/sh
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN+set}" ] && [ -n "$FAKE_LOG" ]; then echo leaked >> "$FAKE_LOG/leak"; fi
 if [ "$1" = -G ]; then [ -z "$FAKE_IDENTITY" ] || echo "identityfile $FAKE_IDENTITY"; exit 0; fi
 if [ -n "$FAKE_LOG" ]; then
   n=$(( $(cat "$FAKE_LOG/n" 2>/dev/null || echo 0) + 1 )); echo $n > "$FAKE_LOG/n"
@@ -49,6 +51,9 @@ elif a[:1] == ["-p"]:
         ok = None
     print("ok" if ok else "Not logged in")
     sys.exit(0 if ok else 1)
+elif a[:2] == ["agents", "--json"] and os.path.exists(home + "/agents-broken"):
+    print("supervisor unreachable")
+    sys.exit(1)
 elif a[:2] == ["agents", "--json"]:
     print(json.dumps([{"name": n, "kind": "background"} for n in s["agents"]]))
 elif "--bg" in a:
@@ -91,7 +96,7 @@ compose)
   *" down"*) rm -f "$S/container";;
   esac;;
 restart) serve;;
-exec) shift 3; HOME=$S/home PATH=$S/cbin:$PATH exec "$@";;
+exec) if [ "$2" = -d ]; then serve; exit 0; fi; shift 3; HOME=$S/home PATH=$S/cbin:$PATH exec "$@";;
 *) echo "fake docker: unexpected $*" >&2; exit 1;;
 esac
 """
@@ -103,8 +108,11 @@ STUBS = {
     "git": '''#!/bin/sh
 echo "$@" >> "$FAKE_SRV/git.log"
 case "$1" in
-clone) case "$2" in *private*) exit 128;; esac; mkdir -p "$3/.git";;
+-C) [ -e "$2/.git/HEAD" ];;
+clone) case "$2" in *private*) exit 128;; esac; mkdir -p "$3/.git"; touch "$3/.git/HEAD";;
 init) mkdir -p "$3/.git";;
+fetch) [ ! -e "$FAKE_SRV/fetchfail" ];;
+checkout) touch .git/HEAD;;
 ls-remote) printf 'ref: refs/heads/main\\tHEAD\\n';;
 esac
 ''',
@@ -130,6 +138,7 @@ class HostTests(unittest.TestCase):
         write_exe(self.srv / "bin/ssh", FAKE_SSH)
         write_exe(self.srv / "bin/docker", FAKE_DOCKER)
         write_exe(self.srv / "bin/uname", "#!/bin/sh\necho x86_64\n")
+        write_exe(self.srv / "bin/ss", '#!/bin/sh\n[ -e "$FAKE_SRV/ssbusy" ] && echo "LISTEN 0 4096 127.0.0.1:2222 0.0.0.0:*"\nexit 0\n')
         for name, text in STUBS.items():
             write_exe(self.srv / "cbin" / name, text)
         (self.laptop / ".ssh/id_test.pub").write_text(PUB + "\n")
@@ -226,6 +235,17 @@ class HostTests(unittest.TestCase):
             self.assertEqual((len(list(self.srv.glob("build-*"))), len(list(self.srv.glob("up-*")))), (builds, ups))
             self.assertEqual(self.ssh_config().count("Host factory\n"), 1)
             self.assertIn("ProxyJump nas", self.ssh_config())
+            self.assertFalse((self.tmp / "calls/leak").exists(), "the Claude token reached an ssh child")
+        with self.subTest("when claude cannot list the dispatchers nothing is started"):
+            (self.srv / "home/agents-broken").touch()
+            started = len([c for c in self.calls() if "--bg" in c["argv"][1]])
+            rc, out, err = self.add("--repo", "acme/widgets", "--alias", "factory")
+            self.assertEqual(rc, 1)
+            self.assertIn("cannot tell which dispatchers run", err)
+            self.assertIn("supervisor unreachable", err)
+            self.assertEqual(len([c for c in self.calls() if "--bg" in c["argv"][1]]), started)
+            self.assertEqual(self.run_host("status")[0], 1)
+            (self.srv / "home/agents-broken").unlink()
         with self.subTest("list needs no network, status follows what runs"):
             n = len(self.calls())
             self.assertEqual(self.run_host("list"), (0, "nas  nas  %s  acme/widgets  factory\n" % self.state, ""))
@@ -249,6 +269,7 @@ class HostTests(unittest.TestCase):
             self.assertIn("cannot move", err)
             self.assertEqual(self.add("--repo", "a/x", "--repo", "b/x")[0], 1)
             self.assertEqual(self.run_host("add", "other")[0], 1)
+            self.assertEqual(self.run_host("add", "nas", "--state", self.state + "/sub/../")[0], 0)  # the same directory, written another way
         with self.subTest("status and remove when something does not answer"):
             (self.srv / "home/stub-state.json").write_text(json.dumps({"agents": [], "plugins": [], "marketplaces": []}))
             rc, out, _ = self.run_host("status", "nas")
@@ -274,6 +295,10 @@ class HostTests(unittest.TestCase):
             self.assertFalse((self.srv / "image").exists() or (self.srv / "container").exists())
             self.assertEqual(json.loads((self.fh / "hosts.json").read_text()), {})
             self.assertEqual(self.ssh_config(), "Host other\n  User me\n")
+        with self.subTest("purge of a state directory that is already gone succeeds"):
+            host.save_registry({"ghost": {"target": "nas", "state": str(self.tmp / "gone"), "dashboard_port": 2222, "repos": [], "alias": None, "rev": None}})
+            self.assertEqual(self.run_host("remove", "ghost", "--purge-state")[0], 0)
+            self.assertEqual(json.loads((self.fh / "hosts.json").read_text()), {})
         with self.subTest("purge deletes it"):
             self.add("--repo", "acme/widgets")
             self.assertEqual(self.run_host("remove", "nas", "--purge-state")[0], 0)
@@ -284,9 +309,10 @@ class HostTests(unittest.TestCase):
         (self.fh / "identity/key.pem").unlink()
         (self.srv / "nodocker").touch()
         (self.laptop / ".ssh/id_test.pub").unlink()
+        (self.srv / "ssbusy").touch()
         rc, out, err = self.add()
         self.assertEqual((rc, out), (1, ""))
-        for text in ("make wizard", "without sudo", "--key"):
+        for text in ("make wizard", "without sudo", "--key", "port 2222 is in use"):
             self.assertIn(text, err)
         self.assertFalse((self.fh / "hosts.json").exists())
         self.assertFalse(Path(self.state).exists())
@@ -297,6 +323,24 @@ class HostTests(unittest.TestCase):
         rc, _, err = self.add()
         self.assertEqual(rc, 1)
         self.assertIn("ssh nas true", err)
+
+    def test_bad_arguments_are_refused_before_anything_is_done(self):
+        for argv in (["--repo", "a/.."], ["--repo", "./x"], ["--repo=-a/b"], ["--repo=a/-b"], ["--repo", "a/."],
+                     ["--name", "bad name"], ["--name", "a.b"], ["--state", "relative/dir"], ["--state", "/srv/.."]):
+            with self.subTest(argv):
+                self.assertEqual(self.run_host("add", "nas", *([] if "--state" in argv else ["--state", self.state]), *argv)[0], 1)
+        self.assertEqual(self.run_host("add", "a b", "--state", self.state)[0], 1)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_failed_private_fetch_is_not_taken_for_a_clone(self):
+        (self.srv / "fetchfail").touch()
+        rc, _, err = self.add("--repo", "acme/private-thing")
+        self.assertEqual(rc, 1)
+        self.assertEqual(list((self.srv / "home/code").glob("private-thing*")), [])
+        (self.srv / "fetchfail").unlink()
+        rc, out, err = self.add("--repo", "acme/private-thing")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue((self.srv / "home/code/private-thing/.git/HEAD").exists())
 
     def test_alias_refused_elsewhere_and_created_0600(self):
         config = self.laptop / ".ssh/config"
@@ -338,29 +382,32 @@ exec "$(dirname "$0")/claude-real" "$@"
         claude, factory = self.srv / "home/.claude", self.srv / "home/.claude/factory"
         keys = factory / "dashboard/authorized_keys"
         keys.parent.mkdir(parents=True)
-        keys.write_text(PUB + "\n")
+        keys.write_text("ssh-ed25519 AAAAother bob\n" + PUB + "\n")
         (claude / "settings.json").write_text(json.dumps({"theme": "dark", "env": {"A": "b"}}))
         (factory / "settings.json").write_text(json.dumps({"worktree_cap": 3, "monitor": "old"}))
+        keys.rename(keys.with_name("keys-aside"))
+        keys.mkdir()  # unreadable as a file: not the same as missing, and no key may be dropped over it
+        rc, out, err = self.add("--repo", "acme/widgets", "--repo", "acme/private-thing")
+        self.assertEqual(rc, 1)
+        self.assertIn("authorising the key", err)
+        keys.rmdir()
+        keys.with_name("keys-aside").rename(keys)
         rc, out, err = self.add("--repo", "acme/widgets", "--repo", "acme/private-thing")
         self.assertEqual(rc, 0, err)
         self.assertEqual(json.loads((claude / "settings.json").read_text()),
                          {"theme": "dark", "env": {"A": "b", "CLAUDE_CODE_OAUTH_TOKEN": TOKEN}})
         self.assertEqual(json.loads((factory / "settings.json").read_text()),
                          {"worktree_cap": 3, "monitor": "/state/home/.isshoni/bin/isshoni", "dispatchers": ["dispatcher-widgets", "dispatcher-private-thing"]})
-        self.assertEqual(keys.read_text(), "write " + PUB + "\n")
+        self.assertEqual(keys.read_text(), "ssh-ed25519 AAAAother bob\nwrite " + PUB + "\n")
         self.assertTrue((self.srv / "serving").exists())
-        restarts = [i for i, c in enumerate(self.calls()) if "docker restart" in c["argv"][1]]
-        starts = [i for i, c in enumerate(self.calls()) if "--bg" in c["argv"][1]]
-        self.assertTrue(restarts and starts and max(restarts) < min(starts))
+        calls = [c["argv"][1] for c in self.calls()]
+        self.assertFalse([c for c in calls if "docker restart" in c], "the container must never be restarted")
+        serve = [i for i, c in enumerate(calls) if "docker exec -d isshoni-factory sh -c" in c]
+        starts = [i for i, c in enumerate(calls) if "--bg" in c]
+        self.assertTrue(serve and starts and max(serve) < min(starts))
         log = (self.srv / "git.log").read_text()
         self.assertIn("remote add origin https://github.com/acme/private-thing", log)
         self.assertIn("checkout -B main origin/main", log)
-
-    def test_authorised_adds_keeps_and_upgrades(self):
-        other = "ssh-ed25519 AAAAother bob"
-        self.assertEqual(host.authorised([other], PUB), [other, "write " + PUB])
-        self.assertEqual(host.authorised([other, "write " + PUB], PUB), [other, "write " + PUB])
-        self.assertEqual(host.authorised([PUB, other], PUB), ["write " + PUB, other])
 
 
 if __name__ == "__main__":

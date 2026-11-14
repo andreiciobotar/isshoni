@@ -6,12 +6,14 @@ import contextlib
 import io
 import json
 import os
+import select
 import shutil
 import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -33,6 +35,8 @@ def docker_says_why_not():
         return "docker does not work here"
     if subprocess.run(["docker", "ps", "-aq", "--filter", "name=^isshoni-factory$"], capture_output=True, text=True).stdout.strip():
         return "a container named isshoni-factory already exists"
+    if subprocess.run(["docker", "image", "inspect", "isshoni-factory"], capture_output=True).returncode == 0:
+        return "an image named isshoni-factory already exists"
     return None
 
 
@@ -114,13 +118,24 @@ class HostEndToEnd(unittest.TestCase):
         ssh_args = ["-p", str(port), "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "IdentitiesOnly=yes",
                     "-o", "BatchMode=yes", "-tt", "127.0.0.1"]
         def dashboard(key):
+            """What the dashboard over ssh shows to `key`: read until its title or a refusal, at most 20 s."""
+            p = subprocess.Popen([real_ssh, "-i", str(laptop / key), *ssh_args], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            out, end = b"", time.monotonic() + 20
             try:
-                p = subprocess.run([real_ssh, "-i", str(laptop / key), *ssh_args], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
-                return p.returncode, p.stdout + p.stderr
-            except subprocess.TimeoutExpired as e:
-                return 0, (e.stdout or b"").decode(errors="replace") + (e.stderr or b"").decode(errors="replace")
-        self.assertNotIn("Permission denied", dashboard("id")[1])
-        self.assertIn("Permission denied", dashboard("stranger")[1])
+                while time.monotonic() < end and b"Isshoni" not in out and b"Permission denied" not in out:
+                    if select.select([p.stdout], [], [], 0.5)[0]:
+                        chunk = os.read(p.stdout.fileno(), 65536)
+                        if not chunk:
+                            break
+                        out += chunk
+            finally:
+                p.kill()
+                p.wait()
+                p.stdout.close()
+                p.stdin.close()
+            return out.decode(errors="replace")
+        self.assertIn("Isshoni", dashboard("id"))
+        self.assertIn("Permission denied", dashboard("stranger"))
 
         logs = self.docker("logs", host.CONTAINER)
         for secret in (TOKEN, "E2ESECRETKEYMATERIAL"):
