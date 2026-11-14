@@ -63,7 +63,7 @@ Optional:
 <p align="center">
   <picture>
     <source media="(max-width: 600px)" srcset="assets/diagrams/factory-narrow.svg">
-    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief; it starts one lead per task in its own worktree. The lead has an explorer, a coder and a reviewer work until the reviewer approves. The lander tests and pushes a pull request, a draft until checks are green; you approve and the lander merges to main. A courier carries your comments to the lead. Every task leaves feedback and a retrospective; the dispatcher proposes rule edits, you decide. Models are defaults.">
+    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief; it starts one lead per task in its own worktree. The lead has an explorer, a coder and a reviewer work until the reviewer approves. The lander tests and pushes a pull request, a draft until handed over and green; you approve and the lander merges to main. A courier carries your comments to the lead; a site manager watches and escalates to the dispatcher. Every task leaves feedback and a retrospective; the dispatcher proposes rule edits, you decide. Models are defaults.">
   </picture>
 </p>
 

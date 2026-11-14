@@ -28,6 +28,8 @@
     .lander .n { fill: #ACD56E; }
     .human .box { stroke: #ECEAF7; }
     .human .n { fill: #ECEAF7; }
+    .pr .box { stroke: #8E8BA8; }
+    .pr .n { fill: #ECEAF7; }
     .muted .box { stroke: #8E8BA8; }
     .muted .n { fill: #8E8BA8; }
     .side .box { stroke: #5C5A75; stroke-dasharray: 4 3; }
@@ -98,7 +100,7 @@
   <path class="arrow" d="M156 324H174"/>
 
   <!-- pull request: draft, then ready -->
-  <g class="human">
+  <g class="pr">
     <rect class="box" x="174" y="292" width="140" height="64" rx="8"/>
     <text class="n" x="244" y="312" text-anchor="middle">Pull request</text>
     <text class="s" x="244" y="328" text-anchor="middle">draft → ready</text>
@@ -137,7 +139,7 @@
   <g class="side muted">
     <rect class="box" x="16" y="564" width="298" height="44" rx="8"/>
     <text class="n" x="165" y="582" text-anchor="middle">site manager<tspan class="m"> · Sonnet</tspan></text>
-    <text class="t" x="165" y="599" text-anchor="middle">every 30 min, watches, escalates</text>
+    <text class="t" x="165" y="599" text-anchor="middle">every 30 min, escalates → dispatcher</text>
   </g>
 
   <!-- kaizen lane, stacked -->
