@@ -600,11 +600,18 @@ func TestKaizenFlowMixShowsAnAddedRole(t *testing.T) {
 	for i := range doc.Summary.Mix.Points {
 		doc.Summary.Mix.Points[i].Share["lander"] = 0.05
 	}
+	for i := range doc.Tasks {
+		if c := doc.Tasks[i].Cost; c != nil {
+			c.ByRole["lander"] = c.Total // the ROLES cell draws a role it has no colour rule for
+		}
+	}
 	m := fakeModel(true, 140, 200)
 	setKaizen(m, doc, pageFlow)
 	out := plain(m)
-	if !strings.Contains(out, "lander $5.00") || !strings.Contains(out, "lander 5%") {
-		t.Fatalf("the legend and the chart name the new role:\n%s", out)
+	for _, want := range []string{"lander $5.00", "lander 5%", "lead $35.85", "other $6.46", "coder 38%", "reviewer 20%", "other 18%", "lead 15%", "explorer 8%"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("the legend and the chart name the new role beside the others: no %q\n%s", want, out)
+		}
 	}
 }
 
@@ -722,6 +729,20 @@ func TestLineChartEndLabelsReadInTheLinesOrder(t *testing.T) {
 	}
 	if want := []string{"s1", "", "", "", "", "s3", "s0", "s2"}; !slices.Equal(got, want) {
 		t.Fatalf("labels by row: %q, want %q\n%s", got, want, ansi.Strip(strings.Join(out.lines, "\n")))
+	}
+}
+
+func TestLineChartKeepsTheNewestPointsWhenOneDotEachDoesNotFit(t *testing.T) {
+	p := NewTheme(true).on(nil)
+	vals := make([]float64, 300)
+	vals[299] = 1 // only the newest point is off the baseline
+	out := p.lineChart(lineOpts{series: testSeries(vals), label: percent}, 40)
+	if out.step != 1 || out.first != 300-2*out.plot {
+		t.Fatalf("step %d first %d plot %d", out.step, out.first, out.plot)
+	}
+	top := []rune(ansi.Strip(out.lines[0]))
+	if last := top[out.gutter+out.plot-1]; last != '⢸' ||strings.ContainsFunc(string(top[out.gutter:out.gutter+out.plot-1]), func(r rune) bool { return r != ' ' }) {
+		t.Fatalf("the rise to the newest point is the right dot column of the plot's last cell: %q", string(top))
 	}
 }
 

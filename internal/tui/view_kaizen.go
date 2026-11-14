@@ -531,8 +531,8 @@ func (m *model) flowLines(p paint, w int) block {
 	s := d.Summary
 	lines := block{m.heading(p, w, "where the money went", "landed tasks")}
 	total := 0.0
-	for _, v := range s.ByRole {
-		total += v
+	for _, name := range d.Roles {
+		total += s.ByRole[name]
 	}
 	var segs []seg
 	var items []string
