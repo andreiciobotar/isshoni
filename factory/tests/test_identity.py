@@ -88,6 +88,29 @@ class AppTokenTests(Identity):
                 self.assertEqual(self.mints(), 1)
                 self.assertEqual(json.loads((self.identity / "token.json").read_text())["token"], TOKEN)
 
+    def test_a_failing_cache_write_still_returns_the_token(self):
+        self.github()
+        self.identity.chmod(0o500)
+        self.addCleanup(self.identity.chmod, 0o700)
+        if os.access(self.identity, os.W_OK):
+            self.skipTest("directory modes are not enforced here (root)")
+        self.assertEqual(self.token(), TOKEN)
+        self.assertEqual(self.files(), ["app.json", "key.pem"])
+        rc, out, err = self.cli("env")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn(f"export GH_TOKEN={TOKEN}", out.splitlines())
+
+    def test_a_failed_mint_uses_a_cached_token_that_has_not_expired(self):
+        self.github(status=500)
+        self.cache({"token": "cached", "expires_at": expiring(600)})
+        self.assertEqual(self.token(), "cached")
+        self.cache({"token": "cached", "expires_at": expiring(-5)})
+        with self.assertRaises(factory.Fail):
+            self.token()
+        rc, out, err = self.cli("env")
+        self.assertEqual(rc, 1)
+        self.assertIn("export GH_TOKEN=unavailable", out.splitlines())
+
     def test_a_refused_mint_fails_and_leaves_nothing_behind(self):
         self.github(status=401)
         with self.assertRaises(factory.Fail):
@@ -140,12 +163,21 @@ class EnvTests(Identity):
             self.assertNotIn(TOKEN, text)
             self.assertNotIn("PRIVATE KEY", text)
 
+    def test_a_corrupt_app_json_fails_closed(self):
+        self.installed()
+        (self.identity / "app.json").write_text("{")
+        rc, out, err = self.cli("env")
+        self.assertEqual((rc, out), (1, "export GH_TOKEN=unavailable\n"))
+        self.assertEqual(err.count("\n"), 1)
+        self.assertTrue(err.startswith("factory: no App token: "))
+
     def test_in_a_real_shell_with_real_git(self):
         self.installed()
         self.github()
         _, out, _ = self.cli("env")
-        (self.home / ".gitconfig").write_text("[credential]\n\thelper = osxkeychain\n"
-                                              "[credential \"https://github.com\"]\n\thelper = !gh auth git-credential\n"
+        answering = "!f() { echo username=human; echo password=leaked; }; f"
+        (self.home / ".gitconfig").write_text(f"[credential]\n\thelper = {answering}\n"
+                                              f"[credential \"https://github.com\"]\n\thelper = {answering}\n"
                                               "[user]\n\tname = Human\n\temail = human@example.com\n")
         repo = self.home / "repo"
         repo.mkdir()
@@ -226,6 +258,17 @@ class RunTests(Identity):
         self.installed()
         self.assertIsNone(self.run_with(["git", "status"])[1])
         self.assertEqual(self.mints(), 0)
+
+    def test_an_unwritable_identity_directory_does_not_break_gh(self):
+        self.installed()
+        self.github()
+        self.identity.chmod(0o500)
+        self.addCleanup(self.identity.chmod, 0o700)
+        if os.access(self.identity, os.W_OK):
+            self.skipTest("directory modes are not enforced here (root)")
+        result, env = self.run_with(["gh", "pr", "list"])
+        self.assertEqual(result, (0, "out", ""))
+        self.assertEqual(env["GH_TOKEN"], TOKEN)
 
     def test_a_mint_failure_is_a_failed_gh_call(self):
         self.installed()

@@ -66,13 +66,13 @@ class Fail(Exception):
 
 
 def run(argv, cwd=None, timeout=None, input=None):
-    """The only place a subprocess starts. Returns (returncode, stdout, stderr). `gh` acts as the App when an identity is stored."""
+    """The only place a subprocess starts. Returns (returncode, stdout, stderr). `gh` acts as the App when an identity is installed."""
     env = None
     if argv[0] == "gh":
         try:
             if identity := acting_identity():
                 env = {**os.environ, "GH_TOKEN": app_token(identity)}
-        except Fail as e:
+        except (Fail, OSError) as e:
             return 1, "", str(e)
     try:
         p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, input=input, env=env)
@@ -912,6 +912,15 @@ def cmd_hook(args):
         message = message if isinstance(message, str) else ""
         fields = {k: p[k] for k in COPIED.get(event, ()) if k in p}
         text, tag = None, tags(p)
+        try:
+            if event == "SessionStart" and tag["slug"] and not p.get("agent_id") and os.environ.get("CLAUDE_ENV_FILE"):
+                line = f'eval "$({shlex.quote(str(FACTORY))} env)"'
+                env_file = Path(os.environ["CLAUDE_ENV_FILE"])
+                have = env_file.read_text() if env_file.exists() else ""
+                if line not in have.splitlines():
+                    env_file.write_text(have + ("\n" if have and not have.endswith("\n") else "") + line + "\n")
+        except Exception:
+            pass
         if event == "UserPromptSubmit":
             fields["from"] = next((v for start, v in PROMPT_FROM if str(p.get("prompt")).startswith(start)), "human")
         elif event == "Stop" and isinstance(p.get("background_tasks"), list):
@@ -929,12 +938,6 @@ def cmd_hook(args):
                 if why := "".join(why.lstrip(" \t\r\n:-–—.,").splitlines()[:1]).strip()[:200]:
                     fields["summary"] = why
         log("events", {**tag, "event": event, **fields})
-        if event == "SessionStart" and tag["slug"] and not p.get("agent_id") and os.environ.get("CLAUDE_ENV_FILE"):
-            line = f'eval "$({shlex.quote(str(FACTORY))} env)"'
-            env_file = Path(os.environ["CLAUDE_ENV_FILE"])
-            have = env_file.read_text() if env_file.exists() else ""
-            if line not in have.splitlines():
-                env_file.write_text(have + ("\n" if have and not have.endswith("\n") else "") + line + "\n")
         if isinstance(text, str) and (lines := feedback_section(text)) is not None:
             file_feedback(lines, tag)
     except Exception:
@@ -2510,33 +2513,48 @@ def acting_identity():
 def app_token(identity):
     """An installation token with at least TOKEN_MARGIN seconds left: the cached one, else a fresh one (cached, 0600)."""
     cache = IDENTITY.expanduser() / "token.json"
+    cached_token, left = None, 0
     try:
         cached = json.loads(cache.read_text())
-        if epoch(cached["expires_at"]) - time.time() > TOKEN_MARGIN:
-            return cached["token"]
+        cached_token, left = cached["token"], epoch(cached["expires_at"]) - time.time()
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    token, expires_at = installation_token(identity)
-    fd, tmp = tempfile.mkstemp(dir=cache.parent)
-    with os.fdopen(fd, "w") as f:
-        json.dump({"token": token, "expires_at": expires_at}, f)
-    os.replace(tmp, cache)
+    if cached_token and left > TOKEN_MARGIN:
+        return cached_token
+    try:
+        token, expires_at = installation_token(identity)
+    except Fail:
+        if cached_token and left > 0:
+            return cached_token
+        raise
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=cache.parent)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"token": token, "expires_at": expires_at}, f)
+        os.replace(tmp, cache)
+    except OSError:  # the cache only saves mints
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
     return token
 
 
 def cmd_env(args):
     """Print the exports that make git and gh act as the App; nothing without an identity."""
-    identity = acting_identity()
-    if not identity:
-        return 0
     try:
+        identity = acting_identity()
+        if not identity:
+            return 0
         token, code = app_token(identity), 0
-    except Fail as e:
+    except (Fail, OSError) as e:
         print(f"factory: no App token: {e}; git and gh will fail until one can be minted", file=sys.stderr)
-        token, code = "unavailable", 1
+        identity, token, code = None, "unavailable", 1
     helper = "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f"
     credential = "credential.https://github.com.helper"
     rewrite = "url.https://github.com/.insteadOf"
+    if not identity:
+        print("export GH_TOKEN=unavailable")
+        return code
     values = {"GH_TOKEN": token, "GIT_TERMINAL_PROMPT": "0",
               "GIT_AUTHOR_NAME": identity["bot_login"], "GIT_AUTHOR_EMAIL": identity["bot_email"],
               "GIT_COMMITTER_NAME": identity["bot_login"], "GIT_COMMITTER_EMAIL": identity["bot_email"],

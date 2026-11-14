@@ -40,7 +40,7 @@ factory env                                                              # expor
 - **`ack`** is run by the dispatcher on the human's word, for a task that was handed over.
 - **`wizard`** creates the factory's GitHub App, gets it installed and verifies it; rerun, it verifies or repairs. See Identity.
 - **`env`** prints `export` lines that make `git` and `gh` act as the App, or nothing (exit 0) when no installed identity is stored. See Identity.
-- **`retro`** takes the task from the working directory and reads the JSON from `<file>` when one is given (exit 1 if it cannot be read), else from stdin.
+- **`retro`** takes the task from the working directory and reads the JSON from `<file>` when one is given (exit 2 if it cannot be read), else from stdin.
 
 ## Declared state, phases and the cap
 | Declared state | By | Meaning |
@@ -276,7 +276,7 @@ The plugin's `SessionStart` hook (`factory hook`) appends one line, `eval "$(<pa
 
 Tokens last one hour at GitHub. The token is cached in `identity/token.json` (0600) and minted again when under 15 minutes remain, so every Bash command starts with at least 15 minutes, which is more than a foreground command may run (10 minutes). Limits: a background command that outlives its token; a session started before plugin 0.5.0 has no hook line (restart the lead); `GIT_CONFIG_*` variables set by the caller are replaced; only `github.com`.
 
-Secrets. The token is in the environment of the lead's shell commands: an agent can read it. It is scoped to the installed repositories and the permissions in the table, and it expires. The key never leaves `identity/`, is read only by `openssl` when a token is minted, and no role is told where it is.
+Secrets. The token is in the environment of the lead's shell commands: an agent can read it. It is scoped to the installed repositories and the permissions in the table, and it expires. The identity is a default, not a boundary: the dispatcher session still acts with your login, and a lead's shell can still reach your own `gh` login or keychain by unsetting the variables, so the rule that no agent posts `lgtm` or approves a pull request stays. The key never leaves `identity/`, is read only by `openssl` when a token is minted, and no role is told where it is.
 
 Failure. When no token can be minted, `factory env` prints the reason on stderr and sets `GH_TOKEN=unavailable`, so each command shows the reason and `git` and `gh` fail with an authentication error; in a lead session they never fall back to your login.
 
@@ -302,4 +302,4 @@ Undo: uninstall the App (the installation URL the report prints), delete the App
 - Merging: without an identity (the author's own account) the author's `lgtm` rests on a rule, not a mechanism (see Merging). A `CHANGES_REQUESTED` review by a different login does not block a merge. The author comparison and the bot test rest on GitHub's `user.type` and login. Checks are not rerun after a retarget, and GitHub does not test the merge result: mergeable means no conflict. A pull request with no task worktree is a `handover` stop; the human merges it. At most 100 open pull requests are seen. An `lgtm` during a running check waits for the next tick. There is no lock: when a tick and the dispatcher merge at once, the second `gh pr merge` fails and is reported.
 - The site manager's thresholds are first guesses; `quiet` reads file times, so a lead waiting on a long command looks quiet; a run that dies after sending may escalate the same firing again next tick. A site manager run is read as one JSON document on `claude`'s standard output: with `ANTHROPIC_LOG=debug` in the environment `claude` logs there too, the message is still sent and the run is recorded as failed.
 - Two repositories whose directories share a name share a spec folder and a default dispatcher name.
-- Identity: one per machine; `workflows` is not granted; only `github.com`; a background command can outlive its token; a lead started before plugin 0.5.0 has no hook line; `GIT_CONFIG_*` set by the caller is replaced. See How the identity is used, including what only a real run proves.
+- Identity: during a GitHub outage each lead command waits for the mint attempt (up to 30 s) once the cached token is within 15 minutes of expiry (a cached token that has not expired is used when the mint fails); one per machine; `workflows` is not granted; only `github.com`; a background command can outlive its token; a lead started before plugin 0.5.0 has no hook line; `GIT_CONFIG_*` set by the caller is replaced. See How the identity is used, including what only a real run proves.
