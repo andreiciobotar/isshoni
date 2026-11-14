@@ -214,7 +214,7 @@ dashboard's zoom, below) of `--session ID`, else of the most recent one; `make s
 VIEW=... SIZE=...` turns it into a PNG under `shots/` (needs Chrome). Both make targets
 take `FIXTURE=<name>` (a directory of `tests/fixtures`, e.g. `grouping`): they render a copy
 of it with every file at 2026-01-01T10:30:00Z, as the golden tests do, with the fixture agents
-and prices and `--range all`, so `--row N` is the golden test's row N.
+and prices, `--range all` and times in UTC, so `--row N` is the golden test's row N.
 
 | Key | |
 |---|---|

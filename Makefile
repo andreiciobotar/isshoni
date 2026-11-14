@@ -5,8 +5,9 @@ VIEW ?= dashboard
 SIZE ?= 140x40
 CHROME ?= $(shell for c in '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' google-chrome google-chrome-stable chromium chromium-browser; do if [ -x "$$c" ]; then echo "$$c"; break; elif p=$$(command -v "$$c"); then echo "$$p"; break; fi; done)
 SHOT := shots/$(VIEW)-$(SIZE)
-# FIXTURE=<name> renders tests/fixtures/<name> as the golden tests do: every file at 2026-01-01T10:30:00Z, all ranges, the fixture agents and prices.
+# FIXTURE=<name> renders tests/fixtures/<name> as the golden tests do: every file at 2026-01-01T10:30:00Z, times in UTC, all ranges, the fixture agents and prices.
 FIXDIR := $(if $(FIXTURE),shots/fixture-$(FIXTURE))
+FIXENV := $(if $(FIXTURE),TZ=UTC )
 FIXARGS := $(if $(FIXTURE),--projects-dir $(FIXDIR) --agents-dir tests/fixtures/agents --prices tests/fixtures/prices.toml --range all)
 
 shots/fixture-%: FORCE
@@ -49,13 +50,13 @@ wizard:
 
 # Render one frame to stdout without a TTY, e.g. make snapshot VIEW=session ARGS="--session 04ca0148 --no-color"
 snapshot: build $(FIXDIR)
-	$(BIN) --snapshot $(VIEW) --size $(SIZE) $(FIXARGS) $(ARGS)
+	$(FIXENV)$(BIN) --snapshot $(VIEW) --size $(SIZE) $(FIXARGS) $(ARGS)
 
 # Render one colored frame to shots/<view>-<size>.png (needs Chrome or Chromium; set CHROME=... to pick one), e.g. make screenshot VIEW=session ARGS="--session 04ca0148"
 screenshot: build $(FIXDIR)
 	@[ -n "$(CHROME)" ] || { echo "isshoni: Chrome or Chromium is missing. Install one, or set CHROME=/path/to/chrome." >&2; exit 1; }
 	@mkdir -p shots
-	$(BIN) --snapshot $(VIEW) --size $(SIZE) $(FIXARGS) $(ARGS) | python3 tools/ansi2html.py > $(SHOT).html
+	$(FIXENV)$(BIN) --snapshot $(VIEW) --size $(SIZE) $(FIXARGS) $(ARGS) | python3 tools/ansi2html.py > $(SHOT).html
 	"$(CHROME)" --headless --disable-gpu --hide-scrollbars \
 		--window-size=$$(( $(firstword $(subst x, ,$(SIZE))) * 9 + 16 )),$$(( $(lastword $(subst x, ,$(SIZE))) * 17 + 16 )) \
 		--screenshot="$(CURDIR)/$(SHOT).png" "file://$(CURDIR)/$(SHOT).html" >/dev/null 2>&1
