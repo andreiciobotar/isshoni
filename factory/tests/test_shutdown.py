@@ -176,7 +176,7 @@ class RunLifetimeTests(Fakes):
 class TickLockTests(Harness):
     def hold(self):
         """A process that holds the watch lock until it is killed."""
-        path = factory.repo_state(SimpleNamespace(root=ROOT), "watch", "lock")
+        path = factory.repo_state(ROOT, "watch", "lock")
         path.parent.mkdir(parents=True, exist_ok=True)
         code = "import fcntl, sys; f = open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); sys.stdin.read()"
         p = start_in_group(self, [sys.executable, "-c", code, str(path)], stdin=subprocess.PIPE,

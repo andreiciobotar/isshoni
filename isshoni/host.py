@@ -294,7 +294,7 @@ class Ctx:
     def save(self, rev):
         reg = load_registry()
         reg[self.name] = {"target": self.target, "state": self.state, "dashboard_port": self.port,
-                          "repos": self.repos, "alias": self.alias, "rev": rev}
+                          "repos": self.repos, "alias": self.alias or None, "rev": rev}
         save_registry(reg)
 
 
@@ -378,6 +378,7 @@ def tar_of(files):
 
 def identity(c):
     files = {n: (store() / "identity" / n).read_bytes() for n in ("key.pem", "app.json")}
+    files["app.json"] = json.dumps({**json.loads(files["app.json"]), "copy": True}).encode()  # the copy cannot remove the App
     want = "\n".join("%s %s" % (hashlib.sha256(d).hexdigest(), n) for n, d in files.items())
     if box(c.target, IDENTITY_SUMS)[1].strip() == want:
         return False
@@ -452,15 +453,12 @@ def dashboard_key(c):
     raise Stop("the dashboard is not serving; run it in the foreground to see why: `ssh -t %s \"docker exec -it %s sh -c 'exec ~/.isshoni/bin/isshoni-tui --serve 0.0.0.0:2222'\"`." % (c.target, CONTAINER))
 
 
-def running_dispatchers(target):
-    """The names of the sessions `claude agents --json` lists in the container; Stop when it cannot say."""
-    rc, out, err = box(target, "claude agents --json")
-    try:
-        if rc == 0:
-            return {a["name"] for a in json.loads(out) if "name" in a}
-    except (ValueError, TypeError):
-        pass
-    raise Stop("cannot tell which dispatchers run: `claude agents --json` printed:\n%s" % tail(out + err))
+def dispatcher_runs(target, repo):
+    """Whether the dispatcher of ~/code/<repo> runs in the container (`factory dispatcher`: exit 0 yes, 1 with its own "factory: " refusal no); Stop when it cannot say."""
+    rc, out, err = box(target, 'cd "$HOME/code/$1" && "$HOME/.isshoni/factory/bin/factory" dispatcher', repo)
+    if rc == 0 or (rc == 1 and "factory: " in err):
+        return rc == 0
+    raise Stop("cannot tell which dispatchers run: `factory dispatcher` printed:\n%s" % tail(out + err))
 
 
 def dispatchers(c):
@@ -469,13 +467,14 @@ def dispatchers(c):
         return False
     started = False
     for repo in c.repos:
-        name = "dispatcher-" + repo.split("/")[1]
-        if name in running_dispatchers(c.target):
+        short = repo.split("/")[1]
+        name = "dispatcher-" + short
+        if dispatcher_runs(c.target, short):
             continue
         need(box(c.target, 'cd "$HOME/code/$1" && claude --bg -n "$2" --permission-mode auto "/factory:dispatch"',
-                 repo.split("/")[1], name), "starting %s" % name)
-        if name not in running_dispatchers(c.target):
-            raise Stop("%s was started but `claude agents --json` does not list it; see `ssh %s docker exec %s claude agents`."
+                 short, name), "starting %s" % name)
+        if not dispatcher_runs(c.target, short):
+            raise Stop("%s was started but `factory dispatcher` does not find it; see `ssh %s docker exec %s claude agents`."
                        % (name, c.target, CONTAINER))
         started = True
     return started
@@ -490,10 +489,10 @@ def connect(c):
         c.alias = answer or None
         if c.alias:
             alias_conflict(c.name, c.alias)
-    if c.alias:
+    if c.alias is not None:
         text = read_ssh_config()
         new = block_re(c.name).sub("", text)
-        new = new + ("\n" if new else "") + alias_block(c.name, c.alias, c.target, c.port)
+        new = new + (("\n" if new else "") + alias_block(c.name, c.alias, c.target, c.port) if c.alias else "")
         if new != text:
             write_ssh_config(new)
             changed = True
@@ -508,7 +507,65 @@ STEPS = (("prerequisites", prerequisites), ("state directory", state_directory),
 
 # ---- the verbs ------------------------------------------------------------------
 
+def ask(prompt, missing=""):
+    """One answer from the terminal; Stop with `missing` when there is none."""
+    if not sys.stdin.isatty():
+        raise Stop(missing)
+    return input(prompt).strip()
+
+
+def confirm(argv, default_yes):
+    print("The same without questions: %s" % shlex.join(["bin/isshoni", "host", *argv]))
+    answer = ask("Run it? [%s] " % ("Y/n" if default_yes else "y/N")).lower()
+    if answer in ("y", "yes") or (default_yes and not answer):
+        return True
+    print("Nothing was done.")
+    return False
+
+
+def list_hosts(reg):
+    print("Registered hosts:\n" + "\n".join("  %s  %s" % (n, e["target"]) for n, e in reg.items()))
+
+
+def wizard_add(args):
+    """Fill in what `host add` was not given; False when the answer to "Run it?" is no."""
+    reg = load_registry()
+    if reg:
+        list_hosts(reg)
+        print("Entering a registered name updates that host.")
+    target = ask("The ssh target (what ssh takes: an alias, user@host or ssh://user@host:port): ",
+                 "no ssh target given: pass TARGET, or run `make wizard-remote` in a terminal to be asked.")
+    name = NAME_RE.sub("-", target)
+    if name in reg:
+        args.target, args.name, args.alias = reg[name]["target"], name, reg[name]["alias"] or ""
+        argv = ["add", args.target, *(["--name", name] if name != NAME_RE.sub("-", args.target) else []),
+                *(["--alias", ""] if not args.alias else [])]
+    else:
+        args.target, args.state = target, ask("The state directory on the server (an absolute path, e.g. /srv/factory): ")
+        args.repo = ask("Repositories to clone and start a dispatcher for, owner/name separated by spaces (empty for none): ").split()
+        args.alias = ask("An ssh alias for this host in ~/.ssh/config (empty for none): ")
+        argv = ["add", target, "--state", args.state, *[a for r in args.repo for a in ("--repo", r)], "--alias", args.alias]
+    return confirm(argv, True)
+
+
+def wizard_remove(args):
+    reg = load_registry()
+    if not reg:
+        print("No host is registered.")
+        return False
+    if not sys.stdin.isatty():
+        raise Stop("no host name given: pass NAME, or run `make uninstall-remote` in a terminal to be asked.")
+    list_hosts(reg)
+    args.name = ask("The host to remove: ")
+    if args.name not in reg:
+        return True  # cmd_remove says so
+    args.purge_state = ask("Also delete the state directory %s on the server? [y/N] " % reg[args.name]["state"]).lower() in ("y", "yes")
+    return confirm(["remove", args.name, *(["--purge-state"] if args.purge_state else [])], False)
+
+
 def cmd_add(args):
+    if args.target is None and not wizard_add(args):
+        return 0
     reg = load_registry()
     name = args.name or NAME_RE.sub("-", args.target)
     entry = reg.get(name, {})
@@ -538,7 +595,7 @@ def cmd_add(args):
             raise Stop("%r is not a repository (owner/name)." % r)
     if len(set(names)) != len(names):
         raise Stop("two repositories have the same name; they would share ~/code/<name>.")
-    alias = args.alias or entry.get("alias")
+    alias = args.alias if args.alias is not None else entry.get("alias")
     if alias:
         if not ALIAS_RE.fullmatch(alias):
             raise Stop("%r is not a usable alias." % alias)
@@ -564,16 +621,18 @@ def host_status(name, e, head):
     state = ssh(target, "docker inspect -f '{{.State.Status}}' %s" % CONTAINER)[1].strip() or "missing"
     rev = box(target, "cat ~/.isshoni/.rev")[1].strip()
     serving = box(target, DASHBOARD_SERVING)[0] == 0
-    try:
-        listed, why = running_dispatchers(target), None
-    except Stop as stop:
-        listed, why = set(), str(stop)
     lines = ["%s: container %s" % (name, state),
              "  rev %s (laptop HEAD %s)%s" % (rev[:7] or "none", head[:7], "" if rev == head else ": not current, run `isshoni host add %s`" % target),
              "  dashboard %s" % ("serving" if serving else "not serving")]
-    missing = [r for r in e["repos"] if "dispatcher-" + r.split("/")[1] not in listed]
+    why, missing = None, False
     for r in e["repos"]:
-        lines.append("  dispatcher-%s %s" % (r.split("/")[1], "unknown" if why else "missing" if r in missing else "running"))
+        try:
+            runs = dispatcher_runs(target, r.split("/")[1])
+            missing = missing or not runs
+            word = "running" if runs else "missing"
+        except Stop as stop:
+            why, word = why or str(stop), "unknown"
+        lines.append("  dispatcher-%s %s" % (r.split("/")[1], word))
     if why:
         lines.append("  " + why.replace("\n", "\n  "))
     return lines, state == "running" and serving and not missing and not why
@@ -593,6 +652,8 @@ def cmd_status(args):
 
 
 def cmd_remove(args):
+    if args.name is None and not wizard_remove(args):
+        return 0
     reg = load_registry()
     e = reg.get(args.name)
     if not e:
@@ -612,6 +673,8 @@ def cmd_remove(args):
     save_registry(reg)
     print("Removed host %s: container and image are gone. %s" % (args.name, "The state directory was deleted." if args.purge_state
           else "The state directory %s on the server is kept." % state))
+    if not reg and (store() / "identity/app.json").exists() and not (store() / "settings.json").exists():
+        print("No install uses the GitHub App any more: `make uninstall` (or `factory uninstall`) removes its installation and the identity kept here.")
     return 0
 
 
@@ -628,13 +691,13 @@ def register(sub):
     p.set_defaults(func=run)
     verbs = p.add_subparsers(dest="verb", required=True)
     s = verbs.add_parser("add", help="bring the host to a running factory; rerun to do only what is missing")
-    s.add_argument("target", help="what ssh takes: an alias, user@host or ssh://user@host:port")
+    s.add_argument("target", nargs="?", help="what ssh takes: an alias, user@host or ssh://user@host:port (left out: you are asked for it and the rest)")
     s.add_argument("--state", help="directory on the server for the factory's state (first time only)")
     s.add_argument("--name", help="the host's name here (default: the target)")
     s.add_argument("--repo", action="append", default=[], metavar="OWNER/NAME", help="a repository to clone and start a dispatcher for (repeatable)")
     s.add_argument("--key", metavar="PUBKEY_FILE", help="the public key to authorise for the dashboard (default: the one ssh offers for the target)")
     s.add_argument("--dashboard-port", type=int, help="the server's loopback port for the dashboard (default 2222)")
-    s.add_argument("--alias", help="write a Host block with this name to ~/.ssh/config")
+    s.add_argument("--alias", help="write a Host block with this name to ~/.ssh/config; an empty value means none: the block is removed and nothing is asked")
     s.set_defaults(host_func=cmd_add)
     s = verbs.add_parser("list", help="the recorded hosts, without network")
     s.set_defaults(host_func=cmd_list)
@@ -642,6 +705,6 @@ def register(sub):
     s.add_argument("name", nargs="?")
     s.set_defaults(host_func=cmd_status)
     s = verbs.add_parser("remove", help="remove the container, the image, the alias and the record; the state directory stays")
-    s.add_argument("name")
+    s.add_argument("name", nargs="?", help="the host's name (left out: you are asked)")
     s.add_argument("--purge-state", action="store_true", help="also delete the state directory on the server")
     s.set_defaults(host_func=cmd_remove)

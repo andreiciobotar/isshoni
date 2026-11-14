@@ -38,7 +38,7 @@ func main() {
 		step     = flag.Duration("frame-step", 0, "hanami snapshot: time between frames (default 400ms)")
 		legend   = flag.Bool("legend", false, "hanami snapshot: with the legend open")
 		serveAt  = flag.String("serve", "", "serve the dashboard over SSH on ADDR (e.g. 127.0.0.1:2222) instead of on this terminal; public keys only")
-		keysFile = flag.String("authorized-keys", dashboardFile("authorized_keys"), "with --serve: the keys allowed in, one per line; `write ssh-ed25519 ...` may also change the worktree cap")
+		keysFile = flag.String("authorized-keys", dashboardFile("authorized_keys"), "with --serve: the keys allowed in, one per line; `write ssh-ed25519 ...` may also change the worktree cap and open the dispatcher")
 		hostKey  = flag.String("host-key", dashboardFile("host_key"), "with --serve: the server's private key, created when missing")
 	)
 	flag.Parse()

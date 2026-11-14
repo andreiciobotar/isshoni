@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,7 +44,7 @@ func TestFactoryStatusDecodesNulls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Cap != 7 || st.Reserve != 1 || st.InMotion != 2 || st.Blocked != 1 || st.InReview != 1 || st.Settled != 1 || len(st.Rows) != 4 {
+	if st.Cap != 7 || st.Reserve != 1 || st.InMotion != 3 || st.Blocked != 2 || st.InReview != 1 || st.Settled != 1 || len(st.Rows) != 5 {
 		t.Fatalf("status %+v", st)
 	}
 	if a := st.Rows[0]; a.Elapsed != nil || a.Waited != nil || a.StopKind != "" || a.StopSummary != "" || a.Slug != "cost-in-money" || a.PRState != "unknown" {
@@ -57,6 +58,9 @@ func TestFactoryStatusDecodesNulls(t *testing.T) {
 	}
 	if c, d := st.Rows[2], st.Rows[3]; c.Phase != "blocked" || c.Deliverable != "" || d.Phase != "settled" || d.Deliverable != "/r/docs/specs/write-up.md" {
 		t.Fatalf("blocked and settled rows: %+v %+v", c, d)
+	}
+	if c, e := st.Rows[2], st.Rows[4]; !c.WaitsOnHuman() || e.WaitsOnHuman() || e.WaitsOn != "needs-an-answer" || st.Rows[0].WaitsOn != "" {
+		t.Fatalf("who the blocked rows wait on: %+v %+v", c, e)
 	}
 	log, _ := os.ReadFile(filepath.Join(dir, "calls"))
 	if !strings.HasPrefix(string(log), "factory ") || !strings.HasSuffix(strings.TrimSpace(string(log)), repo[strings.Index(repo, "TestFactory"):]) {
@@ -202,6 +206,32 @@ func TestReadWorktreeCap(t *testing.T) {
 	os.WriteFile(filepath.Join(home, "s.json"), []byte("[]"), 0o644)
 	if _, err := ReadWorktreeCap(filepath.Join(home, "s.json")); err == nil || err.Error() != "~/s.json is not a JSON object" {
 		t.Errorf("the home directory is shown as ~: %v", err)
+	}
+}
+
+func TestReadDispatchers(t *testing.T) {
+	got, err := ReadDispatchers(settings(t, `{"dispatchers": ["dispatcher-b", "-x", "a.b_c", "", "has space", "dispatcher-a"]}`))
+	if err != nil || !slices.Equal(got, []string{"dispatcher-b", "a.b_c", "dispatcher-a"}) {
+		t.Fatalf("order kept, unsafe names dropped: %v, %v", got, err)
+	}
+	for content, why := range map[string]string{
+		``:                            "is not set",
+		`{}`:                          "is not set",
+		`{"dispatchers": []}`:         "is empty",
+		`{"dispatchers": ["-x"]}`:     "is empty",
+		`{"dispatchers": "a"}`:        "is not a list of strings",
+		`{"dispatchers": ["a", 1]}`:   "is not a list of strings",
+		`{"dispatchers": null}`:       "is empty",
+		`{"dispatchers": {"a": "b"}}`: "is not a list of strings",
+	} {
+		path := settings(t, content)
+		_, err := ReadDispatchers(path)
+		if err == nil || !strings.Contains(err.Error(), `no dispatcher: "dispatchers" `+why+" ("+path+")") {
+			t.Errorf("%q: want %q naming the file, got %v", content, why, err)
+		}
+	}
+	if _, err := ReadDispatchers(settings(t, `not json`)); err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+		t.Errorf("an unreadable file is an error: %v", err)
 	}
 }
 

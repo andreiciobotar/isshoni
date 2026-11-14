@@ -1,43 +1,53 @@
 ---
 name: coding-taste
-description: Optional coding workflow, used only when explicitly requested. Emphasizes minimum total complexity, delegation, real validation, precise communication, and independent review until LGTM.
+description: The factory's standard for code. The smallest complete design, checked facts, proof on the real path, few words.
 ---
 
-# Coding Taste
+# Coding taste
 
-Deliver the complete requested outcome with the least total system complexity.
+The coder builds by this, the reviewer holds a change to it, the lead chooses a design by it.
+It is taste, not procedure: who commits, reviews and lands is in your role file.
 
-## Standard
+## The smallest complete design
 
-Simplicity means the smallest complete design, not fewer lines or reduced scope. Never omit required behavior, integration, validation, security, migration, or cleanup.
+Complete comes first: the behavior asked for, with its security and validation, its wiring into everything it connects to (callers, configuration, build), its migration and its cleanup. Small is measured over the whole system, not in lines, and never by leaving a feature out.
 
-Choose the first complete option: **delete → reuse existing owner/helper → change config/data → add one direct path → extract one small deduplicating helper → add an abstraction only for current callers when it removes more complexity than it adds**. Stop there. Keep one path, one owner, and one source of truth.
+Choose against a written target: what becomes true, what stays true, the interfaces and trust boundaries touched, the tests that show it, what is left out. The scope never moves.
 
-Reject speculative compatibility, modes, flags, extension points, frameworks, duplicate implementations, forwarding wrappers, one-use generic code, no-op scaffolding, premature file splitting, misplaced special cases, and comments that	 narrate visible code.
+Stop at the first rung that finishes the job:
+1. Delete.
+2. Use the owner or helper that already does the job.
+3. Change data or configuration.
+4. Write one direct path.
+5. Pull a repetition into one small helper.
+6. An abstraction comes last, and must pay for itself with the callers that exist.
 
-## Execute
+Every fact has one source, every state one owner, every behavior one path.
 
-1. **Define done:** exact outcome, interfaces, invariants, security boundaries, tests, and non-goals. Do not expand or reduce scope.
-2. **Inspect first:** read repository instructions; find the real owner, runtime path, existing helpers, conventions, and narrowest real test. Preserve unrelated changes and use the project's environment.
-3. **Orchestrate early:**
-   - Delegate independent implementation, investigation, validation, feedback, and review.
-   - Root owns priorities, steering, integration, and final checks; write directly only for small or cross-cutting work.
-   - Give each writer an exclusive worktree/path. Keep reviewers read-only in clean worktrees.
-   - While work runs, do the next non-conflicting task: CI, PR feedback, traces, tests, or review. Never wait or repeatedly poll.
-   - Observe only to continue, steer, cancel, or integrate. Mark every result accepted, deferred, or rejected.
-4. **Implement end to end:** connect the real public path. Add only required code, errors, security, tests, config, and docs.
-5. **Validate:** run focused, integration, end-to-end, and repository checks. Fix and rerun. For PRs, inspect current SHA, required CI, mergeability, reviews, comments, and unresolved threads; address valid feedback and recheck after every push.
-6. **Simplify:** remove duplication, nesting, indirection, flags, wrappers, files, and comments until further deletion removes required behavior or clarity.
-7. **Review until LGTM:** give an independent reviewer the request, repository rules, exact diff, and checks. Fix valid findings, rerun checks, and repeat.
+Refused: building for a future nobody asked for (frameworks, extension points, flags, modes, compatibility with callers that do not exist); the same thing twice (generic code with one user, a wrapper that only forwards, a second implementation); the misplaced or empty (a special case far from its owner, a file split too early, scaffolding that does nothing); a comment that repeats its code.
 
-Do not commit, push, publish, or change external state without authorization.
+## Building
 
-## Communicate
+- Before writing, find where the behavior lives, how it is reached at run time, and the narrowest test that exercises it. Follow the repository's instructions and conventions, reuse its helpers, work in its toolchain, make no unrelated edit, and leave unrelated changes already in the worktree as you found them.
+- Check, do not assume: a fact from memory or a sample is a guess. Count them all, run the tool, read the source.
+- The change must be reachable from the real public entry point, not only from a test. Bring exactly what the task needs: its tests and docs, its configuration, its error handling and security, and the code itself.
+- Prefer a script to a model for anything a script can decide.
+- Code that deletes names the condition that makes deleting safe and keeps everything else; it never lists what to spare.
+- Every call that leaves the process has a timeout and a visible failure; one slow dependency must not blank the result.
+- Never show an unknown as zero, old data as current or an estimate as a fact: say unpriced, stale as of, estimated.
+- Across a boundary between languages or coders, the contract is a literal example with a type beside each field.
+- When fixes for single cases keep multiplying, stop and find the invariant that makes them irrelevant.
 
-Assume every token costs $1. Lead with the result. Use short, concrete statements with exact names, paths, commands, SHAs, blockers, owners, and next actions. Remove filler, repetition, vague claims, and routine narration. State uncertainty directly.
+## Then cut
 
-## Done
+Once it works, read the change again as if someone else wrote it, and delete: a comment, a file, a wrapper, a flag, a layer of indirection, a level of nesting, code that repeats other code. Keep going until the next deletion would lose behavior the task needs or make the code harder to follow.
 
-Finish only when behavior works, delegated work is settled, the diff is clean, checks pass, and the current diff has independent LGTM. For PRs: current SHA pushed, required CI green, valid comments addressed, threads resolved, and mergeability verified.
+## Proof
 
-Report only the result, main simplification, checks, review verdict, blockers, and anything unverified.
+- A test fails without the change it tests, waits for the event rather than the clock, and leaves no process behind.
+- Prove it where it runs: the narrow test of the real behavior, then integration, then an end-to-end run, then the repository's own checks. A failure is fixed and the whole set run again; so is the set after the last cut.
+- It is not finished until whatever is unverified is named, the checks have passed on the final diff, that diff holds only the change, and the behavior works on the real path.
+
+## Words
+
+The reader bills you a dollar a word. So nothing is padding, nothing is said twice, no routine step is narrated and no claim is vague: write the exact command, path, SHA or name instead of describing it, one short concrete claim to a sentence. The outcome comes first, then the next action, then each blocker with its owner. A doubt is stated as a doubt.

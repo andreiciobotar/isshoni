@@ -1,10 +1,14 @@
 package tui
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -73,7 +77,11 @@ type Options struct {
 	Static  bool // render settled (snapshots, tests): no animation phase, no clock
 	// ReadOnly refuses the one write the dashboard makes, the worktree cap.
 	ReadOnly bool
-	Now      func() time.Time
+	// Attach builds the command that gives this terminal to the dispatcher's conversation, run
+	// by key d until it returns; nil where nothing can be attached (the local dashboard, a
+	// snapshot, a read-only connection), and then d is not in the help.
+	Attach func(name string) tea.ExecCommand
+	Now    func() time.Time
 
 	Replay      []data.Event // start in the Hanami tab replaying these, not the live stream
 	ReplaySpeed float64      // event seconds per second; 0 is the default, a minute a second
@@ -111,6 +119,7 @@ type model struct {
 
 	selID      string          // key of the row under the dashboard cursor: a session id, or a group row's key
 	folded     map[string]bool // keys of the repository rows collapsed to one row
+	opened     map[string]bool // keys of the short-runs rows that are open
 	lastCur    int             // table index of the cursor row when it was last found: where the cursor lands if its row vanishes
 	top        int             // first visible table row
 	zoom       bool            // dashboard only: the session row under the cursor shown full screen
@@ -154,6 +163,9 @@ type model struct {
 	flash   map[string]time.Time
 	toast   toast
 
+	pick    []string // the dispatchers on offer while the picker is open
+	pickCur int
+
 	tickOn   bool
 	tickGen  int           // a tick carrying an older generation was superseded
 	tickD    time.Duration // delay of the pending tick
@@ -182,7 +194,7 @@ func New(o Options) *model {
 		w: 100, h: 30, rangeIdx: idx, follow: o.Follow, loading: true,
 		sessions: map[string]*data.Session{}, details: map[string]*data.Session{},
 		dirty: map[string]bool{}, inflight: map[string]bool{}, retry: map[string]time.Time{}, counter: map[string]*Counter{},
-		rowTok: map[string]*Counter{}, flash: map[string]time.Time{}, folded: map[string]bool{}, held: map[string]rankKey{},
+		rowTok: map[string]*Counter{}, flash: map[string]time.Time{}, folded: map[string]bool{}, opened: map[string]bool{}, held: map[string]rankKey{},
 	}
 	m.loadCtx, m.loadCancel = context.WithCancel(m.ctx)
 	for _, k := range append([]string{"tokens", "dispatches", "repeats", "loops", "warns", "share", "recheck"}, kaizenCounters...) {
@@ -343,6 +355,34 @@ func (m *model) isLive(s *data.Session) bool {
 	return m.now().Sub(m.activity(s)) < liveWindow
 }
 
+// A short run is a finished session under a minute and under a quarter dollar. Across a real set of
+// sessions both limits sit in a gap: under $0.25 the durations jump from seconds to minutes, under a minute
+// the costs jump from cents to tens of cents. Probe and housekeeping runs fall below, real work above.
+// The session under zoom is never one: it stays a row of its own while it is shown full screen.
+const (
+	shortRunSpan = time.Minute
+	shortRunCost = 0.25 // dollars
+)
+
+func (m *model) shortRun(s *data.Session) bool {
+	return s.Start != nil && s.End != nil && s.End.Sub(*s.Start) < shortRunSpan && s.Cost.Total < shortRunCost && !m.isLive(s) && !(m.zoom && m.selID == s.ID)
+}
+
+// splitShort takes the short runs out of a container's sessions when there are two or more of them.
+func (m *model) splitShort(ss []*data.Session) (rest, short []*data.Session) {
+	for _, s := range ss {
+		if m.shortRun(s) {
+			short = append(short, s)
+		} else {
+			rest = append(rest, s)
+		}
+	}
+	if len(short) < 2 {
+		return ss, nil
+	}
+	return rest, short
+}
+
 func (m *model) liveCount() int {
 	n := 0
 	for _, s := range m.sessions {
@@ -360,19 +400,21 @@ const (
 	kindTask
 	kindSession
 	kindAll
+	kindShort // the short runs of one task or repository, closed to one row
 )
 
-// treeRow is one display row of the sessions table: all sessions, a repository, a task or a session.
+// treeRow is one display row of the sessions table: all sessions, a repository, a task, a session or short runs.
 // A group of exactly one session is merged into that session's row: s is set, the kind stays the group's.
 type treeRow struct {
 	kind   rowKind
 	key    string          // what selID holds while the cursor is here: the session id when s is set, else a group key that is never an id
 	s      *data.Session   // set on session rows and merged rows only: the rows that enter opens full screen
-	name   string          // repository, task or 8-character session id
+	name   string          // repository, task or 8-character session id; "N short runs" on a short-runs row
+	of     string          // short-runs row: the task or repository they ran in
 	suffix string          // faint, after the name: ×N sessions of a group, the id of a merged row
 	depth  int             // indent in steps of two cells
 	group  []*data.Session // what the row totals; a session row holds just itself
-	folded bool            // a repository collapsed to this row: its tasks and sessions are not shown
+	folded bool            // a repository or short-runs row collapsed to this row: what is under it is not shown
 }
 
 // holds says the cursor is on this row while selID is key: the row's own key, or a session folded into it.
@@ -473,18 +515,37 @@ func (m *model) sessionUnits(ss []*data.Session) []unit {
 	return us
 }
 
-// rows is the sessions table as shown: the tree without what is under a folded repository.
+// rows is the sessions table as shown: the tree without what is under a folded repository or a closed
+// short-runs row.
 func (m *model) rows() []treeRow {
 	var out []treeRow
-	hide := false
+	hide := -1 // depth of the folded row whose rows are skipped; -1 when none
 	for _, r := range m.tree() {
-		if r.depth == 0 {
-			r.folded = m.folded[r.key]
-			hide = r.folded
-		} else if hide {
+		if hide >= 0 && r.depth > hide {
 			continue
 		}
+		switch r.kind {
+		case kindRepo:
+			r.folded = m.folded[r.key]
+		case kindShort:
+			r.folded = !m.opened[r.key]
+		}
+		hide = -1
+		if r.folded {
+			hide = r.depth
+		}
 		out = append(out, r)
+	}
+	return out
+}
+
+// shortRow is a container's short runs: one row at depth, then the sessions one step deeper.
+func (m *model) shortRow(short []*data.Session, path, repo, task string, depth int) []treeRow {
+	of := cmp.Or(task, repo)
+	key := groupKey("short", path, repo, task)
+	out := []treeRow{{kind: kindShort, key: key, name: fmt.Sprintf("%d short runs", len(short)), of: of, depth: depth, group: short}}
+	for _, u := range m.sessionUnits(short) {
+		out = append(out, treeRow{kind: kindSession, key: u.group[0].ID, s: u.group[0], name: short8(u.name), depth: depth + 1, group: u.group})
 	}
 	return out
 }
@@ -534,7 +595,8 @@ func (m *model) tree() []treeRow {
 		}
 		out = append(out, treeRow{kind: kindRepo, key: repoKey, name: r.name, suffix: fmt.Sprintf("×%d", len(ru.group)), group: ru.group})
 		var units []unit
-		for _, s := range r.bare {
+		bare, bareShort := m.splitShort(r.bare)
+		for _, s := range bare {
 			units = append(units, m.unit([]*data.Session{s}, s.ID, "session"))
 		}
 		for name, ss := range r.tasks {
@@ -551,9 +613,16 @@ func (m *model) tree() []treeRow {
 				continue
 			}
 			out = append(out, treeRow{kind: kindTask, key: groupKey("task", r.path, r.name, tu.name), name: tu.name, suffix: fmt.Sprintf("×%d", len(tu.group)), depth: 1, group: tu.group})
-			for _, u := range m.sessionUnits(tu.group) {
+			rest, short := m.splitShort(tu.group)
+			for _, u := range m.sessionUnits(rest) {
 				out = append(out, treeRow{kind: kindSession, key: u.group[0].ID, s: u.group[0], name: short8(u.name), depth: 2, group: u.group})
 			}
+			if short != nil {
+				out = append(out, m.shortRow(short, r.path, r.name, tu.name, 2)...)
+			}
+		}
+		if bareShort != nil {
+			out = append(out, m.shortRow(bareShort, r.path, r.name, "", 1)...)
 		}
 	}
 	if len(shown) == 0 {
@@ -1140,6 +1209,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, m.refreshFactory(factoryEvery))
 
+	case attachMsg:
+		if msg.err != nil {
+			text := msg.name + ": " + firstLine(msg.err.Error())
+			if errors.As(msg.err, new(*exec.ExitError)) {
+				text = msg.name + ": not running?"
+			}
+			m.setToast(text, true)
+		}
+
 	case tea.KeyPressMsg:
 		cmds = append(cmds, m.handleKey(msg))
 	}
@@ -1214,6 +1292,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.filterKey(msg)
 	case m.fac.editing:
 		return m.capKey(msg)
+	case m.pick != nil:
+		return m.pickKey(msg)
 	case m.help:
 		if key.Matches(msg, keys.Help, keys.Back, keys.Open, keys.Quit) {
 			m.help = false
@@ -1230,6 +1310,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return tea.Quit
 	case key.Matches(msg, keys.Help):
 		m.help = true
+	case key.Matches(msg, keys.Dispatcher):
+		return m.dispatcher()
 	case key.Matches(msg, keys.Next):
 		return m.switchView(m.cycle(1))
 	case key.Matches(msg, keys.Prev):
@@ -1305,6 +1387,58 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
+// attachMsg is the end of an attach: err is nil when the conversation was left cleanly.
+type attachMsg struct {
+	name string
+	err  error
+}
+
+// dispatcher is key d: attach at once to the one dispatcher named in the factory settings, or
+// open the picker over several.
+func (m *model) dispatcher() tea.Cmd {
+	switch {
+	case m.opts.ReadOnly:
+		m.setToast("read-only key: no dispatcher", true)
+		return nil
+	case m.opts.Attach == nil:
+		return nil
+	}
+	names, err := data.ReadDispatchers(data.FactorySettingsPath())
+	if err != nil {
+		m.setToast(err.Error(), true)
+		return nil
+	}
+	if len(names) == 1 {
+		return m.attach(names[0])
+	}
+	m.pick, m.pickCur = names, 0
+	return nil
+}
+
+func (m *model) attach(name string) tea.Cmd {
+	m.pick = nil
+	return tea.Exec(m.opts.Attach(name), func(err error) tea.Msg { return attachMsg{name, err} })
+}
+
+// pickKey handles every key while the picker is open: 1-9 pick the first nine, the arrows reach all.
+func (m *model) pickKey(msg tea.KeyPressMsg) tea.Cmd {
+	switch {
+	case key.Matches(msg, keys.Back):
+		m.pick = nil
+	case key.Matches(msg, keys.Down):
+		m.pickCur = min(m.pickCur+1, len(m.pick)-1)
+	case key.Matches(msg, keys.Up):
+		m.pickCur = max(m.pickCur-1, 0)
+	case key.Matches(msg, keys.Open):
+		return m.attach(m.pick[m.pickCur])
+	default:
+		if n, err := strconv.Atoi(msg.Key().Text); err == nil && n >= 1 && n <= min(9, len(m.pick)) {
+			return m.attach(m.pick[n-1])
+		}
+	}
+	return nil
+}
+
 func (m *model) filterKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case key.Matches(msg, keys.FilterClear):
@@ -1344,13 +1478,23 @@ func (m *model) switchView(v viewID) tea.Cmd {
 // fold collapses the repository the cursor is in to its one row (on), or expands the collapsed repository
 // under the cursor; either way the cursor ends on the repository row, which is a cursor move (follow mode
 // goes off). It does nothing on the all row, on a repository of one session, and when the repository is
-// already as asked.
+// already as asked. A short-runs row comes first: on it or on one of its sessions, left closes it, and
+// right opens it when closed; both put the cursor on it.
 func (m *model) fold(on bool) {
 	rows := m.rows()
 	if len(rows) == 0 {
 		return
 	}
 	i, _ := m.cursorRow(rows)
+	if k := shortRowAt(rows, i); k >= 0 && rows[k].folded != on {
+		if on {
+			delete(m.opened, rows[k].key)
+		} else {
+			m.opened[rows[k].key] = true
+		}
+		m.moveTo(k)
+		return
+	}
 	for rows[i].depth > 0 {
 		i--
 	}
@@ -1364,6 +1508,21 @@ func (m *model) fold(on bool) {
 		delete(m.folded, r.key)
 		m.moveTo(i)
 	}
+}
+
+// shortRowAt is the index of the short-runs row that rows[i] is, or is listed under; -1 when none.
+func shortRowAt(rows []treeRow, i int) int {
+	if rows[i].kind == kindShort {
+		return i
+	}
+	j := i
+	for j > 0 && rows[j].depth >= rows[i].depth {
+		j--
+	}
+	if rows[j].kind == kindShort {
+		return j
+	}
+	return -1
 }
 
 // cycle is the next view in a direction.

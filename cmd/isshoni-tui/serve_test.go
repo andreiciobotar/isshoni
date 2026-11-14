@@ -99,6 +99,7 @@ type testEnv struct {
 	host   string
 	logs   *syncBuf
 	starts int
+	claude string // serveOptions.Claude
 
 	maxUnauthenticated, maxUnauthenticatedPerAddress int // serveOptions' limits; zero is the default
 }
@@ -163,7 +164,7 @@ func (e *testEnv) start() (addr string, stop func() error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, ln, serveOptions{Runner: e.runner, AuthorizedKeys: e.keys, HostKey: e.host, Range: "7d", Log: log.New(e.logs, "", 0),
+		done <- serve(ctx, ln, serveOptions{Runner: e.runner, AuthorizedKeys: e.keys, HostKey: e.host, Range: "7d", Claude: e.claude, Log: log.New(e.logs, "", 0),
 			MaxUnauthenticated: e.maxUnauthenticated, MaxUnauthenticatedPerAddress: e.maxUnauthenticatedPerAddress})
 	}()
 	var once sync.Once
@@ -607,6 +608,50 @@ func TestServeQuitEndsOnlyThatViewer(t *testing.T) {
 		t.Fatalf("the other viewer ended too: %v", err)
 	default:
 	}
+}
+
+// The last bytes of a quit (leave the alternate screen, show the cursor) must reach the client:
+// a pty copy that is not joined loses them on about one quit in four.
+func TestServeQuitDeliversTheLastBytes(t *testing.T) {
+	e := newTestEnv(t)
+	s := newSigner(t)
+	e.allow(keyLine(s, ""))
+	addr, _ := e.start()
+
+	for i := range 40 {
+		v := e.view(addr, viewOpts{signer: s})
+		v.waitFor("zebrafish")
+		v.send("q")
+		if err := v.waitExit(); err != nil {
+			t.Fatalf("quit %d: %v", i, err)
+		}
+		select {
+		case <-v.drained:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("quit %d: the output did not end", i)
+		}
+		if !strings.Contains(v.out.String(), "\x1b[?1049l") {
+			t.Fatalf("quit %d lost the end of the output: ...%q", i, v.out.String()[max(0, v.out.Len()-80):])
+		}
+	}
+}
+
+// bareNewline is a line feed the renderer meant as "down, same column". The ssh library's
+// emulated pty turns every one into \r\n, which moves the redraw's cursor to column 0.
+var bareNewline = regexp.MustCompile("[^\r]\n")
+
+func TestServeRedrawsReachTheClientAsTheDashboardWroteThem(t *testing.T) {
+	e := newTestEnv(t)
+	s := newSigner(t)
+	e.allow(keyLine(s, ""))
+	addr, _ := e.start()
+	v := e.view(addr, viewOpts{signer: s, w: 120, h: 36})
+	v.waitFor("zebrafish")
+	mark := v.out.Len()
+	for _, k := range []string{"j", "j", "j", "j", "3", "1"} {
+		v.send(k)
+	}
+	waitFor(t, "a redraw with a bare line feed", func() bool { return bareNewline.MatchString(v.out.String()[mark:]) })
 }
 
 func TestServeShutdownClosesViewersAndLeavesNoProcess(t *testing.T) {

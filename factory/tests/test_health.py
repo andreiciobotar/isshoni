@@ -22,6 +22,11 @@ def iso(ts):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
+def register(sid):
+    """Register session `sid` as the dispatcher of ROOT."""
+    factory.repo_state(ROOT, "dispatcher", "json").write_text(json.dumps({"root": ROOT, "session": sid, "since": "t"}))
+
+
 def row(slug, **kw):
     return {"slug": slug, "branch": f"worktree-{slug}", "path": f"{WT}/{slug}", "base": "main", "phase": "motion",
             "overtime": False, "elapsed": None, "last_commit": None, "pr_url": "", "pr_state": "none", "state": None,
@@ -38,8 +43,9 @@ FINISHED = {"status": "idle", "state": "done"}
 
 def pic(**kw):
     sessions = kw.pop("sessions", [DISPATCHER | {"name": "dispatcher-repo"}])
-    return {"now": NOW, "repo": SimpleNamespace(root=ROOT, default="main", tasks=[]), "dispatcher": "dispatcher-repo",
-            "sessions": sessions, "rows": [], "declared": {}, "events": [],
+    found, why = (None, "cannot list sessions") if sessions is None else factory.find_dispatcher(sessions, ROOT)
+    return {"now": NOW, "repo": SimpleNamespace(root=ROOT, default="main", tasks=[]), "dispatcher": found and found["name"],
+            "dispatcher_why": why, "sessions": sessions, "rows": [], "declared": {}, "events": [],
             "models": {"coder": "sonnet", "explorer": "haiku", "reviewer": "opus"},
             "gh": lambda *a: [], "monitor": None, "lgtm_from_author": True, **kw}
 
@@ -565,7 +571,7 @@ class Harness(Home):
         base = repo_answers([task_entry(s) for s in entries], sessions)
         base[("claude", "-p")] = reply()
         base[("gh", "pr", "list")] = (0, "[]", "")
-        self.fake = TimedRun({**base, **(answers or {})})
+        self.fake = FakeRun({**base, **(answers or {})})
         if at is not None:
             self.clock = at
         out, err = io.StringIO(), io.StringIO()
@@ -592,18 +598,6 @@ def reply(decisions=(), sent=True, cost=0.15):
 
 def choice(fid, decision="escalated", reason="because"):
     return {"id": fid, "decision": decision, "reason": reason}
-
-
-class TimedRun(FakeRun):
-    def __init__(self, answers):
-        super().__init__(answers)
-        self.timeouts = []
-        self.envs = []
-
-    def __call__(self, argv, cwd=None, timeout=None, input=None, env=None, group=False):
-        self.timeouts.append(timeout)
-        self.envs.append(env)
-        return super().__call__(argv, cwd, input)
 
 
 def fired(fid, criterion="past-limit", escalate="always", subject="x", ts=NOW - 10 * HOUR, repo=ROOT):
@@ -640,7 +634,10 @@ class HealthTests(Harness):
 
     def test_the_dispatcher_option(self):
         _, out, _ = self.cli("health", "--dispatcher", "boss", entries=["x"])
-        self.assertIn("0 unfinished sessions named boss", out)
+        self.assertIn("no dispatcher session for /repo", out)
+        boss = DISPATCHER | {"name": "boss"}
+        _, out, _ = self.cli("health", "--dispatcher", "boss", sessions=[boss], entries=["x"])
+        self.assertNotIn("dispatcher-missing", out)
 
     def test_a_bad_criteria_file_is_a_usage_error(self):
         self.criteria_path.write_text('[{"name": "nope"}]')
@@ -657,6 +654,18 @@ class WatchTests(Harness):
         self.assertIn("nothing new", out)
         self.assertEqual(self.claude_runs(), [])
         self.assertEqual(self.records(), [])
+
+    def test_the_site_manager_is_given_the_name_the_dispatcher_has_now(self):
+        register("sid-d")
+        self.tick(sessions=[DISPATCHER | {"name": "renamed", "pid": 7}, self.overtime()])
+        [argv] = self.claude_runs()
+        self.assertIn("The dispatcher's session name is renamed.", argv[-1])
+
+    def test_no_site_manager_runs_when_no_dispatcher_can_be_addressed(self):
+        self.use("past-limit")
+        register("sid-d")
+        self.tick(sessions=[DISPATCHER | {"name": None, "pid": 7}, self.overtime()])
+        self.assertEqual((len(self.records()), self.claude_runs()), (1, []))
 
     def test_a_new_firing_is_logged_and_sent(self):
         code, out, _ = self.tick()
@@ -872,7 +881,7 @@ class WatchTests(Harness):
         [notice] = [c for c in self.fake.calls if c[0] == "osascript"]
         self.assertEqual(notice[1], "-e")
         self.assertIn('with title "factory: repo"', notice[2])
-        self.assertIn("0 unfinished sessions named dispatcher-repo", notice[2])
+        self.assertIn("no dispatcher session for /repo", notice[2])
         by_criterion = {r["criterion"]: r for r in self.records() if "criterion" in r}
         [decision] = [r for r in self.records() if "decision" in r]
         self.assertEqual((decision["id"], decision["decision"], decision["by"]),
@@ -898,7 +907,7 @@ class WatchTests(Harness):
         failing = {("osascript",): (1, "", "no display")}
         code, out, _ = self.cli("watch", sessions=[], entries=["x"], answers=failing)
         self.assertEqual(code, 0)
-        self.assertIn("notify: factory: repo: 0 unfinished sessions named dispatcher-repo\n", out)
+        self.assertIn("notify: factory: repo: no dispatcher session for /repo: run /factory:dispatch in a session there\n", out)
         [decision] = [r for r in self.records() if "decision" in r]
         self.assertEqual((decision["decision"], decision["by"]), ("escalated", "watch"))
         self.assertIn("written to the watch log", decision["reason"])
@@ -910,7 +919,7 @@ class WatchTests(Harness):
         with mock.patch.object(factory.sys, "platform", "linux"):
             self.cli("watch", sessions=[], entries=["x"], answers={("notify-send",): (0, "", "")})
             self.assertEqual([c for c in self.fake.calls if c[0] == "notify-send"],
-                             [["notify-send", "factory: repo", "0 unfinished sessions named dispatcher-repo"]])
+                             [["notify-send", "factory: repo", "no dispatcher session for /repo: run /factory:dispatch in a session there"]])
 
     def test_without_a_notification_service_the_notice_goes_to_the_log(self):
         self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "blocked", "ts": iso(NOW - 2 * HOUR)}])
@@ -918,7 +927,7 @@ class WatchTests(Harness):
         with mock.patch.object(factory.sys, "platform", "linux"):
             _, out, _ = self.cli("watch", sessions=[], entries=["x"])
         self.assertFalse(self.fake.ran("notify-send"))
-        self.assertIn("notify: factory: repo: 0 unfinished sessions named dispatcher-repo\n", out)
+        self.assertIn("notify: factory: repo: no dispatcher session for /repo: run /factory:dispatch in a session there\n", out)
         [decision] = [r for r in self.records() if "decision" in r]
         self.assertIn("written to the watch log", decision["reason"])
 
@@ -1163,8 +1172,7 @@ class ScheduleTests(SchedHarness):
         job = plistlib.loads(self.plist().read_bytes())
         log = str(self.store / "watch.log")
         self.assertEqual(job, {"Label": self.LABEL,
-                               "ProgramArguments": [factory.sys.executable, "/plug/factory/bin/factory", "watch",
-                                                    "--dispatcher", "dispatcher-repo"],
+                               "ProgramArguments": [factory.sys.executable, "/plug/factory/bin/factory", "watch"],
                                "WorkingDirectory": ROOT, "StartInterval": 120,
                                "EnvironmentVariables": {"PATH": job_path()},
                                "StandardOutPath": log, "StandardErrorPath": log})
@@ -1172,12 +1180,10 @@ class ScheduleTests(SchedHarness):
         self.assertEqual(self.launchctl(), [["launchctl", "bootout", f"gui/{uid}/{self.LABEL}"],
                                             ["launchctl", "bootstrap", f"gui/{uid}", str(self.plist())]])
 
-    def test_install_with_a_named_dispatcher_and_a_failing_bootstrap(self):
-        code, _, err = self.schedule("install", "--dispatcher", "boss", answers={
-            ("launchctl", "bootstrap"): (5, "", "Bootstrap failed")})
+    def test_install_with_a_failing_bootstrap(self):
+        code, _, err = self.schedule("install", answers={("launchctl", "bootstrap"): (5, "", "Bootstrap failed")})
         self.assertEqual(code, 1)
         self.assertIn("Bootstrap failed", err)
-        self.assertEqual(plistlib.loads(self.plist().read_bytes())["ProgramArguments"][-1], "boss")
 
     def test_install_from_a_worktree_warns(self):
         _, _, err = self.schedule("install", path=f"{WT}/y/factory/bin/factory")
@@ -1248,7 +1254,7 @@ class SystemdTests(SchedHarness):
         self.assertEqual(self.unit("service").read_text(),
                          f"[Unit]\nDescription=factory watch {ROOT}\n\n[Service]\nType=oneshot\n"
                          f"WorkingDirectory={ROOT}\nEnvironment=\"PATH={path}\"\n"
-                         f"ExecStart={factory.sys.executable} /plug/factory/bin/factory watch --dispatcher dispatcher-repo\n"
+                         f"ExecStart={factory.sys.executable} /plug/factory/bin/factory watch\n"
                          f"StandardOutput=append:{log}\nStandardError=append:{log}\n")
         self.assertEqual(self.unit("timer").read_text(),
                          f"[Unit]\nDescription=factory watch {ROOT}\n\n[Timer]\nOnActiveSec=120\n"
@@ -1304,7 +1310,7 @@ class CronTests(SchedHarness):
         self.assertEqual((code, err, out), (0, "", f"installed {self.LABEL} (cron)\n"))
         path = job_path()
         self.assertEqual(self.written(), [f"{self.OTHER}\n*/2 * * * * cd {ROOT} && PATH={path} {factory.sys.executable} "
-                                          f"/plug/factory/bin/factory watch --dispatcher dispatcher-repo "
+                                          f"/plug/factory/bin/factory watch "
                                           f">> {self.store / 'watch.log'} 2>&1 # {self.LABEL}\n"])
 
     def test_install_without_a_crontab_yet(self):
@@ -1353,8 +1359,36 @@ class HookTests(SchedHarness):
         self.hook("UserPromptSubmit", prompt="hi")
         self.assertTrue(self.plist().exists())
         self.assertEqual(plistlib.loads(self.plist().read_bytes())["ProgramArguments"][-2:],
-                         ["--dispatcher", "dispatcher-repo"])
+                         ["/plug/factory/bin/factory", "watch"])
         self.assertTrue(self.fake.ran("launchctl", "bootstrap"))
+
+    def test_a_registered_session_installs_the_job_whatever_its_name_and_removes_it_when_it_ends(self):
+        register("sid-d")
+        renamed = [DISPATCHER | {"name": "any name", "cwd": "/elsewhere", "pid": 7}]
+        self.hook("SessionStart", source="startup", sessions=renamed)
+        self.assertTrue(self.plist().exists())
+        self.hook("SessionEnd", reason="other", sessions=renamed)
+        self.assertFalse(self.plist().exists())
+
+    def test_a_registered_session_that_is_no_longer_listed_ends_the_job_by_its_id(self):
+        register("sid-d")
+        self.put_plist()
+        self.hook("SessionEnd", reason="other", sessions=[], session_id="sid-other")
+        self.assertTrue(self.plist().exists())
+        self.hook("SessionEnd", reason="other", sessions=[], session_title="not the old-style name")
+        self.assertFalse(self.plist().exists())
+
+    def test_a_registered_session_without_a_process_still_ends_the_job(self):
+        register("sid-d")
+        self.put_plist()
+        self.hook("SessionEnd", reason="other", sessions=[DISPATCHER | {"name": "custom"}])
+        self.assertFalse(self.plist().exists())
+
+    def test_a_session_that_is_not_the_registered_one_starts_nothing(self):
+        register("sid-other")
+        self.hook("UserPromptSubmit", prompt="hi",
+                  sessions=[self.DISPATCHER_SESSION, DISPATCHER | {"sessionId": "sid-other", "name": "boss", "pid": 7}])
+        self.assertFalse(self.plist().exists())
 
     def test_a_prompt_does_not_list_sessions_while_the_job_is_there(self):
         self.put_plist()
@@ -1507,7 +1541,7 @@ class OrphanTests(SchedHarness):
         twin = DISPATCHER | {"name": "dispatcher-repo", "sessionId": "sid-2"}
         self.watch([DISPATCHER | {"name": "dispatcher-repo"}, twin], answers={("osascript",): (0, "", "")})
         [notice] = [c for c in self.fake.calls if c[0] == "osascript"]
-        self.assertIn("2 unfinished sessions named dispatcher-repo", notice[2])
+        self.assertIn("2 sessions named dispatcher-repo", notice[2])
         self.assertTrue(self.plist().exists())
 
 
