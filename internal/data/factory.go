@@ -15,7 +15,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -118,11 +117,8 @@ func (r *Runner) factoryOutput(ctx context.Context, script, repoPath string, fet
 	timeout = cmp.Or(r.Timeout, timeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, r.python(), append([]string{script, "status", "--json"}, flag...)...)
+	cmd := groupCmd(ctx, r.python(), append([]string{script, "status", "--json"}, flag...)...)
 	cmd.Dir = repoPath
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = time.Second
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
 	if err := cmd.Run(); err != nil {

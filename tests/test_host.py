@@ -21,14 +21,15 @@ SECRET_KEY = "-----BEGIN RSA PRIVATE KEY-----\nSECRETKEYMATERIAL\n-----END RSA P
 TOKEN = "sk-ant-oat01-SECRETTOKEN"
 PUB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItestkey laptop"
 
-# Records every call to the directory $FAKE_LOG (N.target, N.cmd, N.in), then runs the remote command in a local
+# Records every call to the directory $FAKE_LOG (N.opts, N.target, N.cmd, N.in), then runs the remote command in a local
 # shell: the "server". Plain sh, because the tests make hundreds of calls.
 FAKE_SSH = r"""#!/bin/sh
+opts=; while [ "$1" = -o ]; do opts="$opts $2"; shift 2; done
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN+set}" ] && [ -n "$FAKE_LOG" ]; then echo leaked >> "$FAKE_LOG/leak"; fi
 if [ "$1" = -G ]; then [ -z "$FAKE_IDENTITY" ] || echo "identityfile $FAKE_IDENTITY"; exit 0; fi
 if [ -n "$FAKE_LOG" ]; then
   n=$(( $(cat "$FAKE_LOG/n" 2>/dev/null || echo 0) + 1 )); echo $n > "$FAKE_LOG/n"
-  printf %s "$1" > "$FAKE_LOG/$n.target"; printf %s "$2" > "$FAKE_LOG/$n.cmd"; cat > "$FAKE_LOG/$n.in"
+  printf %s "$opts" > "$FAKE_LOG/$n.opts"; printf %s "$1" > "$FAKE_LOG/$n.target"; printf %s "$2" > "$FAKE_LOG/$n.cmd"; cat > "$FAKE_LOG/$n.in"
   [ -e "$FAKE_DOWN" ] && exit 255
   exec sh -c "$2" < "$FAKE_LOG/$n.in"
 fi
@@ -149,7 +150,7 @@ def write_exe(path, text):
 
 
 def sh(cwd, *cmd):
-    subprocess.run(cmd, cwd=cwd, check=True, capture_output=True)
+    subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, timeout=60)
 
 
 class HostTests(unittest.TestCase):
@@ -225,7 +226,7 @@ class HostTests(unittest.TestCase):
             self.assertIn("Connect: ssh factory", out)
             home = self.srv / "home"
             self.assertTrue((home / "code/widgets/.git").is_dir())
-            head = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+            head = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True, timeout=60).strip()
             self.assertEqual((home / ".isshoni/.rev").read_text().strip(), head)
             self.assertIn("dispatcher-widgets", (home / "stub-state.json").read_text())
             settings = tomllib.loads((home / ".claude/factory/settings.toml").read_text())
@@ -403,7 +404,7 @@ class HostTests(unittest.TestCase):
         for tool in ("docker", "uname"):
             (bare / tool).symlink_to(self.srv / "bin" / tool)
         (bare / "grep").symlink_to(shutil.which("grep"))
-        out = subprocess.run(["/bin/sh", "-c", host.SERVER_CHECK, "sh", "2222"], env={**os.environ, "PATH": str(bare)}, capture_output=True, text=True).stdout
+        out = subprocess.run(["/bin/sh", "-c", host.SERVER_CHECK, "sh", "2222"], env={**os.environ, "PATH": str(bare)}, capture_output=True, text=True, timeout=60).stdout
         self.assertEqual(out.split(), ["noss"])
         with mock.patch.object(host, "SERVER_CHECK", "echo noss"):
             rc, out, err = self.add()
@@ -594,6 +595,24 @@ exec "$(dirname "$0")/claude-real" "$@"
         log = (self.srv / "git.log").read_text()
         self.assertIn("remote add origin https://github.com/acme/private-thing", log)
         self.assertIn("checkout -B main origin/main", log)
+
+    def test_every_ssh_call_carries_the_keep_alive_options_and_no_other_timeout(self):
+        rc, out, err = self.add("--repo", "acme/widgets")
+        self.assertEqual((rc, err), (0, ""), out)
+        opts = [(self.tmp / ("calls/%d.opts" % i)).read_text() for i in range(1, len(self.calls()) + 1)]
+        self.assertEqual(set(opts), {" ConnectTimeout=10 ServerAliveInterval=15 ServerAliveCountMax=3"})
+
+    def test_a_local_helper_that_hangs_ends_with_a_plain_sentence(self):
+        hung = self.tmp / "hung"
+        hung.mkdir()
+        for name in ("ssh", "git"):
+            write_exe(hung / name, "#!/bin/sh\nexec sleep 30\n")
+        self.enterContext(mock.patch.dict(os.environ, {"PATH": str(hung) + os.pathsep + os.environ["PATH"]}))
+        self.enterContext(mock.patch.object(host, "LOCAL_TIMEOUT", 1))
+        with self.assertRaisesRegex(host.Stop, r"^ssh -G nas did not finish in 1 s; pass --key"):
+            host.public_key("nas", None)
+        with self.assertRaisesRegex(host.Stop, r"^git rev-parse did not finish in 1 s"):
+            host.git("rev-parse", "HEAD")
 
 
 if __name__ == "__main__":
