@@ -113,13 +113,16 @@ def footer(prices, models, tokens):
         print("* no price for: %s (%s tokens); cost excludes them" % (", ".join(models), human(tokens)))
 
 
-def load_all(args, prices, cutoff=None):
-    """The sessions of the projects directory; `cutoff` (default: `--since`) drops those that ended before it."""
+FROM_SINCE = object()  # load_all's default cutoff: whatever `--since` says
+
+
+def load_all(args, prices, cutoff=FROM_SINCE):
+    """The sessions of the projects directory; `cutoff` drops those that ended before it (None: none dropped)."""
     paths = transcript.discover_sessions(args.projects_dir)
     cache = sessioncache.SessionCache(args.projects_dir, prices)
     cache.prune(paths)
-    if cutoff is None and getattr(args, "since", None):
-        cutoff = parse_since(args.since)
+    if cutoff is FROM_SINCE:
+        cutoff = parse_since(args.since) if getattr(args, "since", None) else None
     sessions = []
     for p in paths:
         if cutoff is not None:

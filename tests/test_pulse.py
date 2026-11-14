@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -7,7 +8,7 @@ import unittest
 from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
-from isshoni import cli, kaizen, pulse
+from isshoni import cli, kaizen, metrics, pulse
 from tests import test_kaizen
 from tests.support import AGENTS
 from tests.test_kaizen import ALPHA, Store, ev, fresh, loose, pr, reply, run_cli, session
@@ -28,7 +29,8 @@ class PulseStore(Store):
         self.addCleanup(patch.stop)
 
     def task(self, slug, number, merged, handed=None, size=None, repo=ALPHA, started="2026-11-01T00:00:00Z"):
-        self.events.append(ev(started, "TaskStarted", repo=repo, slug=slug, **({"size": size} if size else {})))
+        if started:  # None: a task that only has state records
+            self.events.append(ev(started, "TaskStarted", repo=repo, slug=slug, **({"size": size} if size else {})))
         if handed:
             self.states.append({"ts": handed, "repo": repo, "slug": slug, "state": "handed-over"})
         self.prs.setdefault(repo, []).append(pr(number, "worktree-" + slug, "2026-11-01T00:00:00Z", merged))
@@ -126,8 +128,52 @@ class SinceTests(PulseStore):
         self.reviewed("p1", -6, rename="p-early")
         self.reviewed("old", -110)
         loose(self.projects, "disp", ALPHA, [(self.at(-90), "claude-fable-5-2", 1)], title="dispatcher-alpha")
-        self.assertEqual(self.kaizen()["summary"]["overhead"]["sessions"], 1)
-        self.assertEqual(self.kaizen("--since", "1h")["summary"]["overhead"]["sessions"], 0)  # a dispatcher session older than load_from
+        self.assertEqual(self.loaded(), {"p-early", "p-old", "p-disp"})
+        self.assertEqual(self.loaded("--since", "1h"), {"p-early"})  # the old task's session and the old dispatcher's are not read
+
+    def loaded(self, *argv):
+        """The project directories of the sessions the command kept for analysis."""
+        with mock.patch.object(metrics, "analyze", wraps=metrics.analyze) as analyze:
+            self.kaizen(*argv)
+        return {c.args[0].project_dir for c in analyze.call_args_list}
+
+    def test_a_task_without_a_start_makes_everything_load_so_since_changes_nothing(self):
+        self.task("p1", 1, self.at(13), self.at(12), started=None)
+        self.reviewed("p1", -6, rename="p-early")
+        self.reviewed("p1", 12)
+        self.assertEqual(self.kaizen()["pulse"]["yesterday"]["first_pass"]["unstated"], {"yes": 0, "of": 1})
+        self.assertEqual(self.kaizen("--since", "1h")["pulse"], self.kaizen()["pulse"])
+
+    def test_since_never_changes_the_pulse(self):
+        def early():
+            self.task("p1", 1, self.at(13), self.at(12), started=self.at(-7))
+            self.reviewed("p1", -6)
+
+        def two_rounds():
+            self.task("p1", 1, self.at(13), self.at(12), started=self.at(-7))
+            self.reviewed("p1", -6, rename="p-early")
+            self.reviewed("p1", 12)
+
+        def no_start():
+            self.task("p1", 1, self.at(13), self.at(12), started=None)
+            self.reviewed("p1", -6, rename="p-early")
+            self.reviewed("p1", 12)
+
+        def plain():
+            self.task("p1", 1, self.at(13), self.at(12))
+            self.task("p2", 2, self.at(30), self.at(29), size="small")
+            self.reviewed("p2", 28)
+            loose(self.projects, "disp", ALPHA, [(self.at(20), "claude-fable-5-2", 1000)], title="dispatcher-alpha")
+
+        for shape in (early, two_rounds, no_start, plain):
+            with self.subTest(shape.__name__):
+                self.events, self.states, self.prs = [], [], {}
+                shutil.rmtree(self.projects)
+                os.makedirs(self.projects)
+                shape()
+                everything = self.kaizen()["pulse"]
+                self.assertGreater(everything["yesterday"]["merged"], 0)
+                self.assertEqual(self.kaizen("--since", "1h")["pulse"], everything)
 
     def test_load_from_is_the_earliest_of_the_cutoff_yesterday_and_the_starts_of_tasks_merged_since(self):
         cutoff = datetime(2026, 11, 15, 6, tzinfo=timezone.utc)
@@ -409,6 +455,8 @@ class GitTests(PulseStore):
         for key, value in (("color.ui", "always"), ("color.diff", "always"), ("diff.noprefix", "true")):
             self.git("config", key, value)
         self.assertEqual(self.pulse()["today"]["conflicts"]["conflicted"], 1)
+        (entry,) = pulse.read_merges(self.factory, self.repo).values()
+        self.assertEqual([b["files"] for b in entry["base_merges"]], [[], [], ["f.txt"]])
 
     def test_a_pull_request_merged_another_way_is_not_in_prs(self):
         self.task("t8", 8, "2026-11-15T09:00:00Z", repo=self.repo)  # no `Merge pull request #8` commit
