@@ -121,6 +121,33 @@ not restart at a plugin version: a change in the mix shows in full three tasks a
 A role added to `ROLES` in `isshoni/kaizen.py` gets its own key everywhere; an agent
 whose role is not listed there is counted under `other`.
 
+`summary.anatomy` is what drives a task's cost, per role, from the transcript runs of the
+same landed tasks with a cost above zero (the lead's own run and every dispatch's, each
+dispatch under the same six `ROLES` as `cost.by_role`). Its keys: `window` (the integer 5,
+the tasks behind each point), `min` (the integer 5, the landed tasks a version needs before
+the dashboard compares it), `points` and `versions`. Every `roles` object below has one key per
+name in `ROLES`, null for a role that did not run enough.
+
+- `points`: one per landed task with a cost, in start order, from the fifth on (as in
+  `mix`). A point has `slug`, `version` (a string or null) and `roles`: per role, null when it
+  ran in fewer than 3 of the window's 5 tasks (`window // 2 + 1`), else `{calls, peak, tools}`,
+  each the median over the window's tasks in which the role ran: model calls, peak
+  context in tokens (the largest context of any call of a run, median over the role's runs
+  in a task; a float or null) and own tool calls (an `Agent` dispatch is not a tool call here;
+  it is counted in `dispatches`).
+- `versions`: one per entry of the document's `versions`, same order, also a version with no
+  landed task (`tasks` 0 and every role null). A version has `version`, `tasks` (its landed tasks
+  with a cost) and `roles`: per role, null when it ran in none of them, else `n` (the tasks it
+  ran in), then the medians over those tasks: `share` (of task cost, 0 to 1) and `cost`
+  (the role's `cost.by_role`), `calls`, `peak` (a float or null), `tools`, `dispatches`,
+  `tools_per_dispatch` (the median of tools over dispatches in the tasks with at least one
+  dispatch; null when none), and `classes`: the share of the role's cost, summed over those
+  tasks, in `input`, `output`, `cache_write` (5-minute and 1-hour writes together) and
+  `cache_read`; they sum to 1, and `classes` is null when nothing was spent.
+- `classes` come from the per-call prices of the runs (as `isshoni anatomy` prices them);
+  `share` and `cost` from the task's `cost`, as the mix does. Tasks that did not land are in
+  none of these figures.
+
 `stops`, oldest first: a lead's `QUESTION`, `BLOCKED` or `OVERTIME` message (`waited_s`
 runs to the next prompt from the human or the dispatcher in the same session, null while
 unanswered; `why` is the event's `summary`, the first line of the message, or null on
@@ -204,7 +231,7 @@ terminal of at least 60x16.
 ```
 bin/isshoni-tui [--range 24h|7d|30d|all] [--follow] [--no-color]
                 [--projects-dir DIR] [--agents-dir DIR] [--prices PATH]
-bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-flow|kaizen-board|help [--size 140x40] [--session ID] [--row N] [--fold]
+bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-flow|kaizen-anatomy|kaizen-board|help [--size 140x40] [--session ID] [--row N] [--fold]
 ```
 `--range` defaults to `7d`. `NO_COLOR` gives the plain rendering too. `--snapshot`
 prints one settled frame and exits, non-zero when the load fails; `--row N` puts the
@@ -226,7 +253,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 | `s` | sort: recent, cost, subagent share; within a repository, tasks and sessions without a task are one list; also puts the held order right |
 | `/` | filter by `repo`, `repo/task`, project or session id |
 | `f` | follow the most recently active session (off until pressed or `--follow`; any cursor key turns it off) |
-| `←` `→`, `h` `l` | kaizen view: previous and next page (Pulse, Flow, Board) |
+| `←` `→`, `h` `l` | kaizen view: previous and next page (Pulse, Flow, Anatomy, Board) |
 | `c` | factory view: edit the cap (digits or `↑` `↓`, `enter` saves, `esc` cancels) |
 | `?`, `q` | help, quit |
 
@@ -290,7 +317,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 - **Kaizen:** whether the factory is getting better, across all repositories, from what
   `isshoni kaizen --json` reports (see [Kaizen measures](#kaizen-measures)). It loads when
   the view is shown (unless a result under 30 seconds old is held) and when the range
-  changes; there is no periodic refresh. Three pages, switched with `←` `→`, each
+  changes; there is no periodic refresh. Four pages, switched with `←` `→`, each
   scrolled with the move keys: **Pulse** (the landed count and the median cost, brief to
   pull request, pull request to merge and first-pass rate, each with how the latest half
   of the landed tasks compares with the earlier half from 10 landed tasks; the rewards;
@@ -304,7 +331,25 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   right, the plugin versions marked under it, and from six landed tasks with a cost,
   below which one line says so; where two lines share a cell the role listed first
   shows; a table of every task, the stops each with its reason in full or
-  "reason not recorded", what slowed tasks) and **Board**
+  "reason not recorded", what slowed tasks), **Anatomy** (what drives a task's cost,
+  from `summary.anatomy`, landed tasks with a cost only: a table of the lead's share of task
+  cost, own tool calls, peak context, model calls, dispatches, own tool calls per dispatch, cost per task
+  and the share of its cost in each token class, one column per plugin version (the most
+  recent that fit, always the latest version with landed tasks and the one before it, up to
+  the newest version; headed with its landed-task count `n`, and `-` with `n=0` for a version
+  with no landed task) and a change column headed with the pair it compares, such as
+  `0.2.0 → 0.3.0`: the latest version with landed tasks against the one before, in percent or,
+  for the shares, in points. It is coloured (green down, orange up) where lower is what the
+  change aimed at (share of cost, own tool calls, peak context, model calls, tool calls per
+  dispatch, cost per task) and grey elsewhere. The change shows only when both have at least `min`
+  (5) landed tasks; below that the column is left out and a line says which version has how
+  many, and the figures of a version under `min` are dimmed. Under the table, a pointer to Pulse, where first-pass rate
+  and review rounds, what must not move, are; then three line charts, one line per role, of
+  model calls, peak context and own tool calls per task, each point the median of the
+  window's tasks, with the plugin versions marked under them, a gap where a role ran in too few
+  of the window's tasks, and one line saying when the chart starts below two points; last, a
+  table of the other roles, latest against before, `before → latest`, with how many landed
+  tasks each ran in, dimmed under `min`, `-` where the role did not run) and **Board**
   (the factory's feedback outbox: open issues grouped by topic, what was acted on, the
   decisions). The columns of a chart use the colour of what they measure; review rounds
   are green for a first pass and orange otherwise; a chart too narrow for every task

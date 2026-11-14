@@ -138,6 +138,60 @@ type KaizenMix struct {
 	Points []KaizenMixPoint `json:"points"`
 }
 
+// AnatomyMedians is a role's medians per task over the window's tasks in which it ran.
+type AnatomyMedians struct {
+	Calls *float64 `json:"calls"`
+	Peak  *float64 `json:"peak"`
+	Tools *float64 `json:"tools"`
+}
+
+// AnatomyPoint is the role medians over the Window landed tasks ending at Slug; a role
+// that ran in fewer than three of them is nil.
+type AnatomyPoint struct {
+	Slug    string                     `json:"slug"`
+	Version string                     `json:"version"`
+	Roles   map[string]*AnatomyMedians `json:"roles"`
+}
+
+// AnatomyClasses is the share of a role's cost in each token class; they sum to 1.
+type AnatomyClasses struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheWrite float64 `json:"cache_write"`
+	CacheRead  float64 `json:"cache_read"`
+}
+
+// AnatomyRole is a role's medians per task over the N landed tasks of a version in which it
+// ran. Tools are its own tool calls, dispatches not counted.
+type AnatomyRole struct {
+	N                int             `json:"n"`
+	Share            float64         `json:"share"`
+	Cost             float64         `json:"cost"`
+	Calls            float64         `json:"calls"`
+	Peak             *float64        `json:"peak"`
+	Tools            float64         `json:"tools"`
+	Dispatches       float64         `json:"dispatches"`
+	ToolsPerDispatch *float64        `json:"tools_per_dispatch"`
+	Classes          *AnatomyClasses `json:"classes"`
+}
+
+// AnatomyVersion is one plugin version over its landed tasks with a cost; a role that did
+// not run in any of them is nil.
+type AnatomyVersion struct {
+	Version string                  `json:"version"`
+	Tasks   int                     `json:"tasks"`
+	Roles   map[string]*AnatomyRole `json:"roles"`
+}
+
+// KaizenAnatomy is what drives a task's cost, per role, over time and per plugin version.
+// A version is compared only with Min landed tasks.
+type KaizenAnatomy struct {
+	Window   int              `json:"window"`
+	Min      int              `json:"min"`
+	Points   []AnatomyPoint   `json:"points"`
+	Versions []AnatomyVersion `json:"versions"`
+}
+
 type KaizenSummary struct {
 	Tasks     int    `json:"tasks"`
 	Landed    int    `json:"landed"`
@@ -150,13 +204,14 @@ type KaizenSummary struct {
 		Yes int `json:"yes"`
 		Of  int `json:"of"`
 	} `json:"first_pass"`
-	ReworkShare *float64     `json:"rework_share"`
-	ByRole      Roles        `json:"by_role"`
-	Mix         KaizenMix    `json:"mix"`
-	Time        KaizenTime   `json:"time"`
-	Defects     Defects      `json:"defects"`
-	TrendMin    int          `json:"trend_min"`
-	Trend       *KaizenTrend `json:"trend"`
+	ReworkShare *float64      `json:"rework_share"`
+	ByRole      Roles         `json:"by_role"`
+	Mix         KaizenMix     `json:"mix"`
+	Anatomy     KaizenAnatomy `json:"anatomy"`
+	Time        KaizenTime    `json:"time"`
+	Defects     Defects       `json:"defects"`
+	TrendMin    int           `json:"trend_min"`
+	Trend       *KaizenTrend  `json:"trend"`
 }
 
 // KaizenStop is a moment the line stopped for the human, or a permission was denied.
