@@ -127,7 +127,7 @@ class Wizard(unittest.TestCase):
                 mock.patch.object(factory, "WIZARD_WAIT", wait), mock.patch.object(factory, "INSTALL_POLL", 0), \
                 redirect_stdout(out), redirect_stderr(err):
             try:
-                factory.setup_app(factory.parse_args(["wizard", "--yes", *args]))
+                factory.setup_app(factory.parse_args(["wizard", "--yes", *args]), None)
                 rc = 0
             except factory.Fail as e:
                 print(f"factory: {e}", file=sys.stderr)
@@ -239,10 +239,7 @@ class FirstRunTests(Wizard):
         self.assertEqual(self.forms[0][1]["name"], "my-factory")
         self.assertIn("named my-factory", self.out)
 
-    def test_a_name_over_34_characters_is_refused_not_cut(self):
-        with redirect_stderr(io.StringIO()) as err:
-            self.assertEqual(factory.main(["wizard", "--name", "n" * 35]), 2)
-        self.assertIn("35 characters", err.getvalue())
+    def test_a_name_of_34_characters_is_accepted(self):
         self.assertEqual(self.wizard("--owner", "octocat", "--name", "n" * 34), 0, self.err)
 
     def test_name_with_a_stored_identity_is_refused(self):

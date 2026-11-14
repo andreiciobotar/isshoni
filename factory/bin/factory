@@ -3070,7 +3070,7 @@ def cost_act(args, detail):
     return f"set monitor to {target}" + (f" (it pointed at {old}, which is missing)" if old else "")
 
 
-def setup_app(args, detail=None):
+def setup_app(args, detail):
     """The GitHub App: create it when there is none, then verify and repair it online. None when nothing changed."""
     identity = load_identity()
     if identity and args.name:
@@ -3211,8 +3211,11 @@ def uninstall_app(args, left):
 def uninstall_plugin(args, left):
     if not shutil.which("claude"):
         return print("  claude is not on PATH: nothing to remove")
-    installed = user_plugin(claude_json("plugin", "list") or [])
-    market = next((m for m in claude_json("plugin", "marketplace", "list") or [] if isinstance(m, dict) and m.get("name") == "factory"), None)
+    plugins, markets = claude_json("plugin", "list"), claude_json("plugin", "marketplace", "list")
+    if plugins is None or markets is None:
+        raise Fail("cannot read `claude plugin list --json` or `claude plugin marketplace list --json`: nothing removed")
+    installed = user_plugin(plugins)
+    market = next((m for m in markets if isinstance(m, dict) and m.get("name") == "factory"), None)
     if market and market.get("repo") != SOURCE:
         print(f"  a marketplace named factory from {market.get('repo') or market.get('path') or market.get('source')}, "
               f"not {SOURCE}: kept, with the plugin")

@@ -438,6 +438,15 @@ class UninstallFlow(Setup):
         self.assertEqual(self.machine.plugins, [PLUGIN])
         self.assertIn("not from andreiciobotar/isshoni", self.out)
 
+    def test_an_unreadable_list_removes_no_plugin_and_no_marketplace(self):
+        self.set_up()
+        self.machine.calls.clear()
+        self.machine.fail.add("market-list")
+        self.assertEqual(self.command("uninstall", "--yes"), 1)
+        self.assertIn("nothing removed", self.out)
+        self.assertEqual([c for c in self.machine.mutations() if c[0] == "claude"], [])
+        self.assertEqual(self.machine.plugins, [PLUGIN])
+
     def test_without_claude_the_plugin_step_says_so_and_the_rest_goes_on(self):
         self.set_up()
         self.machine.tools.discard("claude")
