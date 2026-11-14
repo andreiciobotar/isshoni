@@ -5,7 +5,9 @@ import argparse
 import json
 import os
 import re
+import signal
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 
 from . import metrics, prices as price_file, transcript
@@ -91,14 +93,14 @@ def table(headers, rows, left=()):
 
 def parse_since(text, now=None):
     now = now or datetime.now(timezone.utc)
-    m = re.fullmatch(r"(\d+)([dhw])", text.strip())
+    m = re.fullmatch(r"(\d+)([mdhw])", text.strip())
     if m:
         n, u = int(m.group(1)), m.group(2)
-        return now - timedelta(**{{"d": "days", "h": "hours", "w": "weeks"}[u]: n})
+        return now - timedelta(**{{"m": "minutes", "d": "days", "h": "hours", "w": "weeks"}[u]: n})
     try:
         d = datetime.fromisoformat(text.strip())
     except ValueError:
-        raise SessionError("invalid --since value %r (use Nd, Nh, Nw or an ISO date)" % text)
+        raise SessionError("invalid --since value %r (use Nm, Nh, Nd, Nw or an ISO date)" % text)
     if d.tzinfo is None:
         d = d.replace(tzinfo=timezone.utc)
     return d
@@ -324,6 +326,26 @@ def cmd_anatomy(args):
     return 0
 
 
+def cmd_events(args):
+    from . import events  # events imports kaizen, which imports this module
+
+    cutoff = parse_since(args.since or ("2m" if args.follow else "24h"))
+    feed = events.Feed(args.projects_dir, args.factory_dir, cutoff, None if args.no_gh else events.gh_prs, args.follow)
+    emit = lambda batch: events.write(sys.stdout, batch)  # noqa: E731
+    stop = threading.Event()
+    try:
+        if args.follow:
+            signal.signal(signal.SIGTERM, lambda *_: stop.set())
+            events.follow(feed, emit, stop)
+        else:
+            emit(feed.history())
+    except KeyboardInterrupt:
+        pass
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())  # the exit flush must not fail too
+    return 0
+
+
 def emit_json(obj):
     json.dump(obj, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
@@ -347,7 +369,7 @@ def build_parser():
                                 parents=[_common(False)])
     sub = p.add_subparsers(dest="command", required=True)
     since = argparse.ArgumentParser(add_help=False)
-    since.add_argument("--since", help="Nd, Nh, Nw or an ISO date")
+    since.add_argument("--since", help="Nm, Nh, Nd, Nw or an ISO date")
     scope = argparse.ArgumentParser(add_help=False)
     scope.add_argument("--repo", help="only this repository (name)")
     scope.add_argument("--task", help="only this task (worktree name)")
@@ -364,6 +386,11 @@ def build_parser():
     s = sub.add_parser("anatomy", parents=[_common(True), since, scope], help="cost anatomy of each task per role")
     s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")
     s.set_defaults(func=cmd_anatomy)
+    s = sub.add_parser("events", parents=[_common(True), since], help="the factory's events as JSON lines, for the visualiser")
+    s.add_argument("--follow", action="store_true", help="after the history, keep printing what happens (default history 2m)")
+    s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")
+    s.add_argument("--no-gh", action="store_true", help="do not ask gh for pull requests")
+    s.set_defaults(func=cmd_events)
     return p
 
 

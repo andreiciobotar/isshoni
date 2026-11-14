@@ -21,6 +21,7 @@ const (
 	viewAgents
 	viewFactory
 	viewKaizen
+	viewHanami
 )
 
 type sortMode int
@@ -73,6 +74,9 @@ type Options struct {
 	// ReadOnly refuses the one write the dashboard makes, the worktree cap.
 	ReadOnly bool
 	Now      func() time.Time
+
+	Replay      []data.Event // start in the Hanami tab replaying these, not the live stream
+	ReplaySpeed float64      // event seconds per second; 0 is the default, a minute a second
 }
 
 type toast struct {
@@ -121,6 +125,7 @@ type model struct {
 	atop    int
 	fac     factoryState
 	kz      kaizenState
+	hn      hanamiState
 
 	loading     bool
 	loadGen     int
@@ -185,6 +190,10 @@ func New(o Options) *model {
 	}
 	if o.Runner != nil {
 		m.fatal = o.Runner.Check()
+	}
+	if o.Replay != nil {
+		m.view = viewHanami
+		m.startReplay(o.Replay, o.ReplaySpeed)
 	}
 	return m
 }
@@ -298,6 +307,8 @@ func (m *model) ensureTick() tea.Cmd {
 	}
 	d := tickIdle
 	switch {
+	case m.view == viewHanami && !m.help:
+		d = hanamiDT
 	case m.animating():
 		d = tickFast
 	case m.pulsing():
@@ -1068,6 +1079,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case kaizenMsg:
 		m.applyKaizen(msg)
 
+	case hanamiEventsMsg, hanamiEndMsg, hanamiHistoryMsg:
+		cmds = append(cmds, m.hanamiUpdate(msg))
+
 	case detailMsg:
 		delete(m.inflight, msg.id)
 		exists := m.exists(msg.id)
@@ -1108,6 +1122,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tickOn = false
 		now := m.now()
 		m.step(now.Sub(m.tickFrom))
+		m.hanamiTick(now.Sub(m.tickFrom))
 		if m.loaded && !m.scanning && now.Sub(m.polledAt) >= pollEvery {
 			m.polledAt = now
 			cmds = append(cmds, m.scanCmd())
@@ -1136,7 +1151,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	m.syncOrder(false)
 	m.fixScroll()
-	cmds = append(cmds, m.ensureTick())
+	cmds = append(cmds, m.hanamiSync(), m.ensureTick())
 	return m, tea.Batch(cmds...)
 }
 
@@ -1202,6 +1217,11 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		return nil
 	}
+	if m.view == viewHanami {
+		if cmd, ok := m.hanamiKey(msg); ok {
+			return cmd
+		}
+	}
 	switch {
 	case key.Matches(msg, keys.Quit):
 		return tea.Quit
@@ -1219,6 +1239,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.switchView(viewFactory)
 	case key.Matches(msg, keys.Kaizen):
 		return m.switchView(viewKaizen)
+	case key.Matches(msg, keys.Hanami):
+		return m.switchView(viewHanami)
 	case m.view == viewDashboard && !m.zoom && key.Matches(msg, keys.Fold): // the same keys turn the page in the Kaizen view
 		m.fold(true)
 	case m.view == viewDashboard && !m.zoom && key.Matches(msg, keys.Unfold):
@@ -1343,7 +1365,7 @@ func (m *model) fold(on bool) {
 
 // cycle is the next view in a direction.
 func (m *model) cycle(step int) viewID {
-	const n = int(viewKaizen) + 1
+	const n = int(viewHanami) + 1
 	return viewID((int(m.view) + step + n) % n)
 }
 

@@ -30,13 +30,13 @@ func TestKaizenViewKeys(t *testing.T) {
 	if !strings.Contains(plain(m), "[4 Kaizen]") {
 		t.Fatal("the tab is in the header")
 	}
-	send(m, "tab")
+	send(m, "tab", "tab")
 	if m.view != viewDashboard {
-		t.Fatalf("tab wraps from kaizen to the dashboard: %v", m.view)
+		t.Fatalf("tab wraps from kaizen, past hanami, to the dashboard: %v", m.view)
 	}
-	send(m, "shift+tab")
+	send(m, "shift+tab", "shift+tab")
 	if m.view != viewKaizen {
-		t.Fatalf("shift+tab goes back to kaizen: %v", m.view)
+		t.Fatalf("shift+tab goes back, past hanami, to kaizen: %v", m.view)
 	}
 	send(m, "esc")
 	if m.view != viewDashboard {
