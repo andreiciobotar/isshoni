@@ -1155,6 +1155,15 @@ class ChurningTests(Harness):
             self.assertIn(text, detail)
         self.assertEqual(check("churning", pic(churn={})), [])
 
+    def test_churning_uses_the_ticks_snapshot_and_asks_gh_for_none_of_its_own(self):
+        declared = {"x": {"state": "handed-over", "ts": "t"}}
+        snap = [{"number": 7, "headRefName": "worktree-x"}]
+        with mock.patch.object(factory, "snapshot", side_effect=AssertionError("a second gh pr list")), \
+                mock.patch.object(factory, "queue_send_backs", lambda repo, slug: [iso(NOW)]), \
+                mock.patch.object(factory, "task_slug", lambda repo, pr: "x"), \
+                mock.patch.object(factory, "churn", lambda repo, slug, pr: {"sent_back": [], "files": ["a"], "others": []}):
+            self.assertEqual(list(factory.churning(pic(declared=declared, snap=snap))), ["x"])
+
     def test_it_is_shipped_judgment_and_every_tick(self):
         [c] = [c for c in json.loads((factory.PLUGIN_ROOT / "criteria.json").read_text()) if c["name"] == "churning"]
         self.assertEqual((c["escalate"], c["threshold"]), ("judgment", None))
@@ -1165,11 +1174,11 @@ class ChurningTests(Harness):
         declared = {"x": {"state": "handed-over", "ts": "t"}, "y": {"state": "working", "ts": "t"}}
         p = pic(declared=declared)
         with mock.patch.object(factory, "snapshot", lambda repo: asked.append(1) or []), \
-                mock.patch.object(factory, "sent_back", lambda repo, slug: [iso(NOW)] if slug == "y" else []):
+                mock.patch.object(factory, "queue_send_backs", lambda repo, slug: [iso(NOW)] if slug == "y" else []):
             self.assertEqual(check("churning", p), [])
         self.assertEqual(asked, [])
         with mock.patch.object(factory, "snapshot", lambda repo: asked.append(1) or [{"number": 7, "headRefName": "worktree-x"}]), \
-                mock.patch.object(factory, "sent_back", lambda repo, slug: [iso(NOW)]), \
+                mock.patch.object(factory, "queue_send_backs", lambda repo, slug: [iso(NOW)]), \
                 mock.patch.object(factory, "task_slug", lambda repo, pr: "x"), \
                 mock.patch.object(factory, "churn", lambda repo, slug, pr: {"sent_back": [], "files": ["a"], "others": []}):
             self.assertEqual(factory.churning(pic(declared=declared)), {"x": {"sent_back": [], "files": ["a"], "others": [], "pr": 7}})
@@ -1237,9 +1246,14 @@ class ChurningTests(Harness):
                              entries=["x"])
         return json.loads(out)["rows"][0]
 
-    def test_status_carries_both_flags_and_a_paused_task_is_not_nearing_its_limit(self):
+    def test_a_working_task_nearing_its_limit_has_no_pause_or_priority(self):
         working = self.status_row("working")
         self.assertEqual((working["nearing"], working["paused"], working["prioritized"]), (True, None, None))
+
+    def test_an_expired_priority_no_drain_has_cleared_yet_is_not_shown(self):
+        old = iso(NOW - (factory.RELEASE_HOLD_MINUTES + 1) * 60)
+        factory.repo_state(ROOT, "lander", "json").write_text(json.dumps({"prioritized": {"x": old}}))
+        self.assertIsNone(self.status_row("working")["prioritized"])
 
     def test_status_shows_pause_and_priority(self):
         factory.repo_state(ROOT, "lander", "json").write_text(json.dumps({"prioritized": {"x": iso(NOW - 3 * 60)}}))

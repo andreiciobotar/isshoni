@@ -589,7 +589,7 @@ def _site_manager(records, cutoff):
 def _tech_lead(records, cutoff, tasks, by_task):
     """What came back from the merge queue in the window, how it ended, and how often a landed task's lead was woken
     after the hand-over. A cost is the sum of the priced records, null when none is: never zero."""
-    mine = [r for r in records if cutoff is None or (_ts(r) and _ts(r) >= cutoff)]
+    mine = [r for r in records if (cutoff is None or (_ts(r) and _ts(r) >= cutoff)) and r.get("outcome") != "paused"]  # a paused start resolved nothing
 
     def spent(rs):
         costs = [r["cost_usd"] for r in rs if isinstance(r.get("cost_usd"), (int, float)) and not isinstance(r["cost_usd"], bool)]

@@ -548,7 +548,7 @@ class TechLeadTests(Store):
         self.log("techlead.jsonl", [came_back(t, "resolved", 1.5)])  # the legacy file and the month files are one log
         self.log("techlead-2026-11.jsonl", [
             came_back(t, "resolved", 2.0), came_back(t, "resolved", None), came_back(t, "escalated", 0.25),
-            came_back(t, "stopped", 3.0), came_back(t, "unstarted"), "not json"])
+            came_back(t, "stopped", 3.0), came_back(t, "unstarted"), came_back(t, "paused"), "not json"])  # a paused start is not counted
         self.assertEqual(self.record(), {**self.EMPTY, "came_back": 6, "resolved": 3, "escalated": 1, "stopped": 1,
                                          "unstarted": 1, "cost": 6.75, "cost_resolved": 3.5})
 

@@ -254,7 +254,7 @@ def story(factory, hub, checkout, specs):
     say("1. alpha and holder are handed over; the window is open. alpha merges, holder conflicts: its first send-back, to a tech lead.")
     call("lander", "--dispatcher", DISPATCHER)
     check(hub.merged == [1], f"A merged first (merged: {hub.merged})")
-    check(len(factory.sent_back(repo(), "holder")) == 1, "H was sent back once by the queue")
+    check(len(factory.queue_send_backs(repo(), "holder")) == 1, "H was sent back once by the queue")
     check(len(hub.spawned) == 1, "a tech lead run was started for it")
     tech_lead()
     check(state("holder")["state"] == "handed-over" and hub.models == ["tech-lead"], "the tech lead resolved it and H is handed over again")
@@ -264,7 +264,7 @@ def story(factory, hub, checkout, specs):
     hand_over("bravo")
     call("lander", "--dispatcher", DISPATCHER)
     check(hub.merged == [1, 2], f"B merged (merged: {hub.merged})")
-    check(len(factory.sent_back(repo(), "holder")) == 1 and 3 in map(int, factory.read_lander(repo())["waiting"]),
+    check(len(factory.queue_send_backs(repo(), "holder")) == 1 and 3 in map(int, factory.read_lander(repo())["waiting"]),
           "H conflicts again but is held in waiting for the site manager's decision, not sent back")
 
     say("3. The tick: `churning` fires (H, W open on f.txt), the site manager decides paused for W, the queue then sends H back.")
@@ -272,7 +272,7 @@ def story(factory, hub, checkout, specs):
     check(hub.models == ["tech-lead", "site-manager"], f"one site manager run (models: {hub.models})")
     [decision] = [r for r in factory.read_log("firings") if r.get("by") == "site-manager"]
     check((decision["decision"], decision["waits_on"]) == ("paused", ["waiter"]), f"decision logged: paused, waits_on {decision.get('waits_on')}")
-    check(len(factory.sent_back(repo(), "holder")) == 2 and len(hub.spawned) == 1, "H was sent back (second time) and a tech lead start followed")
+    check(len(factory.queue_send_backs(repo(), "holder")) == 2 and len(hub.spawned) == 1, "H was sent back (second time) and a tech lead start followed")
     before = len(hub.models)
     tech_lead()
     check(len(hub.models) == before, "the tech lead start ran no model")
@@ -304,10 +304,10 @@ def story(factory, hub, checkout, specs):
     check(state("holder")["state"] == "handed-over" and hub.models.count("tech-lead") == 2, "the tech lead resolved H after the release")
     call("lander", "--dispatcher", DISPATCHER)
     check(hub.merged[:4] == [1, 2, 4, 3], f"H merged before L (merged: {hub.merged})")
-    check(len(factory.sent_back(repo(), "holder")) == 2, "H was not sent back a third time")
+    check(len(factory.queue_send_backs(repo(), "holder")) == 2, "H was not sent back a third time")
     [ended] = events("TaskPrioritizedEnd")
     check(ended["reason"] == "merged" and factory.read_lander(repo())["prioritized"] == {}, f"priority ended: {ended['reason']}")
-    check(len(factory.sent_back(repo(), "late")) == 1 and 5 not in hub.merged, "L, behind H on the same line, was sent back for its own conflict (the hold ended with H's merge)")
+    check(len(factory.queue_send_backs(repo(), "late")) == 1 and 5 not in hub.merged, "L, behind H on the same line, was sent back for its own conflict (the hold ended with H's merge)")
     check(not hub.unknown, f"gh and claude calls the shim did not know: {hub.unknown or 'none'}")
 
     say("6. Counted.")

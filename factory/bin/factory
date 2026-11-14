@@ -906,6 +906,7 @@ def collect(repo, sessions, limit_hours, prs=None):
         needed = needed_branches(repo)
         prs = (ask_pull_requests(repo, needed)[0] if needed else {}) or {b: UNKNOWN_PR for b in needed}
     percent = nearing_percent()
+    prioritized = read_lander(repo)["prioritized"]
     rows = []
     for wt in repo.tasks:
         path, branch = wt["path"], wt["branch"]
@@ -946,7 +947,8 @@ def collect(repo, sessions, limit_hours, prs=None):
         row["waits_on"] = (", ".join(waits) if isinstance(waits, list) else waits) if row["state"] == "blocked" else None
         paused = row["state"] == "blocked" and declared[slug].get("paused") is True
         row["paused"] = {"since": declared[slug]["ts"], "waits_on": waits if isinstance(waits, list) else [waits]} if paused else None
-        row["prioritized"] = {"since": held} if (held := read_lander(repo)["prioritized"].get(slug)) else None
+        held = prioritized.get(slug)
+        row["prioritized"] = {"since": held} if held and now - (epoch(held) or 0) < RELEASE_HOLD_MINUTES * 60 else None
         since = epoch(declared.get(slug, {}).get("ts"))
         row["waited"] = None if since is None else max(0, int(now - since))
         row["phase"] = phase(row["pr_state"], mine if placed else None, row["state"])
@@ -2065,9 +2067,9 @@ def churning(p):
     again while other open tasks change the same files; one `gh pr list`, and only when such a task exists."""
     def make(p):
         repo = p["repo"]
-        due = [s for s, r in p["declared"].items() if r["state"] == "handed-over" and sent_back(repo, s)]
+        due = [s for s, r in p["declared"].items() if r["state"] == "handed-over" and queue_send_backs(repo, s)]
         found = {}
-        for pr in snapshot(repo) if due else []:
+        for pr in (p.get("snap") or snapshot(repo)) if due else []:
             slug = task_slug(repo, pr)
             if slug in due and (evidence := churn(repo, slug, pr)):
                 found[slug] = {**evidence, "pr": pr["number"]}
@@ -2852,7 +2854,7 @@ def watch_tick(args, repo):
     every = load_criteria()
     criteria = job_criteria(every, "watch")
     print(f"{now()} watch {os.path.basename(repo.root)}")
-    cheap_tick(repo, args.dispatcher)
+    snap = cheap_tick(repo, args.dispatcher)
     state = read_lander(repo)
     full = time.time() - state["health"] >= HEALTH_SECONDS
     if full:
@@ -2861,6 +2863,7 @@ def watch_tick(args, repo):
     else:
         criteria = [c for c in criteria if c["name"] in EVERY_TICK]
         p = tick_picture(repo, args.dispatcher, criteria)
+    p["snap"] = snap  # the tick's one `gh pr list`, for `churning`
     current, skipped = evaluate(p, criteria)
     if current and not full and p["sessions"] is None:  # something fired between health passes: who is the dispatcher?
         with_dispatcher(p, args.dispatcher)
@@ -3044,7 +3047,7 @@ def pauses(repo):
         later = [x for x in events if x.get("slug") == e["slug"] and x["ts"] >= e["ts"]]
         end = next((x for x in later if x["event"] == "TaskPrioritized"), None)
         over = next((x for x in later if x["event"] == "TaskPrioritizedEnd" and end and x["ts"] >= end["ts"]), None)
-        sent = sent_back(repo, e["slug"])
+        sent = queue_send_backs(repo, e["slug"])
         found.append({"slug": e["slug"], "ts": e["ts"], "waits_on": e.get("waits_on") or [],
                       "minutes": end and end.get("paused_minutes"), "before": sum(t <= e["ts"] for t in sent),
                       "after": sum(t > e["ts"] for t in sent), "ended": over and (over.get("reason"), over.get("minutes"))})
@@ -5351,10 +5354,15 @@ def lander_queue(repo, snap, word):
     ready = spoken | {pr["number"] for pr in candidates(repo, snap)}
     line = [(pr, None if pr["number"] in spoken else {}) for pr in sorted(snap, key=lambda pr: pr["number"])
             if pr["number"] in ready and pr["baseRefName"] not in heads]
-    prioritized = read_lander(repo)["prioritized"]
-    first = {s for s in open_tasks(repo, STATES[:3]) if s in prioritized and time.time() - (epoch(prioritized[s]) or 0) < RELEASE_HOLD_MINUTES * 60} \
-        if prioritized else set()
+    first = queue_holders(repo)
     return [x for x in line if task_slug(repo, x[0]) in first] if first else line
+
+
+def queue_holders(repo):
+    """{slug: when its hold ends (epoch seconds)} of the prioritized tasks still inside RELEASE_HOLD_MINUTES and open."""
+    prioritized = read_lander(repo)["prioritized"]
+    ends = {s: (epoch(since) or 0) + RELEASE_HOLD_MINUTES * 60 for s, since in prioritized.items()}
+    return {s: end for s, end in ends.items() if end > time.time() and s in open_tasks(repo, STATES[:3])} if prioritized else {}
 
 
 def waiting_since(state, n, pr, kind):
@@ -5577,7 +5585,7 @@ def tech_lead_pause(repo, settings, args, waited):
     slug, n = args.slug, args.pr
     pr = gh_json(repo, dict, "pr", "view", str(n), "--json", "number,headRefOid")
     declare(repo, slug, "tech-lead", "blocked", waits_on=waited, paused=True)
-    task_event("TaskPaused", repo, slug, waits_on=waited, files=conflicting_files(repo, pr), sent_back=len(sent_back(repo, slug)))
+    task_event("TaskPaused", repo, slug, waits_on=waited, files=conflicting_files(repo, pr), sent_back=len(queue_send_backs(repo, slug)))
     log_tech_lead(repo, settings, slug, n, args.evidence, "paused", reason=f"waits for {', '.join(waited)}")
     print(f"#{n} tech lead paused: waits for {', '.join(waited)}")
     return 0
@@ -5693,7 +5701,7 @@ RELEASE_HOLD_MINUTES = 24
 OPEN = ("working", "handed-over")
 
 
-def sent_back(repo, slug):
+def queue_send_backs(repo, slug):
     """When the queue sent task `slug` back (the rows `send_back` writes), oldest first."""
     return sorted(r["ts"] for r in read_log("tasks") if r.get("repo") == repo.root and r.get("slug") == slug
                   and r.get("role") == "lander" and r.get("state") == "working")
@@ -5711,7 +5719,7 @@ def churn(repo, slug, pr):
     """None, or the evidence that task `slug` churns: the times the queue sent it back, the files its pull request `pr`
     conflicts in now, and the other open tasks whose branch changes some of them (with those files). A branch that
     cannot be read is left out."""
-    sent = sent_back(repo, slug)
+    sent = queue_send_backs(repo, slug)
     if len(sent) < CHURN_SEND_BACKS or not (files := conflicting_files(repo, pr)):
         return None
     branch, others = {os.path.basename(t["path"]): t["branch"] for t in repo.tasks}, []
@@ -5758,10 +5766,11 @@ def end_priorities(repo, fallback):
     """End the priority of each task whose pull request merged, that left the open states, or whose hold ran out (the
     dispatcher is told of that one)."""
     live, declared = open_tasks(repo, STATES[:3]), read_tasks(repo.root)
+    branch = {os.path.basename(t["path"]): t["branch"] for t in repo.tasks}
     for slug, since in read_lander(repo)["prioritized"].items():
         if slug not in live:
-            end_priority(repo, slug, "merged" if declared.get(slug, {}).get("state") in STATES[:3] and
-                         repo.git("merge-base", "--is-ancestor", f"worktree-{slug}", f"{repo.remote}/{repo.default}")[0] == 0 else "gone")
+            end_priority(repo, slug, "merged" if declared.get(slug, {}).get("state") in STATES[:3] and branch.get(slug) and
+                         repo.git("merge-base", "--is-ancestor", branch[slug], f"{repo.remote}/{repo.default}")[0] == 0 else "gone")
         elif time.time() - (epoch(since) or 0) >= RELEASE_HOLD_MINUTES * 60:
             end_priority(repo, slug, "expired")
             forward(repo, fallback, slug, "LANDER", f"{slug} ({live[slug]}) was served first for {RELEASE_HOLD_MINUTES} minutes "
@@ -5769,12 +5778,13 @@ def end_priorities(repo, fallback):
 
 
 def release_paused(repo, fallback):
-    """Once for each paused task none of whose waited tasks is open any more: it is served first (`prioritized`, the
+    """Once per pause (a row newer than the task's last `TaskPrioritized` event) for each paused task none of whose waited tasks is open any more: it is served first (`prioritized`, the
     `TaskPrioritized` event) and its holder is told the way is clear: a tech lead run, else its lead."""
     live = open_tasks(repo)
+    released = {e["slug"]: e["ts"] for e in repo_log("events", repo.root) or [] if e.get("event") == "TaskPrioritized"}
     for slug, row in paused_rows(repo).items():
         waited = row["waits_on"] if isinstance(row.get("waits_on"), list) else []
-        if slug in read_lander(repo)["prioritized"] or any(w in live for w in waited):
+        if row["ts"] <= released.get(slug, "") or any(w in live for w in waited):  # once per pause, even after the hold expired
             continue
         try:
             pr = next(pr for pr in snapshot(repo) if task_slug(repo, pr) == slug)
@@ -5927,6 +5937,8 @@ def drain(repo, fallback, tick=False, deadline=None):
             watch_snapshot(repo, fallback, snap)
             cheap_at = time.time()
         line = lander_queue(repo, snap, read_word(repo))
+        if first and (holders := queue_holders(repo)):
+            print("the queue serves " + ", ".join(f"{s} first until {time.strftime('%H:%M:%SZ', time.gmtime(end))}" for s, end in holders.items()))
         if not line and first and not tick:
             print("nothing ready")
         merged, stops, flight = lander_pass(repo, fallback, p, snap, line, updated)
@@ -5951,7 +5963,7 @@ def draft_picture(repo, snap):
 
 def cheap_tick(repo, fallback):
     """The part of every tick that costs one `gh pr list`: with a task working, blocked or handed over, take the open
-    pull requests once and look at them (`watch_snapshot`)."""
+    pull requests once and look at them (`watch_snapshot`); they are returned, None without them."""
     here = {os.path.basename(t["path"]) for t in repo.tasks}
     if not any(r["state"] in STATES[:3] and slug in here for slug, r in read_tasks(repo.root).items()):
         return
@@ -5960,6 +5972,7 @@ def cheap_tick(repo, fallback):
     except NotEvaluated as e:
         return print(f"comments: {e}")
     watch_snapshot(repo, fallback, snap)
+    return snap
 
 
 def watch_snapshot(repo, fallback, snap):

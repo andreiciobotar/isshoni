@@ -815,6 +815,47 @@ class ChurnTests(ScratchRepoBase):
         self.assertEqual(self.release(), ([], []))
         self.assertEqual(self.lander()["prioritized"], {})
 
+    def test_an_expired_hold_does_not_release_the_same_pause_again(self):
+        self.paused()
+        self.land("t2")
+        self.assertEqual(len(self.release()[0]), 1)
+        self.prioritize(ago=factory.RELEASE_HOLD_MINUTES * 60 + 5)
+        self.declare("t3", "handed-over")
+        with mock.patch.object(factory, "forward", lambda *a, **k: None):
+            factory.end_priorities(self.repo, "disp")
+        self.assertEqual(self.lander()["prioritized"], {})
+        self.assertEqual(self.release(), ([], []))  # still blocked and paused, but already released once
+        self.assertEqual(len(self.events("TaskPrioritized")), 1)
+        self.assertEqual(self.queue(), [1])  # the queue serves the others again
+        time.sleep(1.1)
+        self.paused()  # a new pause is released again
+        self.assertEqual(len(self.release()[0]), 1)
+        self.assertEqual(len(self.events("TaskPrioritized")), 2)
+
+    def test_a_tick_with_only_a_paused_task_runs_the_loop(self):
+        self.paused()
+        self.declare("t2", "working")
+        ran = []
+        with mock.patch.object(factory, "Repo", lambda: self.repo), mock.patch.object(factory, "watch_tick", lambda *a: None), \
+                mock.patch.object(factory, "drain", lambda *a, **k: ran.append(a)):
+            self.assertEqual(factory.cmd_watch(SimpleNamespace(dispatcher="d")), 0)
+        self.assertEqual(len(ran), 1)
+
+    def test_a_merge_ends_the_priority_of_its_task_in_the_pass(self):
+        self.prioritize()
+        pr = self.pr()
+        with mock.patch.object(factory, "attempt", lambda *a: None), mock.patch.object(factory, "run_clean", lambda: 0), \
+                mock.patch.object(factory, "pull_main", lambda repo: None), redirect_stdout(io.StringIO()):
+            self.assertTrue(factory.lander_pass(self.repo, None, {}, [pr], [(pr, None)], {})[0])
+        self.assertEqual(self.lander()["prioritized"], {})
+        self.assertEqual(self.events("TaskPrioritizedEnd")[-1]["reason"], "merged")
+
+    def test_the_holder_and_its_end_are_named(self):
+        self.prioritize()
+        [(slug, end)] = factory.queue_holders(self.repo).items()
+        self.assertEqual(slug, "t1")
+        self.assertAlmostEqual(end, time.time() - 60 + factory.RELEASE_HOLD_MINUTES * 60, delta=5)
+
     def prioritize(self, slug="t1", ago=60):
         state = self.lander()
         state["prioritized"][slug] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - ago))
