@@ -1037,6 +1037,12 @@ class FiringsTests(Harness):
         self.assertEqual((summary["precision"], summary["recall"]), (None, 0.0))
 
 
+def job_path():
+    """The PATH the harness's tools give a job; Python's own directory may be one of theirs (/usr/bin)."""
+    return ":".join(dict.fromkeys(["/usr/bin", "/opt/bin", "/home/u/.local/bin",
+                                   os.path.dirname(factory.sys.executable), "/bin", "/usr/sbin", "/sbin"]))
+
+
 class SchedHarness(Harness):
     """Harness with the launchd job of the repository: its label, plist and `launchctl` calls."""
 
@@ -1131,9 +1137,7 @@ class ScheduleTests(SchedHarness):
                                "ProgramArguments": [factory.sys.executable, "/plug/factory/bin/factory", "watch",
                                                     "--dispatcher", "dispatcher-repo"],
                                "WorkingDirectory": ROOT, "StartInterval": 1800,
-                               "EnvironmentVariables": {"PATH": "/usr/bin:/opt/bin:/home/u/.local/bin:"
-                                                        + os.path.dirname(factory.sys.executable)
-                                                        + ":/bin:/usr/sbin:/sbin"},
+                               "EnvironmentVariables": {"PATH": job_path()},
                                "StandardOutPath": log, "StandardErrorPath": log})
         uid = os.getuid()
         self.assertEqual(self.launchctl(), [["launchctl", "bootout", f"gui/{uid}/{self.LABEL}"],
@@ -1211,7 +1215,7 @@ class SystemdTests(SchedHarness):
         code, out, err = self.schedule("install")
         self.assertEqual((code, err, out), (0, "", f"installed {self.LABEL} (systemd)\n"))
         log = self.store / "watch.log"
-        path = "/usr/bin:/opt/bin:/home/u/.local/bin:" + os.path.dirname(factory.sys.executable) + ":/bin:/usr/sbin:/sbin"
+        path = job_path()
         self.assertEqual(self.unit("service").read_text(),
                          f"[Unit]\nDescription=factory watch {ROOT}\n\n[Service]\nType=oneshot\n"
                          f"WorkingDirectory={ROOT}\nEnvironment=\"PATH={path}\"\n"
@@ -1269,7 +1273,7 @@ class CronTests(SchedHarness):
         old = f"*/30 * * * * stale # {self.LABEL}"
         code, out, err = self.schedule("install", crontab=f"{self.OTHER}\n{old}\n")
         self.assertEqual((code, err, out), (0, "", f"installed {self.LABEL} (cron)\n"))
-        path = "/usr/bin:/opt/bin:/home/u/.local/bin:" + os.path.dirname(factory.sys.executable) + ":/bin:/usr/sbin:/sbin"
+        path = job_path()
         self.assertEqual(self.written(), [f"{self.OTHER}\n*/30 * * * * cd {ROOT} && PATH={path} {factory.sys.executable} "
                                           f"/plug/factory/bin/factory watch --dispatcher dispatcher-repo "
                                           f">> {self.store / 'watch.log'} 2>&1 # {self.LABEL}\n"])

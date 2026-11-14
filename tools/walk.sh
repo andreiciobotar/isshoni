@@ -4,6 +4,8 @@
 # finds no dispatcher and removes the job, manual install/remove, and the SessionEnd stop.
 # It installs a real per-user job (removed again on exit) and writes to ~/.claude/factory, so it
 # runs only in CI or with WALK=1. WALK_CRON=1 hides systemd so that the cron backend is chosen.
+# WALK_DAEMON=1 leaves a cron tick to the cron daemon instead of running the job's line by hand:
+# the line's schedule becomes every minute, so each tick takes up to a minute.
 set -eu
 
 [ "${CI:-}" = true ] || [ "${WALK:-}" = 1 ] || { echo "walk: refusing outside CI; set WALK=1 to run it here" >&2; exit 2; }
@@ -17,6 +19,8 @@ stub="$work/stub"
 log="$HOME/.claude/factory/watch.log"
 unset CLAUDE_PROJECT_DIR CLAUDE_CODE_SESSION_ID
 [ "${WALK_CRON:-}" = 1 ] && unset XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+patience=30
+[ "${WALK_DAEMON:-}" = 1 ] && patience=90
 
 say() { printf '\n== %s\n' "$*"; }
 die() { echo "walk: FAILED: $*" >&2; exit 1; }
@@ -70,7 +74,9 @@ tick() { # force one scheduled run and wait for it
     case "$backend" in
         launchd) launchctl kickstart "gui/$(id -u)/$label" ;;
         systemd) systemctl --user start "$label.service" ;;
-        cron) sh -c "$(crontab -l | grep -F "# $label" | cut -d' ' -f6-)" ;;
+        cron)
+            if [ "${WALK_DAEMON:-}" = 1 ]; then crontab -l | sed "/ # $label\$/s|^[^ ]* |* |" | crontab -
+            else sh -c "$(crontab -l | grep -F "# $label" | cut -d' ' -f6-)"; fi ;;
     esac
 }
 wait_for() { # wait_for <seconds> <command...>
@@ -94,14 +100,14 @@ native
 say "a forced tick runs watch in the repository"
 : > "$log"
 tick
-wait_for 30 logged "watch walk-repo" || { cat "$log"; die "the tick did not write to $log"; }
+wait_for "$patience" logged "watch walk-repo" || { cat "$log"; die "the tick did not write to $log"; }
 cat "$log"
 expect "present, loaded" "after a tick with a live dispatcher"
 
 say "no dispatcher session: the next tick removes the job"
 gone
 tick
-wait_for 30 absent || { cat "$log"; die "the job did not remove itself"; }
+wait_for "$patience" absent || { cat "$log"; die "the job did not remove itself"; }
 cat "$log"
 logged "removing the schedule" || die "the log does not say the schedule was removed"
 status

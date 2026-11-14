@@ -144,7 +144,7 @@ A job runs `factory watch` every 30 minutes, output appended to `~/.claude/facto
 - **Legacy.** On macOS `install` and `remove` also drop the job of the earlier label `com.claude.factory.watch.<repository directory name>` when its working directory is this repository.
 - Install from the main checkout or the installed plugin: a job installed from a task worktree breaks when the worktree is removed.
 - `remove` by hand lasts until the next prompt of a live default-named dispatcher, which installs the job again.
-- `tools/walk.sh` walks this whole life with the real scheduler, stub `claude` and `gh` and a throwaway repository; CI runs it on Linux (systemd, then cron) and macOS. It installs a real job, so outside CI it wants `WALK=1`.
+- `tools/walk.sh` walks this whole life with the real scheduler, stub `claude` and `gh` and a throwaway repository; CI runs it on Linux (systemd, then cron), on macOS and in the container. It installs a real job, so outside CI it wants `WALK=1`. `WALK_CRON=1` hides systemd so that cron is chosen; `WALK_DAEMON=1` leaves each cron tick to the cron daemon (the job's schedule becomes every minute) instead of running the job's line by hand.
 
 `health` evaluates the criteria and prints what fires now; it writes nothing. `watch` does the same, logs each new firing, and only when there is something new to send starts one headless Sonnet run (no shell, no file tools, 10 minute timeout, about $0.15) under `factory/roles/site-manager.md`. The run gets the evidence in its prompt and either messages the dispatcher (first line `ESCALATION: <repository directory name>`) or suppresses the firing with a reason. `always` firings cannot be suppressed. Nothing is escalated twice while its condition lasts; a suppression is looked at again after two hours. `dispatcher-missing` becomes a desktop notification instead (`notify-send` on Linux; without a notification service, or when it fails, a `notify: ...` line in the watch log) and holds everything else back until a dispatcher exists. Either way the firing is recorded as escalated by `watch`, so the human hears once.
 
@@ -257,6 +257,9 @@ Rerun with an identity stored: it never creates a second App, and `--owner` nami
 Headless machine: on Linux without `DISPLAY` or `WAYLAND_DISPLAY` the wizard does not open a browser (it would start a text browser in the terminal); it only prints the URL. GitHub redirects the browser to `127.0.0.1`, so opening that URL on another machine works only with the port forwarded (`ssh -L PORT:127.0.0.1:PORT`). Otherwise run the wizard on your laptop, then copy the directory (`scp -rp ~/.claude/factory/identity HOST:.claude/factory/`, or mount it into the container) and run `factory wizard` there: it verifies and prints the report.
 
 Undo: uninstall the App (the installation URL the report prints), delete the App (`https://github.com/settings/apps/<slug>/advanced`, or `https://github.com/organizations/<owner>/settings/apps/<slug>/advanced`; no API deletes an App), and `rm -r ~/.claude/factory/identity`.
+
+## In a container
+[container.md](container.md) runs the factory on an always-on Linux host: an image with Claude Code, `gh`, git, Python and Go (`docker/`), all state in one host directory, a non-root user, CPU and memory limits. The site manager's job uses the cron backend there, run by supercronic because a container has neither systemd nor a root cron; the rules above hold unchanged. The same page lists the first-run steps, what a lead in `auto` mode could damage, and what a separate GitHub identity for the factory needs.
 
 ## Known limits
 - Nothing caps what a lead spends; the time limit is checked by the lead between subagent runs.
