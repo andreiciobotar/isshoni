@@ -12,9 +12,13 @@ import (
 )
 
 const (
-	kaizenFresh = 30 * time.Second       // entering the view within this of a result starts no load
-	growFor     = 600 * time.Millisecond // the chart columns grow from zero this long
-	shimmerFor  = 3 * time.Second        // the rewards line shimmers this long after it is shown
+	kaizenFresh = 30 * time.Second // entering the view within this of a result starts no load
+	// kaizenPRFloor is the age of the pull request data from which a load that may ask GitHub follows the cached one.
+	kaizenPRFloor = 10 * time.Minute
+	// kaizenPRWarn is the age of the pull request data from which a repository gets a warning line.
+	kaizenPRWarn = 15 * time.Minute
+	growFor      = 600 * time.Millisecond // the chart columns grow from zero this long
+	shimmerFor   = 3 * time.Second        // the rewards line shimmers this long after it is shown
 )
 
 type kaizenPage int
@@ -43,10 +47,11 @@ type kaizenState struct {
 }
 
 type kaizenMsg struct {
-	gen int
-	rng int
-	doc *data.Kaizen
-	err error
+	gen    int
+	rng    int
+	cached bool // the load that never asks GitHub
+	doc    *data.Kaizen
+	err    error
 }
 
 // kaizenCounters are the tile values that count up: money in cents, times in seconds.
@@ -54,6 +59,8 @@ var kaizenCounters = []string{"kz-landed", "kz-cost", "kz-brief", "kz-merge", "k
 
 // loadKaizen starts a load when the view is shown and the range's result is neither in
 // flight nor fresher than kaizenFresh. A load of another range replaces the one running.
+// It reads the cache first, so the numbers show at once; applyKaizen follows it with a
+// load that may ask GitHub when the pull request data is old.
 func (m *model) loadKaizen() tea.Cmd {
 	k := &m.kz
 	if m.view != viewKaizen || m.runner == nil || m.fatal != nil {
@@ -67,25 +74,41 @@ func (m *model) loadKaizen() tea.Cmd {
 	}
 	k.gen++
 	k.busy, k.busyRange = true, m.rangeIdx
-	r, ctx, since, gen, rng := m.runner, m.ctx, ranges[m.rangeIdx].since, k.gen, m.rangeIdx
+	return m.kaizenCmd(true)
+}
+
+// kaizenCmd loads the document of the range in flight, under the current generation.
+func (m *model) kaizenCmd(cached bool) tea.Cmd {
+	r, ctx, since, gen, rng := m.runner, m.ctx, ranges[m.kz.busyRange].since, m.kz.gen, m.kz.busyRange
 	return func() tea.Msg {
-		doc, err := r.Kaizen(ctx, since)
-		return kaizenMsg{gen: gen, rng: rng, doc: doc, err: err}
+		doc, err := r.Kaizen(ctx, since, cached)
+		return kaizenMsg{gen: gen, rng: rng, cached: cached, doc: doc, err: err}
 	}
 }
 
-// applyKaizen takes a load's result whole. A failure keeps the result before it.
-func (m *model) applyKaizen(msg kaizenMsg) {
+// kaizenPRsOld is true when a repository's pull request data is missing or older than kaizenPRFloor.
+func (m *model) kaizenPRsOld(doc *data.Kaizen) bool {
+	for _, r := range doc.Repos {
+		if at, err := time.Parse(time.RFC3339, r.PRsAsOf); err != nil || m.now().Sub(at) > kaizenPRFloor {
+			return true
+		}
+	}
+	return false
+}
+
+// applyKaizen takes a load's result whole. A failure keeps the result before it. The
+// cached load of old pull request data is followed by one that may ask GitHub, which
+// settles the error line either way.
+func (m *model) applyKaizen(msg kaizenMsg) tea.Cmd {
 	k := &m.kz
 	if msg.gen != k.gen {
-		return
+		return nil
 	}
 	k.busy = false
 	if msg.err != nil {
 		k.err = firstLine(msg.err.Error())
-		return
+		return nil
 	}
-	k.err = ""
 	fresh := k.doc == nil || !reflect.DeepEqual(k.doc, msg.doc)
 	k.doc, k.doneAt, k.doneRange = msg.doc, m.now(), msg.rng
 	if fresh {
@@ -93,6 +116,12 @@ func (m *model) applyKaizen(msg kaizenMsg) {
 	}
 	m.kaizenRetarget(m.opts.Static)
 	m.fixScroll()
+	if msg.cached && m.kaizenPRsOld(msg.doc) {
+		k.busy = true
+		return m.kaizenCmd(false)
+	}
+	k.err = ""
+	return nil
 }
 
 // kaizenRetarget points the tile counters at the document's numbers; jump skips the count-up.

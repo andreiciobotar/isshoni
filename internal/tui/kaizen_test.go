@@ -92,6 +92,12 @@ func TestGoldenKaizen(t *testing.T) {
 		{"kaizen-board-140x40", 140, 40, pageBoard, doc, true},
 		{"kaizen-board-100x30", 100, 30, pageBoard, doc, false},
 		{"kaizen-board-80x24", 80, 24, pageBoard, doc, true},
+		{"kaizen-prs-stale-140x100", 140, 100, pagePulse, func(t *testing.T) *data.Kaizen {
+			d := kaizenDoc(t)
+			d.Repos[0].PRsAsOf, d.Repos[0].PRsError = "2026-11-13T10:50:00Z", "timed out after 10 s"
+			d.Repos[1].PRsAsOf = "2026-11-13T10:40:00Z"
+			return d
+		}, true},
 		{"kaizen-empty-80x24", 80, 24, pagePulse, func(*testing.T) *data.Kaizen { return &data.Kaizen{} }, true},
 		{"kaizen-few-100x30", 100, 30, pagePulse, func(t *testing.T) *data.Kaizen { return fewDoc(t) }, true},
 		{"kaizen-wide-200x50", 200, 50, pagePulse, doc, false},

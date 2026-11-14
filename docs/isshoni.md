@@ -58,11 +58,14 @@ task-notification) was found in the transcript.
 
 ## Kaizen measures
 ```
-isshoni kaizen [--since 7d] [--factory-dir DIR] [--json]
+isshoni kaizen [--since 7d] [--factory-dir DIR] [--json] [--cached]
 ```
 Whether the factory is getting better, computed once. It reads the factory's stores
-read-only (`--factory-dir`, default `~/.claude/factory`; format in `docs/factory.md`,
-"Logs"), the transcripts and the price file; it never imports or runs `factory/bin/factory`.
+(`--factory-dir`, default `~/.claude/factory`; format in `docs/factory.md`, "Logs"), the
+transcripts and the price file; it never imports or runs `factory/bin/factory`. It writes
+two things there: its pull request cache (`cache/kaizen-prs-<key>.json`, one per
+repository) and, for a `gh` call that takes over 2 s or fails, one line in
+`gh-YYYY-MM.jsonl` (the factory's debug log, which the factory prunes).
 `--since` keeps the tasks that started at or after the cutoff (and the stops, slowed
 texts and feedback of that range) and limits the transcripts loaded. Without `--json` it
 prints the headline numbers and one line per task. A missing or empty directory exits 0 with
@@ -72,14 +75,22 @@ default for every field and lines that are not JSON objects are skipped.
 A task is a `(repo, slug)` that appears in events, retros or the task state log; records without
 a `slug` or a `repo` are skipped, and worktrees the monitor sees that the factory never
 started are not tasks. **Landed** means the task's pull request is merged. Pull requests
-come from one `gh pr list --state all` per repository, run in the repository, matched on
-the head branch `worktree-<slug>` (the newest when several). When `gh` cannot be used
-(missing, not a GitHub repository, no such path, bad output) the repository's `prs` holds
-the reason, its tasks have no `pr`, and nothing there counts as landed.
+come from a cache on disk per repository, matched on the head branch `worktree-<slug>`
+(the newest when several). The cache is refreshed when it is older than 10 minutes, by
+`gh api repos/{owner}/{repo}/pulls` run in the repository, most recently updated first,
+100 a page, 10 s a page, stopping at what the cache already holds (at most 10 pages, so
+1000 pull requests on a first fetch); repositories are refreshed at the same time. With
+`--cached`, `gh` is never run. A refresh that fails keeps the cache: the tasks keep their
+`pr`, `prs` stays `ok`, `prs_error` holds the reason and the text output says
+`pull requests for <repo> as of <age> ago: <reason>`. Only when there is no cache at all
+(`gh` missing, not a GitHub repository, no such path, bad output, or `--cached` before
+any fetch: `not fetched yet`) does the repository's `prs` hold the reason; its tasks then
+have no `pr`, and nothing there counts as landed.
 
 The document: `generated`, `factory_dir`, `store_found`, `prices`, `roles` (the role
 names in display order; every `by_role` and `share` object has exactly these keys), `repos`
-(`repo`, `repo_path`, `prs`: `ok` or the reason), `versions` (each plugin version by its
+(`repo`, `repo_path`, `prs`: `ok` or the reason, `prs_as_of`: when the pull request data
+used was fetched, `prs_error`: why this run could not refresh it), `versions` (each plugin version by its
 earliest record in any store), `tasks`, `summary`, `stops`, `slowed`, `rewards`, `outbox`,
 `site_manager`.
 Times are UTC (`2026-11-14T00:01:02Z`), a task's durations whole seconds, medians floats
@@ -369,13 +380,28 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   tasks (what they asked), each with how long it has waited; when nothing waits it says
   so. The `3 Factory` tab carries `▲N` for the number waiting on every view (in a narrow
   header the live count then shows as `● N`, without the word). It refreshes every 30
-  seconds while shown, every 2 minutes otherwise. `c` sets `worktree_cap` (1 to
+  seconds while shown, every 2 minutes otherwise, in two passes. The first, for every
+  repository, is `factory status --json --cached` (10 s limit): it never contacts
+  GitHub, so the rows show at once. The second, only while the view is shown, is
+  `factory status --json --max-age 60` (25 s limit) for each repository with tasks
+  whose pull request data is missing or older than 60 seconds; it asks GitHub (at most
+  10 s per call, see [factory.md](factory.md)). It runs per repository, one at a time
+  each. If it fails, the rows stay and a dim line under the repository says
+  `pull requests as of 2m ago · GitHub slow: <why>`; a line also appears when the data
+  is over 2 minutes old. Off the view only the first pass runs, so the dashboard makes
+  no GitHub call there. `--snapshot` runs both passes. `c` sets `worktree_cap` (1 to
   999) in `~/.claude/factory/settings.json`, leaving the other keys as they were; a file
   that is not a JSON object is never overwritten. See [factory.md](factory.md).
 - **Kaizen:** whether the factory is getting better, across all repositories, from what
   `isshoni kaizen --json` reports (see [Kaizen measures](#kaizen-measures)). It loads when
   the view is shown (unless a result under 30 seconds old is held) and when the range
-  changes; there is no periodic refresh. Four pages, switched with `←` `→`, each
+  changes; there is no periodic refresh. The first load is `isshoni kaizen --json
+  --cached`, which never contacts GitHub, so the numbers show at once; when any
+  repository's pull request data is missing or older than 10 minutes a second load
+  without `--cached` follows in the background and replaces the document. If it fails
+  the first document stays. A repository whose pull request data is over 15 minutes
+  old, or whose refresh failed, gets a line `⚠ pull requests for <repo> as of 12m ago:
+  <why>` on the Pulse and Anatomy pages. Four pages, switched with `←` `→`, each
   scrolled with the move keys: **Pulse** (the landed count and the median cost, brief to
   pull request, pull request to merge and first-pass rate, each with how the latest half
   of the landed tasks compares with the earlier half from 10 landed tasks; beside the cost,
