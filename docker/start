@@ -52,7 +52,7 @@ end() {
 # serve_loop runs in the background; on TERM it stops the current child and ends.
 serve_loop() {
 	child= stopping=
-	trap 'stopping=1; [ -z "$child" ] || kill -TERM "$child" 2>/dev/null || :' TERM INT
+	trap 'stopping=1; [ -z "$child" ] || end "$child"' TERM INT
 	while [ -z "$stopping" ]; do
 		"$tui" --serve 0.0.0.0:2222 &
 		child=$!
@@ -74,6 +74,8 @@ stop() {
 	stopping=1
 	[ -z "$loop" ] || kill -TERM "$loop" 2>/dev/null || :
 	[ -z "$cron" ] || kill -TERM "$cron" 2>/dev/null || :
+	[ -z "$loop" ] || end "$loop"
+	[ -z "$cron" ] || end "$cron"
 }
 
 stopping= cron= loop=
