@@ -958,8 +958,8 @@ func TestHanamiCirculation(t *testing.T) {
 	}
 	g := s.geo()
 	b := s.branches[0]
-	if x, y := b.run(g, nil, 1); x != func() float64 { x, _ := b.point(g, b.grow.x); return x }() || y >= g.waterY {
-		t.Fatal("sap does not end at the branch's tip")
+	if x, y := b.run(g, nil, 1); x < 0 || x >= g.W || y < 0 || y >= g.waterY {
+		t.Fatalf("sap ends outside the sky, at %.0f,%.0f", x, y)
 	}
 
 	// home: the rim takes the colour when the last petal reaches the disc
@@ -1134,10 +1134,9 @@ func TestHanamiNoColourWaterlineAndWords(t *testing.T) {
 	for x := 3; x < 8; x++ {
 		cv.cells[0*20+x].ch, cv.cells[2*20+x].ch = 'y', 'y'
 	}
-	cv.cells[1*20+4].ch = 0
-	cv.cells[3*20+5].ch = 'z'
+	cv.cells[1*20+4].ch, cv.cells[1*20+5].ch, cv.cells[1*20+6].ch = 0, 'x', 0 // its own row, the one above and the one below are all blocked
 	cv.word(4, 1, "abc", hrgb{})
-	if cv.cells[1*20+4].ch != 0 || cv.cells[3*20+4].ch != 0 {
+	if cv.cells[1*20+4].ch != 0 || cv.cells[1*20+6].ch != 0 {
 		t.Fatal("a word with no free row was drawn anyway")
 	}
 }

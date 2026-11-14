@@ -1509,8 +1509,8 @@ func (s *hanamiScene) draw(legend bool) []string {
 	// sap rises along the branches; a brief runs out to a blossom that is to open
 	for _, b := range s.branches {
 		for _, d := range b.beads {
-			col, a := d.col.mix(toRGB(s.th.Text), 0.25), 0.8+0.2*d.k
-			for k := 0; k < 6; k++ { // a head of 2x2 dots with a glow, and a tail of six
+			col, a := d.col.mix(toRGB(s.th.Text), 0.25), 0.55+0.45*d.k // a bare call is dim, output bright
+			for k := 0; k < 6; k++ {                                   // a head of 2x2 dots with a glow, and a tail of six
 				x, y := b.run(g, d.bl, math.Max(0, d.t/beadTrip-0.014*float64(k)))
 				cv.plot(x, y, col, a*(1-float64(k)/7))
 				if k == 0 {
