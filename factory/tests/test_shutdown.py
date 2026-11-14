@@ -60,18 +60,20 @@ def gone(pid, seconds=5.0):
 def start_in_group(testcase, argv, **kw):
     """A child of the test in its own process group, killed and reaped when the test ends."""
     p = subprocess.Popen(argv, start_new_session=True, **kw)
-
-    def cleanup():
-        try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        p.wait()
-        for pipe in (p.stdin, p.stdout, p.stderr):
-            if pipe:
-                pipe.close()
-    testcase.addCleanup(cleanup)
+    testcase.addCleanup(reap, p, True)
     return p
+
+
+def reap(p, group):
+    """Kill `p` (its whole group when `group`), wait for it and close its pipes."""
+    try:
+        os.killpg(p.pid, signal.SIGKILL) if group else p.kill()
+    except ProcessLookupError:
+        pass
+    p.wait()
+    for pipe in (p.stdin, p.stdout, p.stderr):
+        if pipe:
+            pipe.close()
 
 
 class Fakes(unittest.TestCase):
@@ -125,6 +127,48 @@ class RunLifetimeTests(Fakes):
     def test_a_call_without_a_timeout_that_hangs_gets_the_default(self):
         with mock.patch.object(factory, "RUN_TIMEOUT", 0.3):
             self.assertEqual(factory.run(["sleep", "60"]), (124, "", "timed out"))
+
+    def run_with_a_signal_inside_popen(self, argv, group):
+        """`run()` of `argv` when SIGHUP is handled between the fork and the return of `Popen`."""
+        real, made = subprocess.Popen, []
+
+        def popen(*args, **kw):
+            p = real(*args, **kw)
+            made.append(p)
+            self.addCleanup(reap, p, group)
+            if group:
+                self.started()
+            factory.stop_on_signal(signal.SIGHUP, None)
+            return p
+
+        self.run_with_a_signal_and(popen, argv, group)
+        return made[0]
+
+    def run_with_a_signal_and(self, popen, argv, group):
+        """`run()` of `argv` with `popen` for `Popen`, which must end it with SIGHUP (exit 129) and hold nothing."""
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            self.addCleanup(signal.signal, sig, signal.getsignal(sig))
+        env = {**os.environ, "GRANDCHILD": str(self.grandchild)}
+        with mock.patch.object(factory.subprocess, "Popen", popen), self.assertRaises(SystemExit) as raised:
+            factory.run(argv, env=env, group=group)
+        self.assertEqual(raised.exception.code, 129)
+        self.assertEqual(factory.GROUPS, set())
+        self.assertIsNone(factory.HELD)
+
+    def test_a_signal_when_popen_fails_still_ends_the_script(self):
+        def popen(*args, **kw):
+            factory.stop_on_signal(signal.SIGHUP, None)
+            raise OSError("no such program")
+
+        self.run_with_a_signal_and(popen, ["sleep", "60"], group=False)
+
+    def test_a_signal_inside_popen_ends_the_group_child(self):
+        self.run_with_a_signal_inside_popen([str(self.bin / "claude"), "-p"], group=True)
+        self.assertTrue(gone(self.started()))
+
+    def test_a_signal_inside_popen_ends_an_ordinary_child(self):
+        child = self.run_with_a_signal_inside_popen(["sleep", "60"], group=False)
+        self.assertIsNotNone(child.poll())
 
     def run_script(self, env):
         """The script `lander 1` in a throwaway repository, in a process group of its own: the pull request is a fork,
@@ -263,7 +307,7 @@ class BusyAfterHandoverTests(unittest.TestCase):
     def test_it_is_shipped_in_the_criteria_file(self):
         (c,) = [c for c in factory.load_criteria() if c["name"] == "busy-after-handover"]
         self.assertEqual((c["escalate"], c["threshold"], c.get("job", "watch")), ("judgment", 6, "watch"))
-        self.assertEqual(factory.EVERY_TICK, {"busy-after-handover"})
+        self.assertEqual(factory.EVERY_TICK, {"busy-after-handover", "churning"})
 
 
 class BusyEveryTickTests(Harness):
@@ -491,13 +535,13 @@ class StaleLinesTests(unittest.TestCase):
 
     def test_every_name_the_factory_writes_in_the_store_is_not_a_stranger(self):
         store = self.tmp / "store"
-        for name in ("events", "tasks", "feedback", "firings", "retros", "comments", "gh", "techlead"):
+        for name in ("events", "tasks", "feedback", "firings", "retros", "comments", "gh", "techlead", "queue"):
             factory.log(name, {"ts": factory.now()})
         root = "/some/repo"
         for kind, ext in (("dispatcher", "json"), ("comments", "json"), ("lander", "json"), ("watch", "lock"), ("tech-lead-a-task", "lock"),
                           ("lander", "lock"), ("word", "json"), ("word", "json.tmp"), ("dispatcher", "json.tmp"), ("comments", "json.tmp"), ("lander", "json.tmp")):
             factory.repo_state(root, kind, ext).write_text("x")
-        for name in ("tasks.jsonl", "events.jsonl", "settings.json", "watch.log", "tech-lead.log", "hosts.json", "hosts.json.tmp",
+        for name in ("tasks.jsonl", "events.jsonl", "settings.json", "settings.toml", "watch.log", "tech-lead.log", "hosts.json", "hosts.json.tmp",
                      ".settings-ab12.tmp"):
             (store / name).write_text("x")
         for name in ("cache", "comments", "identity", "specs", "deliverables", "dashboard"):

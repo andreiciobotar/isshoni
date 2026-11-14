@@ -465,7 +465,7 @@ class ApprovedTests(World):
                 self.assertEqual(self.merges(), ["1"] if merged else [])
 
     def test_lgtm_from_author_false_leaves_the_author_out_only(self):
-        (self.store / "settings.json").write_text('{"lgtm_from_author": false}')
+        (self.store / "settings.toml").write_text('[merging]\nlgtm_from_author = false\n')
         self.approved([pr(1)], {1: [comment()]})
         self.assertEqual(self.gh_mutations(), [])
         self.approved([pr(1)], {1: [comment(login="dev")]})
@@ -501,6 +501,31 @@ class ApprovedTests(World):
         self.assertEqual(code, 1)
         self.assertEqual(self.merges(), ["1"])
         self.assertIn("#2 stopped: its base has moved", out)
+
+    def queued(self):
+        """The `queue` records, without their `ts`."""
+        return [{k: v for k, v in r.items() if k != "ts"} for r in self.records("queue")]
+
+    def merged_record(self, approved_at):
+        return {"repo": ROOT, "slug": "t1", "pr": 1, "head": SHA, "step": "merged", "approved_at": approved_at}
+
+    def test_a_merge_records_the_time_of_the_approving_review(self):
+        self.approved([pr(1)], reviews={1: [review(at=NOW - 60)]})
+        self.assertEqual(self.queued(), [self.merged_record(iso(NOW - 60))])
+
+    def test_a_merge_records_the_time_of_the_lgtm_comment(self):
+        self.approved([pr(1)], {1: [comment(at=NOW - 90)]})
+        self.assertEqual(self.queued(), [self.merged_record(iso(NOW - 90))])
+
+    def test_a_merge_with_no_approval_required_records_a_null_time(self):
+        self.merge("1", prs=[pr(1)])
+        self.assertEqual(self.queued(), [self.merged_record(None)])
+
+    def test_a_dry_run_and_a_refused_merge_record_nothing(self):
+        self.merge("1", "--dry-run", prs=[pr(1)])
+        self.approved([pr(1)])
+        self.approved([pr(1)], reviews={1: [review()]}, extra={("gh", "pr", "merge"): (1, "", "head moved")})
+        self.assertEqual(self.queued(), [])
 
     def test_all_skips_what_is_not_approved_and_merges_the_rest(self):
         code, out, _ = self.approved([pr(1), pr(2), pr(3)], {1: [comment()], 3: [comment(n=3)]}, "--all")

@@ -291,7 +291,7 @@ func (m *model) saveCap() tea.Cmd {
 		f.fieldErr = fmt.Sprintf("enter a whole number from 1 to %d", capMax)
 		return nil
 	}
-	if err := data.WriteWorktreeCap(data.FactorySettingsPath(), n); err != nil {
+	if err := data.WriteWorktreeCap(n); err != nil {
 		f.fieldErr = err.Error()
 		return nil
 	}

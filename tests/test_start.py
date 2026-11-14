@@ -2,6 +2,7 @@
 import json
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -25,13 +26,18 @@ class StartScript(unittest.TestCase):
         self.bin.mkdir()
         write_exe(self.bin / "claude", CLAUDE_STUB)
         write_exe(self.bin / "supercronic", "#!/bin/sh\nexit 0\n")
+        (self.bin / "python3").symlink_to(sys.executable)  # the container's Python reads TOML; a system one may not
         (self.home / "tmp").mkdir()
         (self.home / ".container-id").write_text("box1\n")  # this container has started before
 
     def settings(self, content):
-        path = self.home / ".claude/factory/settings.json"
+        """settings.toml: text as it is, or a dict of {"dispatchers": [...], "monitor": "..."} in their tables."""
+        path = self.home / ".claude/factory/settings.toml"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content if isinstance(content, str) else json.dumps(content))
+        if not isinstance(content, str):
+            tables = {"dispatchers": "sessions", "monitor": "paths"}
+            content = "".join(f"[{tables[k]}]\n{k} = {json.dumps(v)}\n" for k, v in content.items())
+        path.write_text(content)
 
     def repos(self, *names):
         for name in names:
@@ -74,6 +80,25 @@ class StartScript(unittest.TestCase):
                 self.assertEqual(self.bg(), [{"argv": ["--bg", "-n", "dispatcher-b", "--permission-mode", "auto", "/factory:dispatch"],
                                               "cwd": str(self.home / "code/b")}])
 
+    def test_the_list_comes_from_settings_toml_else_from_a_legacy_settings_json(self):
+        factory = lambda: self.home / ".claude/factory"
+        legacy = lambda names: (factory() / "settings.json").write_text(json.dumps({"dispatchers": names}))
+        cases = {  # name: (arrange, the one started, stderr)
+            "toml only": (lambda: self.settings({"dispatchers": ["dispatcher-a"]}), "a"),
+            "json only": (lambda: (factory().mkdir(parents=True), legacy(["dispatcher-a"])), "a"),
+            "both: the toml wins": (lambda: (self.settings({"dispatchers": ["dispatcher-a"]}), legacy(["dispatcher-b"])), "a"),
+            "neither": (lambda: None, None),
+        }
+        for name, (arrange, started) in cases.items():
+            with self.subTest(name):
+                self.fresh()
+                self.repos("a", "b")
+                self.running()
+                arrange()
+                done = self.start()
+                self.assertEqual((done.returncode, done.stderr), (0, ""))
+                self.assertEqual([c["argv"][2] for c in self.bg()], [f"dispatcher-{started}"] if started else [])
+
     def test_a_new_container_records_its_id_and_starts_nothing(self):
         for before in (None, "other\n"):
             with self.subTest(before=before):
@@ -92,8 +117,8 @@ class StartScript(unittest.TestCase):
         cases = {  # name: (arrange, stderr lines)
             "no settings file": (lambda: None, 0),
             "no key": (lambda: self.settings({"monitor": "x"}), 0),
-            "not json": (lambda: self.settings("{"), 1),
-            "not an object": (lambda: self.settings("[]"), 1),
+            "not toml": (lambda: self.settings("[sessions"), 1),
+            "not a table": (lambda: self.settings("sessions = 3\n"), 1),
             "no repository directory": (lambda: self.settings({"dispatchers": ["dispatcher-gone"]}), 1),
             "not logged in": (broken, 1),
             "no claude": (lambda: (self.settings({"dispatchers": ["dispatcher-a"]}), (self.bin / "claude").unlink()), 1),

@@ -106,7 +106,8 @@ class LandTests(unittest.TestCase):
             tool.write_text(text)
             tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
         self.bump = bindir / "bump"
-        self.env = {**os.environ, "HOME": str(self.home), "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        self.env = {**os.environ, "HOME": str(self.home), "FACTORY_HOME": str(self.home / ".claude" / "factory"),
+                    "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
                     "FAKE_STATE": str(self.state), "FAKE_LANDER": "stop", "TEST_CMD": "true",
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                     "GIT_COMMITTER_EMAIL": "t@t"}
@@ -337,15 +338,23 @@ class LandTests(unittest.TestCase):
 
     def test_lean_start_off_gives_the_lander_its_old_argv(self):
         (self.home / ".claude" / "factory").mkdir(parents=True)
-        (self.home / ".claude" / "factory" / "settings.json").write_text('{"lean_start": false}')
+        (self.home / ".claude" / "factory" / "settings.toml").write_text('[sessions]\nlean_start = false\n')
         self.conflict()
         self.land("t1")
         (call,) = self.claude_calls()
         self.assertFalse(any(a.startswith("--strict") or a == "--settings" for a in call["argv"]))
 
+    def test_the_lander_runs_on_the_configured_model(self):
+        (self.home / ".claude" / "factory").mkdir(parents=True)
+        (self.home / ".claude" / "factory" / "settings.toml").write_text('[models]\nlander = "claude-haiku-4-5"\n')
+        self.conflict()
+        self.land("t1")
+        (call,) = self.claude_calls()
+        self.assertEqual(call["argv"][call["argv"].index("--model") + 1], "claude-haiku-4-5")
+
     def test_a_broken_settings_file_stops_the_land_before_anything_is_declared(self):
         (self.home / ".claude" / "factory").mkdir(parents=True)
-        (self.home / ".claude" / "factory" / "settings.json").write_text('{"lean_start": "no"}')
+        (self.home / ".claude" / "factory" / "settings.toml").write_text('[sessions]\nlean_start = "no"\n')
         self.conflict()
         p = self.land("t1")
         self.assertEqual(p.returncode, 2)
@@ -361,13 +370,14 @@ class LandTests(unittest.TestCase):
         self.assertEqual(call["cwd"], str(wt))
         self.assertEqual(argv[:5], ["-p", "--agent", "factory:lander", "--plugin-dir", str(BIN.parent.parent)])
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
-        self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "auto")
         i = argv.index("--strict-mcp-config")
         self.assertEqual(argv[i:i + 3], ["--strict-mcp-config", "--settings", json.dumps(
             {"disableBundledSkills": True, "enabledPlugins": {"alpha@m": False}})])
-        tools = argv[argv.index("--allowedTools") + 1:-3]
+        tools = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
         self.assertEqual(tools, ["Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
                                  "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)"])
+        self.assertEqual(argv[argv.index("--disallowedTools") + 1:-3], list(FACTORY.ROLE_DENIED))
         self.assertEqual(argv[argv.index("--output-format") + 1], "json")
         brief = argv[-1]
         for text in ("Your task slug is t1.", "The base is main (remote origin).", f"The reviewed head is {old}.",
@@ -384,6 +394,33 @@ class LandTests(unittest.TestCase):
         self.assertEqual(self.last_state(), "working")
         (comment,) = self.gh_calls()
         self.assertIn("conflicts: a.txt - merged by hand", comment["body"])
+
+    def queued(self):
+        """The `queue` records of the run, without their `ts`, in the temporary store."""
+        files = sorted((self.home / ".claude/factory").glob("queue-*.jsonl"))
+        return [{k: v for k, v in json.loads(line).items() if k != "ts"} for f in files for line in f.read_text().splitlines()]
+
+    def number_the_pull_request(self, number=12):
+        self.prs["worktree-t1"][0]["url"] = f"https://x/pull/{number}"
+        self.write_state()
+
+    def test_the_queue_records_a_clean_base_merge_and_nothing_when_the_base_has_not_moved(self):
+        wt = self.task("t1")
+        self.number_the_pull_request()
+        self.land("t1")
+        self.assertEqual(self.queued(), [])
+        self.advance_main(1, "main line", "b.txt")
+        old = self.git("rev-parse", "HEAD", cwd=wt)
+        self.land("t1")
+        self.assertEqual(self.queued(), [{"repo": str(self.repo), "slug": "t1", "pr": 12, "head": old,
+                                          "step": "land-updated", "base": "origin/main"}])
+
+    def test_the_queue_records_a_conflicting_base_merge_with_its_files(self):
+        wt, old = self.conflict()
+        self.number_the_pull_request()
+        self.land("t1")
+        self.assertEqual(self.queued(), [{"repo": str(self.repo), "slug": "t1", "pr": 12, "head": old,
+                                          "step": "land-conflict", "base": "origin/main", "files": ["a.txt"]}])
 
     def test_a_lander_that_stops_pushes_nothing(self):
         wt, old = self.conflict()
@@ -564,7 +601,7 @@ class LandTests(unittest.TestCase):
         old = self.git("rev-parse", "HEAD", cwd=wt)
         p = self.land("t1")
         self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED tests`"))
-        self.assertIn("no test command: no `test:` rule in Makefile", p.stdout)
+        self.assertIn(FACTORY.TEST_NOT_STATED, p.stdout)
         self.assertEqual((self.remote_head(), self.last_state()), (old, "working"))
 
     def test_working_is_declared_before_a_look_is_pushed(self):
@@ -594,7 +631,7 @@ class LandTests(unittest.TestCase):
         module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_land_nobranch", loader))
         loader.exec_module(module)
         with mock.patch.object(module, "declare") as declare, mock.patch.object(module, "run") as run:
-            module.Landing(mock.Mock(), {"path": "/x/t1", "branch": None}, False).mark_working()
+            module.Landing(mock.Mock(), {"path": "/x/t1", "branch": None}, False, "auto").mark_working()
         declare.assert_called_once()
         run.assert_not_called()
 
@@ -714,6 +751,119 @@ class LandTests(unittest.TestCase):
         self.assertIn("Result: STOPPED other", comment["body"])
         self.assertNotIn("Result: LANDED", comment["body"])
         self.assertEqual(self.last_state(), "working")
+
+    def commands(self, wt, *args):
+        return self.factory("commands", *args, cwd=wt)
+
+    def test_a_stated_command_runs_in_a_shell_and_is_named_in_facts_and_comment(self):
+        wt = self.task("t1")
+        self.advance_main(1, "main line", "b.txt")
+        self.assertEqual(self.commands(wt, "test", "true && echo ok > ran.txt && rm ran.txt").returncode, 0)
+        p = self.land("t1", TEST_CMD="exit 1")  # the Makefile rule is not run
+        self.assertEqual((p.returncode, self.result(p)), (0, "`LANDED https://x/pull/t1`"))
+        self.assertIn("tests: `true && echo ok > ran.txt && rm ran.txt` pass", p.stdout)
+        self.assertIn("Tests: `true && echo ok > ran.txt && rm ran.txt` pass.", self.gh_calls()[0]["body"])
+
+    def test_a_failing_stated_command_stops_tests(self):
+        wt = self.task("t1")
+        self.advance_main(1, "main line", "b.txt")
+        old = self.remote_head()
+        self.commands(wt, "test", "echo boom && false")
+        p = self.land("t1")
+        self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED tests`"))
+        self.assertIn("echo boom && false failed", p.stdout)
+        self.assertIn("boom", p.stdout)
+        self.assertEqual((self.remote_head(), self.gh_calls()), (old, []))
+
+    def test_no_tests_land_loudly(self):
+        wt = self.task("t1")
+        self.advance_main(1, "main line", "b.txt")
+        self.commands(wt, "test", "none")
+        p = self.land("t1", TEST_CMD="exit 1")
+        self.assertEqual((p.returncode, self.result(p)), (0, "`LANDED https://x/pull/t1`"))
+        self.assertIn("tests: NO TESTS WERE RUN: none found in this repository", p.stdout)
+        self.assertIn("Tests: NO TESTS WERE RUN: none found in this repository.", self.gh_calls()[0]["body"])
+
+    def test_the_makefile_rule_is_the_last_resort_and_its_text_is_unchanged(self):
+        self.task("t1")
+        self.advance_main(1, "main line", "b.txt")
+        p = self.land("t1")
+        self.assertIn("tests: `make test` pass", p.stdout)
+        self.assertIn("Tests: `make test` pass.", self.gh_calls()[0]["body"])
+
+    def test_resolution_prefers_stated_then_last_handed_over_then_the_makefile(self):
+        wt = self.task("t1", state="working")
+        self.assertEqual(self.commands(wt).stdout, "test: make test (Makefile rule)\ngolden: none\n")
+        self.git("config", "factory.lastTest", "./old.sh")
+        self.assertEqual(self.commands(wt).stdout, "test: ./old.sh (last handed over in this repository)\ngolden: none\n")
+        self.commands(wt, "test", "./new.sh")
+        self.commands(wt, "golden", "./gen.sh")
+        self.assertEqual(self.commands(wt).stdout, "test: ./new.sh (stated for this task)\ngolden: ./gen.sh\n")
+        self.assertEqual((self.commands(wt, "test").stdout, self.commands(wt, "golden").stdout), ("./new.sh\n", "./gen.sh\n"))
+        self.commands(wt, "golden", "none")
+        self.assertEqual(self.commands(wt, "golden").stdout, "none\n")
+        self.assertEqual(self.commands(self.repo).stdout, "test: ./old.sh (last handed over in this repository)\ngolden: none\n")
+
+    def drop_makefile(self):
+        self.git("rm", "-q", "Makefile")
+        self.git("commit", "-q", "-m", "no makefile")
+        self.git("push", "-q", "origin", "main")
+
+    def test_none_is_a_stated_value_and_not_stated_exits_1_with_the_message(self):
+        self.drop_makefile()
+        wt = self.task("t1", state="working")
+        p = self.commands(wt, "test")
+        self.assertEqual((p.returncode, p.stdout), (1, ""))
+        self.assertIn(FACTORY.TEST_NOT_STATED, p.stderr)
+        self.assertEqual(self.commands(wt).stdout, "test: not stated\ngolden: none\n")
+        self.commands(wt, "test", "none")
+        self.assertEqual((self.commands(wt, "test").returncode, self.commands(wt, "test").stdout), (0, "none\n"))
+
+    def test_an_empty_command_and_a_setting_outside_a_task_are_refused(self):
+        wt = self.task("t1", state="working")
+        for value in ("", "  "):
+            p = self.commands(wt, "test", value)
+            self.assertEqual((p.returncode, p.stdout), (1, ""))
+            self.assertIn("empty", p.stderr)
+        p = self.commands(self.repo, "test", "./x.sh")
+        self.assertEqual((p.returncode, p.stdout), (1, ""))
+        self.assertIn("inside a task worktree", p.stderr)
+
+    def test_a_detached_task_worktree_gets_its_own_refusal(self):
+        wt = self.task("t1", state="working")
+        self.git("checkout", "-q", "--detach", cwd=wt)
+        p = self.commands(wt, "test", "./x.sh")
+        self.assertEqual((p.returncode, p.stdout), (1, ""))
+        self.assertIn("detached HEAD; check out worktree-t1", p.stderr)
+
+    def test_handing_over_records_the_stated_command_for_the_next_task_but_not_none(self):
+        wt = self.task("t1", state="working")
+        self.commands(wt, "test", "none")
+        self.factory("state", "handed-over", "https://x/pull/t1", cwd=wt)
+        self.assertEqual(subprocess.run(["git", "config", "--get", "factory.lastTest"], cwd=self.repo, capture_output=True,
+                                        text=True).stdout, "")
+        self.commands(wt, "test", "./check.sh")
+        self.factory("state", "handed-over", "https://x/pull/t1", cwd=wt)
+        self.assertEqual(self.git("config", "--get", "factory.lastTest"), "./check.sh")
+
+    def test_the_lander_gets_the_mode_the_deny_rules_and_the_commands(self):
+        (self.home / ".claude" / "factory").mkdir(parents=True)
+        (self.home / ".claude" / "factory" / "settings.toml").write_text('[sessions]\nlead_permission_mode = "acceptEdits"\n')
+        wt, _ = self.conflict()
+        self.commands(wt, "test", "./check.sh")
+        self.commands(wt, "golden", "./gen.sh")
+        self.land("t1")
+        (call,) = self.claude_calls()
+        argv = call["argv"]
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "acceptEdits")
+        self.assertIn("The test command is ./check.sh. The golden command is ./gen.sh.", argv[-1])
+
+    def test_a_conflict_without_a_stated_command_tells_the_lander_to_find_it(self):
+        self.drop_makefile()
+        self.conflict()
+        self.land("t1")
+        (call,) = self.claude_calls()
+        self.assertIn("The test command is not stated: find how this repository runs its tests and run that.", call["argv"][-1])
 
     def land_as(self, exports, error=None):
         """`factory land t1` in this process, with the App's exports as `factory env` would give them."""

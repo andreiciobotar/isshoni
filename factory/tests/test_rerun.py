@@ -211,6 +211,11 @@ class LogFormats(unittest.TestCase):
     def test_nothing(self):
         self.assertEqual(factory.failing_tests(f"{PREFIX}FAIL\tisshoni/x\t1s\n{PREFIX}exit 1\n"), [])
 
+    def test_pytest_and_jest_logs_name_nothing(self):
+        pytest = f"{PREFIX}FAILED tests/test_a.py::test_one - assert 1 == 2\n{PREFIX}=== 1 failed, 3 passed in 0.12s ===\n"
+        jest = f"{PREFIX}FAIL src/a.test.js\n{PREFIX}  ● adds numbers\n{PREFIX}Tests: 1 failed, 3 passed\n"
+        self.assertEqual((factory.failing_tests(pytest), factory.failing_tests(jest)), ([], []))
+
 
 if __name__ == "__main__":
     unittest.main()

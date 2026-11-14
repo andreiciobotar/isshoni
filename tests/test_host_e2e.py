@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -107,8 +108,9 @@ class HostEndToEnd(unittest.TestCase):
         self.assertEqual([mode(home / "factory/identity"), mode(home / "factory/identity/key.pem"), mode(home / "factory/identity/app.json"), mode(home / "settings.json")],
                          [0o700, 0o600, 0o600, 0o600])
         self.assertEqual(json.loads((home / "settings.json").read_text())["env"], {"CLAUDE_CODE_OAUTH_TOKEN": TOKEN})
-        self.assertEqual(json.loads((home / "factory/settings.json").read_text()),
-                         {"monitor": "/state/home/.isshoni/bin/isshoni", "dispatchers": ["dispatcher-isshoni"]})
+        settings = tomllib.loads((home / "factory/settings.toml").read_text())
+        self.assertEqual((settings["paths"]["monitor"], settings["sessions"]["dispatchers"]),
+                         ("/state/home/.isshoni/bin/isshoni", ["dispatcher-isshoni"]))
         pub = (laptop / "id.pub").read_text().strip()
         self.assertEqual((home / "factory/dashboard/authorized_keys").read_text(), "write " + pub + "\n")
         self.assertTrue((self.state / "home/code/isshoni/.git").is_dir())

@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -160,11 +159,7 @@ func (r *Runner) factoryOutput(ctx context.Context, script, repoPath string, fet
 		case ctx.Err() != nil:
 			return nil, ctx.Err()
 		}
-		msg := strings.TrimSpace(se.String())
-		if i := strings.LastIndex(msg, "\n"); i >= 0 {
-			msg = strings.TrimSpace(msg[i+1:])
-		}
-		return nil, errors.New(cmp.Or(strings.TrimPrefix(msg, "factory: "), err.Error()))
+		return nil, stderrLine(se.String(), err)
 	}
 	return so.Bytes(), nil
 }
@@ -172,11 +167,10 @@ func (r *Runner) factoryOutput(ctx context.Context, script, repoPath string, fet
 // FactorySettingsPath is the factory's settings file.
 func FactorySettingsPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", "factory", "settings.json")
+	return filepath.Join(home, ".claude", "factory", "settings.toml")
 }
 
-// ErrWorktreeCap marks a settings file that is an object but whose worktree_cap the
-// factory would refuse.
+// ErrWorktreeCap marks a settings file whose worktree_cap the factory would refuse.
 var ErrWorktreeCap = errors.New("worktree_cap is invalid")
 
 // ShortPath shows the home directory as ~.
@@ -200,9 +194,8 @@ func shortErr(path string, err error) error {
 	return fmt.Errorf("%s: %w", ShortPath(path), err)
 }
 
-// readSettings returns the file's keys with their values as written; a missing file is
-// no keys, and a file that is not JSON or not an object is an error naming the path.
-func readSettings(path string) (map[string]json.RawMessage, error) {
+// legacySettings reads the keys of a settings.json with their values as written; a missing file is no keys.
+func legacySettings(path string) (map[string]json.RawMessage, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]json.RawMessage{}, nil
@@ -220,18 +213,178 @@ func readSettings(path string) (map[string]json.RawMessage, error) {
 	return obj, nil
 }
 
-// ReadWorktreeCap is the cap the factory would use: the file's worktree_cap, else the default.
+// wrongType is the value of a key that is neither an integer nor a list of strings.
+type wrongType struct{}
+
+var (
+	tableLine = regexp.MustCompile(`^\[\s*([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\s*\](?:\s*#.*)?$`)
+	bareKey   = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+)
+
+// scanLine is the number of `[` minus the number of `]` in a line outside its strings and comment (a basic string
+// has backslash escapes, a literal string none), and whether a `"""` or `”'` opens outside a string: a
+// multi-line string, which this reader does not follow.
+func scanLine(s string) (delta int, triple bool) {
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case quote == '"' && c == '\\':
+			i++
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			if strings.HasPrefix(s[i:], strings.Repeat(string(c), 3)) {
+				return delta, true
+			}
+			quote = c
+		case c == '#':
+			return delta, false
+		case c == '[':
+			delta++
+		case c == ']':
+			delta--
+		}
+	}
+	return delta, false
+}
+
+// readSetting is the one reader of the settings file the dashboard has; the factory is the only writer. It finds
+// `key` inside `[table]` and returns its value: an int, a []string (an array of basic strings on one line or
+// over several, comments and a trailing comma allowed), or wrongType for any other single-line value. found is
+// false for no such key. It is not a TOML parser: a line it cannot classify (a header that is not [bare.name], a key
+// that is not a bare name, a value starting `{`, a `"""` or `”'` anywhere, a list it cannot read) is an error naming the file and the line.
+// A missing file reads the same key of a legacy settings.json beside it, if there is one.
+func readSetting(path, table, key string) (val any, found bool, err error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return readLegacy(filepath.Join(filepath.Dir(path), "settings.json"), key)
+	}
+	if err != nil {
+		return nil, false, shortErr(path, err)
+	}
+	lines, current := strings.Split(string(b), "\n"), ""
+	unreadable := func(i int, what string) error {
+		return fmt.Errorf("%s line %d: %s", ShortPath(path), i+1, what)
+	}
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		if line[0] == '[' {
+			m := tableLine.FindStringSubmatch(line)
+			if m == nil {
+				return nil, false, unreadable(i, "a table header other than [name] or [name.name]")
+			}
+			current = m[1]
+			continue
+		}
+		name, rest, ok := strings.Cut(line, "=")
+		name, rest = strings.TrimSpace(name), strings.TrimSpace(rest)
+		switch {
+		case !ok || !bareKey.MatchString(name):
+			return nil, false, unreadable(i, "a line that is not a table header, a comment or a plain name = value")
+		case strings.HasPrefix(rest, "{"):
+			return nil, false, unreadable(i, "an inline table")
+		}
+		if _, triple := scanLine(line); triple {
+			return nil, false, unreadable(i, "a multi-line string")
+		}
+		if current != table || name != key {
+			// another key: a list over several lines is skipped whole
+			start := i
+			depth, _ := scanLine(rest)
+			for depth > 0 {
+				if i++; i >= len(lines) {
+					return nil, false, unreadable(start, "the list is not closed")
+				}
+				d, triple := scanLine(lines[i])
+				if triple {
+					return nil, false, unreadable(i, "a multi-line string")
+				}
+				depth += d
+			}
+			continue
+		}
+		if !strings.HasPrefix(rest, "[") {
+			rest, _, _ = strings.Cut(rest, "#")
+			if n, err := strconv.Atoi(strings.TrimSpace(rest)); err == nil {
+				return n, true, nil
+			}
+			return wrongType{}, true, nil
+		}
+		list, at, err := readStrings(lines, i, rest[1:])
+		if err != nil {
+			return nil, false, fmt.Errorf("%s line %d: %w", ShortPath(path), at+1, err)
+		}
+		return list, true, nil
+	}
+	return nil, false, nil
+}
+
+// readStrings reads an array of basic strings that began on lines[i], whose text after the `[` is s; on an error
+// the second result is the index of the line it is on (for an unclosed list, where it began).
+func readStrings(lines []string, i int, s string) ([]string, int, error) {
+	out, wantValue, start := []string{}, true, i
+	for {
+		s = strings.TrimLeft(s, " \t\r")
+		switch {
+		case s == "" || s[0] == '#':
+			if i++; i >= len(lines) {
+				return nil, start, errors.New("the list is not closed")
+			}
+			s = lines[i]
+		case s[0] == ']':
+			if rest := strings.TrimSpace(s[1:]); rest != "" && rest[0] != '#' {
+				return nil, i, errors.New("text after the list")
+			}
+			return out, i, nil
+		case s[0] == ',' && !wantValue:
+			wantValue, s = true, s[1:]
+		case s[0] == '"' && wantValue:
+			quoted, err := strconv.QuotedPrefix(s)
+			if err != nil {
+				return nil, i, errors.New("a string is not closed")
+			}
+			v, _ := strconv.Unquote(quoted)
+			out, wantValue, s = append(out, v), false, s[len(quoted):]
+		default:
+			return nil, i, errors.New("the list holds something other than basic strings")
+		}
+	}
+}
+
+// readLegacy is the value of `key` in a settings.json, read as readSetting reads TOML.
+func readLegacy(path, key string) (any, bool, error) {
+	obj, err := legacySettings(path)
+	raw, ok := obj[key]
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	var list []string
+	if n, err := strconv.Atoi(string(raw)); err == nil {
+		return n, true, nil
+	} else if string(raw) == "null" {
+		return nil, true, nil
+	} else if json.Unmarshal(raw, &list) == nil {
+		return list, true, nil
+	}
+	return wrongType{}, true, nil
+}
+
+// ReadWorktreeCap is the cap the factory would use: limits.worktree_cap of the file, else the default.
 func ReadWorktreeCap(path string) (int, error) {
-	obj, err := readSettings(path)
+	v, found, err := readSetting(path, "limits", "worktree_cap")
 	if err != nil {
 		return 0, err
 	}
-	raw, ok := obj["worktree_cap"]
-	if !ok {
+	if !found {
 		return DefaultWorktreeCap, nil
 	}
-	n, err := strconv.Atoi(string(raw))
-	if err != nil || n < 1 {
+	n, ok := v.(int)
+	if !ok || n < 1 {
 		return 0, fmt.Errorf("%s: %w", ShortPath(path), ErrWorktreeCap)
 	}
 	return n, nil
@@ -240,23 +393,22 @@ func ReadWorktreeCap(path string) (int, error) {
 // dispatcherName is what may be passed to `claude attach`: a leading - would be an option.
 var dispatcherName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
-// ReadDispatchers is the "dispatchers" list of the settings file, in the order written,
+// ReadDispatchers is sessions.dispatchers of the settings file, in the order written,
 // without the names that are not safe as an argument. A missing key, an empty list, a
 // value that is not a list of strings and an unreadable file are errors naming the file.
 func ReadDispatchers(path string) ([]string, error) {
-	obj, err := readSettings(path)
+	v, found, err := readSetting(path, "sessions", "dispatchers")
 	if err != nil {
 		return nil, err
 	}
 	no := func(why string) error {
 		return fmt.Errorf(`no dispatcher: "dispatchers" %s (%s)`, why, ShortPath(path))
 	}
-	raw, ok := obj["dispatchers"]
-	if !ok {
+	if !found {
 		return nil, no("is not set")
 	}
-	var all []string
-	if err := json.Unmarshal(raw, &all); err != nil {
+	all, ok := v.([]string)
+	if !ok && v != nil {
 		return nil, no("is not a list of strings")
 	}
 	names := slices.DeleteFunc(all, func(n string) bool { return !dispatcherName.MatchString(n) })
@@ -266,68 +418,32 @@ func ReadDispatchers(path string) ([]string, error) {
 	return names, nil
 }
 
-// WriteWorktreeCap sets worktree_cap and leaves every other key's value as it was. The
-// file is replaced atomically (a symbolic link is followed, so the link stays), keeps its
-// permission bits, and is never written when it is not a JSON object. A link to a missing
-// file is refused: renaming over it would replace the link.
-func WriteWorktreeCap(path string, n int) error {
-	obj, err := readSettings(path)
+// WriteWorktreeCap runs `<root>/factory/bin/factory settings set limits.worktree_cap n`, root being the checkout
+// the dashboard runs from (LocateRoot): the factory is the only writer of its settings file, and `factory` is on
+// the PATH only inside Claude Code sessions. Its one-line complaint is the error.
+func WriteWorktreeCap(n int) error {
+	root, err := LocateRoot()
 	if err != nil {
 		return err
 	}
-	if p, err := filepath.EvalSymlinks(path); err == nil {
-		path = p
-	} else if _, lerr := os.Lstat(path); lerr == nil {
-		return fmt.Errorf("%s is a symbolic link to a missing file", ShortPath(path))
+	script := filepath.Join(root, "factory", "bin", "factory")
+	if _, err := os.Stat(script); err != nil {
+		return fmt.Errorf("factory command not found: %s", script)
 	}
-	obj["worktree_cap"] = json.RawMessage(strconv.Itoa(n))
-	keys := make([]string, 0, len(obj))
-	for k := range obj {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var out bytes.Buffer
-	out.WriteString("{\n")
-	for i, k := range keys {
-		name, _ := json.Marshal(k)
-		fmt.Fprintf(&out, "  %s: %s", name, obj[k])
-		if i < len(keys)-1 {
-			out.WriteByte(',')
-		}
-		out.WriteByte('\n')
-	}
-	out.WriteString("}\n")
-	if err := replaceFile(path, out.Bytes()); err != nil {
-		return shortErr(path, err)
+	var se bytes.Buffer
+	cmd := exec.Command(script, "settings", "set", "limits.worktree_cap", strconv.Itoa(n))
+	cmd.Stderr = &se
+	if err := cmd.Run(); err != nil {
+		return stderrLine(se.String(), err)
 	}
 	return nil
 }
 
-// replaceFile writes data to a temporary file beside path and renames it over path.
-func replaceFile(path string, data []byte) error {
-	mode := os.FileMode(0o644)
-	if st, err := os.Stat(path); err == nil {
-		mode = st.Mode().Perm()
+// stderrLine is the last line of what a factory command wrote to stderr without its "factory: " prefix, else err.
+func stderrLine(stderr string, err error) error {
+	msg := strings.TrimSpace(stderr)
+	if i := strings.LastIndex(msg, "\n"); i >= 0 {
+		msg = strings.TrimSpace(msg[i+1:])
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".settings-*.tmp")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return errors.New(cmp.Or(strings.TrimPrefix(msg, "factory: "), err.Error()))
 }

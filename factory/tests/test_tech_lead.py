@@ -20,7 +20,7 @@ URL = f"https://x/pull/{N}"
 CONFLICT = "it conflicts with main in a.txt"
 RED = "red checks: test https://x/run/2"
 COURIER_LINE = re.compile(r"nothing else: (.*)\. Then reply", re.S)
-SETTINGS = {"tech_lead_model": "opus"}
+SETTINGS = {"models": {"tech_lead": "opus"}}
 ANSWER = {"outcome": "resolved", "note": "Kept both paragraphs in docs/factory.md; make test passes; no reviewer."}
 
 
@@ -36,6 +36,7 @@ class Machine(FakeRun):
         super().__init__({})
         self.root, self.claude, self.after, self.comment, self.push = root, claude or said(), after or {}, comment, push
         self.state = {"head": OLD, "remote": OLD, "dirty": False, "branch": f"worktree-{SLUG}", "ancestor": True, "merged": True}
+        self.config = {}
         self.cwds, self.groups, self.comments, self.lines, self.prompts, self.lead, self.pushes = [], [], [], [], [], lead, []
 
     def __call__(self, argv, cwd=None, input=None, timeout=None, env=None, group=False):
@@ -70,6 +71,8 @@ class Machine(FakeRun):
             return self.comment
         if a[:3] == ["gh", "pr", "ready"]:
             return 0, "", ""
+        if a[:3] == ["git", "config", "--get"]:
+            return (0, self.config[a[3]] + "\n", "") if a[3] in self.config else (1, "", "")
         if a[:3] == ["git", "rev-parse", "HEAD"]:
             return 0, s["head"] + "\n", ""
         if a[:3] == ["git", "rev-parse", "--abbrev-ref"]:
@@ -212,33 +215,50 @@ class RunTests(Case):
         [argv] = m.tech_lead_calls()
         role = (BIN.parent.parent / "roles" / "tech-lead.md").read_text()
         self.assertEqual(argv[:-1], [
-            "claude", "-p", "--model", "opus", "--permission-mode", "dontAsk", "--plugin-dir", str(BIN.parent.parent),
+            "claude", "-p", "--model", "opus", "--permission-mode", "auto", "--plugin-dir", str(BIN.parent.parent),
             "--strict-mcp-config", "--settings", json.dumps(LEAN_SETTINGS),
             "--tools=Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch",
             "--allowedTools", "Read", "Edit", "Write", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "Bash(git *)",
             "Bash(make *)", "Bash(gh pr view *)", "Bash(gh pr diff *)", "Bash(gh pr checks *)", "Bash(gh run view *)",
-            "--disallowedTools", "Bash(git push*)", "Bash(git rebase*)", "Bash(git commit --amend*)", "Bash(git worktree*)",
+            "--disallowedTools", *factory.ROLE_DENIED, "Bash(git push*)",
             "--max-budget-usd", "5.00", "--output-format", "json", "--json-schema", json.dumps(factory.TECH_LEAD_SCHEMA),
             "--append-system-prompt", role])
         self.assertEqual(argv[-1], (
             f"Task slug: {SLUG}. Pull request: #{N} {URL}. It came back from the merge queue: {CONFLICT}. "
-            f"The spec is {self.spec}. The default branch is main, on remote origin. The pull request came back at {OLD}."
+            f"The spec is {self.spec}. The default branch is main, on remote origin. The pull request came back at {OLD}. "
+            "The test command is not stated: find how this repository runs its tests and run that. The golden command is none."
             "\n\nEarlier tech lead runs on this pull request:\nnone"))
         i = m.calls.index(argv)
         self.assertEqual((m.cwds[i], m.timeouts[i], m.envs[i]["FACTORY_ROLE"], m.groups[i]),
                          (f"{self.root}/.claude/worktrees/{SLUG}", 1800, "tech-lead", True))
 
+    def test_the_prompt_carries_the_stated_commands(self):
+        self.use(Machine(self.root)).config.update({f"branch.worktree-{SLUG}.factoryTest": "./check.sh",
+                                                    f"branch.worktree-{SLUG}.factoryGolden": "./gen.sh"})
+        prompt = factory.tech_lead_prompt(factory.Repo(), SLUG, self.pr(), CONFLICT, self.spec)
+        self.assertIn("The test command is ./check.sh. The golden command is ./gen.sh.", prompt)
+
+    def test_a_test_command_that_is_not_stated_still_starts_the_run(self):
+        code, _, _, m = self.go()
+        self.assertEqual(len(m.tech_lead_calls()), 1)
+        self.assertIn("The test command is not stated: find how", m.tech_lead_calls()[0][-1])
+
+    def test_the_permission_mode_comes_from_the_settings(self):
+        (self.store / "settings.toml").write_text('[sessions]\nlead_permission_mode = "acceptEdits"\n')
+        *_, m = self.go()
+        self.assertEqual(m.tech_lead_calls()[0][5], "acceptEdits")
+
     def test_the_model_comes_from_the_settings(self):
-        (self.store / "settings.json").write_text('{"tech_lead_model": "sonnet"}')
+        (self.store / "settings.toml").write_text('[models]\ntech_lead = "sonnet"\n')
         *_, m = self.go()
         self.assertEqual(m.tech_lead_calls()[0][3], "sonnet")
         self.assertEqual(self.records("techlead")[0]["model"], "sonnet")
 
     def test_a_setting_that_is_not_a_model_is_refused(self):
-        (self.store / "settings.json").write_text('{"tech_lead_model": ""}')
+        (self.store / "settings.toml").write_text('[models]\ntech_lead = ""\n')
         code, _, err, m = self.go()
         self.assertEqual(code, 2)
-        self.assertIn("tech_lead_model must be a non-empty string", err)
+        self.assertIn("settings.toml line 2: models.tech_lead: \"\" is not a model", err)
         self.assertEqual(m.tech_lead_calls(), [])
 
     def test_resolved_comments_hands_over_and_tells_nobody(self):
@@ -249,9 +269,9 @@ class RunTests(Case):
         self.assertEqual(m.lines, [])
         self.assertEqual(self.declared(), [("working", "tech-lead", None), ("handed-over", "tech-lead", URL)])
         [r] = self.records("techlead")
-        self.assertEqual({k: r[k] for k in ("repo", "slug", "role", "model", "session", "pr", "evidence", "outcome", "reason",
+        self.assertEqual({k: r[k] for k in ("kind", "repo", "slug", "role", "model", "session", "pr", "evidence", "outcome", "reason",
                                             "note", "noted", "head_before", "head_after", "cost_usd")},
-                         {"repo": self.root, "slug": SLUG, "role": "tech-lead", "model": "opus", "session": "sid-tl", "pr": N,
+                         {"kind": "merge", "repo": self.root, "slug": SLUG, "role": "tech-lead", "model": "opus", "session": "sid-tl", "pr": N,
                           "evidence": CONFLICT, "outcome": "resolved", "reason": None, "note": ANSWER["note"],
                           "noted": True, "head_before": OLD, "head_after": NEW, "cost_usd": 1.42})
         self.assertIsInstance(r["seconds"], int)
@@ -555,6 +575,48 @@ class TagsTests(unittest.TestCase):
         self.assertEqual(self.role({}), "lead")
         self.assertEqual(self.role({"FACTORY_ROLE": "tech-lead"}, {"agent_id": "a1", "agent_type": "factory:coder"}), "coder")
         self.assertEqual(self.role({"FACTORY_ROLE": "tech-lead"}, {"agent_id": "a1"}), "subagent")
+
+
+class PauseTests(Case):
+    """The site manager paused the task (a `paused` decision on its slug waiting for `other`)."""
+
+    def paused(self, waited=("other",)):
+        return mock.patch.object(factory, "paused_for", lambda repo, slug: list(waited))
+
+    def test_a_tech_lead_start_declares_blocked_with_the_pause_and_runs_no_model(self):
+        with self.paused(("a", "b")), mock.patch.object(factory, "conflicting_files", lambda repo, pr: ["a.txt"]):
+            code, out, err, m = self.go()
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(m.tech_lead_calls(), [])
+        self.assertEqual(out, f"#{N} tech lead paused: waits for a, b\n")
+        [row] = self.records("tasks")
+        self.assertEqual((row["state"], row["role"], row["waits_on"], row["paused"]), ("blocked", "tech-lead", ["a", "b"], True))
+        [rec] = self.records("techlead")
+        self.assertEqual((rec["outcome"], rec["cost_usd"], rec["session"], rec["reason"]), ("paused", None, None, "waits for a, b"))
+        [event] = [e for e in self.records("events") if e["event"] == "TaskPaused"]
+        self.assertEqual((event["slug"], event["waits_on"], event["files"], event["sent_back"]), (SLUG, ["a", "b"], ["a.txt"], 0))
+        self.assertEqual(self.machine.comments, [])
+
+    def test_without_a_pause_the_model_runs_as_before(self):
+        with mock.patch.object(factory, "paused_for", lambda repo, slug: []):
+            m = self.go()[3]
+        self.assertEqual(len(m.tech_lead_calls()), 1)
+
+    def test_without_a_tech_lead_the_lead_is_told_to_pause_and_wait(self):
+        self.spec.unlink()
+        with self.paused(("a", "b")), mock.patch.object(factory, "conflicting_files", lambda repo, pr: ["a.txt", "b.txt"]), \
+                mock.patch.object(factory, "spawn"):
+            to, _ = self.send_back()
+        self.assertEqual(to, "lead")
+        self.assertEqual(self.machine.lines, [f"LANDER: {SLUG}: #{N} is paused: it conflicts in a.txt, b.txt while a, b are landing on "
+                                              "the same files. Declare factory state blocked a,b --paused, dispatch nothing, and wait: "
+                                              "you are told when the way is clear."])
+
+    def test_a_tech_lead_started_for_a_pause_is_not_told_anything_by_the_queue(self):
+        with self.paused(), mock.patch.object(factory, "spawn") as spawn:
+            to, _ = self.send_back()
+        self.assertEqual((to, self.machine.lines), ("tech lead", []))
+        spawn.assert_called_once()
 
 
 if __name__ == "__main__":
