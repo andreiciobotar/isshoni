@@ -383,10 +383,11 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   or `stale`. At the top, a band lists everything that waits on you across repositories,
   oldest first: tasks in review (the pull request or deliverable to look at) and tasks
   blocked on you (what they asked; a task blocked on the dispatcher or on another task
-  says so in its row, with its reason beneath, and is not in the band), each with how long it has waited; when nothing waits it says
-  so. The `3 Factory` tab carries `▲N` for the number waiting on every view (in a narrow
-  header the live count then shows as `● N`, without the word). It refreshes every 30
-  seconds while shown, every 2 minutes otherwise, in two passes. The first, for every
+  says so in its row, with its reason beneath, and is not in the band), each with how
+  long it has waited; when nothing waits it says so. The `3 Factory` tab carries `▲N`
+  for the number waiting on every view (in a narrow header the live count then shows as
+  `● N`, without the word). It refreshes every 30 seconds while shown, every 2 minutes
+  otherwise, in two passes. The first, for every
   repository, is `factory status --json --cached` (10 s limit): it never contacts
   GitHub, so the rows show at once. The second, only while the view is shown, is
   `factory status --json --max-age 60` (25 s limit) for each repository with tasks

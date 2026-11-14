@@ -76,7 +76,7 @@ func onDispatcher() data.FactoryTask {
 
 func onTask() data.FactoryTask {
 	x := ftask("docs-after-review", "blocked")
-	x.Waited, x.WaitsOn, x.StopKind = ptr(int64(900)), "design-review", "BLOCKED"
+	x.Waited, x.WaitsOn, x.StopKind = ptr(int64(900)), "design-review-of-docs", "BLOCKED" // 21 characters
 	x.StopSummary = "needs the design review to land first, then the docs can quote its final wording without guessing"
 	return x
 }
@@ -379,6 +379,9 @@ func TestFactoryTaskRowNamesWhomABlockedTaskWaitsOn(t *testing.T) {
 		if !strings.Contains(row, "blocked on design") || !strings.Contains(reason, "needs the design review") {
 			t.Errorf("%d columns: %q / %q", w, row, reason)
 		}
+		if w == 140 && !strings.Contains(row, "blocked on design-review-of-docs ") {
+			t.Errorf("140 columns: the slug it waits on is cut: %q", row)
+		}
 		if w == 80 && !strings.HasSuffix(strings.TrimRight(reason, " "), "…") {
 			t.Errorf("80 columns: a long reason is truncated: %q", reason)
 		}
@@ -388,9 +391,44 @@ func TestFactoryTaskRowNamesWhomABlockedTaskWaitsOn(t *testing.T) {
 			}
 		}
 	}
+	rowOf := func(m *model, i int) block {
+		p, rows := m.th.on(m.th.Bg), m.fac.repos[0].st.Rows
+		return m.taskRow(p, m.factoryCols(p, 140, rows), rows[i], 140)
+	}
 	m := factoryModel(true, 140, 60, factoryRepo{name: "m", st: fstatus(5, func() data.FactoryTask { x := onDispatcher(); x.StopSummary = ""; return x }())})
-	if got := len(m.taskRow(m.th.on(m.th.Bg), m.factoryCols(m.th.on(m.th.Bg), 140, m.fac.repos[0].st.Rows), m.fac.repos[0].st.Rows[0], 140)); got != 1 {
+	if got := len(rowOf(m, 0)); got != 1 {
 		t.Fatalf("no summary, no second line: %d lines", got)
+	}
+	// a task blocked on the human keeps one line even with a summary, as does one with WaitsOn empty
+	human, old := ftask("on-human", "blocked"), ftask("old-script", "blocked")
+	human.WaitsOn, human.StopSummary, old.StopSummary = "human", "Which database should it use?", "Which database should it use?"
+	m = factoryModel(true, 140, 60, factoryRepo{name: "m", st: fstatus(5, human, old)})
+	for i := range 2 {
+		if got := len(rowOf(m, i)); got != 1 {
+			t.Fatalf("a task blocked on the human has a second line: %d lines", got)
+		}
+	}
+}
+
+func TestFactoryBlockedOnSomeoneElseIsLighter(t *testing.T) {
+	human := ftask("on-human", "blocked")
+	human.WaitsOn = "human"
+	m := factoryModel(false, 140, 60, factoryRepo{name: "m", st: fstatus(5, human, onDispatcher(), onTask())})
+	p, th := m.th.on(m.th.Bg), m.th
+	rows := m.fac.repos[0].st.Rows
+	cols := m.factoryCols(p, 140, rows)
+	line := func(i int) string { return m.taskRow(p, cols, rows[i], 140)[0] }
+	if got := line(0); !strings.Contains(got, p.b("▲ ", th.Orange)) || !strings.Contains(got, p.b("blocked, needs you", th.Orange)) {
+		t.Errorf("blocked on the human is bold orange: %q", got)
+	}
+	for i, label := range map[int]string{1: "blocked on dispatcher", 2: "blocked on design-review-of-docs"} {
+		got := line(i)
+		if !strings.Contains(got, p.t("▲ ", th.Muted)) || !strings.Contains(got, p.t(label, th.Muted)) {
+			t.Errorf("%s is muted: %q", label, got)
+		}
+		if strings.Contains(got, p.b("▲ ", th.Muted)) || strings.Contains(got, p.b("▲ ", th.Orange)) {
+			t.Errorf("%s is bold or orange: %q", label, got)
+		}
 	}
 }
 

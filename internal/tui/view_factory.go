@@ -17,7 +17,6 @@ const (
 	meterCells  = 20 // beyond this many slots the meter is a bar
 	baseMax     = 24
 	prMax       = 24
-	phaseMax    = 24
 	slugLeast   = 16
 	nameLeast   = 12 // cells the repository name keeps before the meter shrinks
 	bandDoLeast = 30 // cells the band's do cell needs to stay on its row
@@ -417,6 +416,9 @@ func (m *model) phaseLook(t data.FactoryTask, long bool) (glyph, label string, c
 	case "merged":
 		return "✓", label, m.mergedColor()
 	case "blocked":
+		if !t.WaitsOnHuman() {
+			return "▲", label, th.Muted // not waiting on you
+		}
 		return "▲", label, th.Orange
 	case "settled":
 		return "·", label, th.Faint
@@ -478,7 +480,7 @@ func (m *model) factoryCols(p paint, w int, tasks []data.FactoryTask) factoryCol
 		_, label, _ := m.phaseLook(t, m.w >= 100)
 		base, _ := baseText(t.Base)
 		c.slug = max(c.slug, width(t.Slug))
-		c.phase = max(c.phase, min(2+width(label), phaseMax))
+		c.phase = max(c.phase, 2+width(label))
 		c.pr = max(c.pr, min(width(prText(t)), prMax))
 		c.base = max(c.base, min(width(base), baseMax))
 		c.flags = max(c.flags, width(flagPills(p, t)))
@@ -545,7 +547,7 @@ func (m *model) taskRow(p paint, c factoryCols, t data.FactoryTask, w int) block
 		baseCol = th.Purple
 	}
 	phase := p.t
-	if t.Phase == "blocked" {
+	if t.WaitsOnHuman() {
 		phase = p.b
 	}
 	row := block{c.join(p,

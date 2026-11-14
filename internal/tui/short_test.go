@@ -169,6 +169,72 @@ func TestShortRunsOpenAndClose(t *testing.T) {
 			t.Fatalf("%s on a folded repository: cursor on %s", ks[1], r.label())
 		}
 	}
+
+	// Rows that merely follow a short-runs row are not it. Order: alpha, ci, ci's short-runs row, the bare
+	// session a1, alpha's short-runs row, then beta.
+	newM := func() *model {
+		m := modelOf(120, 40,
+			runSession("a1000000", "alpha", "", 10, 600, 1),
+			runSession("a2000000", "alpha", "", 11, 5, 0.01),
+			runSession("a7000000", "alpha", "", 12, 5, 0.04),
+			runSession("a3000000", "alpha", "ci", 13, 600, 2),
+			runSession("a4000000", "alpha", "ci", 14, 5, 0.02),
+			runSession("a5000000", "alpha", "ci", 15, 20, 0.03),
+			runSession("b1000001", "beta", "", 0, 600, 1),
+			runSession("b1000002", "beta", "", 1, 600, 1))
+		var keys []string
+		for _, r := range m.rows() {
+			keys = append(keys, r.key)
+		}
+		want := []string{groupKey("all"), alphaRepo, groupKey("task", "/r/alpha", "alpha", "ci"), "a3000000", ciShort, "a1000000", alphaShort, groupKey("repo", "/r/beta", "beta")}
+		if strings.Join(keys[:len(want)], ",") != strings.Join(want, ",") {
+			t.Fatalf("rows %q, want them to start with %q", keys, want)
+		}
+		return m
+	}
+	betaRepo := groupKey("repo", "/r/beta", "beta")
+
+	m := newM()
+	m.folded[betaRepo] = true
+	selectRow(m, betaRepo)
+	send(m, "right")
+	if m.folded[betaRepo] || len(m.opened) != 0 || m.selID != betaRepo {
+		t.Fatalf("right on a folded repository after a short-runs row: folded %v, opened %v, selID %q", m.folded, m.opened, m.selID)
+	}
+
+	m = newM()
+	selectRow(m, "a1000000")
+	send(m, "right")
+	if len(m.opened) != 0 || m.selID != "a1000000" {
+		t.Fatalf("right on a bare session after a task's short-runs row: opened %v, selID %q", m.opened, m.selID)
+	}
+
+	m.opened[ciShort] = true
+	send(m, "left")
+	if !m.opened[ciShort] || !m.folded[alphaRepo] || m.selID != alphaRepo {
+		t.Fatalf("left on that session: opened %v, folded %v, selID %q", m.opened, m.folded, m.selID)
+	}
+
+	m = newM()
+	m.opened[alphaShort] = true
+	selectRow(m, betaRepo)
+	send(m, "left")
+	if !m.opened[alphaShort] || !m.folded[betaRepo] {
+		t.Fatalf("left on a repository after an open short-runs row: opened %v, folded %v", m.opened, m.folded)
+	}
+}
+
+func TestZoomedSessionIsNotAShortRun(t *testing.T) {
+	m := shortRunsModel(120, 40)
+	m.opened[ciShort] = true
+	selectRow(m, "a4000000")
+	send(m, "enter")
+	if !m.zoomed() || m.selID != "a4000000" {
+		t.Fatalf("no zoom on a4000000: selID %q", m.selID)
+	}
+	if rows := m.rows(); slicesIndexKey(rows, ciShort) >= 0 || slicesIndexKey(rows, "a4000000") < 0 {
+		t.Fatalf("the zoomed session is folded into a row: %s", rowNames(m))
+	}
 }
 
 func TestShortRunsCursorVisitsEveryRow(t *testing.T) {

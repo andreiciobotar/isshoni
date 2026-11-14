@@ -348,13 +348,14 @@ func (m *model) isLive(s *data.Session) bool {
 // A short run is a finished session under a minute and under a quarter dollar. Across a real set of
 // sessions both limits sit in a gap: under $0.25 the durations jump from seconds to minutes, under a minute
 // the costs jump from cents to tens of cents. Probe and housekeeping runs fall below, real work above.
+// The session under zoom is never one: it stays a row of its own while it is shown full screen.
 const (
 	shortRunSpan = time.Minute
 	shortRunCost = 0.25 // dollars
 )
 
 func (m *model) shortRun(s *data.Session) bool {
-	return s.Start != nil && s.End != nil && s.End.Sub(*s.Start) < shortRunSpan && s.Cost.Total < shortRunCost && !m.isLive(s)
+	return s.Start != nil && s.End != nil && s.End.Sub(*s.Start) < shortRunSpan && s.Cost.Total < shortRunCost && !m.isLive(s) && !(m.zoom && m.selID == s.ID)
 }
 
 // splitShort takes the short runs out of a container's sessions when there are two or more of them.
@@ -1436,8 +1437,11 @@ func (m *model) fold(on bool) {
 
 // shortRowAt is the index of the short-runs row that rows[i] is, or is listed under; -1 when none.
 func shortRowAt(rows []treeRow, i int) int {
+	if rows[i].kind == kindShort {
+		return i
+	}
 	j := i
-	for j > 0 && rows[j].depth >= rows[i].depth && rows[j].kind != kindShort {
+	for j > 0 && rows[j].depth >= rows[i].depth {
 		j--
 	}
 	if rows[j].kind == kindShort {

@@ -1,30 +1,30 @@
  Isshoni  1 Dash  2 Agents [3 Factory ▲7] 4 Kaizen  5 ✿                  24h [7d] 30d  all   ○ idle 
  Factory  13 motion (6 blocked) · 3 review · 1 merged · 1 settled  · as of 11:00:00                 
-  quiet-refactor     ⠋ in motion                 4m12s  -                                           
-  rate-limit-docs    ● in motion                     -  #40 closed              [stale]             
-  stacked-on-login   ● in motion                 1m35s  ?                                           
-  api-rate-limits    ◆ waiting for review        1h30m  #42                                         
-  old-experiment     ✓ merged, not cleaned       1m01s  #31                                         
-  release-notes      · settled, not cleaned     50m00s  release-notes.md                            
+  quiet-refactor     ⠋ in motion                           4m12s  -                                 
+  rate-limit-docs    ● in motion                               -  #40 closed              [stale]   
+  stacked-on-login   ● in motion                           1m35s  ?                                 
+  api-rate-limits    ◆ waiting for review                  1h30m  #42                               
+  old-experiment     ✓ merged, not cleaned                 1m01s  #31                               
+  release-notes      · settled, not cleaned               50m00s  release-notes.md                  
                                                                                                     
  beta-é日本語                                               in motion ●●● 3/2   review 0   merged 0 
-  SLUG               PHASE                     ELAPSED  PR                      FLAGS               
-  task-00            ⠋ in motion                 1m00s  -                                           
-  task-01            ⠋ in motion                 2m00s  -                                           
-  task-02            ⠋ in motion                 3m00s  -                                           
+  SLUG               PHASE                               ELAPSED  PR                      FLAGS     
+  task-00            ⠋ in motion                           1m00s  -                                 
+  task-01            ⠋ in motion                           2m00s  -                                 
+  task-02            ⠋ in motion                           3m00s  -                                 
                                                                                                     
  gamma                                                                                              
   ⚠ not inside a git repository                                                                     
                                                                                                     
  delta-docs                                               in motion ▲▲▲▲▲ 5/5   review 2   merged 0 
-  SLUG               PHASE                     ELAPSED  PR                      FLAGS               
-  docs-after-review  ▲ blocked on design-rev…        -  -                                           
+  SLUG               PHASE                               ELAPSED  PR                      FLAGS     
+  docs-after-review  ▲ blocked on design-review-of-docs        -  -                                 
                      needs the design review to land first, then the docs can quote its final word… 
-  pick-a-theme       ▲ blocked on dispatcher         -  -                                           
+  pick-a-theme       ▲ blocked on dispatcher                   -  -                                 
                      the palette is still open: which brief decides it?                             
-  slow-import        ▲ blocked, needs you            -  -                                           
-  stuck-on-keys      ▲ blocked, needs you            -  -                                           
-  wide-ask           ▲ blocked, needs you            -  -                                           
-  design-review      ◆ waiting for review            -  design.md                                   
-  video-cut          ◆ waiting for review            -  example.com/cut/v2                          
+  slow-import        ▲ blocked, needs you                      -  -                                 
+  stuck-on-keys      ▲ blocked, needs you                      -  -                                 
+  wide-ask           ▲ blocked, needs you                      -  -                                 
+  design-review      ◆ waiting for review                      -  design.md                         
+  video-cut          ◆ waiting for review                      -  example.com/cut/v2                
  ↑↓/jk move  ·  c edit cap  ·  r range  ·  tab next view  ·  ? help  ·  q quit                      
