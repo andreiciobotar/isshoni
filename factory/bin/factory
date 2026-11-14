@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
 """factory: start, list and clean task worktrees run by lead sessions."""
 import argparse
+import base64
 import calendar
 import hashlib
+import html
+import http.server
 import json
 import os
 import plistlib
+import queue
 import re
+import secrets
 import shlex
 import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
+import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
@@ -22,6 +33,7 @@ STALE_SECONDS = 7 * 24 * 3600
 SLUG_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 BACKGROUNDED_RE = re.compile(r"backgrounded\s*·\s*(\S+)\s*·\s*(.+)")
 STORE = Path("~/.claude/factory")
+IDENTITY = STORE / "identity"
 KEEP_MONTHS = 12
 BOUND_RE = re.compile(r"\d{4}-\d{2}(-\d{2}(T\d{2}(:\d{2}(:\d{2}Z?)?)?)?)?")
 WORKTREE_RE = re.compile(r"(.*?)/\.claude/worktrees/([^/]+)(?:/|$)")
@@ -2383,6 +2395,297 @@ def watch_lgtm(p):
     return {**gather(p["repo"], p["dispatcher"]), "lgtm": p["lgtm"], "lgtm_unread": p["lgtm_unread"]}
 
 
+# ---- identity ---------------------------------------------------------------
+
+GITHUB = "https://api.github.com"
+WIZARD_WAIT = 600
+INSTALL_POLL = 3
+PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read", "actions": "read"}
+CALLBACK_DONE = "<!doctype html><meta charset=utf-8><p>Done. Go back to the terminal.</p>"
+
+
+def load_identity():
+    try:
+        return json.loads((IDENTITY.expanduser() / "app.json").read_text())
+    except FileNotFoundError:
+        return None
+    except ValueError as e:
+        raise Fail(f"{IDENTITY.expanduser() / 'app.json'} cannot be read as JSON: {e}", 1)
+
+
+def write_identity(identity):
+    fd = os.open(IDENTITY.expanduser() / "app.json", os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(identity, f, indent=2)
+        f.write("\n")
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def app_jwt(identity):
+    """A 9 minute RS256 JWT for the App, signed by openssl: nothing else in the standard library does RSA."""
+    t = int(time.time())
+    parts = [b64url(json.dumps(part, separators=(",", ":")).encode())
+             for part in ({"alg": "RS256", "typ": "JWT"}, {"iat": t - 60, "exp": t + 540, "iss": identity["client_id"]})]
+    signing = ".".join(parts)
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d, "signature")
+        rc, _, err = run(["openssl", "dgst", "-sha256", "-sign", str(IDENTITY.expanduser() / "key.pem"), "-out", str(out)],
+                         input=signing)
+        if rc != 0:
+            raise Fail(f"openssl could not sign the App's JWT (is openssl installed?): {err.strip()}", 1)
+        return f"{signing}.{b64url(out.read_bytes())}"
+
+
+def github_api(method, path, bearer=None, body=None):
+    """The one HTTP seam. Returns (status, parsed JSON or None); a network error is (0, {"message": reason})."""
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "factory"}
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    data = json.dumps(body).encode() if body is not None else b"" if method == "POST" else None
+    request = urllib.request.Request(GITHUB + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            status, raw = response.status, response.read()
+    except urllib.error.HTTPError as e:
+        status, raw = e.code, e.read()
+    except OSError as e:
+        return 0, {"message": str(e)}
+    try:
+        return status, json.loads(raw)
+    except ValueError:
+        return status, None
+
+
+def reason(status, body):
+    text = body.get("message") if isinstance(body, dict) else None
+    return (f"HTTP {status}" if status else "network error") + (f": {text}" if text else "")
+
+
+def api(method, path, want, bearer=None):
+    status, body = github_api(method, path, bearer)
+    if status != want:
+        raise Fail(f"GitHub {method} {path.partition('?')[0]} failed: {reason(status, body)}", 1)
+    return body
+
+
+def installation_token(identity):
+    """(token, expires_at) of a fresh installation token."""
+    path = f"/app/installations/{identity['installation_id']}/access_tokens"
+    body = api("POST", path, 201, app_jwt(identity))
+    return body["token"], body["expires_at"]
+
+
+def remote_owner():
+    rc, out, _ = run(["git", "remote", "get-url", "origin"])
+    m = re.search(r"github\.com[:/]+([^/\s]+)/", out) if rc == 0 else None
+    return m and m.group(1)
+
+
+def manifest_page(owner, org, name, port, state):
+    manifest = {"name": name, "url": f"https://github.com/{owner}", "public": False,
+                "redirect_url": f"http://127.0.0.1:{port}/callback",
+                "hook_attributes": {"url": f"https://github.com/{owner}", "active": False},
+                "default_events": [], "default_permissions": PERMISSIONS}
+    where = f"organizations/{urllib.parse.quote(owner)}/settings/apps/new" if org else "settings/apps/new"
+    action = f"https://github.com/{where}?state={state}"
+    return ('<!doctype html><meta charset=utf-8><p>Sending you to GitHub...</p>'
+            f'<form id=f method=post action="{html.escape(action)}">'
+            f'<input type=hidden name=manifest value="{html.escape(json.dumps(manifest))}"></form>'
+            "<script>document.getElementById('f').submit()</script>")
+
+
+class CallbackHandler(http.server.BaseHTTPRequestHandler):
+    """Serves the manifest form on / and takes GitHub's redirect on /callback; says nothing on the terminal."""
+
+    def do_GET(self):
+        url = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(url.query)
+        if url.path == "/":
+            self.reply(200, self.server.page)
+        elif url.path == "/callback" and query.get("state") == [self.server.state] and query.get("code"):
+            self.server.codes.put(query["code"][0])
+            self.reply(200, CALLBACK_DONE)
+        else:
+            self.reply(400 if url.path == "/callback" else 404, "")
+
+    def reply(self, status, text):
+        data = text.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
+
+
+def open_browser(url):
+    """Where no display exists, webbrowser would start a text browser inside the terminal: the printed URL is enough."""
+    if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return
+    webbrowser.open(url)
+
+
+def apps_page(owner, org):
+    return f"https://github.com/{'organizations/' + owner + '/' if org else ''}settings/apps"
+
+
+def orphan_note(owner, org):
+    return f"If you confirmed on GitHub, the App exists: delete it at {apps_page(owner, org)} before running again."
+
+
+def manifest_code(owner, org, name):
+    """Run the manifest flow in the browser; the code GitHub redirects back with."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), CallbackHandler)
+    server.state, server.codes = secrets.token_urlsafe(), queue.Queue()
+    server.page = manifest_page(owner, org, name, server.server_port, server.state)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_port}/"
+    try:
+        print(f"Open {url} if no browser opens (over ssh, forward that port).")
+        open_browser(url)
+        return server.codes.get(timeout=WIZARD_WAIT)
+    except queue.Empty:
+        raise Fail(f"no answer from GitHub within 10 minutes; nothing was stored here. {orphan_note(owner, org)}", 1)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def store_identity(identity, pem):
+    directory = IDENTITY.expanduser()
+    directory.mkdir(parents=True, exist_ok=True)
+    directory.chmod(0o700)
+    with os.fdopen(os.open(directory / "key.pem", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w") as f:
+        f.write(pem)
+    write_identity(identity)
+
+
+def create_app(owner):
+    owner = owner or remote_owner()
+    if not owner:
+        raise Fail("no owner: run inside a clone whose origin is on GitHub, or pass --owner NAME", 1)
+    org = api("GET", f"/users/{urllib.parse.quote(owner)}", 200).get("type") == "Organization"
+    name = f"factory-{owner}"[:34]
+    print(f"This creates a GitHub App named {name} under {'the organization' if org else 'the account'} {owner}, "
+          "after one confirmation in your browser.")
+    print("Then you install it on the repositories you choose, with a second confirmation.")
+    code = manifest_code(owner, org, name)
+    status, app = github_api("POST", f"/app-manifests/{urllib.parse.quote(code)}/conversions")
+    if status != 201:
+        raise Fail(f"GitHub did not hand over the App's credentials ({reason(status, app)}); nothing was stored here. "
+                   + orphan_note(owner, org), 1)
+    try:
+        identity = {"app_id": app["id"], "slug": app["slug"], "client_id": app["client_id"], "html_url": app["html_url"],
+                    "owner": app["owner"]["login"], "owner_type": "Organization" if org else "User"}
+        pem = app["pem"]
+    except (KeyError, TypeError) as e:
+        raise Fail(f"GitHub's answer lacks {e}; nothing was stored here. {orphan_note(owner, org)}", 1)
+    store_identity(identity, pem)
+    return identity
+
+
+def undo_lines(identity):
+    slug, owner = identity["slug"], identity["owner"]
+    where = f"organizations/{owner}/settings/apps" if identity["owner_type"] == "Organization" else "settings/apps"
+    uninstall = identity.get("installation_url")
+    return [*([f"  uninstall: {uninstall}"] if uninstall else []),
+            f"  delete the App: https://github.com/{where}/{slug}/advanced",
+            f"  forget it here: rm -r {IDENTITY}"]
+
+
+def stopped(identity, why):
+    return Fail("\n".join([why, "To undo:", *undo_lines(identity)]), 1)
+
+
+def repair_modes(directory):
+    for path, mode in ((directory, 0o700), (directory / "key.pem", 0o600)):
+        if path.stat().st_mode & 0o777 & ~mode:
+            path.chmod(mode)
+            print(f"{path} had looser permissions: set to {oct(mode)[2:]}")
+
+
+def find_installation(identity):
+    for i in api("GET", "/app/installations", 200, app_jwt(identity)):
+        if i["account"]["login"].lower() == identity["owner"].lower():
+            return i
+
+
+def installation_for(identity):
+    found = find_installation(identity)
+    if found:
+        return found
+    url = f"{identity['html_url']}/installations/new"
+    print(f"Install the App on {identity['owner']} and choose its repositories: {url}")
+    open_browser(url)
+    deadline = time.monotonic() + WIZARD_WAIT
+    while not found and time.monotonic() < deadline:
+        time.sleep(INSTALL_POLL)
+        found = find_installation(identity)
+    if not found:
+        raise Fail("the App is not installed yet: run `factory wizard` again after installing it", 1)
+    return found
+
+
+def installed_repositories(token):
+    names, page = [], 1
+    while True:
+        body = api("GET", f"/installation/repositories?per_page=100&page={page}", 200, token)
+        names += [r["full_name"] for r in body["repositories"]]
+        if not body["repositories"] or len(names) >= body["total_count"]:
+            return names
+        page += 1
+
+
+def verify_app(identity):
+    directory = IDENTITY.expanduser()
+    if not (directory / "key.pem").exists():
+        raise stopped(identity, f"{directory / 'key.pem'} is missing: copy the identity directory back from the machine "
+                                f"that ran the wizard, or remove the App and run again.")
+    repair_modes(directory)
+    status, body = github_api("GET", "/app", bearer=app_jwt(identity))
+    if status in (401, 404):
+        raise stopped(identity, "The stored App no longer exists on GitHub or its key was revoked"
+                                + (", or this machine's clock is off by minutes." if status == 401 else "."))
+    if status != 200:
+        raise Fail(f"GitHub GET /app failed: {reason(status, body)}", 1)
+    installation = installation_for(identity)
+    token, _ = installation_token({**identity, "installation_id": installation["id"]})
+    repos = installed_repositories(token)
+    if not repos:
+        raise Fail(f"the App sees no repositories: choose some at {installation['html_url']}", 1)
+    bot = f"{identity['slug']}[bot]"
+    bot_id = api("GET", f"/users/{urllib.parse.quote(bot, safe='')}", 200)["id"]
+    identity = {**identity, "installation_id": installation["id"], "installation_url": installation["html_url"],
+                "bot_login": bot, "bot_id": bot_id, "bot_email": f"{bot_id}+{bot}@users.noreply.github.com"}
+    write_identity(identity)
+    print(f"App {identity['slug']}: {identity['html_url']}")
+    print(f"Acts as {bot}; reads and writes {len(repos)} repositories:")
+    for name in repos:
+        print(f"  {name}")
+    print(f"Its private key is in {IDENTITY}. To undo:")
+    print("\n".join(undo_lines(identity)))
+
+
+def cmd_wizard(args):
+    identity = load_identity()
+    if identity is None:
+        if (IDENTITY.expanduser() / "key.pem").exists():
+            raise Fail(f"{IDENTITY.expanduser() / 'key.pem'} exists without app.json: remove the directory with "
+                       f"`rm -r {IDENTITY}`, delete the App it belongs to on your GitHub apps settings page "
+                       f"(it holds the name), and run again", 1)
+        identity = create_app(args.owner)
+    elif args.owner and args.owner.lower() != identity["owner"].lower():
+        raise Fail(f"this machine's identity is the App {identity['slug']} of {identity['owner']}, not {args.owner}: "
+                   f"one identity per machine (to replace it, undo it first)", 1)
+    verify_app(identity)
+    return 0
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog="factory", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -2448,6 +2751,8 @@ def parse_args(argv):
     schedule = sub.add_parser("schedule", help="install, remove or show the job that runs watch every 30 minutes")
     schedule.add_argument("action", choices=("install", "remove", "status"))
     schedule.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
+    wizard = sub.add_parser("wizard", help="create, install and check the factory's own GitHub App (rerun to repair)")
+    wizard.add_argument("--owner", help="the account or organization to create the App under (default: owner of origin)")
     return parser.parse_args(argv)
 
 
@@ -2457,7 +2762,7 @@ def main(argv=None):
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "schedule": cmd_schedule}[args.cmd](args)
+                "schedule": cmd_schedule, "wizard": cmd_wizard}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)
         return e.code

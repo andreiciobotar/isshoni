@@ -29,6 +29,7 @@ factory firing <id> acted|ignored                                        # id or
 factory miss <text> [--slug <slug>] [--firing <id>]
 factory firings [--json]
 factory merge (<number>... | --all) [--dry-run]
+factory wizard [--owner <account>]
 ```
 
 - **`new`** starts a lead: a background session in a new worktree, with `factory/roles/lead.md` appended to its system prompt, declared `working`. The calling session must be named `--dispatcher` (default `dispatcher-<main checkout's directory name>`; set it with `/rename`), and no other session may carry that name. It refuses a slug whose worktree, branch, session or pull request (in any state) already exists (when `gh` cannot say, it warns and goes on), and a repository at its cap. `--base` stacks the task on another open task's branch.
@@ -36,6 +37,7 @@ factory merge (<number>... | --all) [--dry-run]
 - **`clean`** removes finished tasks (session, worktree, branch) and says why it kept the rest. It never forces and keeps a task whenever anything is uncertain. A task goes only when its pull request is merged into the default branch with the local head equal to the merged head, or its state is `acknowledged` or `dismissed` with a recorded deliverable, a pull request that is not open and a head that is pushed; and in both cases nothing is uncommitted, no task is stacked on it, no session in it is unfinished and no other worktree is nested in it. It keeps a task on a detached HEAD, and one whose worktree is locked with no session (it prints the `git worktree unlock` to run). If sessions cannot be listed, or an unfinished session has no `cwd`, it removes nothing (exit 2). A dismissed branch that is not merged makes `git branch -d` refuse: reported, exit 1. Git-ignored files in a removed worktree go with it.
 - **`state`** is run by a lead inside its worktree. `handed-over` takes the deliverable: a link (`scheme://...`), or a file that exists and is outside the worktree.
 - **`ack`** is run by the dispatcher on the human's word, for a task that was handed over.
+- **`wizard`** creates the factory's GitHub App, gets it installed and verifies it; rerun, it verifies or repairs. See Identity.
 
 ## Declared state, phases and the cap
 | Declared state | By | Meaning |
@@ -225,6 +227,37 @@ Then it retargets the pull request onto the default branch when its base is a me
 - Deleting `lgtm-blocked` from `criteria.json` silences the escalation, not the merging. To turn the `lgtm` trigger off, remove the schedule; while a default-named dispatcher session lives, its next prompt installs it again, so there is no lasting off switch short of ending the dispatcher.
 - `clean` keeps the worktree the running plugin lives in: leads started by it load their plugin from there.
 
+## Identity
+`factory wizard [--owner <account>]` (or `make wizard`) gives the factory a GitHub App of its own. Until the factory is switched to it (a separate change), every command still acts with your `gh` login. It needs `openssl` on the `PATH` (it signs the App's JWT) and a browser.
+
+First run, with nothing stored:
+1. The owner is `--owner`, else the owner of `origin` (https or ssh URL); with neither it exits 1 naming `--owner`. GitHub says whether it is a user or an organization; the App is created under it.
+2. The wizard starts a small web server on `127.0.0.1` (a port the OS picks), prints its address and opens it. The page sends GitHub an App manifest named `factory-<owner>` (34 characters at most; you may rename it on GitHub, the wizard reads the real slug back). **Confirmation one**: create the App. GitHub redirects back to the wizard, which exchanges the code for the App's credentials. It waits 10 minutes, then exits 1 with nothing stored (GitHub creates the App when you confirm, so if you did, delete it on your apps settings page before running again; a failed exchange says the same). Over ssh, forward the printed port (`ssh -L PORT:127.0.0.1:PORT`).
+3. The private key and `app.json` are stored at once. **Confirmation two**: install the App on the repositories you choose, on the page the wizard opens. It polls for 10 minutes; on timeout the App stays stored and the next run resumes here.
+4. It signs a JWT, mints an installation token, lists the repositories the token reads, looks up the bot user, and prints the App, the bot login, the repositories and how to undo. The token is never printed or stored.
+
+Permissions the App asks for, and why:
+
+| Permission | Level | Why |
+| --- | --- | --- |
+| Contents | write | push a task branch; merge a pull request (the merge endpoint is under Contents) |
+| Pull requests | write | open, edit, mark ready and comment on pull requests |
+| Checks, Commit statuses | read | `gh pr checks` |
+| Actions | read | `gh run list`: health reads CI on the default branch |
+| Metadata | read | implicit |
+
+Left out on purpose: `workflows` (so the bot cannot change CI: a branch touching `.github/workflows/` must be pushed by you) and `issues`. No webhook is active.
+
+Files, in `~/.claude/factory/identity/` (mode 0700):
+- `key.pem` (0600): the App's private key. Never printed or logged.
+- `app.json` (0600): `app_id`, `slug`, `client_id`, `html_url`, `owner`, `owner_type`, and once verified `installation_id`, `installation_url`, `bot_login`, `bot_id`, `bot_email` (`<bot_id>+<slug>[bot]@users.noreply.github.com`).
+
+Rerun with an identity stored: it never creates a second App, and `--owner` naming another account exits 1 (one identity per machine). A `key.pem` without `app.json` exits 1 before any call, naming the `rm -r` to run. It sets looser modes back to 0600/0700 and says so; reports a missing `key.pem` (exit 1); reports when GitHub no longer knows the App or its key was revoked (exit 1, files untouched); opens the install page when the App is not installed; exits 1 when the installation sees no repositories, naming the page where to choose some; otherwise verifies, refreshes `app.json` and prints the report, exit 0. Every failure that needs a decision prints the undo lines.
+
+Headless machine: on Linux without `DISPLAY` or `WAYLAND_DISPLAY` the wizard does not open a browser (it would start a text browser in the terminal); it only prints the URL. GitHub redirects the browser to `127.0.0.1`, so opening that URL on another machine works only with the port forwarded (`ssh -L PORT:127.0.0.1:PORT`). Otherwise run the wizard on your laptop, then copy the directory (`scp -rp ~/.claude/factory/identity HOST:.claude/factory/`, or mount it into the container) and run `factory wizard` there: it verifies and prints the report.
+
+Undo: uninstall the App (the installation URL the report prints), delete the App (`https://github.com/settings/apps/<slug>/advanced`, or `https://github.com/organizations/<owner>/settings/apps/<slug>/advanced`; no API deletes an App), and `rm -r ~/.claude/factory/identity`.
+
 ## Known limits
 - Nothing caps what a lead spends; the time limit is checked by the lead between subagent runs.
 - A message that a base moved still wakes the lead, which only passes it to its lander; the dispatcher cannot run a lander on a task's worktree itself. What the lander may do rests on its rules and its tool list, not on a mechanism: Bash can do anything the lead's session may. When a stacked task's base was itself rebased, or was squash-merged, the lander's rebase replays the base's old commits: it reports a difference or stops on a conflict, and the lead sorts it out.
@@ -234,3 +267,4 @@ Then it retargets the pull request onto the default branch when its base is a me
 - Merging: with the author's own account the approval rests on a rule, not a mechanism (see Merging). A `CHANGES_REQUESTED` review by a different login does not block a merge. The author comparison and the bot test rest on GitHub's `user.type` and login. Checks are not rerun after a retarget, and GitHub does not test the merge result: mergeable means no conflict. A pull request with no task worktree is a `handover` stop; the human merges it. At most 100 open pull requests are seen. An `lgtm` during a running check waits for the next tick. There is no lock: when a tick and the dispatcher merge at once, the second `gh pr merge` fails and is reported.
 - The site manager's thresholds are first guesses; `quiet` reads file times, so a lead waiting on a long command looks quiet; a run that dies after sending may escalate the same firing again next tick. A site manager run is read as one JSON document on `claude`'s standard output: with `ANTHROPIC_LOG=debug` in the environment `claude` logs there too, the message is still sent and the run is recorded as failed.
 - Two repositories whose directories share a name share a spec folder and a default dispatcher name.
+- Identity: one per machine; `workflows` is not granted.
