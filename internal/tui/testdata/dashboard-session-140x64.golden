@@ -61,4 +61,4 @@
 ╭─ Now running ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ nothing running                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ↑↓/jk move  ·  enter open  ·  / filter  ·  ←→/hl fold repo  ·  s sort  ·  r range  ·  f follow  ·  tab next view  ·  ? help  ·  q quit     
+ ↑↓/jk move  ·  enter open  ·  / filter  ·  ←→/hl fold repo/runs  ·  s sort  ·  r range  ·  f follow  ·  tab next view  ·  ? help  ·  q quit

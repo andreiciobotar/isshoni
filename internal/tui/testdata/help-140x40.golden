@@ -8,7 +8,7 @@
                                 │ ↑↓/jk         move                                                       │                                
                                 │ g G           first · last                                               │                                
                                 │ pgdn pgup     page                                                       │                                
-                                │ ←→/hl         fold repo                                                  │                                
+                                │ ←→/hl         fold repo/runs                                             │                                
                                 │ enter         open                                                       │                                
                                 │ esc           back                                                       │                                
                                 │                                                                          │                                
