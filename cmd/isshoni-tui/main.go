@@ -34,7 +34,7 @@ func main() {
 		replay   = flag.String("replay", "", "open the Hanami tab replaying this events file (JSON lines, as python3 -m isshoni events prints)")
 		speed    = flag.Float64("replay-speed", 0, "replay: event seconds per second (default 60)")
 		at       = flag.Duration("at", 0, "hanami snapshot: time of the first frame (default 4s)")
-		frames   = flag.Int("frames", 1, "hanami snapshot: number of frames, separated by a form-feed line")
+		frames   = flag.Int("frames", 1, "dashboard and hanami snapshots: number of frames, separated by a form-feed line (dashboard: one load, the cursor one row lower in each)")
 		step     = flag.Duration("frame-step", 0, "hanami snapshot: time between frames (default 400ms)")
 		legend   = flag.Bool("legend", false, "hanami snapshot: with the legend open")
 		serveAt  = flag.String("serve", "", "serve the dashboard over SSH on ADDR (e.g. 127.0.0.1:2222) instead of on this terminal; public keys only")

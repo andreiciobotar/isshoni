@@ -316,7 +316,7 @@ bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-flow|k
 `--range` defaults to `7d`. `NO_COLOR` gives the plain rendering too. `--snapshot`
 prints one settled frame and exits, non-zero when the load fails; `--row N` puts the
 dashboard cursor on table row N (0 is the `all` row) and `--fold` collapses the
-repository that row is in; `--snapshot session` is the full-screen session (the
+repository that row is in; `--frames N` renders N frames from one load, separated by a form-feed line, frame i with the cursor on row `--row`+i (so the rows keep one order across the frames); `--snapshot session` is the full-screen session (the
 dashboard's zoom, below) of `--session ID`, else of the most recent one; `make screenshot
 VIEW=... SIZE=...` turns it into a PNG under `shots/` (needs Chrome). Both make targets
 take `FIXTURE=<name>` (a directory of `tests/fixtures`, e.g. `grouping`): they render a copy
