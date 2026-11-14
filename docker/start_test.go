@@ -183,7 +183,10 @@ func TestServerIsRestartedWhenItDies(t *testing.T) {
 	r := start(t, true)
 	r.started("server", 1)
 	r.started("cron", 1)
-	syscall.Kill(r.pids("cron.pids")[0], syscall.SIGUSR2) // what the container's crontab sends every supercronic
+	// What the container's crontab sends every supercronic.
+	if err := syscall.Kill(r.pids("cron.pids")[0], syscall.SIGUSR2); err != nil {
+		t.Fatal(err)
+	}
 	if err := syscall.Kill(r.pids("server.pids")[0], syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
