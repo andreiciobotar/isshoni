@@ -5,7 +5,7 @@ For a machine that is always on: the dispatcher, its leads and the site manager 
 The image ([docker/Dockerfile](../docker/Dockerfile)) holds tools only, each at a pinned version: Claude Code, `gh`, git, Python 3.13, Go, make, openssl, tmux and [supercronic](https://github.com/aptible/supercronic) on Debian 13 slim. It is 886 MB on x86-64 (Claude Code 365 MB, Go 240 MB) and builds in about 35 seconds on a GitHub runner; CI prints both on every run. It has no Chromium, so `make screenshot` does not work there.
 
 ## The command
-Once, on the laptop, in a clone of this repository: `make wizard` creates the factory's GitHub App ([factory.md](factory.md#identity)). Then:
+Once, on the laptop, in a clone of this repository: `make wizard` creates the factory's GitHub App ([factory.md](factory.md#identity)). Then `make wizard-remote` asks for the ssh target, the state directory, the repositories and an ssh alias, prints the command it will run and asks before running it; `make wizard-remote ARGS="..."` is the command below. Directly:
 
 ```sh
 bin/isshoni host add nas --state /srv/factory --repo owner/name
@@ -19,7 +19,7 @@ bin/isshoni host add nas --state /srv/factory --repo owner/name
 | `--key PUBKEY_FILE` | the public key to authorise for the dashboard; default: the first `<identityfile>.pub` that `ssh -G <target>` lists |
 | `--name NAME` | the host's name here; default: the target, every character outside `A-Za-z0-9_-` turned into `-` |
 | `--dashboard-port PORT` | the server's loopback port for the dashboard; default 2222; like `--state`, fixed once recorded |
-| `--alias ALIAS` | write a `Host` block with this name to `~/.ssh/config` (below) |
+| `--alias ALIAS` | write a `Host` block with this name to `~/.ssh/config` (below); `--alias ""` means none: the block is removed and nothing is asked |
 
 The laptop keeps its records in `~/.claude/factory/hosts.json` (`$FACTORY_HOME` moves it), mode 0600. Each step first looks at the server and does only what is missing, so **a rerun is also the update**: it ships `HEAD` of your clone again when the server has another revision, and resumes where an earlier run stopped. Each prints `[k/12] <step>: done` or `already`. What the steps do to the server:
 
@@ -33,7 +33,7 @@ The laptop keeps its records in `~/.claude/factory/hosts.json` (`$FACTORY_HOME` 
 8. **Settings.** Merges `"monitor"` and `"dispatchers"` into the container's `~/.claude/factory/settings.json`; every other key is kept.
 9. **Repositories.** `git clone https://github.com/owner/name` into `~/code/<name>`; a private repository is instead fetched as the App (`factory env`). The factory's own tooling lives apart, in `~/.isshoni`, so a repository of this name can be one of them.
 10. **Dashboard key.** Lists your public key in `~/.claude/factory/dashboard/authorized_keys` with `write` (an existing line without it is upgraded). The container's start script serves the dashboard only if the file and the binary exist when the container starts; when it is not serving, `host add` starts it in place with `docker exec -d` and never restarts the container, which would stop the running sessions.
-11. **Dispatchers.** For each repository with no `dispatcher-<name>` in `claude agents --json`: `claude --bg -n dispatcher-<name> --permission-mode auto "/factory:dispatch"` in `~/code/<name>`.
+11. **Dispatchers.** For each repository where `factory dispatcher` finds no registered dispatcher (it registers itself on start): `claude --bg -n dispatcher-<name> --permission-mode auto "/factory:dispatch"` in `~/code/<name>`.
 12. **Connect.** Prints how to reach the dashboard.
 
 ### The Claude login
@@ -78,11 +78,12 @@ The dispatcher and the leads are background sessions in the container: `d` in th
 - `host status [NAME]`: over SSH, the container, the shipped revision against your `HEAD`, whether the dashboard serves, and which recorded dispatchers are in `claude agents --json`. Exit 1 when one is not running.
 - `host remove NAME`: removes the container, the image, the alias block and the record. **The state directory is kept** and its path printed; `--purge-state` deletes it too. A server that does not answer is an error, and nothing local is removed.
 - **Update** is `host add <target>` again.
+- `make uninstall-remote` is `host remove` with no name: it lists the hosts, asks which, whether to delete the state directory too, and what it will run (default no). The laptop's `make uninstall` keeps the GitHub App (its installation, `identity/` and `hosts.json`) while a host is recorded; after the last `host remove`, run it again to remove them. The server's copy of the identity is marked `"copy": true` and never removes the App.
 
 ## Known limits
 - One factory container per server.
 - The SSH user must run `docker` without sudo.
-- After a container restart or a server reboot the dispatchers are gone until `host add <target>` is run again; it starts them fresh, without their earlier conversation. Transcripts, worktrees and declared states survive, and `factory status` still lists every task.
+- After a container restart or a server reboot the container's start script (`docker/start`) starts, in the background, each name in `"dispatchers"` of the factory's `settings.json` that `claude agents --json` does not list, fresh and without its earlier conversation. It is silent when there is no settings file or nothing is missing, and when it cannot (repository missing, not logged in, ...) it writes one line to `docker logs isshoni-factory`; the container comes up either way. A recreated container does not do this: it records its id (`~/.container-id`) and waits, and `host add` starts the dispatchers after shipping the new source and plugin. A changed `docker/` changes the image label, so the next `host add` recreates the container, which is the update path. Transcripts, worktrees and declared states survive, and `factory status` still lists every task.
 - The dispatcher runs in `auto` permission mode, because nobody is there to answer prompts.
 - A server that no longer answers cannot be removed from the registry except by editing `hosts.json`.
 - Not documented by Anthropic, and so only the first real run shows them: that the token reaches background sessions, that a `--bg` session on a fresh configuration needs no onboarding or trust answer, and that `"/factory:dispatch"` as the prompt of a `--bg` session starts the skill. Steps 7 and 11 verify what they can and say so when it does not hold.
@@ -118,7 +119,7 @@ A container has no systemd, and a cron daemon needs root. So the container's mai
 What differs from cron on a host:
 - `crontab` knows only `-l` and `-` (what the factory uses). Edit `~/.crontab` by hand and supercronic does not notice until `pkill -USR2 supercronic` or the factory's next change.
 - supercronic also writes a line per run to the container's log (`docker logs isshoni-factory`).
-- After the container restarts, a job line left in `~/.crontab` runs once, finds no dispatcher and removes itself.
+- After the container restarts, a job line left in `~/.crontab` can run before the start script has brought the dispatchers back; it then finds none and removes itself.
 - There is no desktop: `dispatcher-missing` becomes a `notify: ...` line in `~/.claude/factory/watch.log`.
 
 ## What a confused lead could damage

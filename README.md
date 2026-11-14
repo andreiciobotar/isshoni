@@ -46,7 +46,6 @@ make install && make up            # live dashboard; needs Go 1.27+
 Factory: `make wizard` in the clone checks the tools, builds the dashboard, installs the plugin, writes the settings, offers cost alerts with the daily digest and offers the factory its own GitHub App ([what each step does](docs/factory.md#setup-and-uninstall)). Then, in Claude Code, in the repository you want work done in:
 
 ```
-/rename dispatcher-<repository directory name>
 /factory:dispatch
 ```
 
@@ -54,9 +53,9 @@ Describe a task; ask for progress whenever you like. By default leads run unatte
 
 Optional:
 
-- [Always on](docs/container.md): `bin/isshoni host add <ssh target> --state <dir> --repo <owner/name>` runs the factory in a container on a Linux host that has Docker.
+- [Always on](docs/container.md): `make wizard-remote` asks for what it needs and runs the factory in a container on a Linux host that has Docker.
 
-`make uninstall` removes what the wizard put on the machine.
+`make uninstall` removes what the wizard put on this machine, `make uninstall-remote` a server's install.
 
 ## The software factory
 
@@ -70,7 +69,7 @@ Optional:
 A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`.
 
 <p align="center">
-  <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap">
+  <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap and its reserve">
 </p>
 
 ## Kaizen (改善), built in
@@ -99,7 +98,7 @@ Parsing a transcript is slow, so parsed sessions are cached, one file per transc
 Cost is the API list price, from [isshoni/prices.toml](isshoni/prices.toml). `isshoni-tui` is the same data live, plus the factory's tasks and whether it is getting better. Its fifth view, [Hanami (花見)](docs/isshoni.md#hanami-花見-the-work-as-something-to-watch), draws the work as motion: something to leave on a second screen.
 
 <p align="center">
-  <img src="assets/tabs/hanami.webp" alt="Hanami: a day of the factory replayed; blossoms open where agents work and a merge streams away">
+  <img src="assets/tabs/hanami.webp" alt="Hanami: a day of the factory replayed; blossoms open where agents work, and a merge bursts as a firework that lights the stage">
 </p>
 
 Every view, the Agents one too, and its keys: [docs/isshoni.md](docs/isshoni.md#dashboard-isshoni-tui).
