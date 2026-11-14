@@ -2278,7 +2278,7 @@ def mergeability(p, n):
 
 
 def merge_one(p, pr, merged, dry, permission=None):
-    """Merge `pr` (with `dry`, only check it; `merged` holds what would have merged before it). None, or the
+    """Merge `pr` (with `dry`, only check it; `merged`: something would have merged before it). None, or the
     (kind, reason) of the first blocker. The invariant: a pull request is merged only when its head holds the
     current tip of the default branch and its checks are green on that head. With `permission` (a dict of the
     permission of each login seen), GitHub's own records must hold a valid approval of it."""
@@ -2379,7 +2379,7 @@ def cmd_merge(args):
             selected.append(pr)
     if not selected:
         print("nothing to merge")
-    selected, merged, failed = bottom_up(selected), set(), False
+    selected, merged, failed = bottom_up(selected), False, False
     permission = {} if args.approved else None
     for i, pr in enumerate(selected):
         named = pr["number"] in args.prs
@@ -2397,7 +2397,7 @@ def cmd_merge(args):
             for rest in selected[i + 1:]:
                 print(f"#{rest['number']} not attempted")
             break
-        merged.add(pr["headRefName"])
+        merged = True
         if not args.dry_run:
             print(f"#{pr['number']} merged {pr['url']}")
         else:

@@ -218,6 +218,13 @@ class StarterTests(World):
         self.assertEqual((decision["id"], decision["decision"], decision["reason"]),
                          (fired["id"], "escalated", "reported by the lander run"))
 
+    def test_a_behind_stop_is_recorded_as_that_kind_and_fires_lgtm_blocked(self):
+        code, out, _ = self.lander("1", prs=[plain(1)], answer=reply("#1 stopped behind: its base has moved"))
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped behind: its base has moved\n", out)
+        self.assertEqual(lander_state()["stopped"]["1"]["kind"], "behind")
+        self.assertEqual([r["subject"] for r in self.records() if r.get("criterion") == "lgtm-blocked"], ["#1/behind"])
+
     def test_a_draft_is_given_on_the_humans_word_but_never_taken_on_an_approval(self):
         draft = {**reviewed(1), "isDraft": True}
         code, out, _ = self.lander(prs=[draft])

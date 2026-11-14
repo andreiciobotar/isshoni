@@ -60,7 +60,7 @@ class World(Harness):
         self.seed("tasks", [{"repo": ROOT, "slug": s, "state": st, "ts": iso(NOW - 3600)} for s, st in states.items()])
         answers = {
             ("git", "status"): (0, "", ""), ("git", "rev-list"): (0, "0\t1\n", ""), ("git", "fetch"): (0, "", ""),
-            ("git", "merge-base", "--is-ancestor"): lambda: (1, "", "") if self.fake.ran("gh", "pr", "merge") else (0, "", ""),
+            ("git", "merge-base", "--is-ancestor"): lambda: (1, "", "") if self.tip_moved_in_last_fetch() else (0, "", ""),
             ("git", "log"): (0, f"{NOW} {local}\n", ""),
             ("gh", "pr", "list", "--state", "open"): (0, json.dumps(prs), ""),
             ("gh", "pr", "edit"): (0, "", ""), ("gh", "pr", "ready"): (0, "", ""), ("gh", "pr", "merge"): (0, "", ""),
@@ -80,6 +80,17 @@ class World(Harness):
         finished = [{"id": f"id-{s}", "sessionId": f"sid-{s}", "cwd": f"{WT}/{s}", "kind": "background",
                      "status": "idle", "state": "done"} for s in slugs]
         return answers, [DISPATCHER | {"name": SESSION}, *finished], slugs
+
+    def tip_moved_in_last_fetch(self):
+        """Whether the default branch's tip, as the last `git fetch` left it, holds a merge of this command: a fetch
+        made before a merge still shows the old tip, which every head then contains."""
+        merges, seen = 0, 0
+        for call in self.fake.calls:
+            if call[:3] == ["gh", "pr", "merge"]:
+                merges += 1
+            elif call[:2] == ["git", "fetch"]:
+                seen = merges
+        return seen > 0
 
     def merge(self, *argv, prs, **kw):
         answers, sessions, slugs = self.world(prs, **{k: kw.pop(k) for k in list(kw) if k in (
