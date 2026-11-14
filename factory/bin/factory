@@ -72,8 +72,8 @@ def run(argv, cwd=None, timeout=None, input=None):
         try:
             if found := acting_identity(cwd):
                 env = {**os.environ, "GH_TOKEN": app_token(*found)}
-        except (Fail, OSError) as e:
-            return 1, "", str(e)
+        except Exception as e:  # fail closed: no token, and no `gh` run with the human's login
+            return 1, "", str(e) or type(e).__name__
     try:
         p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, input=input, env=env)
     except subprocess.TimeoutExpired:
@@ -735,8 +735,12 @@ def cmd_status(args):
               for key, p in (("blocked", "blocked"), ("in_review", "review"), ("merged", "merged"),
                              ("settled", "settled"))}
     counts["in_motion"] = sum(r["phase"] in ("motion", "blocked") for r in rows)
-    stored = load_identity()
-    acting = stored and stored.get("bot_login") and acting_identity()
+    unreadable = None
+    try:
+        stored = load_identity()
+        acting = stored and stored.get("bot_login") and acting_identity()
+    except Exception as e:  # a corrupt app.json must not take `status` down
+        stored, acting, unreadable = None, None, e
     bot = acting and stored["bot_login"]
     if args.json:
         doc = {"rows": rows, "cap": cap, "open": len(rows), **counts,
@@ -768,7 +772,8 @@ def cmd_status(args):
             if stored.get("repository_selection") == "all" else ""))
     else:
         print("acting on GitHub with your gh login (" + (
-            f"the App belongs to {stored['owner']}, not this repository's owner" if stored and stored.get("bot_login") else
+            f"the stored App cannot be read: {unreadable or type(unreadable).__name__}" if unreadable else
+            f"this repository is not on GitHub under {stored['owner']}, the App's owner" if stored and stored.get("bot_login") else
             "the App is stored but not installed: factory wizard" if stored else "no App identity: factory wizard") + ")")
     for r in rows:
         if r["phase"] == "review":
@@ -2432,6 +2437,7 @@ def watch_lgtm(p):
 GITHUB = "https://api.github.com"
 TOKEN_MARGIN = 900
 REPO_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
+GITHUB_REMOTE_RE = re.compile(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/\s:]+)/([^/\s]+?)(?:\.git)?/?")
 WIZARD_WAIT = 600
 INSTALL_POLL = 3
 PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read", "actions": "read"}
@@ -2439,12 +2445,16 @@ CALLBACK_DONE = "<!doctype html><meta charset=utf-8><p>Done. Go back to the term
 
 
 def load_identity():
+    path = IDENTITY.expanduser() / "app.json"
     try:
-        return json.loads((IDENTITY.expanduser() / "app.json").read_text())
+        identity = json.loads(path.read_text())
     except FileNotFoundError:
         return None
     except ValueError as e:
-        raise Fail(f"{IDENTITY.expanduser() / 'app.json'} cannot be read as JSON: {e}", 1)
+        raise Fail(f"{path} cannot be read as JSON: {e}", 1)
+    if not isinstance(identity, dict):
+        raise Fail(f"{path} is not a JSON object", 1)
+    return identity
 
 
 def write_identity(identity):
@@ -2510,7 +2520,7 @@ def installation_token(identity, repository=None):
     path = f"/app/installations/{identity['installation_id']}/access_tokens"
     status, body = github_api("POST", path, app_jwt(identity), {"repositories": [repository]} if repository else None)
     if status == 422 and repository:
-        raise Fail(f"the App is not installed on {identity['owner']}/{repository}: add it at {identity.get('installation_url')}", 1)
+        raise Fail(f"the App is not installed on {identity['owner']}/{repository}: add it at {identity.get('installation_url')} ({reason(status, body)})", 1)
     if status != 201:
         raise Fail(f"GitHub POST {path} failed: {reason(status, body)}", 1)
     return body["token"], body["expires_at"]
@@ -2560,24 +2570,22 @@ def app_token(identity, name):
 
 def cmd_env(args):
     """Print the exports that make git and gh act as the App; nothing without an identity."""
+    identity, token, code = None, "unavailable", 1
     try:
         found = acting_identity()
         if not found:
             return 0
-        identity, token, code = found[0], app_token(*found), 0
-    except (Fail, OSError) as e:
-        print(f"factory: no App token: {e}; git and gh will fail until one can be minted", file=sys.stderr)
-        identity, token, code = None, "unavailable", 1
+        identity = found[0]
+        token, code = app_token(*found), 0
+    except Exception as e:  # fail closed: whatever went wrong, git must not reach the human's credentials
+        print(f"factory: no App token: {e or type(e).__name__}; git and gh will fail until one can be minted", file=sys.stderr)
     helper = "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f"
     credential = "credential.https://github.com.helper"
     rewrite = "url.https://github.com/.insteadOf"
-    if not identity:
-        print("export GH_TOKEN=unavailable")
-        return code
-    values = {"GH_TOKEN": token, "GIT_TERMINAL_PROMPT": "0",
-              "GIT_AUTHOR_NAME": identity["bot_login"], "GIT_AUTHOR_EMAIL": identity["bot_email"],
-              "GIT_COMMITTER_NAME": identity["bot_login"], "GIT_COMMITTER_EMAIL": identity["bot_email"],
-              "GIT_CONFIG_COUNT": "4"}
+    values = {"GH_TOKEN": token, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "4"}
+    if isinstance(identity, dict) and identity.get("bot_login") and identity.get("bot_email"):
+        for who in ("AUTHOR", "COMMITTER"):
+            values[f"GIT_{who}_NAME"], values[f"GIT_{who}_EMAIL"] = identity["bot_login"], identity["bot_email"]
     for i, (key, value) in enumerate(((credential, ""), (credential, helper), (rewrite, "git@github.com:"),
                                       (rewrite, "ssh://git@github.com/"))):
         values[f"GIT_CONFIG_KEY_{i}"], values[f"GIT_CONFIG_VALUE_{i}"] = key, value
@@ -2589,7 +2597,7 @@ def cmd_env(args):
 def remote_repo(cwd=None):
     """(owner, name) of the GitHub repository `origin` points to (https or ssh form), or None."""
     rc, out, _ = run(["git", "remote", "get-url", "origin"], cwd=cwd)
-    m = re.search(r"github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$", out.strip()) if rc == 0 else None
+    m = GITHUB_REMOTE_RE.fullmatch(out.strip()) if rc == 0 else None
     return m and m.groups()
 
 

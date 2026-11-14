@@ -292,6 +292,12 @@ class OwnerTests(Wizard):
             self.assertEqual(self.owner(url), ("octocat", "repo"), url)
         self.assertEqual(self.owner("git@github.com:octocat/my.dotted-repo.git"), ("octocat", "my.dotted-repo"))
 
+    def test_only_github_dot_com_is_a_host(self):
+        for url in ("https://notgithub.com/octocat/repo", "https://evil.io/github.com/octocat/repo",
+                    "https://gitlab.com/x/github.com/octocat/repo", "https://github.com.evil.io/octocat/repo",
+                    "git@notgithub.com:octocat/repo.git", "ssh://git@gitlab.com/github.com/octocat/repo"):
+            self.assertIsNone(self.owner(url), url)
+
     def test_none(self):
         self.assertIsNone(self.owner("https://example.com/octocat/repo"))
         self.assertIsNone(self.owner("https://github.com/octocat"))

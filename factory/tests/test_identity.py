@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -154,10 +155,7 @@ class AppTokenTests(Identity):
         self.github(status=422)
         with self.assertRaises(factory.Fail) as caught:
             self.token()
-        self.assertEqual(str(caught.exception), f"the App is not installed on octocat/one: add it at {INSTALL_URL}")
-        rc, out, err = self.cli("env")
-        self.assertEqual((rc, out), (1, "export GH_TOKEN=unavailable\n"))
-        self.assertIn("the App is not installed on octocat/one", err)
+        self.assertEqual(str(caught.exception), f"the App is not installed on octocat/one: add it at {INSTALL_URL} (HTTP 422)")
 
     def test_a_name_that_is_not_a_repository_name_is_refused(self):
         self.github()
@@ -220,45 +218,95 @@ class EnvTests(Identity):
             self.assertIn(line, out.splitlines())
         self.assertNotIn(TOKEN, out.split("GIT_CONFIG_VALUE_1")[1])
 
-    def test_a_mint_failure_makes_git_and_gh_fail(self):
-        self.installed()
-        self.github(status=500)
-        rc, out, err = self.cli("env")
-        self.assertEqual(rc, 1)
-        self.assertEqual(err.count("\n"), 1)
-        self.assertTrue(err.startswith("factory: no App token: GitHub POST /app/installations/7654321/access_tokens failed"))
-        self.assertIn("export GH_TOKEN=unavailable", out.splitlines())
-        for text in (out, err):
-            self.assertNotIn(TOKEN, text)
-            self.assertNotIn("PRIVATE KEY", text)
+    LOCKDOWN = ("export GIT_TERMINAL_PROMPT=0", "export GIT_CONFIG_COUNT=4",
+                "export GIT_CONFIG_KEY_0=credential.https://github.com.helper", "export GIT_CONFIG_VALUE_0=''",
+                "export GIT_CONFIG_KEY_1=credential.https://github.com.helper",
+                "export GIT_CONFIG_KEY_2=url.https://github.com/.insteadOf", "export GIT_CONFIG_VALUE_2=git@github.com:",
+                "export GIT_CONFIG_KEY_3=url.https://github.com/.insteadOf", "export GIT_CONFIG_VALUE_3=ssh://git@github.com/")
+    AUTHOR = (f"export GIT_AUTHOR_NAME='{BOT}'", f"export GIT_COMMITTER_NAME='{BOT}'",
+              f"export GIT_AUTHOR_EMAIL='{EMAIL}'", f"export GIT_COMMITTER_EMAIL='{EMAIL}'")
 
-    def test_a_corrupt_app_json_fails_closed(self):
-        self.installed()
-        (self.identity / "app.json").write_text("{")
-        rc, out, err = self.cli("env")
-        self.assertEqual((rc, out), (1, "export GH_TOKEN=unavailable\n"))
-        self.assertEqual(err.count("\n"), 1)
-        self.assertTrue(err.startswith("factory: no App token: "))
+    def fresh(self):
+        for path in (self.identity, self.home / "repo"):
+            shutil.rmtree(path, ignore_errors=True)
 
-    def test_in_a_real_shell_with_real_git(self):
-        self.installed()
-        self.github()
-        _, out, _ = self.cli("env")
-        answering = "!f() { echo username=human; echo password=leaked; }; f"
+    def in_shell(self, out):
+        """Evaluates `out` in a real shell, in a repository with an ssh origin and a global gitconfig whose credential helpers
+        all answer (so a helper that survives shows). Returns the output lines: the push URL, what `git credential fill`
+        answers for github.com and for gitlab.com, and the author and committer of a commit."""
+        answering = '"!f() { echo username=human; echo password=leaked; }; f"'
         (self.home / ".gitconfig").write_text(f"[credential]\n\thelper = {answering}\n"
                                               f"[credential \"https://github.com\"]\n\thelper = {answering}\n"
                                               "[user]\n\tname = Human\n\temail = human@example.com\n")
         repo = self.home / "repo"
         repo.mkdir()
+        fill = 'printf "protocol=https\\nhost=%s\\n\\n" {} | git credential fill'
         script = ('eval "$OUT"; git init -q . && git remote add origin git@github.com:octocat/one.git && '
-                  'git remote get-url --push origin && printf "protocol=https\\nhost=github.com\\n\\n" | git credential fill && '
-                  'git commit -q --allow-empty -m x && git log -1 --format="%an|%ae|%cn|%ce"')
+                  'git remote get-url --push origin && ' + fill.format("github.com") + " && " + fill.format("gitlab.com") +
+                  ' && git commit -q --allow-empty -m x && git log -1 --format="%an|%ae|%cn|%ce"')
         done = subprocess.run(["sh", "-c", script], cwd=repo, capture_output=True, text=True, timeout=30,
                               env={"PATH": os.environ["PATH"], "HOME": str(self.home), "OUT": out, "GIT_CONFIG_NOSYSTEM": "1"})
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(done.stdout.splitlines(), [
-            "https://github.com/octocat/one.git", "protocol=https", "host=github.com", "username=x-access-token",
-            f"password={TOKEN}", f"{BOT}|{EMAIL}|{BOT}|{EMAIL}"])
+        return done.stdout.splitlines()
+
+    def assert_locked_down(self, out, token, author=True):
+        lines = out.splitlines()
+        for line in (f"export GH_TOKEN={token}", *self.LOCKDOWN, *(self.AUTHOR if author else ())):
+            self.assertIn(line, lines)
+        self.assertEqual(any(line.startswith("export GIT_AUTHOR_NAME") for line in lines), author)
+
+    def assert_in_shell(self, out, token, author):
+        shell = self.in_shell(out)
+        self.assertEqual(shell[:5], ["https://github.com/octocat/one.git", "protocol=https", "host=github.com",
+                                     "username=x-access-token", f"password={token}"])
+        # the global helpers do answer elsewhere: this is what the reset entry keeps from github.com
+        self.assertEqual(shell[5:9], ["protocol=https", "host=gitlab.com", "username=human", "password=leaked"])
+        self.assertEqual(shell[9], f"{BOT}|{EMAIL}|{BOT}|{EMAIL}" if author else "Human|human@example.com|Human|human@example.com")
+
+    def test_in_a_real_shell_with_real_git(self):
+        self.installed()
+        self.github()
+        _, out, _ = self.cli("env")
+        self.assert_in_shell(out, TOKEN, author=True)
+
+    def test_a_mint_failure_makes_git_and_gh_fail(self):
+        for status in (500, 422):
+            with self.subTest(status):
+                self.fresh()
+                self.installed()
+                self.github(status=status)
+                rc, out, err = self.cli("env")
+                self.assertEqual(rc, 1)
+                self.assertEqual(err.count("\n"), 1)
+                self.assertTrue(err.startswith("factory: no App token: "))
+                self.assertIn("will fail until one can be minted", err)
+                self.assert_locked_down(out, "unavailable")
+                for text in (out, err):
+                    self.assertNotIn(TOKEN, text)
+                    self.assertNotIn("PRIVATE KEY", text)
+                self.assert_in_shell(out, "unavailable", author=True)
+
+    def test_an_unreadable_or_malformed_app_json_still_locks_git_down(self):
+        cases = {"corrupt": "{", "a list": "[1]", "an empty list": "[]", "no owner": json.dumps({"bot_login": BOT}),
+                 "no key": json.dumps({"owner": "octocat", "bot_login": BOT, "installation_id": 7654321,
+                                       "client_id": "Iv23abc"})}
+        for name, content in cases.items():
+            with self.subTest(name):
+                self.fresh()
+                self.installed()
+                (self.identity / "app.json").write_text(content)
+                rc, out, err = self.cli("env")
+                self.assertEqual(rc, 1)
+                self.assertEqual(err.count("\n"), 1)
+                self.assertTrue(err.startswith("factory: no App token: "))
+                self.assertNotIn("Traceback", err)
+                self.assert_locked_down(out, "unavailable", author=False)
+
+    def test_a_corrupt_app_json_is_one_shell_session_with_no_credentials(self):
+        self.installed()
+        (self.identity / "app.json").write_text("{")
+        _, out, _ = self.cli("env")
+        self.assert_in_shell(out, "unavailable", author=False)
 
 
 class HookTests(Identity):
@@ -371,8 +419,16 @@ class StatusTests(Identity):
         self.assertIn(f"\nacting on GitHub as {BOT} (the factory's App)\n", self.status(self.INSTALLED))
         for remote in (("someone-else", "one"), None):
             self.remote = remote
-            self.assertIn("\nacting on GitHub with your gh login (the App belongs to octocat, not this repository's owner)\n",
+            self.assertIn("\nacting on GitHub with your gh login (this repository is not on GitHub under octocat, the App's owner)\n",
                           self.status(self.INSTALLED))
+
+    def test_an_unreadable_app_json_does_not_stop_status(self):
+        broken = factory.Fail("app.json cannot be read as JSON", 1)
+        with mock.patch.object(factory, "load_identity", side_effect=broken):
+            out = invoke(["status"], repo_answers([]))[1]
+            doc = json.loads(invoke(["status", "--json"], repo_answers([]))[1])
+        self.assertIn("\nacting on GitHub with your gh login (the stored App cannot be read: app.json cannot be read as JSON)\n", out)
+        self.assertIsNone(doc["identity"])
 
     def test_all_repositories_are_flagged(self):
         everything = {**self.INSTALLED, "repository_selection": "all"}
