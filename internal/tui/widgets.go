@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"cmp"
 	"image/color"
 	"math"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/spinner"
@@ -261,6 +263,8 @@ type chartOut struct {
 	first  int   // index of the first value drawn: the newest ones that fit are kept
 	gutter int   // cells left of the first column
 	stride int   // cells from one column to the next
+	step   int   // line chart: dots from one point to the next
+	plot   int   // line chart: cells of the plot, between the gutter and the end labels
 }
 
 // chart draws o in w cells on p's background. The y labels give the largest drawn value
@@ -364,6 +368,169 @@ func (p paint) chart(o chartOpts, w int) chartOut {
 			}
 			x = y
 		}
+		out.lines = append(out.lines, fit(sb.String(), w, p))
+	}
+	return out
+}
+
+// ---- line chart -------------------------------------------------------------------
+
+const lineRows = 8 // rows tall; each holds four dots
+
+var dotBits = [2][4]rune{{0x01, 0x02, 0x04, 0x40}, {0x08, 0x10, 0x20, 0x80}}
+
+// lineSeries is one line: values 0..1, oldest first, as many as every other series has.
+type lineSeries struct {
+	name  string
+	color color.Color
+	vals  []float64
+}
+
+type lineOpts struct {
+	series []lineSeries
+	label  func(float64) string // y and end labels
+}
+
+// dotsBetween calls set for every dot on the straight line from (x0, y0) to (x1, y1).
+func dotsBetween(x0, y0, x1, y1 int, set func(x, y int)) {
+	dx, dy := max(x1-x0, x0-x1), -max(y1-y0, y0-y1)
+	sx, sy := 1, 1
+	if x1 < x0 {
+		sx = -1
+	}
+	if y1 < y0 {
+		sy = -1
+	}
+	for e := dx + dy; ; {
+		set(x0, y0)
+		if x0 == x1 && y0 == y1 {
+			return
+		}
+		e2 := 2 * e
+		if e2 >= dy {
+			e, x0 = e+dy, x0+sx
+		}
+		if e2 <= dx {
+			e, y0 = e+dx, y0+sy
+		}
+	}
+}
+
+// lineChart draws the series as braille lines in w cells on p's background: a y gutter,
+// the plot, and each line's name and latest value at its end. The scale runs from 0 to the
+// largest drawn value rounded up to 10%. Where two lines share a cell the earlier series
+// owns its colour. The points are spread over the plot, as many dots apart as fit; when
+// even one dot each does not fit, only the newest that do are drawn.
+func (p paint) lineChart(o lineOpts, w int) chartOut {
+	th := p.th
+	n := len(o.series[0].vals)
+	scale := func(from int) float64 {
+		hi := 0.0
+		for _, s := range o.series {
+			for _, v := range s.vals[from:] {
+				hi = math.Max(hi, v)
+			}
+		}
+		return math.Max(0.1, math.Ceil(hi*10-1e-9)/10)
+	}
+	positive := func(vals []float64) bool { return slices.ContainsFunc(vals, func(v float64) bool { return v > 0 }) }
+	ends := make([]string, len(o.series))
+	endW := 0
+	for i, s := range o.series {
+		if positive(s.vals) {
+			ends[i] = s.name + " " + o.label(s.vals[n-1])
+			endW = max(endW, width(ends[i])+1)
+		}
+	}
+	gutter := width(o.label(scale(0))) + 1
+	pw := max(8, w-gutter-endW)
+	step := max(1, (2*pw-1)/(n-1))
+	out := chartOut{gutter: gutter, step: step, plot: pw}
+	if (n-1)*step+1 > 2*pw {
+		out.first = n - 2*pw
+	}
+	top := scale(out.first)
+	type cellDots struct {
+		bits rune
+		col  color.Color
+		k    uint32
+	}
+	grid := make([][]cellDots, lineRows)
+	for r := range grid {
+		grid[r] = make([]cellDots, pw)
+	}
+	endRow := make([]int, len(o.series))
+	for si := len(o.series) - 1; si >= 0; si-- {
+		s := o.series[si]
+		vals := s.vals[out.first:]
+		if !positive(vals) {
+			ends[si] = ""
+			continue
+		}
+		set := func(x, y int) {
+			c := &grid[y/4][x/2]
+			c.bits |= dotBits[x%2][y%4]
+			c.col, c.k = s.color, key24(s.color)
+		}
+		var px, py int
+		for j, v := range vals {
+			x, y := j*step, lineRows*4-1-int(math.Round(v/top*(lineRows*4-1)))
+			if j == 0 {
+				px, py = x, y
+			}
+			dotsBetween(px, py, x, y, set)
+			px, py = x, y
+		}
+		endRow[si] = py / 4
+	}
+	// end labels read top to bottom in the lines' order: the highest latest value first, each on
+	// its line's row or the next free one below; a block that runs off the bottom moves up
+	var labelled []int
+	for si := range o.series {
+		if ends[si] != "" {
+			labelled = append(labelled, si)
+		}
+	}
+	slices.SortStableFunc(labelled, func(a, b int) int { return cmp.Compare(o.series[b].vals[n-1], o.series[a].vals[n-1]) })
+	labelled = labelled[:min(len(labelled), lineRows)]
+	rows := make([]int, len(labelled))
+	for i, si := range labelled {
+		rows[i] = endRow[si]
+		if i > 0 {
+			rows[i] = max(rows[i], rows[i-1]+1)
+		}
+	}
+	for i, limit := len(rows)-1, lineRows-1; i >= 0 && rows[i] > limit; i, limit = i-1, limit-1 {
+		rows[i] = limit
+	}
+	labelAt := make([]string, lineRows)
+	for i, si := range labelled {
+		s := o.series[si]
+		labelAt[rows[i]] = p.sp(1) + p.t(s.name, s.color) + p.sp(1) + p.b(o.label(s.vals[n-1]), th.Text)
+	}
+	for r := 0; r < lineRows; r++ {
+		lab := ""
+		switch r {
+		case 0:
+			lab = o.label(top)
+		case lineRows - 1:
+			lab = o.label(0)
+		}
+		var sb strings.Builder
+		sb.WriteString(p.t(cell(lab, gutter-1, true), th.Muted) + p.sp(1))
+		for x := 0; x < pw; {
+			y := x + 1
+			for y < pw && grid[r][y].bits == grid[r][x].bits && grid[r][y].k == grid[r][x].k {
+				y++
+			}
+			if d := grid[r][x]; d.bits == 0 {
+				sb.WriteString(p.sp(y - x))
+			} else {
+				sb.WriteString(p.t(strings.Repeat(string(0x2800+d.bits), y-x), d.col))
+			}
+			x = y
+		}
+		sb.WriteString(labelAt[r])
 		out.lines = append(out.lines, fit(sb.String(), w, p))
 	}
 	return out

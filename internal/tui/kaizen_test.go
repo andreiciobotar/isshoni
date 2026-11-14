@@ -36,7 +36,7 @@ func fewDoc(t testing.TB) *data.Kaizen {
 	s := &d.Summary
 	s.Tasks, s.Landed, s.InFlight = 2, 2, 0
 	s.Cost, s.BriefToPR, s.PRToMerge, s.Rounds = data.Median{Median: ptr(9.9), N: 2}, data.Median{Median: ptr(3000.0), N: 2}, data.Median{Median: ptr(750.0), N: 2}, data.Median{Median: ptr(3.5), N: 2}
-	s.FirstPass.Yes, s.FirstPass.Of, s.Trend = 0, 2, nil
+	s.FirstPass.Yes, s.FirstPass.Of, s.Trend, s.Mix.Points = 0, 2, nil, nil
 	d.Rewards = nil
 	return d
 }
@@ -71,7 +71,7 @@ func TestGoldenKaizen(t *testing.T) {
 		{"kaizen-100x30", 100, 30, pagePulse, doc, true},
 		{"kaizen-80x24", 80, 24, pagePulse, doc, true},
 		{"kaizen-flow-140x40", 140, 40, pageFlow, doc, true},
-		{"kaizen-flow-100x30", 100, 30, pageFlow, doc, false},
+		{"kaizen-flow-100x30", 100, 30, pageFlow, doc, true},
 		{"kaizen-flow-140x100", 140, 100, pageFlow, doc, true},
 		{"kaizen-board-140x100", 140, 100, pageBoard, doc, true},
 		{"kaizen-flow-80x24", 80, 24, pageFlow, doc, true},

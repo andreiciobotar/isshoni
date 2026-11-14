@@ -416,7 +416,7 @@ func (m *model) chartBox(p paint, s kzSeries, bw int) block {
 	}
 	ch := in.chart(o, iw)
 	lines := slices.Clone(ch.lines)
-	axis, labels := m.versionAxis(in, s.vers, ch, iw)
+	axis, labels := m.versionAxis(in, s.vers, ch.first, ch.gutter, iw, func(i int) int { return ch.gutter + (i-ch.first)*ch.stride })
 	lines = append(lines, axis, labels)
 	caption := in.t("latest ", th.Faint) + in.b(s.label(s.vals[len(s.vals)-1]), th.Text)
 	if s.median != nil {
@@ -430,26 +430,27 @@ func (m *model) chartBox(p paint, s kzSeries, bw int) block {
 	return p.boxed(title, lines, bw, chartH, s.accent)
 }
 
-// versionAxis is a rule under the columns with a ▲ under the first task of each plugin version
-// after the first shown, and the version labels beneath it: the first at the left.
-func (m *model) versionAxis(in paint, vers []string, ch chartOut, w int) (axis, labels string) {
+// versionAxis is a rule of w cells under the columns with a ▲ under the first task of each
+// plugin version after the first shown (first), at the cell xOf gives for it, and the version
+// labels beneath it: the first at the left, after the gutter.
+func (m *model) versionAxis(in paint, vers []string, first, gutter, w int, xOf func(i int) int) (axis, labels string) {
 	th := m.th
 	type mark struct {
 		x     int
 		label string
 	}
-	marks := []mark{{ch.gutter, kzVersion(vers[ch.first])}}
+	marks := []mark{{gutter, kzVersion(vers[first])}}
 	rule := []rune(strings.Repeat("─", w))
-	for i := ch.first + 1; i < len(vers); i++ {
+	for i := first + 1; i < len(vers); i++ {
 		if vers[i] != vers[i-1] {
-			x := ch.gutter + (i-ch.first)*ch.stride
+			x := xOf(i)
 			rule[x] = '▲'
 			marks = append(marks, mark{x, kzVersion(vers[i])})
 		}
 	}
 	var ax, lb strings.Builder
-	ax.WriteString(in.sp(ch.gutter))
-	for i := ch.gutter; i < w; {
+	ax.WriteString(in.sp(gutter))
+	for i := gutter; i < w; {
 		j := i + 1
 		for j < w && (rule[j] == '▲') == (rule[i] == '▲') {
 			j++
@@ -529,27 +530,19 @@ func (m *model) flowLines(p paint, w int) block {
 	d := m.kz.doc
 	s := d.Summary
 	lines := block{m.heading(p, w, "where the money went", "landed tasks")}
-	roles := []struct {
-		name string
-		val  float64
-		col  color.Color
-	}{
-		{"lead", s.ByRole.Lead, th.AgentColor("main")}, {"coder", s.ByRole.Coder, th.AgentColor("coder")},
-		{"reviewer", s.ByRole.Reviewer, th.AgentColor("reviewer")}, {"explorer", s.ByRole.Explorer, th.AgentColor("explorer")},
-		{"other", s.ByRole.Other, th.Muted},
-	}
 	total := 0.0
-	for _, r := range roles {
-		total += r.val
+	for _, v := range s.ByRole {
+		total += v
 	}
 	var segs []seg
 	var items []string
-	for i, r := range roles {
-		segs = append(segs, seg{r.val, r.col})
-		if r.val <= 0 {
+	for i, name := range d.Roles {
+		val, col := s.ByRole[name], m.roleColor(name)
+		segs = append(segs, seg{val, col})
+		if val <= 0 {
 			continue
 		}
-		items = append(items, p.swatch(i, r.col)+p.t(" "+r.name+" ", th.Muted)+p.b(m.kzMoney(r.val), th.Text)+p.t(fmt.Sprintf(" %.0f%%", r.val/total*100), th.Faint))
+		items = append(items, p.swatch(i, col)+p.t(" "+name+" ", th.Muted)+p.b(m.kzMoney(val), th.Text)+p.t(fmt.Sprintf(" %.0f%%", val/total*100), th.Faint))
 	}
 	if total <= 0 {
 		lines = append(lines, p.sp(1)+p.t("no cost recorded for landed tasks yet", th.Faint))
@@ -564,6 +557,8 @@ func (m *model) flowLines(p paint, w int) block {
 		if n := unpriced(d); n > 0 {
 			lines = append(lines, p.sp(1)+p.t("* "+Human(float64(n))+" tokens had no price: costs are a lower bound", th.Yellow))
 		}
+		lines = append(lines, "")
+		lines = append(lines, m.mixLines(p, w)...)
 	}
 	lines = append(lines, "", m.heading(p, w, "where the time went", "brief to merge, landed tasks"))
 	phases := []struct {
@@ -593,6 +588,61 @@ func (m *model) flowLines(p paint, w int) block {
 	lines = append(lines, "", m.heading(p, w, "what slowed tasks", "from retrospectives"))
 	lines = append(lines, m.slowedLines(p, w)...)
 	return lines
+}
+
+// roleColor is the colour a role is drawn in, wherever it shows.
+func (m *model) roleColor(role string) color.Color {
+	switch role {
+	case "lead":
+		return m.th.AgentColor("main")
+	case "other":
+		return m.th.Muted
+	}
+	return m.th.AgentColor(role)
+}
+
+// mixLines is the heading and chart of each role's share of task cost over time, the
+// plugin versions marked beneath it, or one line saying when the chart starts.
+func (m *model) mixLines(p paint, w int) block {
+	th := m.th
+	d := m.kz.doc
+	mix := d.Summary.Mix
+	note := fmt.Sprintf("role share of task cost · median of %d tasks", mix.Window)
+	if len(mix.Points) < 2 {
+		landed := len(mix.Points) + mix.Window - 1
+		if len(mix.Points) == 0 {
+			landed = 0
+			for _, t := range d.Tasks {
+				if t.Landed && t.Cost != nil && t.Cost.Total > 0 {
+					landed++
+				}
+			}
+		}
+		return block{m.heading(p, w, "the mix over time", note), p.sp(1) +
+			p.t(fmt.Sprintf("%s with a cost: the line starts at %d (each point is the median of %d tasks)", plural(landed, "landed task"), mix.Window+1, mix.Window), th.Faint)}
+	}
+	o := lineOpts{label: func(v float64) string { return fmt.Sprintf("%.0f%%", v*100) }}
+	for _, role := range d.Roles {
+		s := lineSeries{name: role, color: m.roleColor(role)}
+		for _, pt := range mix.Points {
+			s.vals = append(s.vals, pt.Share[role])
+		}
+		o.series = append(o.series, s)
+	}
+	ch := p.lineChart(o, w-2)
+	if ch.first > 0 {
+		note += fmt.Sprintf(" · last %d/%d", len(mix.Points)-ch.first, len(mix.Points))
+	}
+	vers := make([]string, len(mix.Points))
+	for i, pt := range mix.Points {
+		vers[i] = pt.Version
+	}
+	axis, labels := m.versionAxis(p, vers, ch.first, ch.gutter, ch.gutter+ch.plot, func(i int) int { return ch.gutter + (i-ch.first)*ch.step/2 })
+	out := block{m.heading(p, w, "the mix over time", note)}
+	for _, l := range append(ch.lines, axis, labels) {
+		out = append(out, fit(p.sp(1)+l, w, p))
+	}
+	return out
 }
 
 // kzStateLook is the glyph, label and colour of a task's state: landed, else its declared
@@ -716,8 +766,11 @@ func (m *model) taskTable(p paint, w int) block {
 					if t.Cost == nil || t.Cost.Total <= 0 {
 						return p.t(cell("-", kzRolesW, false), th.Faint)
 					}
-					r := t.Cost.ByRole
-					return p.stack(kzRolesW, []seg{{r.Lead, th.AgentColor("main")}, {r.Coder, th.AgentColor("coder")}, {r.Reviewer, th.AgentColor("reviewer")}, {r.Explorer, th.AgentColor("explorer")}, {r.Other, th.Muted}})
+					var segs []seg
+					for _, name := range d.Roles {
+						segs = append(segs, seg{t.Cost.ByRole[name], m.roleColor(name)})
+					}
+					return p.stack(kzRolesW, segs)
 				}
 				s, col := text(t, c)
 				return p.t(cell(s, widths[c], right[c]), col)

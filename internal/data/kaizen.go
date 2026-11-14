@@ -10,6 +10,7 @@ type Kaizen struct {
 	FactoryDir  string        `json:"factory_dir"`
 	StoreFound  bool          `json:"store_found"`
 	Prices      Prices        `json:"prices"`
+	Roles       []string      `json:"roles"` // the role order
 	Repos       []KaizenRepo  `json:"repos"`
 	Versions    []KaizenVer   `json:"versions"`
 	Tasks       []KaizenTask  `json:"tasks"`
@@ -49,14 +50,8 @@ type KaizenVer struct {
 	FirstSeen string `json:"first_seen"`
 }
 
-// Roles is money by role.
-type Roles struct {
-	Lead     float64 `json:"lead"`
-	Coder    float64 `json:"coder"`
-	Reviewer float64 `json:"reviewer"`
-	Explorer float64 `json:"explorer"`
-	Other    float64 `json:"other"`
-}
+// Roles is money by role, keyed by the names in Kaizen.Roles.
+type Roles map[string]float64
 
 // Defects counts retro defects by who caught them.
 type Defects struct {
@@ -130,6 +125,19 @@ type KaizenTime struct {
 	MergeWait float64 `json:"merge_wait_s"`
 }
 
+// KaizenMixPoint is each role's median share of a task's cost over the Window landed
+// tasks ending at Slug.
+type KaizenMixPoint struct {
+	Slug    string `json:"slug"`
+	Version string `json:"version"`
+	Share   Roles  `json:"share"`
+}
+
+type KaizenMix struct {
+	Window int              `json:"window"`
+	Points []KaizenMixPoint `json:"points"`
+}
+
 type KaizenSummary struct {
 	Tasks     int    `json:"tasks"`
 	Landed    int    `json:"landed"`
@@ -144,6 +152,7 @@ type KaizenSummary struct {
 	} `json:"first_pass"`
 	ReworkShare *float64     `json:"rework_share"`
 	ByRole      Roles        `json:"by_role"`
+	Mix         KaizenMix    `json:"mix"`
 	Time        KaizenTime   `json:"time"`
 	Defects     Defects      `json:"defects"`
 	TrendMin    int          `json:"trend_min"`
