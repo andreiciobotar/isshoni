@@ -60,18 +60,20 @@ def gone(pid, seconds=5.0):
 def start_in_group(testcase, argv, **kw):
     """A child of the test in its own process group, killed and reaped when the test ends."""
     p = subprocess.Popen(argv, start_new_session=True, **kw)
-
-    def cleanup():
-        try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        p.wait()
-        for pipe in (p.stdin, p.stdout, p.stderr):
-            if pipe:
-                pipe.close()
-    testcase.addCleanup(cleanup)
+    testcase.addCleanup(reap, p, True)
     return p
+
+
+def reap(p, group):
+    """Kill `p` (its whole group when `group`), wait for it and close its pipes."""
+    try:
+        os.killpg(p.pid, signal.SIGKILL) if group else p.kill()
+    except ProcessLookupError:
+        pass
+    p.wait()
+    for pipe in (p.stdin, p.stdout, p.stderr):
+        if pipe:
+            pipe.close()
 
 
 class Fakes(unittest.TestCase):
@@ -133,12 +135,17 @@ class RunLifetimeTests(Fakes):
         def popen(*args, **kw):
             p = real(*args, **kw)
             made.append(p)
-            self.addCleanup(p.kill)
+            self.addCleanup(reap, p, group)
             if group:
                 self.started()
             factory.stop_on_signal(signal.SIGHUP, None)
             return p
 
+        self.run_with_a_signal_and(popen, argv, group)
+        return made[0]
+
+    def run_with_a_signal_and(self, popen, argv, group):
+        """`run()` of `argv` with `popen` for `Popen`, which must end it with SIGHUP (exit 129) and hold nothing."""
         for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
             self.addCleanup(signal.signal, sig, signal.getsignal(sig))
         env = {**os.environ, "GRANDCHILD": str(self.grandchild)}
@@ -146,7 +153,14 @@ class RunLifetimeTests(Fakes):
             factory.run(argv, env=env, group=group)
         self.assertEqual(raised.exception.code, 129)
         self.assertEqual(factory.GROUPS, set())
-        return made[0]
+        self.assertIsNone(factory.HELD)
+
+    def test_a_signal_when_popen_fails_still_ends_the_script(self):
+        def popen(*args, **kw):
+            factory.stop_on_signal(signal.SIGHUP, None)
+            raise OSError("no such program")
+
+        self.run_with_a_signal_and(popen, ["sleep", "60"], group=False)
 
     def test_a_signal_inside_popen_ends_the_group_child(self):
         self.run_with_a_signal_inside_popen([str(self.bin / "claude"), "-p"], group=True)
