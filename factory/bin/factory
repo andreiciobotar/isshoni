@@ -70,9 +70,8 @@ def why(e):
     return str(e) or type(e).__name__ if isinstance(e, Fail) else f"{type(e).__name__}: {e}"
 
 
-def run(argv, cwd=None, timeout=None, input=None):
+def run(argv, cwd=None, timeout=None, input=None, env=None):
     """The only place a subprocess starts. Returns (returncode, stdout, stderr). `gh` acts as the App when an identity is installed."""
-    env = None
     if argv[0] == "gh":
         try:
             if found := acting_identity(cwd):
@@ -2576,9 +2575,9 @@ def app_token(identity, name):
     return token
 
 
-def cmd_env(args):
-    """Print the exports that make git and gh act as the App; nothing when no identity applies. Whatever else happens the
-    lock-down is printed (exit 1): git must not reach the human's credentials."""
+def identity_exports():
+    """({name: value}, exit code): the exports that make git and gh act as the App; empty when no identity applies.
+    Whatever else happens the lock-down comes back (exit 1): git must not reach the human's credentials."""
     values = {"GH_TOKEN": "unavailable", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "4"}
     credential, rewrite = "credential.https://github.com.helper", "url.https://github.com/.insteadOf"
     helper = "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f"
@@ -2589,7 +2588,7 @@ def cmd_env(args):
     try:
         found = acting_identity()
         if not found:
-            return 0
+            return {}, 0
         login, email = found[0]["bot_login"], found[0]["bot_email"]
         if not (isinstance(login, str) and isinstance(email, str) and login and email):
             raise Fail("the stored App's bot_login and bot_email must be non-empty strings", 1)
@@ -2601,6 +2600,12 @@ def cmd_env(args):
         values["GH_TOKEN"], code = token, 0
     except Exception as e:
         print(f"factory: no App token: {why(e)}; git and gh will fail until one can be minted", file=sys.stderr)
+    return values, code
+
+
+def cmd_env(args):
+    """Print the exports that make git and gh act as the App; nothing when no identity applies."""
+    values, code = identity_exports()
     for name, value in values.items():
         print(f"export {name}={shlex.quote(value)}")
     return code
@@ -2892,6 +2897,12 @@ class Landing:
     def out(self, *args):
         return self.git(*args)[1].strip()
 
+    def act(self, *args):
+        """`git` as the App when an identity is installed (as the session hook's `factory env` does), for what
+        reaches the remote or makes commits: the human's credentials and name are not used then."""
+        exports, _ = identity_exports()
+        return run(["git", *args], cwd=self.path, env={**os.environ, **exports} if exports else None)
+
     def stop(self, reason, needs, facts=()):
         return f"STOPPED {reason}", list(facts), needs
 
@@ -2905,7 +2916,7 @@ class Landing:
         self.base, self.merged = land_base(repo, branch or "")
         self.target_branch = repo.default if self.merged else self.base
         self.target = f"{remote}/{self.target_branch}"
-        rc, _, err = self.git("fetch", remote)
+        rc, _, err = self.act("fetch", remote)
         if rc != 0:
             return self.stop("other", f"git fetch {remote} failed: {err.strip()}")
         if branch != f"worktree-{self.slug}" or branch == repo.default:
@@ -2931,7 +2942,7 @@ class Landing:
         overlap = sorted(set(self.out("diff", "--name-only", old_base, self.target).splitlines()) & set(task_files))
         if self.out("rev-list", "--merges", f"{old_base}..HEAD"):
             return self.stop("other", "the branch holds a merge commit; a rebase would drop it")
-        rc, out, err = self.git("rebase", self.target)
+        rc, out, err = self.act("rebase", self.target)
         if rc != 0:
             return self.conflict(task_files, out + err)
         return self.rebased(old_base, overlap)
@@ -2967,7 +2978,7 @@ class Landing:
         look = bool(overlap) or not identical
         if look:
             self.mark_working()
-        rc, out, err = self.git("push", f"--force-with-lease={branch}:{self.old_head}", self.remote, f"HEAD:{branch}")
+        rc, out, err = self.act("push", f"--force-with-lease={branch}:{self.old_head}", self.remote, f"HEAD:{branch}")
         if rc != 0:
             return self.stop("other", f"git push failed: {(err or out).strip()}", unpushed)
         kind = "LANDED, LOOK" if look else "LANDED"
@@ -3039,7 +3050,7 @@ class Landing:
         needs = "\n".join(sections.get("Needs the lead", [])) or "none"
         failed = [] if rc == 0 else [self.failed_run(rc)]
         facts = [*facts, *failed]
-        if self.git("fetch", self.remote)[0] != 0:
+        if self.act("fetch", self.remote)[0] != 0:
             return self.stop("other", f"git fetch {self.remote} failed after the lander ran; whether it pushed is unknown",
                              facts)
         new_head = self.out("rev-parse", "--verify", "--quiet", f"refs/remotes/{self.remote}/{self.branch}")
