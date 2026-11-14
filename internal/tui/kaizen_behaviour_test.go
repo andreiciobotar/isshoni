@@ -22,11 +22,11 @@ import (
 
 func TestKaizenViewKeys(t *testing.T) {
 	m := fakeModel(true, 120, 40)
-	send(m, "5")
+	send(m, "4")
 	if m.view != viewKaizen {
-		t.Fatal("5 opens the kaizen view")
+		t.Fatal("4 opens the kaizen view")
 	}
-	if !strings.Contains(plain(m), "[5 Kaizen]") {
+	if !strings.Contains(plain(m), "[4 Kaizen]") {
 		t.Fatal("the tab is in the header")
 	}
 	send(m, "tab")
@@ -109,11 +109,11 @@ func kaizenStub(t *testing.T) (*model, string, *time.Time) {
 
 func TestKaizenLoadsOnEntryNotWithinThirtySeconds(t *testing.T) {
 	m, dir, now := kaizenStub(t)
-	got := only[kaizenMsg](upd(m, press("5")))
+	got := only[kaizenMsg](upd(m, press("4")))
 	if len(got) != 1 || calls(t, dir, "kaizen --since") != 1 || !m.kz.busy {
 		t.Fatalf("entering starts one load for the range: %d msgs, %d calls", len(got), calls(t, dir, "kaizen "))
 	}
-	if more := only[kaizenMsg](upd(m, press("5"))); len(more) != 0 {
+	if more := only[kaizenMsg](upd(m, press("4"))); len(more) != 0 {
 		t.Fatal("one load in flight at most")
 	}
 	if out := plain(m); !strings.Contains(out, "reading the factory's logs") {
@@ -125,12 +125,12 @@ func TestKaizenLoadsOnEntryNotWithinThirtySeconds(t *testing.T) {
 	}
 	send(m, "1")
 	*now = now.Add(29 * time.Second)
-	if got := only[kaizenMsg](upd(m, press("5"))); len(got) != 0 {
+	if got := only[kaizenMsg](upd(m, press("4"))); len(got) != 0 {
 		t.Fatal("a result under 30 s old is kept")
 	}
 	send(m, "1")
 	*now = now.Add(2 * time.Second)
-	if got := only[kaizenMsg](upd(m, press("5"))); len(got) != 1 {
+	if got := only[kaizenMsg](upd(m, press("4"))); len(got) != 1 {
 		t.Fatal("an older one is loaded again")
 	}
 	if n := calls(t, dir, "kaizen "); n != 2 {
@@ -140,7 +140,7 @@ func TestKaizenLoadsOnEntryNotWithinThirtySeconds(t *testing.T) {
 
 func TestKaizenRangeChangeLoadsAgainWithTheNewSince(t *testing.T) {
 	m, dir, _ := kaizenStub(t)
-	upd(m, only[kaizenMsg](upd(m, press("5")))[0])
+	upd(m, only[kaizenMsg](upd(m, press("4")))[0])
 	msgs := upd(m, press("r")) // 7d -> 30d
 	if got := only[kaizenMsg](msgs); len(got) != 1 {
 		t.Fatalf("a range change loads: %d", len(got))
@@ -159,7 +159,7 @@ func TestKaizenRangeChangeLoadsAgainWithTheNewSince(t *testing.T) {
 
 func TestKaizenStaleResultIsIgnored(t *testing.T) {
 	m, _, _ := kaizenStub(t)
-	first := only[kaizenMsg](upd(m, press("5")))[0]
+	first := only[kaizenMsg](upd(m, press("4")))[0]
 	upd(m, press("r")) // a newer load replaces it
 	upd(m, first)
 	if m.kz.doc != nil || !m.kz.busy {
@@ -169,11 +169,11 @@ func TestKaizenStaleResultIsIgnored(t *testing.T) {
 
 func TestKaizenFailedLoadKeepsTheOldResult(t *testing.T) {
 	m, dir, now := kaizenStub(t)
-	upd(m, only[kaizenMsg](upd(m, press("5")))[0])
+	upd(m, only[kaizenMsg](upd(m, press("4")))[0])
 	send(m, "1")
 	*now = now.Add(time.Minute)
 	os.WriteFile(filepath.Join(dir, "fail"), nil, 0o644)
-	got := only[kaizenMsg](upd(m, press("5")))
+	got := only[kaizenMsg](upd(m, press("4")))
 	if len(got) != 1 {
 		t.Fatal("no load")
 	}
@@ -186,7 +186,7 @@ func TestKaizenFailedLoadKeepsTheOldResult(t *testing.T) {
 		t.Fatal("one line")
 	}
 	os.Remove(filepath.Join(dir, "fail"))
-	upd(m, only[kaizenMsg](upd(m, press("5")))[0])
+	upd(m, only[kaizenMsg](upd(m, press("4")))[0])
 	if m.kz.err != "" {
 		t.Fatal("a good load clears the error")
 	}
@@ -876,7 +876,7 @@ func TestSnapshotKaizen(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out, "[5 Kaizen]") || !strings.Contains(out, want) {
+		if !strings.Contains(out, "[4 Kaizen]") || !strings.Contains(out, want) {
 			t.Errorf("%s:\n%s", view, out)
 		}
 	}

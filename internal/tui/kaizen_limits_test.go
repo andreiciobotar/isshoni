@@ -85,14 +85,14 @@ func TestKaizenListsEveryStopSlowedAndTenDecisions(t *testing.T) {
 }
 
 func TestHeaderLiveCountAtEightyColumnsWithTwelveLive(t *testing.T) {
-	for _, view := range []viewID{viewDashboard, viewSession, viewAgents, viewFactory, viewKaizen} {
+	for _, view := range []viewID{viewDashboard, viewAgents, viewFactory, viewKaizen} {
 		m := fakeModel(true, 80, 24)
 		for i := 0; i < 12; i++ {
 			s := fakeSession(fmt.Sprintf("dddddddd-%04d", i), "alpha", i, 1, 1)
 			m.sessions[s.ID], m.seen[s.ID] = s, m.now()
 		}
 		m.view = view
-		if head := strings.Split(plain(m), "\n")[0]; !strings.Contains(head, "12 live") || !strings.Contains(head, "[7d]") || !strings.Contains(head, "5 Kaizen") {
+		if head := strings.Split(plain(m), "\n")[0]; !strings.Contains(head, "12 live") || !strings.Contains(head, "[7d]") || !strings.Contains(head, "4 Kaizen") {
 			t.Errorf("view %v: %q", view, head)
 		}
 	}

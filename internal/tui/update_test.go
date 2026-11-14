@@ -256,14 +256,14 @@ func TestSlowFullLoadKeepsNewerSessionResult(t *testing.T) {
 
 func TestPollDropsVanishedSessions(t *testing.T) {
 	m, _ := stubModel(t)
-	m.selID, m.view = sidA, viewSession
+	m.selID, m.zoom = sidA, true
 	seen := map[string]time.Time{sidB: m.seen[sidB], "cccccccc-0003": m.seen["cccccccc-0003"]}
 	upd(m, scanMsg{seen: seen})
 	if m.sessions[sidA] != nil || m.details[sidA] != nil {
 		t.Fatal("a session whose transcript is gone must leave the list and the cache")
 	}
-	if m.view != viewDashboard || m.selID == sidA {
-		t.Fatalf("the open session vanished: view=%v sel=%s", m.view, m.selID)
+	if m.zoom || m.selID == sidA {
+		t.Fatalf("the open session vanished: zoom=%v sel=%s", m.zoom, m.selID)
 	}
 	// a result that was in flight for it is ignored
 	m.inflight[sidA] = true

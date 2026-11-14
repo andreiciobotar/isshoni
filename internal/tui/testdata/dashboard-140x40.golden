@@ -1,9 +1,9 @@
- Isshoni 一緒に [1 Dashboard] 2 Session  3 Agents  4 Factory  5 Kaizen                                 24h  7d  30d [all]  ○ idle  00:00:00 
+ Isshoni 一緒に [1 Dashboard] 2 Agents  3 Factory  4 Kaizen                                            24h  7d  30d [all]  ○ idle  00:00:00 
  Sessions  1 in 1 repos, 0 tasks · all · sorted by recent  · no price for sonnet-5-5: excluded from cost                                    
 ▌ COST               ▌ SUBAGENT SHARE    ▌ DISPATCHES        ▌ REPEATS           ▌ REVIEW LOOPS      ▌ RE-CHECK RATE     ▌ MODEL WARNINGS   
 ▌ $0.0054*           ▌ 20.6%             ▌ 18                ▌ 1                 ▌ 3                 ▌ 67%               ▌ 1                
 ▌ 670 tok            ▌ ███░░░░░░░░░░░░   ▌ 18.0 per session  ▌ re-dispatches     ▌ reviewer → coder  ▌ claims re-read    ▌ wrong model used 
- ↑ totals of all 1 session shown · the mix panels show the selected row                                                                     
+ ↑ totals of all 1 session shown · the mix and the pane show the selected row                                                               
 ╭─ Sessions 1 ──────────────────────────────────────────────────────────────────────────────────────╮ ╭─ Agent mix · all ×1 ───────────────╮
 │    REPO / TASK    ACTIVE           COST  TOKENS MAIN│SUB         SUB% DISP REP LOOP RCHK WARN BAD │ │ ● main       █████░   $0.0043  79% │
 │ >  all ×1         01-01 10:30  $0.0054*     670 █████████████▓▓▓  21%   18   1    3  67%    1   2 │ │ ● coder      ░░░░░░       $0*   0% │
@@ -18,23 +18,23 @@
 │                                                                                                   │ │ ▒ opus-5-5            $0.0003   5% │
 │                                                                                                   │ │ ░ sonnet-5-5         unpriced   0% │
 ╰───────────────────────────────────────────────────────────────────────────────────────────────────╯ ╰────────────────────────────────────╯
+ ○ all ×1  Jan 01 10:00 → 10:11 · 11m40s  $0.0054*  670 tok  main 79% · sub 21%  ↻1 ↺3 ⚠1                                                   
 ╭─ Now running ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ nothing running                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
  ↑↓/jk move  ·  enter open  ·  / filter  ·  ←→/hl fold repo  ·  s sort  ·  r range  ·  f follow  ·  tab next view  ·  ? help  ·  q quit     

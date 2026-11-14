@@ -31,8 +31,8 @@ func runProgram(o Options, popts ...tea.ProgramOption) error {
 // SnapshotOptions selects what Snapshot renders.
 type SnapshotOptions struct {
 	Options
-	View    string // dashboard, session, agents, factory, kaizen, kaizen-flow, kaizen-board, help
-	Session string // id prefix for the session view
+	View    string // dashboard, session (the zoom), agents, factory, kaizen, kaizen-flow, kaizen-board, help
+	Session string // id prefix for the zoomed session
 	Row     int    // dashboard: cursor on this table row, 0 is the all row
 	Fold    bool   // dashboard: collapse the repository the cursor is in
 	W, H    int
@@ -65,6 +65,7 @@ func Snapshot(so SnapshotOptions) (string, error) {
 		m.sessions[s.ID] = s
 	}
 	m.loading = false
+	m.syncOrder(true)
 	if ag, err := m.runner.Agents(ctx, ranges[m.rangeIdx].since); err == nil {
 		m.agents = ag
 	}
@@ -84,7 +85,7 @@ func Snapshot(so SnapshotOptions) (string, error) {
 	}
 	switch so.View {
 	case "session":
-		m.view = viewSession
+		m.zoom = true
 		if so.Session != "" {
 			if err := detail(so.Session); err != nil {
 				return "", err
@@ -126,6 +127,11 @@ func Snapshot(so SnapshotOptions) (string, error) {
 	if m.view == viewDashboard && so.Row > 0 && len(m.rows()) > 0 {
 		rows := m.rows()
 		m.selID = rows[min(so.Row, len(rows)-1)].key
+		if s, d := m.paneSession(); s != nil && d == nil {
+			if err := detail(s.ID); err != nil {
+				return "", err
+			}
+		}
 	}
 	if so.Fold && m.view == viewDashboard {
 		m.fold(true)
@@ -156,6 +162,7 @@ func (m *model) preload(sessions []*data.Session, details []*data.Session, agent
 	}
 	m.agents = agents
 	m.loading = false
+	m.syncOrder(true)
 	m.normalizeSelection()
 	m.settle()
 	m.fixScroll()

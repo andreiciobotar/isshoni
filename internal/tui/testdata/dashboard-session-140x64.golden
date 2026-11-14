@@ -1,0 +1,64 @@
+ Isshoni 一緒に [1 Dashboard] 2 Agents  3 Factory  4 Kaizen                                            24h  7d  30d [all]  ○ idle  00:00:00 
+ Sessions  1 in 1 repos, 0 tasks · all · sorted by recent, held  · no price for sonnet-5-5: excluded from cost                              
+▌ COST               ▌ SUBAGENT SHARE    ▌ DISPATCHES        ▌ REPEATS           ▌ REVIEW LOOPS      ▌ RE-CHECK RATE     ▌ MODEL WARNINGS   
+▌ $0.0054*           ▌ 20.6%             ▌ 18                ▌ 1                 ▌ 3                 ▌ 67%               ▌ 1                
+▌ 670 tok            ▌ ███░░░░░░░░░░░░   ▌ 18.0 per session  ▌ re-dispatches     ▌ reviewer → coder  ▌ claims re-read    ▌ wrong model used 
+ ↑ totals of all 1 session shown · the mix and the pane show the selected row                                                               
+╭─ Sessions 1 ──────────────────────────────────────────────────────────────────────────────────────╮ ╭─ Agent mix · repo cwd fixture- ────╮
+│    REPO / TASK    ACTIVE           COST  TOKENS MAIN│SUB         SUB% DISP REP LOOP RCHK WARN BAD │ │ ● main       █████░   $0.0043  79% │
+│    all ×1         01-01 10:30  $0.0054*     670 █████████████▓▓▓  21%   18   1    3  67%    1   2 │ │ ● coder      ░░░░░░       $0*   0% │
+│ >· cwd fixture-   01-01 10:30  $0.0054*     670 █████████████▓▓▓  21%   18   1    3  67%    1   2 │ │ ● reviewer   ░░░░░░   $0.0003   5% │
+│                                                                                                   │ │ ● explorer   █░░░░░  $0.0008*  16% │
+│                                                                                                   │ │ ● general-p… ░░░░░░  <$0.0001   0% │
+│                                                                                                   │ ╰────────────────────────────────────╯
+│                                                                                                   │ ╭─ Model mix · repo cwd fixture- ────╮
+│                                                                                                   │ │ ███████████████████████████▓▓▓▓▓▒▒ │
+│                                                                                                   │ │ █ fable-5-2           $0.0043  79% │
+│                                                                                                   │ │ ▓ haiku-5-5           $0.0009  16% │
+│                                                                                                   │ │ ▒ opus-5-5            $0.0003   5% │
+│                                                                                                   │ │ ░ sonnet-5-5         unpriced   0% │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────╯ ╰────────────────────────────────────╯
+ ○ repo cwd fixture-  cwd  Jan 01 10:00 → 10:11 · 11m40s  $0.0054*  670 tok  main 79% · sub 21%  ↻1 ↺3 ⚠1                                   
+╭─ Timeline ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ● coder           ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈███████┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈░┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈░┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ │
+│ ● reviewer        ┈┈┈┈┈┈┈┈█████████┈┈┈┈┈┈┈┈┈┈┈┈██████┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈██████┈┈┈┈┈┈┈┈┈┈┈┈┈┈███████┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ │
+│ ● explorer        ██████┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈░┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈██████┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈█████ │
+│                   ▒▒┈████┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈██████┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈▒┈┈ │
+│                   ┈▒▒┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ │
+│ ● general-purpose ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈░┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ │
+│                   10:00                                                                                                            10:11 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Dispatches 18 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   TIME     AGENT           MODEL          IN    OUT      COST   TOTAL    DUR FLAGS            DESCRIPTION                                │
+│   10:00:10 explorer        haiku-5-5      11     21   $0.0008     253    30s [rechecked]      Find config loader                         │
+│   10:00:15   explorer      haiku-5-5       1      1  <$0.0001       4      - [unfinished]     Nested lookup                              │
+│   10:00:20 explorer        haiku-5-5       2      4  <$0.0001      20      - [unfinished] +1  Find config loader again                   │
+│   10:00:30 explorer        sonnet-5-5      7      8       $0*      15    20s [WARN]           Map database migrations                    │
+│   10:01:00 reviewer        opus-5-5        2      3   $0.0001      14    45s                  Review change                              │
+│   10:02:00 coder           sonnet-5-5      3      4       $0*      18    38s [loop] [loop↻1]  Apply fixes                                │
+│   10:03:00 reviewer        opus-5-5        2      3   $0.0001      14    30s                  Second pass                                │
+│   10:03:40 explorer                        0      0        $0       0      - [no-run]         Ghost dispatch                             │
+│   10:05:00 general-purpose haiku-5-5       1      1  <$0.0001       4     0s [orphan]                                                    │
+│   10:06:00 reviewer        opus-5-5        1      1  <$0.0001       4    30s                  Handback review                            │
+│   10:07:00 coder                           0      0        $0       0      - [no-run] [loop]  Second fix round                           │
+│   10:07:10 explorer        haiku-5-5       1      1  <$0.0001       4    30s [rechecked]      Helper lookup                              │
+│   10:07:15 explorer        haiku-5-5       1      1  <$0.0001       4    31s                  Entry point lookup                         │
+│   10:08:00 reviewer        opus-5-5        1      1  <$0.0001       4    31s                  Another handback review                    │
+│   10:10:00 coder                           0      0        $0       0      - [no-run]         Third fix round                            │
+│   10:11:00 explorer        haiku-5-5       1      1  <$0.0001       4    12s                  Queued only                                │
+│   10:11:10 explorer        haiku-5-5       1      1  <$0.0001       4      - [unfinished]     Wrong attachment type                      │
+│   10:11:20 explorer        haiku-5-5       1      1  <$0.0001       4     7s                  Both sources                               │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Now running ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ nothing running                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓/jk move  ·  enter open  ·  / filter  ·  ←→/hl fold repo  ·  s sort  ·  r range  ·  f follow  ·  tab next view  ·  ? help  ·  q quit     

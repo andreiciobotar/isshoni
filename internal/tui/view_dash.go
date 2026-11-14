@@ -15,44 +15,60 @@ import (
 
 type dashLayout struct {
 	compactTiles bool
+	tilesH       int // the tiles and their caption, or the one line that stands for both
 	sideW        int // side column of mix boxes; 0 puts one-line strips below instead
 	stripH       int
 	tableW       int
-	topH         int // sessions table and side column
+	treeH        int // sessions table and side column
+	contentH     int // the pane under the pane header: 0 when there is no room, and on group rows (Now running takes it)
 	nowH         int // Now running panel, full width
 }
 
 const tileH = 3
 
+// dashLayout is the one place the dashboard's rows are split. Nothing in it depends on the cursor's row,
+// so the tree and the pane header do not move as the cursor walks.
 func (m *model) dashLayout() dashLayout {
 	var l dashLayout
 	l.compactTiles = m.w < 112
-	avail := m.h - 3 - tileH - 1
+	l.tilesH = 1
+	if m.h >= 30 {
+		l.tilesH = tileH + 1
+	}
 	l.tableW = m.w
 	if m.w >= 120 {
 		l.sideW = 38
 		l.tableW = m.w - l.sideW - 1
 	} else {
-		l.stripH = 3 // heading naming the scope, then the two strips
+		l.stripH = 2
 	}
-	avail -= l.stripH
-	l.nowH = min(max(len(m.nowRunning()), 1)+2, 10)
-	if l.nowH = min(l.nowH, avail-4); l.nowH < 3 {
-		l.nowH = 0
+	nowCap := 8
+	switch {
+	case m.h < 30:
+		nowCap = 2
+	case m.h < 45:
+		nowCap = 4
 	}
-	// the table and side column take what their content needs, up to what is left; the side column is
-	// sized from the whole range, so it does not jump as the cursor moves
+	l.nowH = min(max(len(m.nowRunning()), 1), nowCap) + 2
+	rest := m.h - 3 - l.tilesH - 1 - l.stripH - l.nowH
+	// the table and side column take what their content needs, up to what the pane leaves; the side column
+	// is sized from the whole range, so it does not jump as the cursor moves
 	need := max(len(m.rows())+3, 7)
 	if l.sideW > 0 {
 		t := m.totals()
 		need = max(need, len(roleUsage(t.byAgent))+2+len(t.byModel)+3)
 	}
-	l.topH = max(min(need, avail-l.nowH), 3)
+	l.contentH = max(rest/2, 8)
+	l.treeH = max(min(need, rest-l.contentH), 5)
+	l.contentH = rest - l.treeH
+	if l.contentH < 4 {
+		l.treeH, l.contentH = rest, 0
+	}
 	return l
 }
 
 // dashRows is how many display rows fit in the table.
-func (m *model) dashRows() int { return max(1, m.dashLayout().topH-3) }
+func (m *model) dashRows() int { return max(1, m.dashLayout().treeH-3) }
 
 func (m *model) dashBody(p paint, w, h int) block {
 	l := m.dashLayout()
@@ -62,35 +78,106 @@ func (m *model) dashBody(p paint, w, h int) block {
 	if shown {
 		label = sc.label()
 	}
-	out := m.tiles(p, w, l.compactTiles)
-	out = append(out, m.caption(p, w))
-	table := m.sessionsTable(p, l.tableW, l.topH)
+	var out block
+	if l.tilesH == 1 {
+		out = block{m.tilesLine(p, w)}
+	} else {
+		out = append(m.tiles(p, w, l.compactTiles), m.caption(p, w))
+	}
+	table := m.sessionsTable(p, l.tableW, l.treeH)
 	if l.sideW == 0 {
 		out = append(out, table...)
 	} else {
-		agentH := min(len(roleUsage(m.totals().byAgent))+2, max(l.topH-4, 3))
-		modelH := l.topH - agentH
+		agentH := min(len(roleUsage(m.totals().byAgent))+2, max(l.treeH-4, 3))
+		modelH := l.treeH - agentH
 		side := m.agentMixBox(p, label, t, l.sideW, agentH)
 		if modelH >= 3 {
 			side = append(side, m.modelMixBox(p, label, t, l.sideW, modelH)...)
 		}
-		out = append(out, joinCols(p, l.topH, 1, []int{l.tableW, l.sideW}, table, side)...)
+		out = append(out, joinCols(p, l.treeH, 1, []int{l.tableW, l.sideW}, table, side)...)
 	}
-	if l.nowH > 0 {
-		out = append(out, m.nowRunningBox(p, w, l.nowH)...)
-	}
+	out = append(out, m.paneHeader(p, sc, w))
 	if l.stripH > 0 {
-		head := p.t(" mix", m.th.Faint)
-		if label != "" {
-			head += p.t(" · ", m.th.Faint) + p.t(label, m.th.Text) + p.t(" · ", m.th.Faint) + p.t(m.money(t.cost, t.unpriced), m.th.Text)
-		}
-		out = append(out, fit(head, w, p))
 		rows, _ := agentUsage(roleUsage(t.byAgent))
 		out = append(out, m.scopeStrip(p, "agents", rows, t.cost, m.th.AgentColor, func(k string) string { return k }, w))
 		rows, _ = sortedUsage(t.byModel)
 		out = append(out, m.scopeStrip(p, "models", rows, t.cost, m.th.ModelColor, shortModel, w))
 	}
-	return out
+	nowH := l.nowH
+	if sc.s != nil {
+		out = append(out, m.paneContent(p, sc, w, l.contentH)...)
+	} else {
+		nowH += l.contentH
+	}
+	return append(out, m.nowRunningBox(p, w, nowH)...)
+}
+
+// paneHeader is the one line about the row under the cursor, whatever its kind. Whole fields drop from the
+// right when the width is short.
+func (m *model) paneHeader(p paint, row treeRow, w int) string {
+	th := m.th
+	if len(row.group) == 0 {
+		return p.sp(w)
+	}
+	t := sumTotals(row.group)
+	dot := p.t("○", th.Faint)
+	if slices.ContainsFunc(row.group, m.isLive) {
+		dot = p.dot(th.Green, m.pulse())
+	}
+	line := p.sp(1) + dot + p.sp(1) + p.b(row.label(), th.Text)
+	var fields []string
+	if row.s != nil {
+		fields = append(fields, p.t(row.s.Label(), th.Purple))
+	}
+	var start, end *time.Time
+	for _, s := range row.group {
+		if s.Start != nil && (start == nil || s.Start.Before(*start)) {
+			start = s.Start
+		}
+		if s.End != nil && (end == nil || s.End.After(*end)) {
+			end = s.End
+		}
+	}
+	if start != nil && end != nil {
+		fields = append(fields, p.t(spanText(*start, *end), th.Muted))
+	}
+	count := func(glyph string, n int, warn color.Color) string {
+		col := th.Green
+		if n > 0 {
+			col = warn
+		}
+		return p.b(fmt.Sprintf("%s%d", glyph, n), col)
+	}
+	fields = append(fields,
+		p.b(m.money(t.cost, t.unpriced), th.Text),
+		p.t(Human(float64(t.tokens))+" tok", th.Muted),
+		p.t("main ", th.Muted)+p.b(share(t.mainCost, t.cost), th.Yellow)+p.t(" · sub ", th.Muted)+p.b(share(t.subCost, t.cost), th.Purple),
+		count("↻", t.repeats, th.Yellow)+p.sp(1)+count("↺", t.loops, th.Yellow)+p.sp(1)+count("⚠", t.warns, th.Red))
+	for _, f := range fields {
+		if width(line)+2+width(f) > w {
+			break
+		}
+		line += p.sp(2) + f
+	}
+	return fit(line, w, p)
+}
+
+// paneContent is the session row's pane: the timeline above the dispatch list, no dispatch marked. The
+// timeline is shown only when the list keeps its rows and the timeline shows all its lanes (or at least two).
+func (m *model) paneContent(p paint, row treeRow, w, h int) block {
+	th := m.th
+	s, d := row.s, m.details[row.s.ID]
+	if d == nil {
+		in := p.on(th.Surface)
+		return p.boxed("Dispatches", []string{in.t(spin(m.spinFrame())+" ", th.Purple) + in.t("loading dispatches…", th.Muted)}, w, h, th.Pink)
+	}
+	var out block
+	if room := min(h-(3+min(len(d.Dispatches), 3))-3, 6); room >= 1 {
+		if pl := m.timelinePlan(s, d, w, room, -1); pl.hidden == 0 || len(pl.lanes) >= 2 {
+			out = m.timeline(p, s, d, pl, w, -1)
+		}
+	}
+	return append(out, m.dispatchList(p, s, d, w, h-len(out), -1, 0)...)
 }
 
 func plural(n int, noun string) string {
@@ -100,13 +187,13 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// caption says what the tiles total, since the mix panels follow the cursor instead.
+// caption says what the tiles total, since the mix and the pane follow the cursor instead.
 func (m *model) caption(p paint, w int) string {
 	n := len(m.visible())
 	if n == 0 {
 		return p.sp(w)
 	}
-	return fit(p.t(fmt.Sprintf(" ↑ totals of all %s shown · the mix panels show the selected row", plural(n, "session")), m.th.Faint), w, p)
+	return fit(p.t(fmt.Sprintf(" ↑ totals of all %s shown · the mix and the pane show the selected row", plural(n, "session")), m.th.Faint), w, p)
 }
 
 // label names a row for the mix panels: its kind, its text, its suffix.
@@ -224,18 +311,41 @@ type tile struct {
 	color color.Color
 }
 
+// counted is a counter as a number, green at zero and the warning colour above.
+func (m *model) counted(k string, warn color.Color) (string, color.Color) {
+	v := int(m.counter[k].Value())
+	col := m.th.Green
+	if v > 0 {
+		col = warn
+	}
+	return fmt.Sprintf("%d", v), col
+}
+
+// tilesLine is the tiles' totals on one line, for short terminals.
+func (m *model) tilesLine(p paint, w int) string {
+	th := m.th
+	n := len(m.visible())
+	if n == 0 {
+		return p.sp(w)
+	}
+	t := m.totals()
+	rv, rc := m.counted("repeats", th.Yellow)
+	lv, lc := m.counted("loops", th.Yellow)
+	wv, wc := m.counted("warns", th.Red)
+	sep := p.t(" · ", th.Faint)
+	line := p.t(" all "+plural(n, "session")+"  ", th.Faint) + p.b(m.money(t.cost, t.unpriced), th.Blue) + sep +
+		p.t(Human(m.counter["tokens"].Cur)+" tok", th.Muted) + sep +
+		p.t("sub ", th.Muted) + p.b(fmt.Sprintf("%.0f%%", m.counter["share"].Value()/10), th.Purple) + sep +
+		p.b(fmt.Sprint(int(m.counter["dispatches"].Value())), th.Teal) + p.t(" disp", th.Muted) + sep +
+		p.b("↻"+rv, rc) + p.sp(1) + p.b("↺"+lv, lc) + p.sp(1) + p.b("⚠"+wv, wc)
+	return fit(line, w, p)
+}
+
 func (m *model) tiles(p paint, w int, compact bool) block {
 	th := m.th
 	c := func(k string) float64 { return m.counter[k].Value() }
 	t := m.totals()
-	count := func(k string, warn color.Color) (string, color.Color) {
-		v := int(c(k))
-		col := th.Green
-		if v > 0 {
-			col = warn
-		}
-		return fmt.Sprintf("%d", v), col
-	}
+	count := m.counted
 	sp := p.on(th.Surface)
 	shareV := c("share") / 10
 	gauge := func(tw int) string {

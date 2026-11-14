@@ -200,8 +200,8 @@ func TestMergedRows(t *testing.T) {
 
 	m.selID = "a4000000"
 	send(m, "enter")
-	if m.view != viewSession || m.selID != "a4000000" {
-		t.Errorf("enter on a merged row: view %v, session %s", m.view, m.selID)
+	if !m.zoomed() || m.selID != "a4000000" {
+		t.Errorf("enter on a merged row: zoom %v, session %s", m.zoom, m.selID)
 	}
 }
 
