@@ -159,7 +159,7 @@ class MergeCommandTests(World):
             "no task row": (dict(prs=[pr(1)], tasks=[]), "no task worktree has its head branch"),
             "motion": (dict(prs=[pr(1)], state="working"), "phase motion (declared working)"),
             "blocked": (dict(prs=[pr(1)], state="blocked"), "phase blocked (declared blocked)"),
-            "local head differs": (dict(prs=[pr(1)], local="other"), "local commits that are not on the pull request"),
+            "local head differs": (dict(prs=[pr(1)], local="other"), "worktree head is not the pull request's head"),
             "no checks": (dict(prs=[pr(1)], checks=[]), "no check passed"),
             "gh checks printed nothing": (dict(prs=[pr(1)], checks=(1, "", "no checks reported")),
                                           "no checks reported"),
@@ -213,7 +213,7 @@ class MergeCommandTests(World):
         self.assertIn("#1 merged", out)
 
     def behind(self, n):
-        return f"#{n} stopped: its base has moved since its head: bring it up to date (factory land t{n}) so its checks run on the combination"
+        return f"#{n} stopped: its base has moved since its head: bring it up to date (the lander does when its turn comes) so its checks run on the combination"
 
     def test_a_stop_ends_the_run(self):
         code, out, _ = self.merge("1", "2", "3", prs=[pr(1), pr(2), pr(3)])
@@ -307,7 +307,7 @@ class DryRunTests(World):
         prs = [pr(1, draft=True), pr(2, base="worktree-t1"), pr(3), pr(4)]
         code, out, _ = self.merge("--dry-run", "--all", prs=prs)
         self.assertEqual(code, 1)
-        why = "its base has moved since its head: bring it up to date (factory land t{}) so its checks run on the combination"
+        why = "its base has moved since its head: bring it up to date (the lander does when its turn comes) so its checks run on the combination"
         self.assertEqual(out.splitlines(), [
             "#1 would merge (draft: would be marked ready)",
             "#2 would stop: " + why.format(2), "#3 would stop: " + why.format(3), "#4 would stop: " + why.format(4)])
@@ -506,7 +506,7 @@ class ApprovedTests(World):
         code, out, _ = self.approved([pr(1), pr(2), pr(3)], {1: [comment()], 3: [comment(n=3)]}, "--all")
         self.assertEqual(code, 1)
         self.assertIn("#2 skipped: not approved on GitHub", out)
-        self.assertIn("#3 stopped: its base has moved since its head: bring it up to date (factory land t3) so its checks run on the combination", out)
+        self.assertIn("#3 stopped: its base has moved since its head: bring it up to date (the lander does when its turn comes) so its checks run on the combination", out)
         self.assertEqual(self.merges(), ["1"])
 
     def test_an_approved_draft_that_is_handed_over_up_to_date_and_green_is_marked_ready_and_merged(self):
@@ -535,7 +535,7 @@ class ApprovedTests(World):
 
     def test_a_head_behind_its_base_is_refused_in_both_modes(self):
         behind = {("git", "merge-base", "--is-ancestor"): (1, "", "")}
-        why = ("#1 stopped: its base has moved since its head: bring it up to date (factory land t1) so its checks "
+        why = ("#1 stopped: its base has moved since its head: bring it up to date (the lander does when its turn comes) so its checks "
                "run on the combination")
         code, out, _ = self.approved([pr(1)], {1: [comment()]}, extra=behind)
         self.assertEqual(code, 1)
@@ -822,7 +822,7 @@ class SyncDraftTests(World):
             "blocked, ready": (dict(prs=[pr(1)], state="blocked"), [["pr", "ready", "1", "--undo"]],
                                "#1 back to draft: task t1 is in phase blocked (declared blocked)\n"),
             "head moved, ready": (dict(prs=[pr(1)], local="other"), [["pr", "ready", "1", "--undo"]],
-                                  "#1 back to draft: task t1 has local commits that are not on the pull request\n"),
+                                  "#1 back to draft: task t1's worktree head is not the pull request's head\n"),
             "no task worktree": (dict(prs=[pr(1)], tasks=[], checks=FAILED), [], ""),
             "a fork": (dict(prs=[pr(1, fork=True)], tasks=["t1"], checks=FAILED), [], ""),
             "settled": (dict(prs=[pr(1)], state="acknowledged", checks=FAILED), [], ""),
@@ -869,7 +869,7 @@ class SyncDraftTests(World):
             self.seed("tasks", record)
             self.tick([theirs()], tasks=[], checks=FAILED)
             self.assertEqual(self.flips(), [])
-        with self.subTest("the noticing tick"):
+        with self.subTest("the lander loop"):
             self.setUp()
             self.seed("tasks", record)
             approved = {"latestReviews": [{"state": "APPROVED", "submittedAt": iso(NOW - 60)}], "comments": []}
@@ -904,7 +904,7 @@ class SyncDraftTests(World):
 
     def test_an_unreadable_list_changes_nothing(self):
         code, out, _ = self.tick([pr(1, draft=True)], extra={("gh", "pr", "list", "--state", "open"): (1, "", "down")})
-        self.assertIn("notice: gh pr list failed: down\n", out)
+        self.assertIn("comments: gh pr list failed: down\n", out)
         self.assertEqual(self.flips(), [])
 
     def test_a_refusal_is_reported_and_does_not_stop_the_tick(self):
@@ -914,13 +914,15 @@ class SyncDraftTests(World):
         self.assertIn("#1 draft flag not changed: gh pr ready 1: refused\n", out)
         self.assertIn("#2 ready for review\n", out)
 
-    def test_a_green_approved_draft_turns_ready_and_the_next_tick_starts_the_lander(self):
+    def test_a_green_approved_draft_turns_ready_and_is_queued_as_a_draft_too(self):
         approved = {"latestReviews": [{"state": "APPROVED", "submittedAt": iso(NOW - 60)}], "comments": []}
+        reviews = lambda: [c for c in self.fake.calls if REVIEWS % 1 in c]
         code, out, _ = self.tick([{**pr(1, draft=True), **approved}])
         self.assertIn("#1 ready for review\n", out)
-        self.assertEqual([c for c in self.claude_runs() if "--agent" in c], [])  # a draft is never taken on an approval
+        self.assertTrue(reviews())  # the draft flag is not a gate: a draft is queued too
         code, out, _ = self.tick([{**pr(1), **approved}], at=NOW + 120)
-        self.assertEqual(len([c for c in self.claude_runs() if "--agent" in c]), 1)
+        self.assertTrue(reviews())
+        self.assertEqual(self.claude_runs(), [])
 
     def test_an_orphaned_tick_still_syncs_the_drafts(self):
         code, out, _ = self.tick([pr(1, draft=True)], orphaned=True)
@@ -931,7 +933,7 @@ class SyncDraftTests(World):
         self.tick([pr(1), pr(2, draft=True)], tasks=["t1", "t2"])
         lists = [c for c in self.fake.calls if c[:5] == ["gh", "pr", "list", "--state", "open"] and factory.NOTICE_FIELDS in c]
         checks = [c for c in self.fake.calls if c[:3] == ["gh", "pr", "checks"]]
-        self.assertEqual((len(lists), len(checks)), (1, 2))
+        self.assertEqual((len(lists), len(checks)), (2, 2))  # the cheap tick's list, and the loop's
 
     def test_a_draft_whose_lead_went_back_to_work_is_not_merged_even_when_approved(self):
         code, out, _ = self.merge("1", prs=[pr(1, draft=True)], state="working")

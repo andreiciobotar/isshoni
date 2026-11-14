@@ -2304,13 +2304,20 @@ def stale_lines(repo):
 
 
 def cmd_watch(args):
-    """One scheduled tick at a time per repository: cron starts one every two minutes, whatever the last one still does."""
+    """One scheduled tick at a time per repository: cron starts one every two minutes, whatever the last one still does.
+    The lander's loop runs last, while a task is handed over or the human's word stands."""
     repo = Repo()
     with repo_lock(repo, "watch") as free:
         if not free:
             print("watch: a tick is already running")
             return 0
-        return watch_tick(args, repo)
+        watch_tick(args, repo)
+        word = read_word(repo)
+        if handed_over(repo) or word["all"] or word["prs"]:  # last: the loop runs until health is next due
+            with repo_lock(repo, "lander") as free:
+                if free:
+                    drain(repo, args.dispatcher, tick=True, deadline=read_lander(repo)["health"] + HEALTH_SECONDS)
+        return 0
 
 
 def tick_picture(repo, fallback, criteria):
@@ -2385,7 +2392,6 @@ def watch_tick(args, repo):
     due = p["now"] - (last and epoch(last["ts"]) or 0) >= DIGEST_HOURS * 3600
     if due and digests and not orphaned and p["dispatcher"] and not any(f["criterion"] == "dispatcher-missing" for f in current):
         digest(p, digests, by_hand=False)
-    return 0
 
 
 def digest(p, criteria, by_hand):
@@ -2839,7 +2845,7 @@ def handover_reason(p, pr):
     if row["phase"] != "review":
         return f"task {row['slug']} is in phase {row['phase']} (declared {row['state'] or 'none'})"
     if row["head"] != pr["headRefOid"]:
-        return f"task {row['slug']} has local commits that are not on the pull request"
+        return f"task {row['slug']}'s worktree head is not the pull request's head"
     return None
 
 
@@ -2928,9 +2934,9 @@ def merge_one(p, pr, merged, dry, permission=None):
     stop = permission is not None and approval_stop(p, pr, permission)
     if stop:
         return stop
-    moved = "its base has moved since its head: bring it up to date (factory land {}) so its checks run on the combination"
+    moved = "its base has moved since its head: bring it up to date (the lander does when its turn comes) so its checks run on the combination"
     if dry and merged:  # in a real run the merge before it has moved the default branch, which the tip check sees
-        return "behind", moved.format(task_of(p, pr)["slug"])
+        return "behind", moved
     if base != repo.default:
         state, _, _, into, _ = pull_request(repo, base)
         if state == "unknown":
@@ -2941,7 +2947,7 @@ def merge_one(p, pr, merged, dry, permission=None):
         return "pending", f"git fetch {repo.remote} failed: cannot tell whether its base has moved"
     ahead = repo.git("merge-base", "--is-ancestor", f"{repo.remote}/{repo.default}", pr["headRefOid"])[0]
     if ahead == 1:
-        return "behind", moved.format(task_of(p, pr)["slug"])
+        return "behind", moved
     if ahead != 0:
         return "pending", "cannot tell whether its base has moved: git merge-base failed"
     try:
@@ -3269,23 +3275,20 @@ def courier(repo, name, line):
     return rc == 0 and isinstance(reply, str) and reply.strip().lower() == "sent"
 
 
-def forward(repo, fallback, slug, pr, k, path):
-    """Tell the lead of `slug`, else the dispatcher, else the human on this machine, to read `path`; who was told."""
+def forward(repo, fallback, slug, head, said, lead=True):
+    """Put `head: <slug>: said` into the session of the lead of `slug`, else into the dispatcher's (found as `find_dispatcher`
+    does), whose line says it did not reach the lead; the role that got it, or None. Without `lead` only the dispatcher is
+    tried, with `head: said`."""
     sessions = list_sessions() or []
-    said = f"{k} new from the human on #{pr['number']}: read {path}"
-    lead = [s for s in sessions_in(sessions, repo.root, repo.worktree_path(slug)) if s.get("name") == slug]
-    asked = [("lead", slug, f"PR COMMENTS: {slug}: {said}")] if lead else []
+    live = lead and [s for s in sessions_in(sessions, repo.root, repo.worktree_path(slug)) if s.get("name") == slug]
+    asked = [("lead", slug, f"{head}: {slug}: {said}")] if live else []
     dispatcher = find_dispatcher(sessions, repo.root, fallback)[0]
     if dispatcher:
-        asked.append(("dispatcher", dispatcher["name"],f"PR COMMENTS: {slug} (not delivered to its lead): {said}"))
+        asked.append(("dispatcher", dispatcher["name"], f"{head}: {slug} (not delivered to its lead): {said}" if lead else f"{head}: {said}"))
     for to, name, line in asked:
         if courier(repo, name, line):
             return to
-    title = f"factory: comments on #{pr['number']}"
-    argv = notify_argv(title, str(path))
-    if not (argv and run(argv)[0] == 0):
-        print(f"notify: {title}: {path}")
-    return "human"
+    return None
 
 
 def save_comments(path, since, kept):
@@ -3335,7 +3338,12 @@ def watch_comments(repo, fallback, snap):
         kept[n] = sorted(old | {i["id"] for i in current} - retry)
         sent = sorted((i for i in new if i["decision"] == "forward"), key=lambda i: i["at"])
         batch = write_batch(slug, pr, sent) if sent else None
-        to = forward(repo, fallback, slug, pr, len(sent), batch) if sent else None
+        to = forward(repo, fallback, slug, "PR COMMENTS", f"{len(sent)} new from the human on #{n}: read {batch}") if sent else None
+        if sent and to is None:
+            to, title = "human", f"factory: comments on #{n}"
+            argv = notify_argv(title, str(batch))
+            if not (argv and run(argv)[0] == 0):
+                print(f"notify: {title}: {batch}")
         for i in new:
             go = i in sent
             log("comments", {"ts": now(), "repo": repo.root, "slug": slug, "pr": pr["number"], "id": i["id"],
@@ -4695,30 +4703,56 @@ def cmd_rerun(args):
 
 # ---- lander -----------------------------------------------------------------
 
-MERGE_TIMEOUT = 3600
-MERGE_BASH_MS = "2400000"
-MERGE_TOOLS = ("Read", "Grep", "Glob", "SendMessage", "ToolSearch", "Bash(factory merge --approved *)",
-               "Bash(factory land *)", "Bash(factory status *)", "Bash(factory status)", "Bash(gh pr view *)", "Bash(gh pr checks *)",
-               "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(sleep *)", "Bash(factory rerun *)")
-MERGE_KINDS = ("unapproved", "stale", "behind", "ci", "pending", "conflict", "tests", "handover", "base", "other")
-MERGE_LINE_RE = re.compile(r"#(\d+) (?:merged (\S.*)|stopped (\w+): (\S.*))")
+WORD_SECONDS = 3600
+WINDOW_MAX = 720
+POLL = 20
+# kind of a stop -> (patience in seconds before it is reported, whether it keeps the loop polling meanwhile, who is told)
+STOP_POLICY = {"pending": (1800, True, "dispatcher"), "handover": (600, False, "dispatcher"), "conflict": (0, False, "lead")}
+
+
+def stop_policy(kind, reason):
+    """The row of STOP_POLICY for a stop; checks that have not started or cannot be read are patient, red ones go to the lead."""
+    if kind == "ci":
+        return (0, False, "lead") if reason.startswith("failed or cancelled checks") else (180, True, "dispatcher")
+    return STOP_POLICY.get(kind, (0, False, "dispatcher"))
 
 
 def read_lander(repo):
-    """lander.json: what the tick has noticed, the stops of the lander's runs and when health last ran."""
+    """lander.json: the stops the loop has reported (`stopped`) and those still inside their patience (`waiting`),
+    each by pull request number, and when health last ran."""
     try:
         data = json.loads(repo_state(repo.root, "lander", "json").read_text())
     except (OSError, ValueError):
         data = None
-    return {"noticed": {}, "stopped": {}, "health": 0, **(data if isinstance(data, dict) else {})}
+    data = data if isinstance(data, dict) else {}
+    return {"stopped": data.get("stopped") or {}, "waiting": data.get("waiting") or {}, "health": data.get("health") or 0}
+
+
+def write_json(path, data):
+    """`data` as the whole content of `path`, atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps(data))
+    os.replace(temp, path)
 
 
 def write_lander(repo, state):
-    path = repo_state(repo.root, "lander", "json")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(json.dumps(state))
-    os.replace(temp, path)
+    write_json(repo_state(repo.root, "lander", "json"), state)
+
+
+def read_word(repo):
+    """The human's word, `{"all": until, "prs": {"<n>": until}}` (epoch seconds), without what has expired. The word file
+    is per repository, transient and written only by `factory lander`."""
+    try:
+        data = json.loads(repo_state(repo.root, "word", "json").read_text())
+        live = lambda until: isinstance(until, (int, float)) and until > time.time()
+        return {"all": data["all"] if live(data.get("all")) else 0, "prs": {n: t for n, t in data["prs"].items() if live(t)}}
+    except (OSError, ValueError, KeyError, AttributeError, TypeError):
+        return {"all": 0, "prs": {}}
+
+
+def write_word(repo, word):
+    write_json(repo_state(repo.root, "word", "json"), word)
 
 
 @contextlib.contextmanager
@@ -4737,25 +4771,12 @@ def repo_lock(repo, name):
 
 def approved_at(pr):
     """The newest time an approving review or an `lgtm` comment was left on `pr`, or None. Only a prefilter: the
-    gate of `factory merge --approved` decides. A draft is never one, and only a comment of an owner, member or
-    collaborator counts as an `lgtm`."""
-    if pr.get("isDraft"):
-        return None
+    gate of `factory merge --approved` decides. The draft flag is not a gate, so a draft counts; only a comment of an
+    owner, member or collaborator counts as an `lgtm`."""
     times = [r.get("submittedAt") for r in pr.get("latestReviews") or [] if r.get("state") == "APPROVED"]
     times += [c.get("createdAt") for c in pr.get("comments") or [] if str(c.get("body")).strip().lower() == "lgtm"
               and c.get("authorAssociation") in HUMAN_ASSOCIATIONS]
     return max((t for t in times if t), default=None)
-
-
-def lead_state(repo, sessions, pr):
-    """`busy` while the lead session of the task of `pr` is not finished, or when sessions could not be listed
-    (None), else `free` (also with no session): the last part of a `noticed` key, so a pull request noticed while
-    its lead was busy is run once more when it is free."""
-    if sessions is None:
-        return "busy"
-    slug = task_slug(repo, pr)
-    s = slug and sessions and task_session({"sessions": sessions, "repo": repo}, repo.worktree_path(slug))
-    return "busy" if s and not finished(s) else "free"
 
 
 def candidates(repo, snap):
@@ -4764,107 +4785,260 @@ def candidates(repo, snap):
     return [pr for pr in snap if approved_at(pr) and declared.get(task_slug(repo, pr), {}).get("state") == "handed-over"]
 
 
-def merge_brief(repo, given, word, dispatcher):
-    lines = ["Merge run.", f"Repository: {repo.root}", "Pull requests:"]
-    for pr in given:
-        n = pr["number"]
-        slug = task_slug(repo, pr)
-        how = (f"on the human's word: merge with `factory merge {n}`" if n in word
-               else f"approved on GitHub: merge with `factory merge --approved {n}`")
-        lines.append(f"- #{n}: head {pr['headRefName']}, base {pr['baseRefName']}, "
-                     f"{f'task {slug} (its lead is the session {slug})' if slug else 'no task'}; {how}")
-    return "\n".join([*lines, "No dispatcher session is alive." if not dispatcher
-                      else "The dispatcher started this run: do not message it." if word
-                      else f"The dispatcher's session name is {dispatcher}."])
+def lander_queue(repo, snap, word):
+    """[(pr, permission)] of the pull requests of `snap` to work through, by number: those approved on GitHub (permission
+    `{}`) and those on the human's word (`None`): every handed-over one while the window is open, and each number given.
+    A pull request whose base is the head of an open one waits for its base, silently."""
+    declared, heads = read_tasks(repo.root), {pr["headRefName"] for pr in snap}
+    handed = {pr["number"] for pr in snap if declared.get(task_slug(repo, pr), {}).get("state") == "handed-over"}
+    spoken = {int(n) for n in word["prs"]} | (handed if word["all"] else set())
+    ready = spoken | {pr["number"] for pr in candidates(repo, snap)}
+    return [(pr, None if pr["number"] in spoken else {}) for pr in sorted(snap, key=lambda pr: pr["number"])
+            if pr["number"] in ready and pr["baseRefName"] not in heads]
 
 
-def lander_results(rc, out, numbers):
-    """({number: ("merged", url) or (stop kind, evidence)}, the reply's JSON or {}). A number the reply has no line
-    for, or every number when the run failed or could not be read, is a stop `other` with the reason."""
+def waiting_since(state, n, pr, kind):
+    """When the stop `kind` of `pr` at its head began: the waiting record of it, else now."""
+    old = state["waiting"].get(str(n)) or {}
+    return old["since"] if (old.get("head"), old.get("kind")) == (pr["headRefOid"], kind) else time.time()
+
+
+def held(state, stops):
+    """The numbers of `stops` that are inside their patience and keep the loop polling."""
+    found = set()
+    for n, (pr, kind, line) in stops.items():
+        patience, polling, _ = stop_policy(kind, line)
+        if polling and time.time() - waiting_since(state, n, pr, kind) < patience:
+            found.add(n)
+    return found
+
+
+def after_red(repo, pr, stop):
+    """A failed-checks stop first asks `rerun_line` (once, in process): the stop becomes the polling `pending` when a re-run
+    started, else it carries the `no rerun: <why>` text after a `; `."""
+    if stop[0] != "ci" or not stop[1].startswith("failed or cancelled checks"):
+        return stop
     try:
-        reply = json.loads(out)
-    except ValueError:
-        reply = None
-    reply = reply if isinstance(reply, dict) else {}
-    text = reply.get("result") if rc == 0 else None
-    cause = ("timed out" if rc == 124 else f"exited {rc}") if rc else None if isinstance(text, str) else "its reply could not be read"
-    missing = "the lander gave no line for it" + (f" ({cause})" if cause else "")
-    results = {}
-    for line in text.splitlines() if isinstance(text, str) else []:
-        m = MERGE_LINE_RE.fullmatch(line.strip("`- \t"))
-        if m and int(m[1]) in numbers:
-            results[int(m[1])] = ("merged", m[2]) if m[2] else (m[3] if m[3] in MERGE_KINDS else "other", m[4])
-    return {n: results.get(n, ("other", missing)) for n in numbers}, reply
+        started, line = rerun_line(repo, str(pr["number"]))
+    except NotEvaluated as e:
+        started, line = False, f"no rerun: {e}"
+    return ("pending", line) if started else (stop[0], f"{stop[1]}; {line}")
 
 
-def run_lander(repo, snap, given, word, fallback):
-    """One merge run of a model lander over the pull requests `given` of the snapshot `snap` (those in `word` on
-    the human's word, the rest on GitHub's approval). Prints its result lines, records the stops and what has been
-    noticed in lander.json, and tells the human of each stop when no dispatcher is alive. True when all merged."""
-    sessions = list_sessions()
-    found = find_dispatcher(sessions, repo.root, fallback)[0] if sessions is not None else None
-    name = found and found["name"]
-    tools = [*MERGE_TOOLS, *(f"Bash(factory merge {n})" for n in sorted(word))]
-    argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", "sonnet",
-            "--permission-mode", "dontAsk", "--allowedTools", *tools, "--output-format", "json",
-            merge_brief(repo, given, word, name)]
-    # `factory` first on the PATH (the schedule's PATH holds only git, gh, claude and Python), so a nested
-    # `factory land` finds this script and, as the job's PATH has them, `claude`, `git` and `gh`.
-    env = {**os.environ, "PATH": f"{FACTORY.parent}{os.pathsep}{os.environ.get('PATH', '')}",
-           "BASH_DEFAULT_TIMEOUT_MS": MERGE_BASH_MS, "BASH_MAX_TIMEOUT_MS": MERGE_BASH_MS}
-    rc, out, _ = run(argv, cwd=repo.root, timeout=MERGE_TIMEOUT, env=env, group=True)
-    results, reply = lander_results(rc, out, [pr["number"] for pr in given])
+def evidence(repo, n, kind, line):
+    """One line of why pull request `n` goes back to its lead: the conflict, or the failed checks with their links (and
+    why they were not re-run)."""
+    if kind == "conflict":
+        return f"it {line}"
     try:
-        snap, opened = snapshot(repo), True  # the heads and approvals as the run left them
-    except NotEvaluated:
-        opened = False
-    if opened:  # what is no longer open merged, even when the run died; what is still open did not
-        shown = {pr["number"] for pr in snap}
-        for pr in given:
-            n, (kind, _) = pr["number"], results[pr["number"]]
-            if kind == "merged" and n in shown:
-                results[n] = ("other", "the lander said merged but it is still open")
-            elif kind != "merged" and n not in shown and rc:
-                results[n] = ("merged", pr["url"])
-    before, sessions = sessions, list_sessions()
-    state, heads = read_lander(repo), {pr["number"]: pr["headRefOid"] for pr in snap}
+        checks = gh_json(repo, list, "pr", "checks", str(n), "--json", "name,bucket,link")
+    except NotEvaluated as e:
+        return f"red checks that could not be read: {e}"
+    return "red checks: " + ", ".join(f"{c.get('name')} {c.get('link')}" for c in checks if c.get("bucket") in ("fail", "cancel")) \
+        + (f"; {why}" if (why := line.partition("; ")[2]) else "")
 
-    def lead(pr):
-        """`busy` when the lead was busy before the run or is after it (a lead that frees during the run keeps its
-        retry), except for a run that already was the retry of this head and approval: one retry each, or a stop that
-        wakes the lead would start a run on every tick."""
-        if (state["noticed"].get(str(pr["number"])) == f"{pr['headRefOid']}:{approved_at(pr)}:busy"
-                and lead_state(repo, before, pr) == "free"):  # a run by hand while it is busy is not the retry
-            return "free"
-        return "busy" if "busy" in (lead_state(repo, before, pr), lead_state(repo, sessions, pr)) else "free"
-    # Only this run's pull requests get a new key, with the stamp read before the run: an approval that came
-    # during it, or on another pull request, starts the next run. Its last part says whether the lead is busy.
-    state["noticed"] = {**{n: k for n, k in state["noticed"].items() if int(n) in heads},
-                        **{str(pr["number"]): f"{heads[pr['number']]}:{at}:{lead(pr)}" for pr in given
-                           if (at := approved_at(pr)) and pr["number"] in heads}}
-    state["stopped"] = {n: s for n, s in state["stopped"].items() if int(n) in heads}
-    for n, (kind, text) in results.items():
-        if kind == "merged":
-            print(f"#{n} merged {text}")
-            state["stopped"].pop(str(n), None)
-            continue
-        print(f"#{n} stopped {kind}: {text}")
-        if n in heads:
-            state["stopped"][str(n)] = {"head": heads[n], "kind": kind, "text": text, "ts": now()}
-        firing = fire(repo, {"criterion": "lgtm-blocked", "escalate": "always",
-                             "slug": task_slug(repo, next(pr for pr in given if pr["number"] == n)),
-                             "subject": f"#{n}/{kind}", "detail": f"#{n} stopped {kind}: {text}"})
-        if name:  # the lander told it; the health run must not send it again
-            log_firing(repo, id=firing["id"], decision="escalated", by="lander", reason="reported by the lander run")
+
+def send_back(repo, fallback, pr, slug, evidence):
+    """Return pull request `pr` to the lead of task `slug`: the task goes back to `working` and the pull request to draft
+    (it leaves the queue until its lead hands over again), and one line with the one-line `evidence` goes to the lead's
+    session, else the dispatcher's, else the human on this machine. Who was told: "lead", "dispatcher" or "human"."""
+    declare(repo, slug, "lander", "working")
+    to_draft(repo, pr["headRefName"])
+    said = (f"#{pr['number']} went back to you: {evidence}. Fix it on your branch (merge {repo.remote}/{repo.default} in), "
+            "re-review what you change, and hand over again: it is then merged by itself.")
+    to = forward(repo, fallback, slug, "LANDER", said)
+    if to is None:
+        title = f"factory: #{pr['number']} went back to {slug}"
+        argv = notify_argv(title, said)
+        if not (argv and run(argv)[0] == 0):
+            print(f"notify: {title}: {said}")
+        to = "human"
+    return to
+
+
+def report_stop(repo, fallback, pr, kind, line):
+    """Tell of one stop, once: a firing of lgtm-blocked, then the lead (the pull request goes back to it), or the dispatcher, else the
+    human, as its kind says."""
+    n, slug = pr["number"], task_slug(repo, pr)
+    firing = fire(repo, {"criterion": "lgtm-blocked", "escalate": "always", "slug": slug, "subject": f"#{n}/{kind}",
+                         "detail": f"#{n} stopped {kind}: {line}"})
+    if stop_policy(kind, line)[2] == "lead":
+        to = send_back(repo, fallback, pr, slug, evidence(repo, n, kind, line))
+    else:
+        to = forward(repo, fallback, slug, "LANDER", f"#{n} stopped {kind}: {line}", lead=False)
+    if to:
+        log_firing(repo, id=firing["id"], decision="escalated", by="lander", reason=f"reported by the lander to the {to}")
+    else:
+        notify(repo, firing)
+    print(f"#{n} stopped {kind}: {line} (told {to or 'human'})")
+
+
+def settle(repo, fallback, stops):
+    """Record the stops of a pass in lander.json and report those that are out of patience and new, once each: `waiting`
+    keeps the others, `stopped` what was reported; a record of a pull request with no such stop now is dropped. A
+    `handover` of a pull request already sent back at this head (its task is working) stays quiet."""
+    state, waiting, stopped, news = read_lander(repo), {}, {}, []
+    for n, (pr, kind, line) in stops.items():
+        since, head = waiting_since(state, n, pr, kind), pr["headRefOid"]
+        old = state["stopped"].get(str(n)) or {}
+        if kind == "handover" and old.get("head") == head or (old.get("head"), old.get("kind")) == (head, kind):
+            stopped[str(n)] = old
+        elif time.time() - since < stop_policy(kind, line)[0]:
+            waiting[str(n)] = {"head": head, "kind": kind, "since": since}
         else:
-            notify(repo, firing)
-    write_lander(repo, state)
-    if "num_turns" in reply:
-        cost, ms = reply.get("total_cost_usd"), reply.get("duration_ms")
-        print(f"lander: {reply['num_turns'] if reply['num_turns'] is not None else '?'} turns, "
-              f"{f'${cost:.2f}' if isinstance(cost, (int, float)) else '$?'}, "
-              f"{f'{ms / 1000:.0f}' if isinstance(ms, (int, float)) else '?'} s")
-    return all(kind == "merged" for kind, _ in results.values())
+            stopped[str(n)] = {"head": head, "kind": kind, "text": line, "ts": now()}
+            news.append((pr, kind, line))
+    write_lander(repo, {**state, "waiting": waiting, "stopped": stopped})
+    for new in news:
+        report_stop(repo, fallback, *new)
+
+
+def conflicting_files(repo, pr):
+    """The files in which the head of `pr` would conflict with the default branch, read without touching anything; an
+    empty list when it merges cleanly or git cannot tell (`update_branch` decides then)."""
+    rc, out, _ = repo.git("merge-tree", "--write-tree", "--name-only", f"{repo.remote}/{repo.default}", pr["headRefOid"])
+    return out.split("\n\n")[0].split()[1:] if rc == 1 else []
+
+
+def level(repo, task):
+    """Fast-forward the worktree of `task` to its own remote branch (someone pressed "Update branch" on GitHub, or pushed
+    from elsewhere); nothing is pushed. None, or why not: the lead may be running, the worktree is dirty or cannot be
+    read, or the two have diverged."""
+    path, branch, remote = task["path"], task["branch"], repo.remote
+    busy = land_busy(repo, path)
+    if busy:
+        return busy
+    rc, status, _ = repo.git("status", "--porcelain", path=path)
+    if rc != 0 or status.strip():
+        return "the worktree has uncommitted changes" if rc == 0 else "git status failed in the worktree"
+    rc, out, err = act_git(path, "fetch", remote, timeout=GH_TIMEOUT)
+    if rc != 0:
+        return f"git fetch {remote} failed: {' '.join((err or out).split())}"
+    if act_git(path, "merge", "--ff-only", f"{remote}/{branch}")[0] != 0:
+        return f"its worktree and {remote}/{branch} have diverged"
+    return None
+
+
+def attempt(repo, p, pr, permission):
+    """`merge_one`, asked again once when its only fault is a worktree that is not on the head of its pull request and
+    `level` can fix that. When the worktree then holds a head GitHub does not show yet (a push of ours, a stale
+    `gh pr list`) the pull request is in flight, not stopped."""
+    stop, row = merge_one(p, pr, False, False, permission), task_of(p, pr)
+    if stop and stop[0] == "handover" and row and row["phase"] == "review" and row["head"] != pr["headRefOid"] \
+            and level(repo, row) is None:
+        row["head"] = repo.git("rev-parse", "HEAD", path=row["path"])[1].strip()
+        pushed = repo.git("rev-parse", f"{repo.remote}/{row['branch']}", path=row["path"])[1].strip()
+        if row["head"] != pr["headRefOid"] and row["head"] == pushed:
+            return "pending", f"GitHub does not show the pushed head {row['head']} yet"
+        stop = merge_one(p, pr, False, False, permission)
+    return stop
+
+
+def update_branch(repo, task):
+    """Merge the default branch into the branch of `task`, in its worktree, and push: None, or the (kind, one line) of why
+    not. A conflict is aborted, never resolved: its lead is responsible. No tests, no comment."""
+    path, branch, remote, one = task["path"], task["branch"], repo.remote, lambda text: " ".join(text.split())
+    reason = level(repo, task)
+    if reason:
+        return "handover", reason
+    rc, out, err = act_git(path, "merge", "--no-edit", f"{remote}/{repo.default}")
+    if rc != 0:
+        files = repo.git("diff", "--name-only", "--diff-filter=U", path=path)[1].split()
+        left = "" if repo.git("merge", "--abort", path=path)[0] == 0 else "; `git merge --abort` failed: the worktree is left mid-merge"
+        return ("conflict", f"conflicts with {repo.default} in {', '.join(files)}{left}") if files else \
+            ("other", f"git merge failed: {one(err or out)}{left}")
+    rc, out, err = act_git(path, "push", remote, f"HEAD:{branch}", timeout=GH_TIMEOUT)
+    if rc != 0:
+        return "other", f"git push failed: {one(err or out)}; the merge commit is left in the worktree"
+    return None
+
+
+def lander_pass(repo, fallback, p, snap, line, updated):
+    """One full pass over `line`: (whether a pull request merged, the stops {n: (pr, kind, line)}, the numbers in flight).
+    At most one pull request is brought up to date, and none while another waits for its checks; `updated` keeps the
+    tip of the default branch each one was updated against. A handed-over pull request in no queue is only checked,
+    read-only, for a conflict."""
+    stops, behind = {}, []
+    for pr, permission in line:
+        stop = attempt(repo, p, pr, permission)
+        if stop is None:
+            print(f"#{pr['number']} merged {pr['url']}")
+            run_clean()
+            pull_main(repo)
+            return True, stops, set()
+        if stop[0] in ("behind", "conflict"):
+            behind.append((pr, stop[0]))
+        else:
+            stops[pr["number"]] = (pr, *after_red(repo, pr, stop))
+    queued, declared = {pr["number"] for pr, _ in line}, read_tasks(repo.root)
+    for pr in snap:
+        if pr["number"] not in queued and pr["baseRefName"] == repo.default \
+                and declared.get(task_slug(repo, pr), {}).get("state") == "handed-over" and fetched(p, pr) \
+                and (files := conflicting_files(repo, pr)):
+            stops[pr["number"]] = (pr, "conflict", f"conflicts with {repo.default} in {', '.join(files)}")
+    flight, tip = held(read_lander(repo), stops), lambda: repo.git("rev-parse", f"{repo.remote}/{repo.default}")[1].strip()
+    for pr, kind in behind:
+        n, files = pr["number"], conflicting_files(repo, pr)
+        if files:  # told at once, whether or not another waits: no update, no CI run
+            stops[n] = (pr, "conflict", f"conflicts with {repo.default} in {', '.join(files)}")
+            continue
+        if flight:
+            continue
+        if updated.get(n) == tip():
+            stops[n] = (pr, "other", f"still {'behind' if kind == 'behind' else 'conflicting'} after the update")
+        elif stop := update_branch(repo, next(t for t in repo.tasks if t["branch"] == pr["headRefName"])):
+            stops[n] = (pr, *stop)
+        else:
+            updated[n] = tip()
+            print(f"#{n} brought up to date, waiting for its checks")
+            flight.add(n)
+    settle(repo, fallback, stops)
+    return False, stops, flight
+
+
+def wait(p, flight, deadline):
+    """Sleep by POLL until the checks of one of the pull requests `flight` are no longer pending or unstarted, or
+    WATCH_INTERVAL or the deadline has passed."""
+    end = min(time.time() + WATCH_INTERVAL, deadline or float("inf"))
+    while time.time() < end:
+        time.sleep(min(POLL, end - time.time()))
+        for n in flight:
+            try:
+                stop = checks_stop(p, str(n))
+            except NotEvaluated as e:
+                stop = "ci", str(e)
+            if not (stop and stop_policy(*stop)[1]):
+                return
+
+
+def drain(repo, fallback, tick=False, deadline=None):
+    """Merge every pull request that is ready, one full pass after another (`merge_one` gates and merges; `update_branch`
+    brings one pull request up to date), and wait for the checks of the one in flight.
+    Ends when nothing merged and nothing is in flight, or at `deadline`; the numbers still stopped. With `tick` the
+    comments and draft flags are looked at again every WATCH_INTERVAL."""
+    stopped, updated, cheap_at, first = set(), {}, time.time(), True
+    while not (deadline and time.time() >= deadline):
+        try:
+            snap = snapshot(repo)
+            p = gather(repo, None)
+            tasks(p)
+        except NotEvaluated as e:
+            print(f"lander: {e}")
+            break
+        stopped &= {pr["number"] for pr in snap}
+        if tick and time.time() - cheap_at >= WATCH_INTERVAL:
+            watch_snapshot(repo, fallback, snap)
+            cheap_at = time.time()
+        line = lander_queue(repo, snap, read_word(repo))
+        if not line and first and not tick:
+            print("nothing ready")
+        merged, stops, flight = lander_pass(repo, fallback, p, snap, line, updated)
+        stopped, first = stopped | (set(stops) & {pr["number"] for pr, _ in line}), False
+        if not (merged or flight):
+            break
+        if not merged:
+            wait(p, flight, deadline)
+    return stopped
 
 
 def draft_picture(repo, snap):
@@ -4880,64 +5054,57 @@ def draft_picture(repo, snap):
 
 def cheap_tick(repo, fallback):
     """The part of every tick that costs one `gh pr list`: with a task working, blocked or handed over, take the open
-    pull requests once and give them to the comment forwarder; with one handed over (or a task's pull request that is
-    ready for review while its task is not: it goes back to draft), also set the draft flags; with one handed over,
-    start a lander for what was approved since last noticed."""
+    pull requests once and look at them (`watch_snapshot`)."""
     here = {os.path.basename(t["path"]) for t in repo.tasks}
     if not any(r["state"] in STATES[:3] and slug in here for slug, r in read_tasks(repo.root).items()):
         return
     try:
         snap = snapshot(repo)
     except NotEvaluated as e:
-        return print(f"{'notice' if handed_over(repo) else 'comments'}: {e}")
+        return print(f"comments: {e}")
+    watch_snapshot(repo, fallback, snap)
+
+
+def watch_snapshot(repo, fallback, snap):
+    """Give the open pull requests `snap` to the comment forwarder; with a task handed over (or a task's pull request that
+    is ready for review while its task is not: it goes back to draft), also set the draft flags."""
     try:
         watch_comments(repo, fallback, snap)
     except Exception as e:  # the tick goes on without it
         print(f"comments: {why(e)}")
-    over = handed_over(repo)
-    if over or any(not pr["isDraft"] and task_slug(repo, pr) for pr in snap):
+    if handed_over(repo) or any(not pr["isDraft"] and task_slug(repo, pr) for pr in snap):
         sync_drafts(draft_picture(repo, snap), snap)
-    if over:
-        notice(repo, fallback, snap)
-
-
-def notice(repo, fallback, snap):
-    """Pull requests of `snap` approved since last noticed start one lander run."""
-    noticed, sessions, new = read_lander(repo)["noticed"], False, []
-    for pr in candidates(repo, snap):
-        head, stored = f"{pr['headRefOid']}:{approved_at(pr)}", noticed.get(str(pr["number"]))
-        if stored is None or not (stored == head or stored.startswith(f"{head}:")):  # a new head or approval
-            new.append(pr)
-        elif stored.endswith(":busy"):  # a stored two-part key counts as noticed: no burst after an upgrade
-            sessions = list_sessions() if sessions is False else sessions
-            if lead_state(repo, sessions, pr) == "free":
-                new.append(pr)
-    if new:
-        with repo_lock(repo, "lander") as free:
-            if free:
-                run_lander(repo, snap, new, set(), fallback)
 
 
 def cmd_lander(args):
+    """Record the human's word (a merge window, or numbers) and, for numbers or none, run the loop here."""
     repo = Repo()
-    try:
-        snap = snapshot(repo)
-    except NotEvaluated as e:
-        raise Fail(f"lander: {e}", code=1)
-    by_number = {pr["number"]: pr for pr in snap}
-    unknown = [n for n in args.prs if n not in by_number]
-    if unknown:
-        raise Fail(f"lander: #{unknown[0]} is not an open pull request; nothing done")
-    word = set(args.prs)
-    given = [by_number[n] for n in dict.fromkeys(args.prs)] or candidates(repo, snap)
-    if not given:
-        print("nothing approved")
+    word = read_word(repo)
+    if args.window is not None:
+        if args.prs or not 0 <= args.window <= WINDOW_MAX:
+            raise Fail(f"lander: --window takes minutes from 0 to {WINDOW_MAX} and no pull request numbers")
+        word["all"] = time.time() + args.window * 60 if args.window else 0
+        write_word(repo, word)
+        print(f"merge window open until {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(word['all']))}: every handed-over "
+              "pull request with green checks merges; the next tick starts it" if args.window else "merge window closed")
         return 0
+    if args.prs:
+        try:
+            open_numbers = {pr["number"] for pr in snapshot(repo)}
+        except NotEvaluated as e:
+            raise Fail(f"lander: {e}", code=1)
+        unknown = [n for n in args.prs if n not in open_numbers]
+        if unknown:
+            raise Fail(f"lander: #{unknown[0]} is not an open pull request; nothing done")
+        word["prs"].update({str(n): time.time() + WORD_SECONDS for n in args.prs})
+        write_word(repo, word)
     with repo_lock(repo, "lander") as free:
         if not free:
-            print("a lander run is already going; run it again when it ends")
-            return 1
-        return 0 if run_lander(repo, snap, given, word, args.dispatcher) else 1
+            joined = ", ".join(f"#{n}" for n in dict.fromkeys(args.prs))
+            print("a lander run is already going: it takes everything that is ready"
+                  + (f" ({joined} {'is' if len(set(args.prs)) == 1 else 'are'} now in its queue)" if args.prs else ""))
+            return 0
+        return 1 if drain(repo, args.dispatcher) else 0
 
 
 def parse_args(argv):
@@ -5015,9 +5182,11 @@ def parse_args(argv):
     merge.add_argument("--dry-run", action="store_true")
     merge.add_argument("--approved", action="store_true",
                        help="merge only what GitHub's own records show approved (a review or an lgtm), read now")
-    lander = sub.add_parser("lander", help="start a lander run that merges pull requests (the human's word, or what GitHub shows approved)")
-    lander.add_argument("prs", nargs="*", type=int, metavar="pr", help="merge these on the human's word; none: those approved on GitHub")
-    lander.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
+    lander = sub.add_parser("lander", help="merge every pull request that is ready, here and now; or record the human's word for a window")
+    lander.add_argument("prs", nargs="*", type=int, metavar="pr", help="merge these on the human's word as well as what GitHub shows approved")
+    lander.add_argument("--window", type=int, metavar="MINUTES",
+                        help="every handed-over pull request with green checks merges for this long (0 closes the window); the next tick starts it")
+    lander.add_argument("--dispatcher", help="the dispatcher's session name (old-style: the session name to look for when no registered session is running; default dispatcher-<repo directory>)")
     land = sub.add_parser("land", help="bring a handed-over task up to its base (a model takes part only on a conflict)")
     land.add_argument("slug", nargs="?")
     land.add_argument("--all", action="store_true", help="every handed-over task whose pull request conflicts or whose base merged")

@@ -19,7 +19,7 @@ from test_health import HOUR, NOW, SID, Harness, check, choice, decided, fired, 
 
 FAKE_CLAUDE = """#!/bin/sh
 case "$1" in
-  agents) echo '[]'; exit 0 ;;
+  agents) echo "${AGENTS:-[]}"; exit 0 ;;
 esac
 sleep 60 &
 echo $! > "$GRANDCHILD"
@@ -37,7 +37,7 @@ sleep 60 >/dev/null 2>&1 &
 echo $! > "$GRANDCHILD"
 """
 FAKE_GH = """#!/bin/sh
-echo '[{"number": 1, "url": "u", "isDraft": false, "headRefName": "worktree-t", "headRefOid": "abc", "baseRefName": "main", "author": {"login": "a"}, "isCrossRepository": false, "latestReviews": [], "comments": []}]'
+echo '[{"number": 1, "url": "u", "isDraft": false, "headRefName": "worktree-t", "headRefOid": "abc", "baseRefName": "main", "author": {"login": "a"}, "isCrossRepository": true, "latestReviews": [], "comments": []}]'
 """
 
 
@@ -127,13 +127,15 @@ class RunLifetimeTests(Fakes):
             self.assertEqual(factory.run(["sleep", "60"]), (124, "", "timed out"))
 
     def run_script(self, env):
-        """The script `lander 1` in a throwaway repository, in a process group of its own."""
+        """The script `lander 1` in a throwaway repository, in a process group of its own: the pull request is a fork,
+        so the loop stops on it and tells the dispatcher (the fake `claude` lists one) with a `claude -p` run."""
         repo, home = self.tmp / "repo", self.tmp / "home"
         repo.mkdir()
         home.mkdir()
         subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30)
+        agents = json.dumps([{"sessionId": "sid-d", "name": "dispatcher-repo", "cwd": str(repo), "kind": "interactive"}])
         env = {**os.environ, "HOME": str(home), "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
-               "GRANDCHILD": str(self.grandchild), "CLAUDE_CODE_SESSION_ID": "sid-d", **env}
+               "GRANDCHILD": str(self.grandchild), "CLAUDE_CODE_SESSION_ID": "sid-d", "AGENTS": agents, **env}
         env.pop("FACTORY_HOME", None)
         return start_in_group(self, [sys.executable, str(BIN), "lander", "1"], cwd=repo, env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -159,7 +161,7 @@ class RunLifetimeTests(Fakes):
         self.assertTrue(gone(pid))
 
     def script_gets(self, signum):
-        """The script `lander 1` with the fake `claude` and `gh`, signalled during the claude run."""
+        """The script `lander 1` with the fake `claude` and `gh`, signalled during the courier's claude run."""
         p = self.run_script({})
         pid = self.started()
         os.kill(p.pid, signum)
@@ -272,7 +274,7 @@ class BusyEveryTickTests(Harness):
 
     def setUp(self):
         super().setUp()
-        factory.write_lander(SimpleNamespace(root=ROOT), {"noticed": {}, "stopped": {}, "health": NOW - 10})  # no health pass
+        factory.write_lander(SimpleNamespace(root=ROOT), {"stopped": {}, "waiting": {}, "health": NOW - 10})  # no health pass
         self.busy = [DISPATCHER | {"name": "dispatcher-repo"}, lead("x", pid=100)]
 
     def hand_over(self, minutes):
@@ -289,8 +291,8 @@ class BusyEveryTickTests(Harness):
     def test_a_task_not_yet_past_the_threshold_costs_nothing_extra(self):
         self.hand_over(5)
         self.assertIn("nothing new", self.tick())
-        # the one listing is the draft sync's, which runs with any handed-over task
-        self.assertEqual((self.count("claude", "agents"), self.count("ps"), self.count("claude", "-p")), (1, 0, 0))
+        # the listings are the draft sync's and the lander loop's, which run with any handed-over task
+        self.assertEqual((self.count("claude", "agents"), self.count("ps"), self.count("claude", "-p")), (2, 0, 0))
 
     def test_no_handed_over_task_runs_no_session_listing_and_no_ps(self):
         self.assertIn("nothing new", self.tick())
@@ -302,8 +304,8 @@ class BusyEveryTickTests(Harness):
         [record] = self.records()
         self.assertEqual((record["criterion"], record["subject"]), ("busy-after-handover", "x"))
         self.assertIn("101 up 19:00: sleep 600", record["detail"])
-        # two listings: the draft sync's and the criterion's
-        self.assertEqual((self.count("claude", "agents"), self.count("ps"), len(self.claude_runs())), (2, 1, 1))
+        # three listings: the draft sync's, the criterion's and the lander loop's
+        self.assertEqual((self.count("claude", "agents"), self.count("ps"), len(self.claude_runs())), (3, 1, 1))
 
     def test_an_undecided_finding_is_sent_again_on_the_health_pass_only_and_a_decided_one_is_not(self):
         self.hand_over(7)
