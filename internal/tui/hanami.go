@@ -461,7 +461,7 @@ func (s *hanamiScene) layout(g hGeo, b *hBranch, now bool) {
 		last = bl.uT
 		i++
 	}
-	slices.SortFunc(closed, func(a, b *hBlossom) int { return b.closed.Compare(a.closed) }) // newest closed nearest the open ones
+	slices.SortStableFunc(closed, func(a, b *hBlossom) int { return b.closed.Compare(a.closed) }) // newest closed nearest the open ones
 	for _, bl := range closed {
 		last -= du / 2
 		bl.uT, bl.sizeT = math.Max(0.3, last), blossomSize(bl.work, capR)
@@ -1561,12 +1561,6 @@ func (s *hanamiScene) draw(legend bool) []string {
 	for pass := 0; pass < 2; pass++ { // closed ones behind, open ones in front
 		cv.layer = 4 + pass
 		for _, b := range s.branches {
-			live := 0
-			for _, bl := range b.blossoms {
-				if bl.closed.IsZero() {
-					live++
-				}
-			}
 			for _, bl := range b.blossoms {
 				if bl.closed.IsZero() != (pass == 1) {
 					continue
@@ -1593,7 +1587,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 				}
 				cv.flower(x, y, r, rot, col.mix(text, 0.35*bl.heat), loud, false)
 				glowR := 2.4*r + 4
-				if blossomCap(g, live) <= 3.5 { // a small stage: glows must not merge into one band
+				if blossomCap(g, 0) <= 3.5 { // a small stage: glows must not merge into one band
 					glowR = math.Min(glowR, 1.2*r+2)
 				}
 				cv.glow(x, y, glowR, col, 0.2+0.3*bl.heat+0.15*throb)

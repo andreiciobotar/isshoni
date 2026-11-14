@@ -1224,8 +1224,8 @@ func TestHanamiReturnDoesNotFlipTheOthers(t *testing.T) {
 		}
 		return
 	}
-	s.Apply(ev("return", 3, who(0)), false)
 	prev := pos()
+	s.Apply(ev("return", 3, who(0)), false)
 	for f := 0; f < 3*hanamiFPS; f++ {
 		s.Step(goldenNow.Add(3 * time.Second))
 		for i, p := range pos() {
