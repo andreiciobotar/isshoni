@@ -304,7 +304,7 @@ class LandTests(unittest.TestCase):
         p = self.land("t1", TEST_CMD=f"cp {self.state}/busy.json {self.state}/agents.json")
         self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED busy`"))
         self.assertIn("rebased commits", p.stdout)
-        self.assertEqual((self.remote_head(), self.gh_calls(), self.last_state()), (old, [], "handed-over"))
+        self.assertEqual((self.remote_head(), self.gh_calls(), self.last_state()), (old, [], "working"))
 
     def test_a_dirty_worktree_stops(self):
         wt = self.task("t1")
@@ -400,7 +400,7 @@ class LandTests(unittest.TestCase):
         old = self.git("rev-parse", "HEAD", cwd=wt)
         p = self.land("t1")
         self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED tests`"))
-        self.assertIn("no test command", p.stdout)
+        self.assertIn("no test command: no `test:` rule in Makefile", p.stdout)
         self.assertEqual((self.remote_head(), self.last_state()), (old, "working"))
 
     def test_a_range_diff_that_differs_is_a_look(self):
@@ -414,9 +414,46 @@ class LandTests(unittest.TestCase):
     def test_working_is_declared_before_a_look_is_pushed(self):
         self.task("t1", line=20)
         self.advance_main(2, "main line")
-        p = self.land("t1", TEST_CMD="true")
+        seen = self.state / "state-at-push"
+        hook = self.repo / ".git" / "hooks" / "pre-push"
+        hook.write_text("#!/bin/sh\npython3 -c \"import glob, json, os; rs = [json.loads(l) for f in sorted(glob.glob(os.environ['HOME'] "
+                        "+ '/.claude/factory/tasks-*.jsonl')) for l in open(f)]; "
+                        f"print([r['state'] for r in rs if r['slug'] == 't1'][-1])\" > {seen}\n")
+        hook.chmod(0o755)
+        p = self.land("t1")
         self.assertEqual(self.result(p), "`LANDED, LOOK https://x/pull/t1`")
+        self.assertEqual(seen.read_text().strip(), "working")
         self.assertEqual([r["state"] for r in self.declared() if r["slug"] == "t1"], ["handed-over", "working"])
+
+    def grow(self, wt, n, odd=None):
+        """Commits 2..n on the task branch (commit `odd` edits a.txt line 20), pushed, with the pull request's head."""
+        for i in range(2, n + 1):
+            if i == odd:
+                self.edit(wt, 20, "odd line")
+            else:
+                (wt / f"f{i}.txt").write_text(f"c{i}\n")
+                self.git("add", ".", cwd=wt)
+                self.git("commit", "-q", "-m", f"c{i}", cwd=wt)
+        self.git("push", "-q", "origin", "worktree-t1", cwd=wt)
+        self.prs["worktree-t1"][0]["headRefOid"] = self.git("rev-parse", "HEAD", cwd=wt)
+        self.write_state()
+
+    def test_twelve_commits_rebased_cleanly_are_identical(self):
+        wt = self.task("t1", line=20)
+        self.grow(wt, 12)
+        self.advance_main(1, "main line", "b.txt")
+        p = self.land("t1")
+        self.assertEqual((p.returncode, self.result(p)), (0, "`LANDED https://x/pull/t1`"))
+        self.assertIn("range-diff: identical", p.stdout)
+
+    def test_a_difference_among_the_first_of_twelve_commits_is_seen(self):
+        wt = self.task("t1", line=1, text="task line")
+        self.grow(wt, 12, odd=2)
+        self.advance_main(17, "main line")
+        p = self.land("t1")
+        self.assertEqual(self.result(p), "`LANDED, LOOK https://x/pull/t1`")
+        self.assertIn("range-diff differs", p.stdout)
+        self.assertIn("Range-diff: differs.", self.gh_calls()[0]["body"])
 
     def test_a_lander_that_exits_non_zero_is_a_stop_with_what_git_shows(self):
         wt, old = self.conflict()

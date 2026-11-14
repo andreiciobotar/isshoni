@@ -2829,7 +2829,7 @@ LAND_TOOLS = ("Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Ba
               "Bash(gh pr edit *)", "Bash(factory state working)")
 LAND_REASONS = ("dirty", "conflict", "golden", "tests", "denied", "other")
 LAND_RESULT_RE = re.compile(r"(LANDED, LOOK|LANDED|STOPPED)(?: (\S+))?")
-RANGE_PAIR_RE = re.compile(r"\s*(?:-|\d+):\s+\S+ ([=!<>]) (?:-|\d+):")
+RANGE_PAIR_RE = re.compile(r"\s*(?:-|\d+):\s+\S+\s+([=!<>])\s+(?:-|\d+):\s+\S+")
 
 
 def land_base(repo, branch):
@@ -2848,14 +2848,16 @@ def land_busy(repo, path):
     return unplaced_block(sessions) or session_block(sessions_in(sessions, repo.root, path))
 
 
-def test_target(path):
-    """Whether the first makefile make reads in `path` has a `test` rule (not a `test` variable)."""
+def no_test_rule(path):
+    """Why `make test` is not known in `path`, or None: the first makefile make reads must have a `test:` rule.
+    Included files and rules naming several targets are not read."""
+    present = os.listdir(path)
     for name in ("GNUmakefile", "makefile", "Makefile"):
-        try:
-            return bool(re.search(r"^test\s*:(?!:?=)", (Path(path) / name).read_text(), re.M))
-        except OSError:
+        if name not in present:
             continue
-    return False
+        text = (Path(path) / name).read_text()
+        return None if re.search(r"^test\s*:(?!:?=)", text, re.M) else f"no `test:` rule in {name}"
+    return "no Makefile"
 
 
 def lander_sections(text):
@@ -2943,12 +2945,12 @@ class Landing:
         repo, branch = self.repo, self.branch
         new_head = self.out("rev-parse", "HEAD")
         rc, out, _ = self.git("range-diff", "--no-color", f"{old_base}..{self.old_head}", f"{self.target}..HEAD")
-        pairs = out.strip().splitlines()
-        marks = [m.group(1) for m in map(RANGE_PAIR_RE.match, pairs) if m]
-        identical = rc == 0 and bool(marks) and set(marks) == {"="}
+        pairs = [line for line in out.splitlines() if line.strip()]
+        identical = rc == 0 and bool(pairs) and all(m and m.group(1) == "=" for m in map(RANGE_PAIR_RE.match, pairs))
         unpushed = [f"head: `{self.old_head}` -> `{new_head}`, not pushed"]
-        if not test_target(self.path):
-            return self.stop("tests", "no test command: make test is not defined; the worktree is on the "
+        missing = no_test_rule(self.path)
+        if missing:
+            return self.stop("tests", f"no test command: {missing}; the worktree is on the "
                              f"rebased commits at {new_head}, unpushed", unpushed)
         rc, out, err = run(["make", "test"], cwd=self.path, timeout=LAND_TEST_TIMEOUT)
         if rc != 0:
@@ -2957,6 +2959,7 @@ class Landing:
                              f"rebased commits at {new_head}, unpushed. Last lines:\n{tail}", unpushed)
         busy = land_busy(repo, self.path)
         if busy:
+            self.mark_working()
             return self.stop("busy", f"{busy}; the worktree is on the rebased commits at {new_head}, unpushed",
                              unpushed)
         look = bool(overlap) or not identical
@@ -2970,7 +2973,7 @@ class Landing:
                    f"Overlap with the base: {', '.join(overlap) or 'none'}.", "Conflicts: none.",
                    "Regenerated: nothing.", "Tests: `make test` pass."]
         retarget_error = self.retarget()
-        error = retarget_error or self.announce(new_head, kind, details)
+        error = "; ".join(e for e in (retarget_error, self.announce(new_head, kind, details)) if e)
         count = self.out("rev-list", "--count", f"{old_base}..{self.target}")
         facts = [f"base: `{self.target}` at `{self.out('rev-parse', self.target)}`, {count} commits since the old base; "
                  f"overlap: {', '.join(overlap) or 'none'}",
