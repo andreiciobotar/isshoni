@@ -280,7 +280,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_defaults(self):
         want = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                "task_time_limit_hours": 2, "monitor": None}
+                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True}
         self.assertEqual(self.load(), want)
         self.assertEqual(self.load("{}"), want)
 
@@ -291,9 +291,9 @@ class SettingsTests(unittest.TestCase):
 
     def test_overrides(self):
         got = self.load('{"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan", '
-                        '"task_time_limit_hours": 0.5, "monitor": "/bin/isshoni"}')
+                        '"task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": false}')
         self.assertEqual(got, {"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan",
-                               "task_time_limit_hours": 0.5, "monitor": "/bin/isshoni"})
+                               "task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": False})
         self.assertEqual(self.load('{"worktree_cap": 9}')["lead_model"], "fable")
 
     def test_invalid_values_name_the_key(self):
@@ -305,6 +305,7 @@ class SettingsTests(unittest.TestCase):
                           ('{"task_time_limit_hours": -1}', "task_time_limit_hours"),
                           ('{"task_time_limit_hours": "2"}', "task_time_limit_hours"),
                           ('{"task_time_limit_hours": true}', "task_time_limit_hours"),
+                          ('{"lgtm_from_author": "no"}', "lgtm_from_author"), ('{"lgtm_from_author": 0}', "lgtm_from_author"),
                           ('{"monitor": ""}', "monitor"), ('{"monitor": 3}', "monitor"), ('{"monitor": null}', "monitor")):
             with self.assertRaisesRegex(factory.Fail, key):
                 self.load(text)

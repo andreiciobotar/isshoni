@@ -40,7 +40,7 @@ def pic(**kw):
     return {"now": NOW, "repo": SimpleNamespace(root=ROOT, default="main"), "dispatcher": "dispatcher-repo",
             "sessions": sessions, "rows": [], "declared": {}, "events": [],
             "models": {"coder": "sonnet", "explorer": "haiku", "reviewer": "opus"},
-            "gh": lambda *a: [], "monitor": None, **kw}
+            "gh": lambda *a: [], "monitor": None, "lgtm_from_author": True, **kw}
 
 
 def check(name, p, threshold=None):

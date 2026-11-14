@@ -66,6 +66,7 @@ The cap (`worktree_cap`) counts slots per repository. Only `new` checks it, so a
 | `lead_model` | `fable` | |
 | `lead_permission_mode` | `auto` | `acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan` |
 | `task_time_limit_hours` | 2 | after it `status` shows `overtime` while the lead's turn has not ended; the lead stops and reports |
+| `lgtm_from_author` | `true` | `true` or `false`: whether an `lgtm` by the pull request's author counts; set `false` once the factory has its own account (see Merging) |
 | `monitor` | none | the path of the monitor's `isshoni` command; the cost criteria need it (see Criteria) |
 
 ## Messages
@@ -161,7 +162,7 @@ Criteria are `factory/criteria.json`, one entry per line: `name`, `escalate` (`a
 | `ci-red-handover` | judgment | | a handed-over pull request has a failing check |
 | `deep-stack` | judgment | 3 | a task's stack, counting the task itself, is deeper than that |
 | `merged-not-cleaned` | judgment | 2 h | a task was merged or settled that long ago and not cleaned |
-| `lgtm-blocked` | always | | a pull request carries the human's `lgtm` and was not merged; subject `#<number>/<kind>` (see Merging) |
+| `lgtm-blocked` | always | | a pull request carries the human's approval (an approving review or an `lgtm`) and was not merged; subject `#<number>/<kind>` (see Merging) |
 | `base-merged` | always | | a lead is still working (pull request neither merged nor open against the default branch) on a base that has merged, and its worktree lacks that merge commit |
 | `cost-outlier` | judgment | 3 | a working or blocked task has cost more than that many times the median landed task |
 | `lead-heavy` | judgment | 85 % | a working or blocked task that has cost at least the median landed task has more than that share of its cost in the lead's own session |
@@ -193,9 +194,15 @@ To turn the digest off, delete the four `"job": "digest"` lines of `criteria.jso
 ## Merging
 `factory merge` merges pull requests with no model. It merges only what is mechanical and stops at the first thing that is not. Two things start it:
 - **The dispatcher**, on the human's word: `factory merge <number>...`, or `--all` for every open pull request whose task is handed over (the others print `#N skipped: <why>`; with none left, `nothing to merge`).
-- **The human comments `lgtm`** on the pull request. Each `watch` tick, before the criteria, merges every open pull request that has such a comment; `health` runs the same checks without acting. The comment counts when its whole body, trimmed, in any case, is `lgtm`; its author has `admin` or `write` permission on the repository; and it was created after the head branch last changed (GitHub's activity feed for the branch: the time of the push, not a commit date). Review comments and review bodies do not count. This needs the watch running, which it is while a dispatcher session lives.
+- **The human approves** the pull request, in either of two ways. Each `watch` tick, before the criteria, merges every open pull request that has one; `health` runs the same checks without acting. This needs the watch running, which it is while a dispatcher session lives.
+  - *An approving review.* Per login, the newest review that is not comment-only (`COMMENTED`, `PENDING`) is its verdict, so a later `CHANGES_REQUESTED` or a dismissal withdraws an approval and a later comment-only review does not. An `APPROVED` verdict counts when it is on the pull request's current head (its `commit_id`); one on an older commit is a `stale` blocker. Of several approvals, one on the head is preferred, then the newest.
+  - *An `lgtm` comment.* Its whole body, trimmed, in any case, is `lgtm`, and it was created after the head branch last changed (GitHub's activity feed for the branch: the time of the push, not a commit date). Review bodies do not count. An `lgtm` can approve a pull request whose review is on an older commit; the `lgtm` rules then decide.
+- **Who may approve**, for both: a login whose GitHub `user.type` is `User` (a bot never), with `admin` or `write` permission on the repository, and not the pull request's author. The exception: an author's `lgtm` counts while `lgtm_from_author` is `true` (the default); an author's review never does.
 
-**Nothing technical tells the human's `lgtm` from one an agent posts**, because agents act with the human's GitHub credentials. The `lgtm` trigger rests on a rule written into every role file: no agent ever posts one. A separate GitHub identity for the factory would make this a mechanism; that is not built.
+**Nothing technical tells the human's approval from one an agent posts when they share a login**, because agents act with the human's GitHub credentials. What is decided, per identity of the pull request's author:
+- *A GitHub App*: its comments and reviews have `user.type` `Bot`, so its `lgtm` or approval never counts. A mechanism, no setting needed.
+- *A second account of its own* (a regular user with write access): it looks like the human. Set `"lgtm_from_author": false` in the settings once the factory has such an account; its `lgtm` stops counting while another user's still does.
+- *The human's own account* (today): `lgtm_from_author` stays `true`, and the `lgtm` rests on a rule written into every role file: no agent ever posts one, and none ever approves a pull request.
 
 Per pull request, bottom-up through a stack (a pull request based on another selected one goes after it). Each check that fails is a blocker with a kind:
 
@@ -207,14 +214,14 @@ Per pull request, bottom-up through a stack (a pull request based on another sel
 | `ci` | no checks, a failed or cancelled check, or no passed check |
 | `pending` | a check is still running; GitHub has not computed mergeability after 5 asks 3 seconds apart; the base's pull request cannot be read |
 | `conflict` | it conflicts with its base |
-| `stale` | (`lgtm` only) the head changed after the `lgtm`: a fresh one is needed |
+| `stale` | the head changed after the approval (a review on an older commit, or an `lgtm` older than the last change to the head): a fresh one is needed |
 | `head-time` | (`lgtm` only) the activity feed does not name the pull request's head, so when it changed cannot be told |
 | `merge` | a `gh` step failed |
 
 Then it retargets the pull request onto the default branch when its base is a merged one (`gh pr edit --base`), marks a draft ready (`gh pr ready`) and merges with a merge commit, pinned to the head it checked (`gh pr merge --merge --match-head-commit`). Merge commits keep branches stacked on it valid; squash would not. After any merge it runs `clean`.
 
 - `merge` prints `#N merged <url>`, or `#N stopped: <reason>` and `#M not attempted` for the rest; exit 0 when everything merged, 1 on a stop or a failed step, 2 for a number that is not an open pull request. `--dry-run` changes nothing, checks every pull request as if the earlier ones had merged, and prints `#N would merge` or `#N would stop: <reason>`; mergeability of a pull request that would first be retargeted is not checked.
-- In `watch` one pull request's blocker does not stop the others. It prints `#N merged on lgtm <comment url>` or `#N blocked: <reason>`. A blocker other than `pending` fires `lgtm-blocked`; `pending` fires nothing and the next tick tries again. Nothing is merged while phases cannot be trusted (a session with no `cwd`, an unknown pull request state) or once a `gh` read fails; `lgtm-blocked` is then `not evaluated`.
+- In `watch` one pull request's blocker does not stop the others. It prints `#N merged on approval <review url>`, `#N merged on lgtm <comment url>` or `#N blocked: <reason>`. A blocker other than `pending` fires `lgtm-blocked`; `pending` fires nothing and the next tick tries again. Nothing is merged while phases cannot be trusted (a session with no `cwd`, an unknown pull request state) or once a `gh` read fails; `lgtm-blocked` is then `not evaluated`.
 - Deleting `lgtm-blocked` from `criteria.json` silences the escalation, not the merging. To turn the `lgtm` trigger off, remove the schedule; while a default-named dispatcher session lives, its next prompt installs it again, so there is no lasting off switch short of ending the dispatcher.
 - `clean` keeps the worktree the running plugin lives in: leads started by it load their plugin from there.
 
@@ -224,6 +231,6 @@ Then it retargets the pull request onto the default branch when its base is a me
 - A worktree made by hand under a slug used before inherits that slug's last declared state.
 - A store nobody writes to is never pruned. A month file and `watch.log` have no size limit.
 - The monitor adds up the cost of a reused slug, so a task started under an old slug looks dearer than it is. A model the monitor has no price for understates the cost.
-- Merging: the `lgtm` trigger rests on a rule, not a mechanism (see Merging). Checks are not rerun after a retarget, and GitHub does not test the merge result: mergeable means no conflict. A pull request with no task worktree is a `handover` stop; the human merges it. At most 100 open pull requests are seen. An `lgtm` during a running check waits for the next tick. There is no lock: when a tick and the dispatcher merge at once, the second `gh pr merge` fails and is reported.
+- Merging: with the author's own account the approval rests on a rule, not a mechanism (see Merging). A `CHANGES_REQUESTED` review by a different login does not block a merge. The author comparison and the bot test rest on GitHub's `user.type` and login. Checks are not rerun after a retarget, and GitHub does not test the merge result: mergeable means no conflict. A pull request with no task worktree is a `handover` stop; the human merges it. At most 100 open pull requests are seen. An `lgtm` during a running check waits for the next tick. There is no lock: when a tick and the dispatcher merge at once, the second `gh pr merge` fails and is reported.
 - The site manager's thresholds are first guesses; `quiet` reads file times, so a lead waiting on a long command looks quiet; a run that dies after sending may escalate the same firing again next tick. A site manager run is read as one JSON document on `claude`'s standard output: with `ANTHROPIC_LOG=debug` in the environment `claude` logs there too, the message is still sent and the run is recorded as failed.
 - Two repositories whose directories share a name share a spec folder and a default dispatcher name.

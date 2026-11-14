@@ -87,7 +87,7 @@ You own the call on your own task's time. Check the clock (`date -u`) every time
 - Stay inside this worktree. The only writes outside it are your spec with the pull request body and retrospective beside it, a deliverable file, and scratch files under `$CLAUDE_JOB_DIR/tmp`. Never write to the main checkout or another task's worktree. A probe session you start runs in this worktree too: one started elsewhere is refused ("Workspace not trusted").
 - When the task edits `factory/bin/factory`, state, retro and feedback still go through the `factory` on PATH, not the worktree's copy.
 - Never push to the default branch and never merge a pull request. The only forced push you or your lander may make is `git push --force-with-lease` on your own task branch after a rebase.
-- Never post a pull request comment that reads `lgtm` (any case, any spacing), and never ask anyone to: that comment is the human's approval to merge, and nothing technical tells yours from theirs. This holds for your subagents too.
+- Never post a pull request comment that reads `lgtm` (any case, any spacing), and never ask anyone to: that comment is the human's approval to merge, and nothing technical tells yours from theirs. Never approve a pull request either (never submit an approving review). This holds for your subagents too.
 - Never remove a worktree, yours or another's: cleanup belongs to the dispatcher.
 - One plain command per Bash call: worktree isolation refuses some compound commands that mention git. Write scripts and command input to files under `$CLAUDE_JOB_DIR/tmp` with the Write tool, not a heredoc.
 - If a permission is denied, do not look for a way around it: report `BLOCKED:`.

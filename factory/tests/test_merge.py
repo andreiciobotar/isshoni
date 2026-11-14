@@ -14,11 +14,13 @@ GREEN = [{"name": "test", "bucket": "pass"}]
 SESSION = "dispatcher-repo"
 COMMENTS = "repos/{owner}/{repo}/issues/%d/comments"
 ACTIVITY = "repos/{owner}/{repo}/activity"
+REVIEWS = "repos/{owner}/{repo}/pulls/%d/reviews"
+AUTHOR = {"login": "andrei", "is_bot": False}
 
 
-def pr(n, base="main", draft=False, fork=False, sha=SHA):
+def pr(n, base="main", draft=False, fork=False, sha=SHA, author=AUTHOR):
     return {"number": n, "url": f"https://x/pull/{n}", "isDraft": draft, "headRefName": f"worktree-t{n}",
-            "headRefOid": sha, "baseRefName": base, "isCrossRepository": fork}
+            "headRefOid": sha, "baseRefName": base, "isCrossRepository": fork, "author": author}
 
 
 def raw(x):
@@ -29,8 +31,14 @@ def per(value, n):
     return value[n] if isinstance(value, dict) else value
 
 
-def comment(body="lgtm", at=NOW - 60, login="andrei", n=1):
-    return {"body": body, "created_at": iso(at), "html_url": f"https://x/pull/{n}#c{at}", "user": {"login": login}}
+def comment(body="lgtm", at=NOW - 60, login="andrei", n=1, type="User"):
+    return {"body": body, "created_at": iso(at), "html_url": f"https://x/pull/{n}#c{at}",
+            "user": {"login": login, "type": type}}
+
+
+def review(state="APPROVED", at=NOW - 60, login="dev", sha=SHA, n=1, type="User"):
+    return {"state": state, "submitted_at": iso(at), "commit_id": sha, "html_url": f"https://x/pull/{n}#r{at}",
+            "user": {"login": login, "type": type}}
 
 
 class World(Harness):
@@ -267,7 +275,7 @@ def approval_gh(pages, permissions, asked=None):
 
 class ApprovalTests(unittest.TestCase):
     def approval(self, *comments, permissions=None, asked=None):
-        p = {"gh": approval_gh([list(comments)], permissions or {"andrei": "admin"}, asked)}
+        p = {"gh": approval_gh([list(comments)], permissions or {"andrei": "admin"}, asked), "lgtm_from_author": True}
         return factory.newest_approval(p, pr(1), {})
 
     def test_body_variants(self):
@@ -284,7 +292,7 @@ class ApprovalTests(unittest.TestCase):
 
     def test_the_newest_approval_wins_over_pages_and_order(self):
         p = {"gh": approval_gh([[comment(at=NOW - 10)], [comment(at=NOW - 500), comment("hello", at=NOW)]],
-                               {"andrei": "admin"})}
+                               {"andrei": "admin"}), "lgtm_from_author": True}
         self.assertEqual(factory.newest_approval(p, pr(1), {})["created_at"], iso(NOW - 10))
 
     def test_permission_is_asked_once_per_login(self):
@@ -320,14 +328,17 @@ class ApprovalTests(unittest.TestCase):
 
 
 class LgtmTests(World):
-    def lgtm_world(self, prs, comments, activity=None, **kw):
+    def lgtm_world(self, prs, comments, activity=None, reviews=None, **kw):
         answers, sessions, slugs = self.world(prs, **kw)
         for p in prs:
             n = p["number"]
+            answers[("gh", "api", "--paginate", "--slurp", REVIEWS % n)] = raw([(reviews or {}).get(n, [])])
             answers[("gh", "api", "--paginate", "--slurp", COMMENTS % n)] = raw([comments.get(n, [])])
             answers[("gh", "api", "-X", "GET", ACTIVITY, "-f", f"ref=refs/heads/worktree-t{n}")] = raw(
                 (activity or {}).get(n, [{"after": SHA, "timestamp": iso(NOW - 3600)}]))
-        answers[("gh", "api", "repos/{owner}/{repo}/collaborators/andrei/permission")] = raw({"permission": "admin"})
+        for login, permission in {"andrei": "admin", "dev": "write", "reader": "read"}.items():
+            answers[("gh", "api", f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission")] = raw(
+                {"permission": permission})
         answers.update(kw.get("extra") or {})
         return answers, sessions, slugs
 
@@ -524,6 +535,84 @@ class LgtmTests(World):
         self.assertEqual(self.gh_mutations(), [])
         self.assertFalse(self.fake.ran("claude", "rm"))
         self.assertEqual({p.name: p.read_bytes() for p in self.store.iterdir()}, before)
+
+    def merges(self):
+        return [c[2] for c in self.gh_mutations() if c[1] == "merge"]
+
+    def test_an_approving_review_on_the_head_merges_without_comments_or_activity(self):
+        code, out, _ = self.tick_lgtm([pr(1)], {}, reviews={1: [review()]})
+        self.assertEqual(code, 0)
+        self.assertIn(f"#1 merged on approval https://x/pull/1#r{NOW - 60}\n", out)
+        self.assertEqual(self.merges(), ["1"])
+        self.assertFalse(any(COMMENTS % 1 in c or ACTIVITY in c for c in self.fake.calls))
+
+    def test_a_review_that_may_not_approve_does_nothing(self):
+        cases = {"the author": review(login="andrei"), "no write access": review(login="reader"),
+                 "a bot": review(login="factory[bot]", type="Bot")}
+        for label, r in cases.items():
+            with self.subTest(label):
+                self.setUp()
+                code, out, _ = self.tick_lgtm([pr(1)], {}, reviews={1: [r]})
+                self.assertEqual((code, self.gh_mutations(), self.records()), (0, [], []))
+                self.assertNotIn("blocked", out)
+                self.assertFalse(any("factory[bot]" in part for c in self.fake.calls for part in c))
+
+    def test_an_approval_on_an_older_commit_is_stale(self):
+        _, out, _ = self.tick_lgtm([pr(1)], {}, reviews={1: [review(sha="old")]})
+        self.assertIn("#1 blocked: its head changed after the approval; a fresh approval is needed", out)
+        self.assertEqual((self.gh_mutations(), self.subjects()), ([], ["#1/stale"]))
+
+    def test_a_later_verdict_withdraws_an_approval_and_a_comment_does_not(self):
+        cases = {"changes requested": ([review(at=NOW - 120), review("CHANGES_REQUESTED")], False),
+                 "dismissed": ([review(at=NOW - 120), review("DISMISSED")], False),
+                 "listed out of order": ([review("CHANGES_REQUESTED"), review(at=NOW - 120)], False),
+                 "commented": ([review(at=NOW - 120), review("COMMENTED")], True)}
+        for label, (reviews, merged) in cases.items():
+            with self.subTest(label):
+                self.setUp()
+                _, out, _ = self.tick_lgtm([pr(1)], {}, reviews={1: reviews})
+                self.assertEqual(self.merges(), ["1"] if merged else [])
+                self.assertNotIn("blocked", out)
+
+    def test_an_approval_on_the_head_is_preferred_to_a_newer_one_on_an_older_commit(self):
+        _, out, _ = self.tick_lgtm([pr(1)], {}, reviews={1: [review(at=NOW - 120), review(login="andrea", sha="old")]},
+                                   extra={("gh", "api", "repos/{owner}/{repo}/collaborators/andrea/permission"):
+                                          raw({"permission": "write"})})
+        self.assertIn(f"#1 merged on approval https://x/pull/1#r{NOW - 120}\n", out)
+
+    def test_a_review_on_the_head_wins_and_an_lgtm_rescues_an_older_one(self):
+        _, out, _ = self.tick_lgtm([pr(1)], {1: [comment()]}, reviews={1: [review()]})
+        self.assertIn("#1 merged on approval", out)
+        self.setUp()
+        _, out, _ = self.tick_lgtm([pr(1)], {1: [comment()]}, reviews={1: [review(sha="old")]})
+        self.assertIn("#1 merged on lgtm", out)
+
+    def test_an_lgtm_from_a_bot_author_does_nothing(self):
+        bot = {"login": "app/factory", "is_bot": True}
+        _, out, _ = self.tick_lgtm([pr(1, author=bot)], {1: [comment(login="factory[bot]", type="Bot")]})
+        self.assertEqual((self.gh_mutations(), self.records()), ([], []))
+        self.assertNotIn("blocked", out)
+
+    def test_lgtm_from_author_false_leaves_the_author_out_only(self):
+        (self.store / "settings.json").write_text('{"lgtm_from_author": false}')
+        self.tick_lgtm([pr(1)], {1: [comment()]})
+        self.assertEqual(self.gh_mutations(), [])
+        _, out, _ = self.tick_lgtm([pr(1)], {1: [comment(login="dev")]})
+        self.assertIn("#1 merged on lgtm", out)
+
+    def test_health_shows_a_stale_approval_without_changing_anything(self):
+        answers, sessions, slugs = self.lgtm_world([pr(1)], {}, reviews={1: [review(sha="old")]})
+        before = {p.name: p.read_bytes() for p in self.store.iterdir()}
+        _, out, _ = self.cli("health", answers=answers, sessions=sessions, entries=slugs)
+        self.assertIn("lgtm-blocked  always  #1/stale  its head changed after the approval; a fresh approval is "
+                      "needed https://x/pull/1", out)
+        self.assertEqual((self.gh_mutations(), {p.name: p.read_bytes() for p in self.store.iterdir()}), ([], before))
+
+    def test_a_failing_reviews_call_is_not_evaluated(self):
+        _, out, _ = self.tick_lgtm([pr(1)], {1: [comment()]},
+                                   extra={("gh", "api", "--paginate", "--slurp", REVIEWS % 1): (1, "", "boom")})
+        self.assertIn("not evaluated: lgtm-blocked: gh api --paginate failed: boom", out)
+        self.assertEqual((self.gh_mutations(), self.records()), ([], []))
 
 
 class BaseMergedTests(unittest.TestCase):

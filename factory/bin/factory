@@ -73,7 +73,7 @@ def validate_slug(slug):
 
 def load_settings():
     settings = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                "task_time_limit_hours": 2, "monitor": None}
+                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True}
     path = SETTINGS_PATH.expanduser()
     try:
         data = json.loads(path.read_text())
@@ -98,8 +98,12 @@ def load_settings():
     monitor = data.get("monitor")
     if "monitor" in data and (not isinstance(monitor, str) or not monitor.strip()):
         raise Fail("settings: monitor must be a non-empty string")
+    from_author = data.get("lgtm_from_author", settings["lgtm_from_author"])
+    if not isinstance(from_author, bool):
+        raise Fail("settings: lgtm_from_author must be true or false")
     return {"worktree_cap": cap, "lead_model": model, "lead_permission_mode": mode,
-            "task_time_limit_hours": hours, "monitor": monitor and os.path.expanduser(monitor)}
+            "task_time_limit_hours": hours, "monitor": monitor and os.path.expanduser(monitor),
+            "lgtm_from_author": from_author}
 
 
 def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now):
@@ -1074,7 +1078,7 @@ def gather(repo, dispatcher):
     sessions = list_sessions()
     settings = load_settings()
     return {"now": time.time(), "repo": repo, "dispatcher": dispatcher, "sessions": sessions,
-            "monitor": settings["monitor"],
+            "monitor": settings["monitor"], "lgtm_from_author": settings["lgtm_from_author"],
             "rows": None if sessions is None else collect(repo, sessions, settings["task_time_limit_hours"]),
             "declared": read_tasks(repo.root), "events": repo_log("events", repo.root), "models": pinned_models(),
             "gh": lambda *args: gh_json(repo, *args)}
@@ -2125,9 +2129,10 @@ def cmd_schedule(args):
 
 MERGEABLE_TRIES = 5
 MERGEABLE_WAIT = 3
-PR_FIELDS = "number,url,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository"
+PR_FIELDS = "number,url,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,author"
 ACTIVITY = "repos/{owner}/{repo}/activity"
 FORK = ("fork", "its head is in another repository")
+STALE_REVIEW = ("stale", "its head changed after the approval; a fresh approval is needed")
 
 
 def open_prs(p):
@@ -2285,22 +2290,49 @@ def cmd_merge(args):
     return 1 if failed else 0
 
 
-def newest_approval(p, pr, permission):
-    """The newest comment on `pr` that says exactly `lgtm` and comes from a login with write access, or None."""
+def paged(p, path):
+    """Every object of a paginated `gh api` list."""
     # A tuple as the kind: gh_json checks a bare `list` for objects, and these are pages.
-    pages = p["gh"]((list,), "api", "--paginate", "--slurp", f"repos/{{owner}}/{{repo}}/issues/{pr['number']}/comments")
-    if not all(isinstance(g, list) and all(isinstance(c, dict) for c in g) for g in pages):
+    pages = p["gh"]((list,), "api", "--paginate", "--slurp", path)
+    if not all(isinstance(g, list) and all(isinstance(x, dict) for x in g) for g in pages):
         raise NotEvaluated("gh api answered with an unexpected shape")
-    approvals = []
-    for c in (c for g in pages for c in g):
-        login = (c.get("user") or {}).get("login")
-        if login and isinstance(c.get("body"), str) and c["body"].strip().lower() == "lgtm":
-            if login not in permission:
-                permission[login] = p["gh"](dict, "api", f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission").get("permission")
-                if not isinstance(permission[login], str):
-                    raise NotEvaluated(f"gh api could not read the permission of {login}")
-            if permission[login] in ("admin", "write"):
-                approvals.append(c)
+    return [x for g in pages for x in g]
+
+
+def approver(p, pr, x, permission, author=False):
+    """The login behind comment or review `x` when it may approve `pr`: a user, not a bot, with write
+    access, and (unless `author`) not the pull request's author; else None."""
+    user = x.get("user") or {}
+    login = user.get("login")
+    if user.get("type") != "User" or not login or (login == pr["author"]["login"] and not author):
+        return None
+    if login not in permission:
+        permission[login] = p["gh"](dict, "api", f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission").get("permission")
+        if not isinstance(permission[login], str):
+            raise NotEvaluated(f"gh api could not read the permission of {login}")
+    return login if permission[login] in ("admin", "write") else None
+
+
+def approving_review(p, pr, permission):
+    """The review that approves `pr`, or None: a login's newest verdict (a review that only comments is
+    none) is APPROVED. One on the pull request's head is preferred, then the newest."""
+    verdict = {}
+    for r in sorted(paged(p, f"repos/{{owner}}/{{repo}}/pulls/{pr['number']}/reviews"),
+                    key=lambda r: r.get("submitted_at") or ""):
+        login = (r.get("user") or {}).get("login")
+        if login and r.get("state") not in ("COMMENTED", "PENDING"):
+            verdict[login] = r
+    approvals = [r for r in verdict.values() if r.get("state") == "APPROVED" and approver(p, pr, r, permission)]
+    return max(approvals, key=lambda r: (r.get("commit_id") == pr["headRefOid"], r.get("submitted_at") or ""),
+               default=None)
+
+
+def newest_approval(p, pr, permission):
+    """The newest comment on `pr` that says exactly `lgtm` and comes from a login that may approve it, or None.
+    The pull request's author is one only while the setting `lgtm_from_author` is on."""
+    approvals = [c for c in paged(p, f"repos/{{owner}}/{{repo}}/issues/{pr['number']}/comments")
+                 if isinstance(c.get("body"), str) and c["body"].strip().lower() == "lgtm"
+                 and approver(p, pr, c, permission, author=p["lgtm_from_author"])]
     return max(approvals, key=lambda c: c.get("created_at") or "", default=None)
 
 
@@ -2317,21 +2349,25 @@ def stale_approval(p, pr, approval):
 
 
 def lgtm_step(p, dry):
-    """Merge (with `dry`, only check) each open pull request the human approved with `lgtm`. Leaves
-    p["lgtm"], a list of (pull request, "merged" or a blocker kind, the comment url or the reason), and
-    p["lgtm_unread"], why the rest could not be looked at."""
+    """Merge (with `dry`, only check) each open pull request the human approved, with a review or with
+    `lgtm`. Leaves p["lgtm"], a list of (pull request, "merged" or a blocker kind, the source (`approval` or
+    `lgtm`) and its url or the reason), and p["lgtm_unread"], why the rest could not be looked at."""
     results, permission, merged = [], {}, set()
     p["lgtm"], p["lgtm_unread"] = results, None
     try:
         phased(p)
         for pr in bottom_up(open_prs(p)):
-            approval = newest_approval(p, pr, permission)
-            if approval:
-                stop = (FORK if pr["isCrossRepository"] else stale_approval(p, pr, approval)) or \
-                    merge_one(p, pr, merged, dry)
+            review = approving_review(p, pr, permission)
+            on_head = bool(review) and review.get("commit_id") == pr["headRefOid"]
+            # A review on the head needs no lgtm; an lgtm can still approve what a review on an older commit cannot.
+            lgtm = None if on_head else newest_approval(p, pr, permission)
+            if review or lgtm:
+                source, approval = ("lgtm", lgtm) if lgtm else ("approval", review)
+                stop = (FORK if pr["isCrossRepository"] else None if on_head else
+                        stale_approval(p, pr, lgtm) if lgtm else STALE_REVIEW) or merge_one(p, pr, merged, dry)
                 if not stop:
                     merged.add(pr["headRefName"])
-                results.append((pr, *(stop or ("merged", approval.get("html_url") or pr["url"]))))
+                results.append((pr, *(stop or ("merged", f"{source} {approval.get('html_url') or pr['url']}"))))
     except NotEvaluated as e:
         p["lgtm_unread"] = str(e)
 
@@ -2340,7 +2376,7 @@ def watch_lgtm(p):
     """The tick's lgtm step; after a merge, clean and a fresh picture that keeps its results."""
     lgtm_step(p, dry=False)
     for pr, kind, text in p["lgtm"]:
-        print(f"#{pr['number']} merged on lgtm {text}" if kind == "merged" else f"#{pr['number']} blocked: {text}")
+        print(f"#{pr['number']} merged on {text}" if kind == "merged" else f"#{pr['number']} blocked: {text}")
     if not any(kind == "merged" for _, kind, _ in p["lgtm"]):
         return p
     run_clean()
