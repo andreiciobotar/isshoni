@@ -14,6 +14,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+os.environ.pop("FACTORY_ROLE", None)  # a tech lead session runs `make test`: the tests must not see its role
 BIN = Path(__file__).resolve().parent.parent / "bin" / "factory"
 _loader = importlib.machinery.SourceFileLoader("factory_bin", str(BIN))
 factory = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_bin", _loader))

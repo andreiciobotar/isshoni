@@ -1,4 +1,4 @@
-.PHONY: install up build test fmt-check test-factory wizard wizard-remote uninstall uninstall-remote snapshot screenshot strip pictures clean FORCE
+.PHONY: install up build test fmt-check fmt goldentest-factory wizard wizard-remote uninstall uninstall-remote snapshot screenshot strip pictures clean FORCE
 
 BIN := bin/isshoni-tui
 VIEW ?= dashboard
@@ -44,6 +44,14 @@ test: fmt-check test-factory
 
 fmt-check:
 	@files=$$(gofmt -l $$(git ls-files -co --exclude-standard '*.go')); [ -z "$$files" ] || { echo "isshoni: gofmt would change these files:" >&2; echo "$$files" >&2; echo "Fix with: gofmt -w $$files" >&2; exit 1; }
+
+# Write gofmt's changes to the Go files that fmt-check flags.
+fmt:
+	@files=$$(gofmt -l $$(git ls-files -co --exclude-standard '*.go')); [ -z "$$files" ] || gofmt -w $$files
+
+# Regenerate the golden files of the dashboard views; review the diff.
+golden:
+	go test ./internal/tui -update
 
 test-factory:
 	python3 -m unittest discover -s factory/tests

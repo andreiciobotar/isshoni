@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -31,11 +32,12 @@ class Machine(FakeRun):
     def __init__(self, root, claude=None, after=None, comment=(0, "", ""), lead=True):
         super().__init__({})
         self.root, self.claude, self.after, self.comment = root, claude or said(), after or {}, comment
-        self.state = {"head": OLD, "remote": OLD, "dirty": False, "branch": f"worktree-{SLUG}", "ancestor": True, "merged": True}
-        self.cwds, self.comments, self.lines, self.prompts, self.lead = [], [], [], [], lead
+        self.state = {"head": OLD, "remote": OLD, "dirty": False, "branch": f"worktree-{SLUG}", "ancestor": True, "merged": True, "on_default": False}
+        self.cwds, self.groups, self.comments, self.lines, self.prompts, self.lead = [], [], [], [], [], lead
 
-    def __call__(self, argv, cwd=None, input=None, timeout=None, env=None):
+    def __call__(self, argv, cwd=None, input=None, timeout=None, env=None, group=False):
         self.cwds.append(cwd)
+        self.groups.append(group)
         return super().__call__(argv, cwd=cwd, input=input, timeout=timeout, env=env)
 
     def tech_lead_calls(self):
@@ -73,6 +75,8 @@ class Machine(FakeRun):
             return 0, s["remote"] + "\n", ""
         if a[:3] == ["git", "status", "--porcelain"]:
             return 0, " M a.txt\n" if s["dirty"] else "", ""
+        if a[:3] == ["git", "merge-base", "--is-ancestor"] and a[3] == "HEAD":
+            return (0 if s["on_default"] else 1), "", ""
         if a[:3] == ["git", "merge-base", "--is-ancestor"]:
             return (0 if s["merged" if a[3] == "origin/main" else "ancestor"] else 1), "", ""
         if a[:2] == ["git", "fetch"]:
@@ -103,7 +107,10 @@ class Case(unittest.TestCase):
         return machine
 
     def go(self, evidence=CONFLICT, **machine):
-        m = self.use(Machine(self.root, **machine))
+        return self.go_with(Machine, evidence, **machine)
+
+    def go_with(self, machine_class, evidence=CONFLICT, **machine):
+        m = self.use(machine_class(self.root, **machine))
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
             code = factory.main(["tech-lead", SLUG, str(N), evidence, "--dispatcher", "dispatcher-repo"])
@@ -198,7 +205,8 @@ class RunTests(Case):
             "--allowedTools", "Read", "Edit", "Write", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "Bash(git *)",
             "Bash(make *)", "Bash(gh pr view *)", "Bash(gh pr diff *)", "Bash(gh pr checks *)", "Bash(gh run view *)",
             "--disallowedTools", "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git push *--force*)",
-            "Bash(git push * +*)", "Bash(git rebase*)", "Bash(git commit --amend*)", "Bash(git worktree*)",
+            "Bash(git push * +*)", "Bash(git push *:*)", "Bash(git push * -f*)", "Bash(git push *--delete*)",
+            "Bash(git push *--mirror*)", "Bash(git push *--all*)", "Bash(git rebase*)", "Bash(git commit --amend*)", "Bash(git worktree*)",
             "--max-budget-usd", "5.00", "--output-format", "json", "--json-schema", json.dumps(factory.TECH_LEAD_SCHEMA),
             "--append-system-prompt", role])
         self.assertEqual(argv[-1], (
@@ -206,7 +214,8 @@ class RunTests(Case):
             f"The spec is {self.spec}. The default branch is main, on remote origin. The pull request came back at {OLD}."
             "\n\nEarlier tech lead runs on this pull request:\nnone"))
         i = m.calls.index(argv)
-        self.assertEqual((m.cwds[i], m.timeouts[i], m.envs[i]["FACTORY_ROLE"]), (f"{self.root}/.claude/worktrees/{SLUG}", 1800, "tech-lead"))
+        self.assertEqual((m.cwds[i], m.timeouts[i], m.envs[i]["FACTORY_ROLE"], m.groups[i]),
+                         (f"{self.root}/.claude/worktrees/{SLUG}", 1800, "tech-lead", True))
 
     def test_the_model_comes_from_the_settings(self):
         (self.store / "settings.json").write_text('{"tech_lead_model": "sonnet"}')
@@ -258,6 +267,7 @@ class RunTests(Case):
             "not an ancestor of HEAD": {"head": NEW, "remote": NEW, "ancestor": False},
             "origin/main is not merged in": {"head": NEW, "remote": NEW, "merged": False},
             "HEAD is not origin/worktree-task1": {"head": NEW},
+            "the run pushed the task onto the default branch": {"head": NEW, "remote": NEW, "on_default": True},
             "the spec changed": self.edit_spec,
         }
         for reason, after in cases.items():
@@ -275,6 +285,30 @@ class RunTests(Case):
                 self.assertIn(reason, line)
                 self.assertNotIn("handed-over", [s for s, *_ in self.declared()][-1:])
                 self.assertTrue(out.startswith(f"#{N} tech lead stopped: "))
+
+    def test_a_failed_check_tells_the_lead_the_reason_and_the_note(self):
+        *_, m = self.go(after={"head": NEW, "remote": NEW, "dirty": True})
+        self.assertIn(f"is yours: the worktree is not clean. {ANSWER['note'].rstrip('.')}. The task is working", m.lines[0])
+
+    def test_a_failing_pull_request_read_is_a_stopped_record_and_a_line_to_the_lead(self):
+        class Unreadable(Machine):
+            def resolve(self, a):
+                return (1, "", "boom") if a[:3] == ["gh", "pr", "view"] else super().resolve(a)
+        code, out, _, m = self.go_with(Unreadable)
+        self.assertEqual((code, m.tech_lead_calls(), self.declared()), (1, [], []))
+        [r] = self.records("techlead")
+        self.assertEqual((r["outcome"], r["pr"], r["cost_usd"], r["note"]), ("stopped", N, None, None))
+        self.assertTrue(r["reason"].startswith("the run failed: "))
+        self.assertIn("boom", r["reason"])
+        [line] = m.lines
+        self.assertTrue(line.startswith(f"TECH LEAD: {SLUG}: #{N} came back from the merge queue ({CONFLICT}) and is yours: the run failed: "))
+        self.assertTrue(out.startswith(f"#{N} tech lead stopped: the run failed: "))
+
+    def test_a_failure_after_the_task_was_declared_working_still_tells_the_lead(self):
+        with mock.patch.object(factory, "to_draft", side_effect=KeyError("headRefName")):
+            code, _, _, m = self.go()
+        self.assertEqual((code, self.declared(), len(m.lines)), (1, [("working", "tech-lead", None)], 1))
+        self.assertIn("KeyError", self.records("techlead")[0]["reason"])
 
     def test_escalate_tells_the_lead_and_the_task_stays_working(self):
         note = "main routes every call through Identity; whose identity the new command uses is not in the spec."
@@ -327,6 +361,19 @@ class RunTests(Case):
         self.assertEqual(code, 2)
         self.assertIn("is missing", err)
         self.assertEqual((m.tech_lead_calls(), self.declared()), ([], []))
+
+
+class RunGroupTests(unittest.TestCase):
+    def test_a_timeout_kills_what_the_child_started(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp, "pid")
+            rc, *_ = factory.run(["sh", "-c", f"sleep 30 & echo $! > {pidfile}; wait"], timeout=1, group=True)
+            self.assertEqual(rc, 124)
+            pid = int(pidfile.read_text())
+        with self.assertRaises(ProcessLookupError):
+            for _ in range(50):
+                os.kill(pid, 0)
+                time.sleep(0.1)
 
 
 class TagsTests(unittest.TestCase):

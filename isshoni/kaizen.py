@@ -283,10 +283,10 @@ def _first_ts(records):
     return min(stamped, key=lambda x: x[0]) if stamped else None
 
 
-def _role_facts(sessions, prices):
+def _role_facts(sessions, prices, tech_sessions):
     """What each role that ran in the task did, from the anatomy's blocks over kaizen's own role buckets."""
     from . import anatomy  # anatomy reads this module's logs: import it where it is used
-    runs = [("lead", s.run) for s in sessions if s.run] + [
+    runs = [("tech-lead" if s.id in tech_sessions else "lead", s.run) for s in sessions if s.run] + [
         (_dispatch_role(d), d.run) for s in sessions for d in s.dispatches if d.run]
     out = {}
     for role, r in anatomy.by_role(runs, prices).items():
@@ -327,7 +327,7 @@ def _task(key, recs, sessions, prices, tech_sessions):
     t = {"repo": _name(repo), "repo_path": repo, "slug": slug, "version": version, "started": started,
          "state": states[-1] if states else None, "pr": None, "landed": False,
          "brief_to_pr_s": None, "pr_to_merge_s": None, "cost": None, "review_rounds": None, "first_pass": None,
-         "_roles": _role_facts(sessions, prices)}
+         "_roles": _role_facts(sessions, prices, tech_sessions)}
     t["authoring"] = _authoring(t["_roles"])
     if sessions:
         t["cost"], t["review_rounds"] = _cost(sessions, tech_sessions)

@@ -951,14 +951,14 @@ func (m *model) siteManagerLines(p paint, w int) block {
 		ratio("precision", s.Precision, fmt.Sprintf("%d acted on of %d with an outcome", s.Acted, s.Acted+s.Ignored), "no outcome recorded yet"),
 		ratio("recall", s.Recall, fmt.Sprintf("%d acted on of %d that needed the human", s.Acted, s.Acted+s.Missed), "nothing acted on or missed yet"),
 	})...)
-	count := func(n int, label string, col color.Color) string { return m.kzCount(p, n, label, col) }
-	missed := count(s.Missed, "missed", th.Red)
+	missed := m.kzCount(p, s.Missed, "missed", th.Red)
 	if s.Missed > 0 {
 		missed += p.t(fmt.Sprintf(" (%d suppressed first, %d never fired)", s.MissedSuppressed, s.MissedNeverFired), th.Muted)
 	}
 	return append(lines, legend(p, w, []string{
-		count(s.Escalated, "escalated", th.Text), count(s.Acted, "acted on", th.Green), count(s.Ignored, "ignored", th.Orange),
-		count(s.NoOutcome, "no outcome yet", th.Text), count(s.Suppressed, "suppressed", th.Text), missed,
+		m.kzCount(p, s.Escalated, "escalated", th.Text), m.kzCount(p, s.Acted, "acted on", th.Green),
+		m.kzCount(p, s.Ignored, "ignored", th.Orange), m.kzCount(p, s.NoOutcome, "no outcome yet", th.Text),
+		m.kzCount(p, s.Suppressed, "suppressed", th.Text), missed,
 	})...)
 }
 
