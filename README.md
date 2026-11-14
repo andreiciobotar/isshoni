@@ -120,7 +120,7 @@ Every view, the Agents one too, and its keys: [docs/isshoni.md](docs/isshoni.md#
 ## More
 
 - [docs/factory.md](docs/factory.md): commands, states, settings, logs, the site manager
-- [docs/isshoni.md](docs/isshoni.md): the monitor's options and the dashboard's keys
+- [docs/isshoni.md](docs/isshoni.md): the monitor's options and the dashboard's keys, and `isshoni-tui --serve`, which also opens the dispatcher's conversation over SSH for a `write` key
 - `make test` runs everything
 
 ## Status

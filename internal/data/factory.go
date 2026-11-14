@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -201,6 +203,35 @@ func ReadWorktreeCap(path string) (int, error) {
 		return 0, fmt.Errorf("%s: %w", ShortPath(path), ErrWorktreeCap)
 	}
 	return n, nil
+}
+
+// dispatcherName is what may be passed to `claude attach`: a leading - would be an option.
+var dispatcherName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// ReadDispatchers is the "dispatchers" list of the settings file, in the order written,
+// without the names that are not safe as an argument. A missing key, an empty list, a
+// value that is not a list of strings and an unreadable file are errors naming the file.
+func ReadDispatchers(path string) ([]string, error) {
+	obj, err := readSettings(path)
+	if err != nil {
+		return nil, err
+	}
+	no := func(why string) error {
+		return fmt.Errorf(`no dispatcher: "dispatchers" %s (%s)`, why, ShortPath(path))
+	}
+	raw, ok := obj["dispatchers"]
+	if !ok {
+		return nil, no("is not set")
+	}
+	var all []string
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return nil, no("is not a list of strings")
+	}
+	names := slices.DeleteFunc(all, func(n string) bool { return !dispatcherName.MatchString(n) })
+	if len(names) == 0 {
+		return nil, no("is empty")
+	}
+	return names, nil
 }
 
 // WriteWorktreeCap sets worktree_cap and leaves every other key's value as it was. The
