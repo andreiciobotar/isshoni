@@ -37,12 +37,12 @@ Only you can do these. In order:
 ## Talking to the dispatcher
 - **Recommended: SSH to the host, then `docker exec -it isshoni-factory tmux attach`.** It needs nothing beyond the SSH access you already have, and works from any SSH client, a phone's included. A lead is `claude attach <slug>` from that shell.
 - **Claude Code's Remote Control** (`/remote-control` in the dispatcher session, then claude.ai or the mobile app): outbound HTTPS only, no port to open. It needs the subscription login of step 2. A good second door for a phone; documented by Anthropic, not tried here.
-- **The dashboard over SSH**, read-only by default: see the next section. It is the dashboard only, not a shell.
+- **The dashboard over SSH**, read-only by default: see the next section. A key with `write` can press `d` there to open the dispatcher's conversation on the same connection: give `write` only to people you would give a shell ([isshoni.md](isshoni.md#over-ssh)).
 
 ## The dashboard over SSH
 The container can serve `isshoni-tui` to any SSH client, for a phone or a laptop that has no `docker exec` ([isshoni.md](isshoni.md#over-ssh) has what it does). It needs the dashboard built (step 6) and a key:
 
-1. Put a public key in `<FACTORY_STATE>/home/.claude/factory/dashboard/authorized_keys`, one per line (`mkdir -p` the directory first). A line that starts with `write ` (`write ssh-ed25519 AAAA... laptop`) may also change the worktree cap; every other key is read-only.
+1. Put a public key in `<FACTORY_STATE>/home/.claude/factory/dashboard/authorized_keys`, one per line (`mkdir -p` the directory first). A line that starts with `write ` (`write ssh-ed25519 AAAA... laptop`) may also change the worktree cap and open the dispatcher's conversation with `d` (a session that runs commands as the container's user and acts on GitHub as the factory's bot: give `write` only to people you would give a shell); every other key is read-only. `d` needs the dispatcher's name in the `"dispatchers"` list of `~/.claude/factory/settings.json`.
 2. Restart the container: `docker compose restart`. (A container built before the dashboard existed has neither the start script nor the published port: run `docker compose up -d --build` once instead.) The start script runs `isshoni-tui --serve 0.0.0.0:2222` when the file is not empty and `~/code/isshoni/bin/isshoni-tui` exists.
 3. Connect: `ssh -p 2222 HOST`, with `HOST` the machine the container runs on. The first time, `ssh` shows the server's fingerprint; compare it with the `serving ssh on ..., host key SHA256:...` line in `docker logs isshoni-factory`. The host key is created on that first start and kept in `<FACTORY_STATE>/home/.claude/factory/dashboard/host_key`.
 
@@ -55,7 +55,7 @@ The container can serve `isshoni-tui` to any SSH client, for a phone or a laptop
 - **The port is published whether or not the dashboard is on**; with no key file nothing listens behind it. If host port 2222 is taken, set `DASHBOARD_PORT`: the container's own port stays 2222.
 - **Off**: empty or remove the key file and restart the container.
 - The server is not supervised: if it crashes it stays down until the container restarts. On `docker compose stop` it is killed with the container, not signalled, and holds no state to lose.
-- It runs where the factory runs, as the container's user, so the Factory view's `factory status` sees the same tmux and processes; a `write` key changes `~/.claude/factory/settings.json` of that user.
+- It runs where the factory runs, as the container's user, so the Factory view's `factory status` sees the same tmux and processes; a `write` key changes `~/.claude/factory/settings.json` of that user and reaches the dispatcher's conversation as that user.
 
 ## State
 Everything that must survive is under `FACTORY_STATE`, mounted at `/state`. The rest of the container is read-only, apart from 64 MB of `/tmp` in memory.

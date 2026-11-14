@@ -2,20 +2,25 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -24,6 +29,7 @@ import (
 	"charm.land/wish/v2/activeterm"
 	"charm.land/wish/v2/bubbletea"
 	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/sys/unix"
 
 	"isshoni/internal/data"
 	"isshoni/internal/tui"
@@ -33,7 +39,8 @@ import (
 // connection.
 const shutdownGrace = 5 * time.Second
 
-// writeOption is the authorized_keys option that lets a key change the worktree cap.
+// writeOption is the authorized_keys option that lets a key change the worktree cap and open
+// the dispatcher's conversation (a session that runs commands as this account).
 const writeOption = "write"
 
 // serveOptions configures serve. The Runner is shared by every session.
@@ -43,7 +50,8 @@ type serveOptions struct {
 	HostKey        string
 	Range          string
 	Follow         bool
-	NoColor        bool // the --no-color flag only: the server's own environment says nothing about a client's terminal
+	NoColor        bool   // the --no-color flag only: the server's own environment says nothing about a client's terminal
+	Claude         string // the claude binary key d attaches with; "claude" on PATH when empty
 	Log            *log.Logger
 }
 
@@ -72,7 +80,8 @@ func serve(ctx context.Context, ln net.Listener, o serveOptions) error {
 	defer cancelShare()
 	o.Runner.Share = shareCtx
 	s := &server{o: o}
-	srv, err := wish.NewServer(ssh.HostKeyPEM(hostPEM), wish.WithPublicKeyAuth(s.auth))
+	// a real pty: the attach client needs a terminal of its own, not the emulated one wish defaults to
+	srv, err := wish.NewServer(ssh.HostKeyPEM(hostPEM), ssh.AllocatePty(), wish.WithPublicKeyAuth(s.auth))
 	if err != nil {
 		return err
 	}
@@ -216,10 +225,127 @@ func (s *server) session(sess ssh.Session) {
 	ctx, cancel := context.WithCancel(sess.Context())
 	defer cancel()
 	program := bubbletea.MiddlewareWithProgramHandler(func(sess ssh.Session) *tea.Program {
-		m := tui.New(tui.Options{Runner: s.o.Runner, Ctx: ctx, Range: s.o.Range, Follow: s.o.Follow, NoColor: s.o.NoColor, ReadOnly: !write})
-		return tea.NewProgram(m, programOptions(sess)...)
+		o := tui.Options{Runner: s.o.Runner, Ctx: ctx, Range: s.o.Range, Follow: s.o.Follow, NoColor: s.o.NoColor, ReadOnly: !write}
+		pty, _, _ := sess.Pty() // read once, here: the ssh library rewrites its window on every resize
+		// The program gets its own descriptor for the slave: the library closes its own when the
+		// connection ends, from another goroutine, while the program still reads and polls it.
+		// Nothing closes this one but the garbage collector: Bubble Tea has a goroutine that may
+		// still use it when the program returns.
+		tty, err := dupFile(pty.Slave)
+		if err != nil {
+			s.o.Log.Printf("no terminal for %s: %v", who, err)
+			return nil
+		}
+		if write {
+			o.Attach = func(name string) tea.ExecCommand {
+				return attachCommand{func() error { return s.attach(sess, pty.Term, tty, name) }}
+			}
+		}
+		p := tea.NewProgram(tui.New(o), append(programOptions(sess), tea.WithInput(tty), tea.WithOutput(tty))...)
+		go watchWindow(ctx, pty.Window, tty, p)
+		return p
 	})
-	activeterm.Middleware()(program(func(ssh.Session) {}))(sess)
+	activeterm.Middleware()(program(func(ssh.Session) {}))(noWindowChanges{sess})
+}
+
+// noWindowChanges keeps wish from reading the session's window changes. With a real pty the
+// ssh library reads them too, to resize the pty, and a channel with two readers hands each
+// change to only one: the pty would miss every other resize. watchWindow tells the dashboard
+// from the pty's own size instead.
+type noWindowChanges struct{ ssh.Session }
+
+func (s noWindowChanges) Pty() (ssh.Pty, <-chan ssh.Window, bool) {
+	pty, _, ok := s.Session.Pty()
+	return pty, nil, ok
+}
+
+// watchWindow sends the program the pty's size whenever it changes, until ctx ends.
+func watchWindow(ctx context.Context, last ssh.Window, tty *os.File, p *tea.Program) {
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		var ws *unix.Winsize
+		rc, err := tty.SyscallConn()
+		if err != nil {
+			return
+		}
+		rc.Control(func(fd uintptr) { ws, _ = unix.IoctlGetWinsize(int(fd), unix.TIOCGWINSZ) })
+		if ws == nil || int(ws.Col) == last.Width && int(ws.Row) == last.Height {
+			continue
+		}
+		last = ssh.Window{Width: int(ws.Col), Height: int(ws.Row)}
+		p.Send(tea.WindowSizeMsg{Width: last.Width, Height: last.Height})
+	}
+}
+
+// attachCommand is a tea.ExecCommand that runs on the session's own pty, so it ignores the
+// streams tea.Exec hands it.
+type attachCommand struct{ run func() error }
+
+func (c attachCommand) Run() error        { return c.run() }
+func (attachCommand) SetStdin(io.Reader)  {}
+func (attachCommand) SetStdout(io.Writer) {}
+func (attachCommand) SetStderr(io.Writer) {}
+
+// attach runs `claude attach name` with the session's pty as its controlling terminal until it
+// exits, so the kernel signals it on every resize. It ends the attach client only: the
+// dispatcher's session belongs to its own supervisor. The client gets a SIGHUP when the
+// connection ends, and a kill 2 seconds later if it stays.
+func (s *server) attach(sess ssh.Session, term string, tty *os.File, name string) error {
+	cmd := exec.CommandContext(sess.Context(), cmp.Or(s.o.Claude, "claude"), "attach", name)
+	cmd.Env = append(os.Environ(), "TERM="+term)
+	for _, kv := range sess.Environ() {
+		if strings.HasPrefix(kv, "COLORTERM=") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGHUP) }
+	cmd.WaitDelay = 2 * time.Second
+	who := fmt.Sprintf("%s %s %s", sess.RemoteAddr(), gossh.FingerprintSHA256(sess.PublicKey()), name)
+	s.o.Log.Printf("attach start %s", who)
+	defer s.o.Log.Printf("attach end %s", who)
+	client, err := dupFile(tty) // exec reads the descriptor of what it is given: not the program's own
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	// the duplicate shares the slave's open file description, which Go leaves non-blocking
+	if err := unix.SetNonblock(int(client.Fd()), false); err != nil {
+		return err
+	}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = client, client, client
+	// Its own session with the pty as controlling terminal, so the kernel signals it on a resize.
+	// macOS revokes the pty when that session's leader exits, which would end the dashboard's
+	// own terminal with it: there the client runs without one and sees no resize.
+	if runtime.GOOS != "darwin" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Wait()
+}
+
+// dupFile is a second descriptor for f, which the caller closes.
+func dupFile(f *os.File) (*os.File, error) {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+	var dup *os.File
+	var dupErr error
+	if err := rc.Control(func(fd uintptr) {
+		n, err := unix.FcntlInt(fd, unix.F_DUPFD_CLOEXEC, 0)
+		dup, dupErr = os.NewFile(uintptr(n), f.Name()), err
+	}); err != nil {
+		return nil, err
+	}
+	return dup, dupErr
 }
 
 // programOptions is what wish makes of the session, with two repairs. A client that has no

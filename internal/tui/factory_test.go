@@ -10,8 +10,27 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"isshoni/internal/data"
 )
+
+// A window too small to lay the Factory view out must not panic on a key or a render.
+func TestFactoryViewSurvivesAWindowWithNoRoom(t *testing.T) {
+	for _, sz := range [][2]int{{0, 10}, {1, 1}, {0, 0}} {
+		for _, repos := range [][]factoryRepo{nil, {alpha()}, fakeFactoryRepos()} {
+			for _, asked := range []bool{true, false} {
+				m := factoryModel(true, 100, 30, repos...)
+				if !asked {
+					m.fac.doneAt = time.Time{}
+				}
+				m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
+				send(m, "j", "G", "down", "k")
+				m.Render()
+			}
+		}
+	}
+}
 
 // ---- fixtures ---------------------------------------------------------------------
 

@@ -1,0 +1,26 @@
+#!/bin/bash
+# A stand-in for `claude attach NAME` that tests run on the session's pty. $STUBDIR holds what it records.
+# It prints its banner, `STUB WINCH <rows> <cols>` on every resize and `STUB GOT <line>` for each
+# input line, and exits 0 on the line `detach`, 3 on `fail`. On SIGHUP it writes $STUBDIR/hup and exits.
+[ "$1" = attach ] && [ -n "$2" ] || { echo "stub: want attach NAME" >&2; exit 2; }
+echo "$2" >> "$STUBDIR/attached"
+echo "$$" >> "$STUBDIR/attach-pids"
+tty=no
+[ -t 0 ] && tty=yes
+echo "STUB ATTACHED $2 tty=$tty size=$(stty size) term=$TERM colorterm=$COLORTERM"
+trap 'echo "STUB WINCH $(stty size)"' WINCH
+trap 'touch "$STUBDIR/hup"; exit 0' HUP
+while true; do
+	read -r -t 1 line # bash runs a trap when a builtin returns, so read gives up every second
+	status=$?
+	if [ "$status" -gt 128 ]; then
+		continue # a timeout or a signal, its trap has run
+	elif [ "$status" -ne 0 ]; then
+		exit 0 # the terminal is gone
+	fi
+	case "$line" in
+	detach) exit 0 ;;
+	fail) exit 3 ;;
+	*) echo "STUB GOT $line" ;;
+	esac
+done

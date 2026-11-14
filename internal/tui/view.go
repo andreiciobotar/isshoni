@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -47,6 +48,8 @@ func (m *model) frame() []string {
 		return m.fatalScreen(p)
 	case m.help:
 		return m.helpScreen(p)
+	case m.pick != nil:
+		return m.pickScreen(p)
 	case m.view == viewHanami:
 		return m.hanamiFrame(p)
 	case m.loading && len(m.sessions) == 0 && m.refreshErr == "":
@@ -383,7 +386,7 @@ func (m *model) errorScreen(p paint) []string {
 func (m *model) helpScreen(p paint) []string {
 	th := m.th
 	lines := []string{p.gradient(brand, true) + p.t(" "+brandKanji+"  keys", th.Muted)}
-	for _, g := range helpGroups() {
+	for _, g := range m.helpGroups() {
 		lines = append(lines, "")
 		for _, b := range g {
 			lines = append(lines, p.b(cell(b.Help().Key, 14, false), th.Purple)+p.t(b.Help().Desc, th.Text))
@@ -415,6 +418,33 @@ func (m *model) helpScreen(p paint) []string {
 	bw = min(m.w-2, bw+4)
 	bh := min(m.h, len(lines)+2)
 	return m.fitScreen(p.center(p.boxed("help", lines, bw, bh, th.Pink), m.w, m.h), p)
+}
+
+// pickScreen lists the dispatchers to choose from: the first nine numbered, a window of the
+// list around the cursor when it is taller than the screen.
+func (m *model) pickScreen(p paint) []string {
+	th := m.th
+	room := max(1, m.h-6)
+	top := max(0, min(m.pickCur-room+1, len(m.pick)-room))
+	var lines []string
+	bw := 0
+	for i := top; i < min(len(m.pick), top+room); i++ {
+		num := " "
+		if i < 9 {
+			num = strconv.Itoa(i + 1)
+		}
+		mark, fg := "  ", th.Text
+		if i == m.pickCur {
+			mark, fg = "› ", th.Purple
+		}
+		l := p.b(mark+num+"  "+m.pick[i], fg)
+		lines = append(lines, l)
+		bw = max(bw, width(l))
+	}
+	hint := p.t("1-9 or ↑↓ enter · esc cancel", th.Faint)
+	lines = append(lines, "", hint)
+	bw = min(m.w-2, max(bw, width(hint))+4)
+	return m.fitScreen(p.center(p.boxed("dispatcher", lines, bw, len(lines)+2, th.Pink), m.w, m.h), p)
 }
 
 // wrapPlain word-wraps plain text to w cells.

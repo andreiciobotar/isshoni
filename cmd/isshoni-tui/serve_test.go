@@ -99,6 +99,7 @@ type testEnv struct {
 	host   string
 	logs   *syncBuf
 	starts int
+	claude string // serveOptions.Claude
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -161,7 +162,7 @@ func (e *testEnv) start() (addr string, stop func() error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, ln, serveOptions{Runner: e.runner, AuthorizedKeys: e.keys, HostKey: e.host, Range: "7d", Log: log.New(e.logs, "", 0)})
+		done <- serve(ctx, ln, serveOptions{Runner: e.runner, AuthorizedKeys: e.keys, HostKey: e.host, Range: "7d", Claude: e.claude, Log: log.New(e.logs, "", 0)})
 	}()
 	var once sync.Once
 	var result error
