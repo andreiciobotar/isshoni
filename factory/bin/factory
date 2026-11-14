@@ -1420,7 +1420,7 @@ def c_nearing_limit(p, threshold):
     for r in unfinished(phased(p)):
         s = task_session(p, r["path"])
         pct = 100 * (r["elapsed"] or 0) / (p["limit_hours"] * 3600)
-        if r["phase"] == "motion" and s and not finished(s) and not r["overtime"] and pct > threshold:
+        if r["state"] == "working" and s and not finished(s) and not r["overtime"] and pct > threshold:
             found.append((r["slug"], r["slug"], f"working for {age(p['now'] - r['elapsed'], p['now'])}, "
                           f"{pct:.0f}% of the {p['limit_hours']}h limit"))
     return found
@@ -2234,7 +2234,7 @@ def cmd_miss(args):
 
 
 def summarize(firings, misses):
-    """Counts of what the dispatcher received; an escalation `to: lead` is counted apart (`told_lead`)."""
+    """Counts of what the dispatcher received; escalations `to: lead` are left out (`cmd_firings` prints their count)."""
     escalated = [f for f in firings if f["decision"] == "escalated" and f.get("to") != "lead"]
     acted = sum(f["outcome"] == "acted" for f in escalated)
     ignored = sum(f["outcome"] == "ignored" for f in escalated)

@@ -133,8 +133,9 @@ class CriteriaTests(Home):
         self.assertEqual(run(elapsed=at_76), [("x", "x", "working for 1h, 76% of the 2h limit")])
         self.assertEqual(run(elapsed=at_74), [])
         self.assertEqual(run(elapsed=3 * HOUR, overtime=True), [])
-        self.assertEqual(run("handed-over", "review", elapsed=at_76), [])
-        self.assertEqual(run("blocked", "blocked", elapsed=at_76), [])
+        for state in ("handed-over", "blocked"):
+            busy = factory.phase("open", [lead("x")], state)
+            self.assertEqual(run(state, busy, elapsed=at_76), [], state)
 
     def test_ci_red_default(self):
         def runs(*items):
@@ -897,6 +898,15 @@ class WatchTests(Harness):
         self.assertTrue(new["detail"].endswith(f"; lead told at {iso(NOW - 31 * 60)}: stop sleep"), new["detail"])
         self.assertNotEqual(new["id"], "aaa")
         self.assertNotIn("lead_told", new)
+        [sent] = json.loads(argv[-1].partition("\n\n")[2])
+        self.assertEqual((sent["id"], sent["lead_told"]), (new["id"], True))
+
+    def test_a_refired_firing_still_undecided_is_sent_again_with_the_marker(self):
+        self.told(31)
+        self.tick()
+        new = self.records()[3]
+        self.tick(at=NOW + 1800)
+        [argv] = self.claude_runs()
         [sent] = json.loads(argv[-1].partition("\n\n")[2])
         self.assertEqual((sent["id"], sent["lead_told"]), (new["id"], True))
 
