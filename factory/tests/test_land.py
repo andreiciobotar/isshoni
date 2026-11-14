@@ -23,6 +23,9 @@ if a[:2] == ["pr", "list"]:
 elif a[:2] == ["pr", "view"]:
     print(json.dumps({"mergeable": read("mergeable").get(a[2], "MERGEABLE")}))
 elif a[:2] in (["pr", "edit"], ["pr", "comment"]):
+    if a[1] == "edit" and os.environ.get("FAKE_GH_FAIL_EDIT"):
+        print("edit refused", file=sys.stderr)
+        sys.exit(1)
     rec = {"argv": a}
     if "--body-file" in a:
         rec["body"] = open(a[a.index("--body-file") + 1]).read()
@@ -534,6 +537,43 @@ class LandTests(unittest.TestCase):
         (edit,) = self.gh_calls()
         self.assertEqual(edit["argv"], ["pr", "edit", "https://x/pull/t1", "--base", "main"])
         self.assertEqual((self.remote_head(), self.last_state()), (old, "handed-over"))
+
+    def test_a_branch_with_a_merge_commit_is_a_stop_before_any_rebase(self):
+        wt = self.task("t1", line=20)
+        self.advance_main(1, "main line", "b.txt")
+        self.git("fetch", "-q", "origin", cwd=wt)
+        self.git("merge", "-q", "--no-ff", "--no-commit", "origin/main", cwd=wt)
+        (wt / "extra.txt").write_text("in the merge\n")
+        self.git("add", ".", cwd=wt)
+        self.git("commit", "-q", "-m", "merge main", cwd=wt)
+        self.git("push", "-q", "origin", "worktree-t1", cwd=wt)
+        self.prs["worktree-t1"][0]["headRefOid"] = self.git("rev-parse", "HEAD", cwd=wt)
+        self.write_state()
+        self.advance_main(2, "again", "b.txt")
+        old = self.git("rev-parse", "HEAD", cwd=wt)
+        p = self.land("t1")
+        self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED other`"))
+        self.assertIn("the branch holds a merge commit; a rebase would drop it", p.stdout)
+        self.assertEqual((self.git("rev-parse", "HEAD", cwd=wt), self.remote_head(), self.claude_calls(), self.last_state()),
+                         (old, old, [], "working"))
+
+    def test_a_failed_retarget_after_the_push_is_reported_with_one_comment(self):
+        wt = self.task("t1", line=25, base="worktree-gone")
+        self.advance_main(1, "main line", "b.txt")
+        self.git("branch", "worktree-gone", "main")
+        self.git("config", "branch.worktree-t1.factoryBase", "worktree-gone")
+        self.prs["worktree-gone"] = [{"state": "MERGED", "url": "u", "baseRefName": "main", "headRefOid": "z"}]
+        self.write_state()
+        p = self.land("t1", FAKE_GH_FAIL_EDIT="1")
+        self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED other`"))
+        self.assertIn("pushed", p.stdout)
+        self.assertIn("edit refused", p.stdout)
+        (comment,) = self.gh_calls()
+        self.assertEqual(comment["argv"][:2], ["pr", "comment"])
+        self.assertIn("Retarget onto main failed", comment["body"])
+        self.assertIn("Result: STOPPED other", comment["body"])
+        self.assertNotIn("Result: LANDED", comment["body"])
+        self.assertEqual(self.last_state(), "working")
 
 
 if __name__ == "__main__":

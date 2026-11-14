@@ -2929,6 +2929,8 @@ class Landing:
             return ("LANDED", facts, "none") if error is None else self.stop("other", error, facts)
         task_files = self.out("diff", "--name-only", old_base, "HEAD").splitlines()
         overlap = sorted(set(self.out("diff", "--name-only", old_base, self.target).splitlines()) & set(task_files))
+        if self.out("rev-list", "--merges", f"{old_base}..HEAD"):
+            return self.stop("other", "the branch holds a merge commit; a rebase would drop it")
         rc, out, err = self.git("rebase", self.target)
         if rc != 0:
             return self.conflict(task_files, out + err)
@@ -2973,7 +2975,7 @@ class Landing:
                    f"Overlap with the base: {', '.join(overlap) or 'none'}.", "Conflicts: none.",
                    "Regenerated: nothing.", "Tests: `make test` pass."]
         retarget_error = self.retarget()
-        error = "; ".join(e for e in (retarget_error, self.announce(new_head, kind, details)) if e)
+        error = "; ".join(e for e in (retarget_error, self.announce(new_head, kind, details, retarget_error)) if e)
         count = self.out("rev-list", "--count", f"{old_base}..{self.target}")
         facts = [f"base: `{self.target}` at `{self.out('rev-parse', self.target)}`, {count} commits since the old base; "
                  f"overlap: {', '.join(overlap) or 'none'}",
@@ -2993,12 +2995,15 @@ class Landing:
         stop = gh_step(self.repo, "pr", "edit", self.url, "--base", self.target_branch)
         return stop and stop[1]
 
-    def announce(self, new_head, kind, details):
-        """Comment on the pull request after a push; None, or why `gh` could not."""
+    def announce(self, new_head, kind, details, retarget_error=None):
+        """Comment on the pull request after a push; None, or why `gh` could not. A failed retarget makes the
+        result a stop."""
+        result = f"Result: {kind}" + (" (the lead has been asked to look)." if kind != "LANDED" else ".")
+        if retarget_error:
+            result = f"Retarget onto {self.target_branch} failed: {retarget_error}. Result: STOPPED other (the lead has been asked to look)."
         body = "\n".join([
             f"Rebased onto `{self.target}` at `{self.out('rev-parse', self.target)}` by `factory land`, without the "
-            f"task's lead: `{self.old_head}` -> `{new_head}`.", *details,
-            f"Result: {kind}" + (" (the lead has been asked to look)." if kind != "LANDED" else ".")])
+            f"task's lead: `{self.old_head}` -> `{new_head}`.", *details, result])
         with tempfile.NamedTemporaryFile("w", suffix=".md") as f:
             f.write(body)
             f.flush()
