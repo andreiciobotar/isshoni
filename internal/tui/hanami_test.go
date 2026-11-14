@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -473,7 +474,7 @@ func TestHanamiSettledEventsDoNotMove(t *testing.T) {
 			if !bl.closed.IsZero() {
 				closed++
 			}
-			if bl.size.x > blossomSize(s.geo(), 0, 0)+0.01 {
+			if bl.size.x > blossomSize(0, blossomCap(s.geo(), 0))+0.01 {
 				grown++
 			}
 		}
@@ -489,6 +490,45 @@ func TestHanamiSettledEventsDoNotMove(t *testing.T) {
 	stepFor(s, last, time.Second)
 	if n := len(s.branches); n == 0 {
 		t.Fatal("a branch whose session worked a moment ago withdrew")
+	}
+
+	// a session that was already quiet when the viewer arrived: its blossoms are closed, placed and trimmed by
+	// Arrive, so the first Step moves nothing
+	q := newHanamiScene(NewTheme(true))
+	q.w, q.h = 140, 40
+	for k := 0; k < 9; k++ {
+		who := func(e *data.Event) { e.Session, e.Agent, e.Role = "quiet", fmt.Sprint("a", k), "coder" }
+		q.Apply(ev("spawn", float64(k), who), true)
+		q.Apply(ev("tool", float64(k)+0.5, who), true)
+		if k < 4 {
+			q.Apply(ev("return", float64(k)+0.7, who), true)
+		}
+	}
+	arrived := goldenNow.Add(20 * time.Minute)
+	q.Arrive(arrived)
+	where := func() (n int, at []float64) {
+		g := q.geo()
+		for _, b := range q.branches {
+			for _, bl := range b.blossoms {
+				x, y, _, _ := b.blossomAt(g, bl)
+				at = append(at, x, y, bl.size.x)
+				n++
+			}
+		}
+		return
+	}
+	n0, before := where()
+	q.Step(arrived)
+	n1, after := where()
+	if n0 == 0 || n0 != n1 || !slices.Equal(before, after) {
+		t.Fatalf("the first Step after Arrive moved a blossom or lost one: %d then %d", n0, n1)
+	}
+	for _, b := range q.branches {
+		for _, bl := range b.blossoms {
+			if bl.closed.IsZero() {
+				t.Fatal("a blossom of a session that was quiet is still open after Arrive")
+			}
+		}
 	}
 }
 
@@ -1092,7 +1132,9 @@ func TestHanamiLayoutSpreadsTheTree(t *testing.T) {
 		for i := 0; i < hanamiSlots; i++ { // every slot in use, five open blossoms on each
 			for k := 0; k < 5; k++ {
 				s.Apply(ev("spawn", float64(i), func(e *data.Event) { e.Session, e.Agent, e.Role = fmt.Sprint("s", i), fmt.Sprint("a", k), "coder" }), true)
-				s.Apply(ev("tool", float64(i), func(e *data.Event) { e.Session, e.Agent, e.Tool = fmt.Sprint("s", i), fmt.Sprint("a", k), "edit" }), true)
+				for n := 0; n < 100; n++ { // heavy work: every blossom wants to be as large as it may
+					s.Apply(ev("tool", float64(i), func(e *data.Event) { e.Session, e.Agent, e.Tool = fmt.Sprint("s", i), fmt.Sprint("a", k), "edit" }), true)
+				}
 			}
 		}
 		stepFor(s, goldenNow.Add(11*time.Second), 3*time.Second)
@@ -1120,7 +1162,7 @@ func TestHanamiLayoutSpreadsTheTree(t *testing.T) {
 			}
 			tips = append(tips, [2]float64{x, y})
 			for _, bl := range b.blossoms {
-				if bl.size.x > math.Max(3.5, 0.16*g.spacing())+0.01 || (sz[0] == 250 && bl.size.x > 16) {
+				if bl.size.x > math.Max(3.5, 0.16*g.spacing())+0.01 || (sz[0] == 250 && 2*bl.size.x > 16) {
 					t.Fatalf("%v: a blossom of radius %.1f (spacing %.0f)", sz, bl.size.x, g.spacing())
 				}
 			}
@@ -1136,25 +1178,66 @@ func TestHanamiOpenBlossomsKeepApart(t *testing.T) {
 		s := newHanamiScene(NewTheme(true))
 		s.w, s.h = sz[0], sz[1]
 		g := s.geo()
-		for k := 0; k < 8; k++ {
-			s.Apply(ev("spawn", float64(k), func(e *data.Event) { e.Agent, e.Role = fmt.Sprint("a", k), "coder" }), true)
-			for n := 0; n < 20*k; n++ {
-				s.Apply(ev("tool", float64(k), func(e *data.Event) { e.Agent, e.Tool = fmt.Sprint("a", k), "edit" }), true)
-			}
-		}
-		stepFor(s, goldenNow.Add(10*time.Second), 3*time.Second)
-		b := s.branches[0]
-		for i, a := range b.blossoms {
-			ax, ay, _, _ := b.blossomAt(g, a)
-			if ax < 0 || ax >= g.W || ay < 0 || ay >= g.H {
-				t.Fatalf("%v: a blossom outside the field", sz)
-			}
-			for _, o := range b.blossoms[:i] {
-				ox, oy, _, _ := b.blossomAt(g, o)
-				if d := math.Hypot(ax-ox, ay-oy); d < a.size.x+o.size.x {
-					t.Fatalf("%v: two blossoms overlap: %.1f apart, radii %.1f and %.1f", sz, d, a.size.x, o.size.x)
+		for i := 0; i < hanamiSlots; i++ { // every branch, the shortest included
+			for k := 0; k < 8; k++ {
+				s.Apply(ev("spawn", float64(i), func(e *data.Event) { e.Session, e.Agent, e.Role = fmt.Sprint("s", i), fmt.Sprint("a", k), "coder" }), true)
+				for n := 0; n < 20*k; n++ {
+					s.Apply(ev("tool", float64(i), func(e *data.Event) { e.Session, e.Agent, e.Tool = fmt.Sprint("s", i), fmt.Sprint("a", k), "edit" }), true)
 				}
 			}
+		}
+		stepFor(s, goldenNow.Add(15*time.Second), 3*time.Second)
+		for _, b := range s.branches {
+			for i, a := range b.blossoms {
+				ax, ay, _, _ := b.blossomAt(g, a)
+				if ax < 0 || ax >= g.W || ay < 0 || ay >= g.H {
+					t.Fatalf("%v: a blossom outside the field", sz)
+				}
+				for _, o := range b.blossoms[:i] {
+					ox, oy, _, _ := b.blossomAt(g, o)
+					if d := math.Hypot(ax-ox, ay-oy); d < a.size.x+o.size.x {
+						t.Fatalf("%v: slot %d: two blossoms overlap: %.1f apart, radii %.1f and %.1f", sz, b.slot, d, a.size.x, o.size.x)
+					}
+				}
+			}
+		}
+	}
+}
+
+// A blossom keeps the side of its branch it was first given: when the first of three returns, no blossom jumps.
+func TestHanamiReturnDoesNotFlipTheOthers(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	s.w, s.h = 140, 40
+	who := func(k int) func(*data.Event) {
+		return func(e *data.Event) { e.Agent, e.Role = fmt.Sprint("a", k), "coder" }
+	}
+	for k := 0; k < 3; k++ {
+		s.Apply(ev("spawn", float64(k), who(k)), true)
+	}
+	b := s.branches[0]
+	g := s.geo()
+	sides := []int{b.blossoms[0].side, b.blossoms[1].side, b.blossoms[2].side}
+	pos := func() (p [][2]float64) {
+		for _, bl := range b.blossoms {
+			x, y, _, _ := b.blossomAt(g, bl)
+			p = append(p, [2]float64{x, y})
+		}
+		return
+	}
+	s.Apply(ev("return", 3, who(0)), false)
+	prev := pos()
+	for f := 0; f < 3*hanamiFPS; f++ {
+		s.Step(goldenNow.Add(3 * time.Second))
+		for i, p := range pos() {
+			if d := math.Hypot(p[0]-prev[i][0], p[1]-prev[i][1]); d > 2 {
+				t.Fatalf("frame %d: blossom %d moved %.1f dots in one frame", f, i, d)
+			}
+			prev[i] = p
+		}
+	}
+	for i, bl := range b.blossoms {
+		if bl.side != sides[i] {
+			t.Fatalf("blossom %d changed sides", i)
 		}
 	}
 }

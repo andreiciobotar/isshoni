@@ -144,7 +144,6 @@ type hBlossom struct {
 	uT, sizeT   float64   // its place and its radius, as the layout of its branch wants them
 	side        int       // which side of the branch its twig takes
 	placed      bool      // false until the layout has put it in its place
-	laid        bool      // scratch of the layout
 	bud         bool      // its brief has not arrived: it stays a bud
 	closed      time.Time // when its agent returned (or its session came to rest); zero while it works
 }
@@ -345,8 +344,6 @@ func (s *hanamiScene) geo() hGeo {
 // fraction (slotOrder[i]+0.5)/12 of that path, so the first sessions are far apart.
 var slotOrder = [hanamiSlots]int{5, 1, 9, 3, 7, 11, 0, 6, 2, 10, 4, 8}
 
-const sideWeight = 1.0
-
 // path is the lengths of the top edge and the right edge of the path the tips lie on, in dots.
 func (g hGeo) path() (top, side float64) {
 	return math.Max(1, g.W-6-(g.cx+0.6*g.R)), math.Max(1, g.cy-0.5*g.R-5)
@@ -355,17 +352,17 @@ func (g hGeo) path() (top, side float64) {
 // spacing is the room one branch has on that path: no blossom is wider than a share of it.
 func (g hGeo) spacing() float64 {
 	top, side := g.path()
-	return (top + sideWeight*side) / hanamiSlots / sideWeight
+	return (top + side) / hanamiSlots
 }
 
 // tip is where slot's branch is aimed.
 func (g hGeo) tip(slot int) (x, y float64) {
 	top, side := g.path()
-	f := (float64(slotOrder[slot]) + 0.5) / hanamiSlots * (top + sideWeight*side)
+	f := (float64(slotOrder[slot]) + 0.5) / hanamiSlots * (top + side)
 	if f <= top {
 		return g.cx + 0.6*g.R + f, 5
 	}
-	return g.W - 6, 5 + (f-top)/sideWeight
+	return g.W - 6, 5 + (f - top)
 }
 
 // geom is where a branch starts (on the disc's rim), its direction, and its full length.
@@ -394,7 +391,7 @@ func (b *hBranch) point(g hGeo, u float64) (x, y float64) {
 }
 
 // blossomU is where along its branch a blossom's twig leaves it.
-func (b *hBranch) blossomU(bl *hBlossom) float64 { return bl.u.x * b.grow.x }
+func (b *hBranch) blossomU(bl *hBlossom) float64 { return math.Max(0, math.Min(1, bl.u.x)) * b.grow.x } // a spring may overshoot: the tip is the end
 
 // run is where a light is at p in 0..1 on its way from the disc along the branch to a blossom's place,
 // or to the branch's tip when there is no blossom.
@@ -414,8 +411,8 @@ func (b *hBranch) run(g hGeo, bl *hBlossom, p float64) (x, y float64) {
 func (b *hBranch) blossomAt(g hGeo, bl *hBlossom) (x, y, bx, by float64) {
 	u := b.blossomU(bl)
 	bx, by = b.point(g, u)
-	x2, y2 := b.point(g, math.Min(1, u+0.02))
-	nx, ny := -(y2 - by), x2-bx
+	x0, y0 := b.point(g, math.Max(0, u-0.02)) // the direction of the branch where the twig leaves it
+	nx, ny := -(by - y0), bx-x0
 	if l := math.Hypot(nx, ny); l > 0 {
 		nx, ny = nx/l, ny/l
 	}
@@ -426,12 +423,11 @@ func (b *hBranch) blossomAt(g hGeo, bl *hBlossom) (x, y, bx, by float64) {
 	return bx + nx*twig, by + ny*twig, bx, by
 }
 
-// blossomSize is the radius, in dots, a blossom grows to for the work its agent has done, capped by the room a
-// branch has and by how many blossoms are open on it (live).
-func blossomSize(g hGeo, work float64, live int) float64 {
-	return math.Min(3.4+1.8*math.Sqrt(work), blossomCap(g, live))
-}
+// blossomSize is the radius, in dots, a blossom grows to for the work its agent has done, up to cap.
+func blossomSize(work, cap float64) float64 { return math.Min(3.4+1.8*math.Sqrt(work), cap) }
 
+// blossomCap is the largest radius a blossom may have: a share of the room a branch has, and the smaller the more
+// blossoms are open on it (live).
 func blossomCap(g hGeo, live int) float64 {
 	return math.Max(3.5, math.Min(g.R*0.48, 0.16*g.spacing())) / math.Sqrt(math.Max(1, float64(live)/5))
 }
@@ -455,34 +451,39 @@ func (s *hanamiScene) layout(g hGeo, b *hBranch, now bool) {
 		capR = math.Min(capR, du*L/2.2)
 	}
 	i, last := 0, 1+du/2
+	var closed []*hBlossom
 	for _, bl := range b.blossoms {
-		if bl.closed.IsZero() {
-			bl.uT, bl.side = 1-float64(i)*du, i%2
-			bl.sizeT = math.Min(3.4+1.8*math.Sqrt(bl.work), capR)
-			last = bl.uT
-			i++
+		if !bl.closed.IsZero() {
+			closed = append(closed, bl)
+			continue
 		}
-	}
-	for { // closed: the most recently closed nearest the open ones
-		var bl *hBlossom
-		for _, x := range b.blossoms {
-			if !x.closed.IsZero() && !x.laid && (bl == nil || x.closed.After(bl.closed)) {
-				bl = x
-			}
-		}
-		if bl == nil {
-			break
-		}
-		bl.laid = true
-		last -= du / 2
-		bl.uT, bl.side = math.Max(0.3, last), i%2
-		bl.sizeT = math.Min(3.4+1.8*math.Sqrt(bl.work), capR)
+		bl.uT, bl.sizeT = 1-float64(i)*du, blossomSize(bl.work, capR)
+		last = bl.uT
 		i++
 	}
+	slices.SortFunc(closed, func(a, b *hBlossom) int { return b.closed.Compare(a.closed) }) // newest closed nearest the open ones
+	for _, bl := range closed {
+		last -= du / 2
+		bl.uT, bl.sizeT = math.Max(0.3, last), blossomSize(bl.work, capR)
+	}
 	for _, bl := range b.blossoms {
-		bl.laid = false
+		if !bl.placed {
+			bl.side = bl.n % 2 // given once, when it is first placed: a return does not flip the blossoms after it
+		}
 		if now || !bl.placed {
 			bl.u.x, bl.u.v, bl.size.x, bl.size.v, bl.placed = bl.uT, 0, bl.sizeT, 0, true
+		}
+	}
+}
+
+// closeQuiet closes the blossoms of a session at rest: whoever had not returned is no longer working.
+func (s *hanamiScene) closeQuiet(b *hBranch) {
+	if s.now.Sub(b.last) <= hanamiQuiet {
+		return
+	}
+	for _, bl := range b.blossoms {
+		if bl.closed.IsZero() {
+			bl.closed = b.last
 		}
 	}
 }
@@ -944,7 +945,6 @@ func (s *hanamiScene) Step(now time.Time) {
 	memory := s.memory()
 	for i := 0; i < len(s.branches); i++ {
 		b := s.branches[i]
-		quiet := s.now.Sub(b.last)
 		target := 1.0
 		if s.withdrawn(b) {
 			target = 0
@@ -958,11 +958,9 @@ func (s *hanamiScene) Step(now time.Time) {
 			}
 		}
 		b.beads = beads
+		s.closeQuiet(b)
 		kept := b.blossoms[:0]
 		for _, bl := range b.blossoms {
-			if bl.closed.IsZero() && quiet > hanamiQuiet {
-				bl.closed = b.last // the session is at rest: whoever had not returned is no longer working
-			}
 			if bl.closed.IsZero() || s.now.Sub(bl.closed) < memory {
 				kept = append(kept, bl)
 			}
@@ -1200,11 +1198,16 @@ func (s *hanamiScene) Arrive(now time.Time) {
 	if now.After(s.now) {
 		s.now = now
 	}
-	memory, g := s.memory(), s.geo()
+	g := s.geo()
+	for _, b := range s.branches {
+		s.closeQuiet(b)
+	}
+	memory := s.memory()
 	s.branches = slices.DeleteFunc(s.branches, func(b *hBranch) bool {
 		b.blossoms = slices.DeleteFunc(b.blossoms, func(bl *hBlossom) bool {
 			return !bl.closed.IsZero() && s.now.Sub(bl.closed) >= memory
 		})
+		b.trim()
 		s.layout(g, b, true)
 		return s.withdrawn(b)
 	})
@@ -1558,6 +1561,12 @@ func (s *hanamiScene) draw(legend bool) []string {
 	for pass := 0; pass < 2; pass++ { // closed ones behind, open ones in front
 		cv.layer = 4 + pass
 		for _, b := range s.branches {
+			live := 0
+			for _, bl := range b.blossoms {
+				if bl.closed.IsZero() {
+					live++
+				}
+			}
 			for _, bl := range b.blossoms {
 				if bl.closed.IsZero() != (pass == 1) {
 					continue
@@ -1583,7 +1592,11 @@ func (s *hanamiScene) draw(legend bool) []string {
 					continue
 				}
 				cv.flower(x, y, r, rot, col.mix(text, 0.35*bl.heat), loud, false)
-				cv.glow(x, y, 2.4*r+4, col, 0.2+0.3*bl.heat+0.15*throb)
+				glowR := 2.4*r + 4
+				if blossomCap(g, live) <= 3.5 { // a small stage: glows must not merge into one band
+					glowR = math.Min(glowR, 1.2*r+2)
+				}
+				cv.glow(x, y, glowR, col, 0.2+0.3*bl.heat+0.15*throb)
 			}
 		}
 	}
