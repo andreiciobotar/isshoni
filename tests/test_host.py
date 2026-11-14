@@ -69,6 +69,18 @@ elif a[:2] == ["plugin", "install"]:
 json.dump(s, open(path, "w"))
 '''
 
+# Stands in for the factory script in the container: `dispatcher` answers from the agents of the claude stub.
+FACTORY_STUB = r'''#!/usr/bin/env python3
+import json, os, sys
+home = os.environ["HOME"]
+if sys.argv[1:] == ["dispatcher"]:
+    if os.path.exists(home + "/agents-broken"):
+        print("supervisor unreachable")
+        sys.exit(2)
+    agents = json.load(open(home + "/stub-state.json"))["agents"]
+    sys.exit(0 if "dispatcher-" + os.path.basename(os.getcwd()) in agents else 1)
+'''
+
 FAKE_DOCKER = r"""#!/bin/sh
 S=$FAKE_SRV
 serve() {
@@ -145,8 +157,9 @@ class HostTests(unittest.TestCase):
         (self.fh / "identity/key.pem").write_text(SECRET_KEY)
         (self.fh / "identity/app.json").write_text(json.dumps({"bot_login": "bot[bot]", "owner": "acme"}))
         for name, text in (("docker/Dockerfile", "FROM scratch\n"), ("docker/compose.yaml", "name: isshoni-factory\n"),
-                           ("docker/start", "#!/bin/sh\n"), ("factory/bin/factory", "#!/bin/sh\n"), ("Makefile", "install:\n")):
+                           ("docker/start", "#!/bin/sh\n"), ("factory/bin/factory", FACTORY_STUB), ("Makefile", "install:\n")):
             (self.repo / name).write_text(text)
+        (self.repo / "factory/bin/factory").chmod(0o755)
         sh(self.repo, "git", "init", "-q")
         self.commit("first")
         self.state = str(self.srv / "state")

@@ -44,7 +44,6 @@ make install && make up            # live dashboard; needs Go 1.27+
 Factory: `make wizard` in the clone checks the tools, builds the dashboard, installs the plugin, writes the settings, offers cost alerts with the daily digest and offers the factory its own GitHub App ([what each step does](docs/factory.md#setup-and-uninstall)). Then, in Claude Code, in the repository you want work done in:
 
 ```
-/rename dispatcher-<repository directory name>
 /factory:dispatch
 ```
 

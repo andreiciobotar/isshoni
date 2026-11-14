@@ -440,15 +440,12 @@ def dashboard_key(c):
     raise Stop("the dashboard is not serving; run it in the foreground to see why: `ssh -t %s \"docker exec -it %s sh -c 'exec ~/.isshoni/bin/isshoni-tui --serve 0.0.0.0:2222'\"`." % (c.target, CONTAINER))
 
 
-def running_dispatchers(target):
-    """The names of the sessions `claude agents --json` lists in the container; Stop when it cannot say."""
-    rc, out, err = box(target, "claude agents --json")
-    try:
-        if rc == 0:
-            return {a["name"] for a in json.loads(out) if "name" in a}
-    except (ValueError, TypeError):
-        pass
-    raise Stop("cannot tell which dispatchers run: `claude agents --json` printed:\n%s" % tail(out + err))
+def dispatcher_runs(target, repo):
+    """Whether the dispatcher of ~/code/<repo> runs in the container (`factory dispatcher`: exit 0 yes, 1 no); Stop when it cannot say."""
+    rc, out, err = box(target, 'cd "$HOME/code/$1" && "$HOME/.isshoni/factory/bin/factory" dispatcher', repo)
+    if rc in (0, 1):
+        return rc == 0
+    raise Stop("cannot tell which dispatchers run: `factory dispatcher` printed:\n%s" % tail(out + err))
 
 
 def dispatchers(c):
@@ -457,13 +454,14 @@ def dispatchers(c):
         return False
     started = False
     for repo in c.repos:
-        name = "dispatcher-" + repo.split("/")[1]
-        if name in running_dispatchers(c.target):
+        short = repo.split("/")[1]
+        name = "dispatcher-" + short
+        if dispatcher_runs(c.target, short):
             continue
         need(box(c.target, 'cd "$HOME/code/$1" && claude --bg -n "$2" --permission-mode auto "/factory:dispatch"',
-                 repo.split("/")[1], name), "starting %s" % name)
-        if name not in running_dispatchers(c.target):
-            raise Stop("%s was started but `claude agents --json` does not list it; see `ssh %s docker exec %s claude agents`."
+                 short, name), "starting %s" % name)
+        if not dispatcher_runs(c.target, short):
+            raise Stop("%s was started but `factory dispatcher` does not find it; see `ssh %s docker exec %s claude agents`."
                        % (name, c.target, CONTAINER))
         started = True
     return started
@@ -552,16 +550,18 @@ def host_status(name, e, head):
     state = ssh(target, "docker inspect -f '{{.State.Status}}' %s" % CONTAINER)[1].strip() or "missing"
     rev = box(target, "cat ~/.isshoni/.rev")[1].strip()
     serving = box(target, DASHBOARD_SERVING)[0] == 0
-    try:
-        listed, why = running_dispatchers(target), None
-    except Stop as stop:
-        listed, why = set(), str(stop)
     lines = ["%s: container %s" % (name, state),
              "  rev %s (laptop HEAD %s)%s" % (rev[:7] or "none", head[:7], "" if rev == head else ": not current, run `isshoni host add %s`" % target),
              "  dashboard %s" % ("serving" if serving else "not serving")]
-    missing = [r for r in e["repos"] if "dispatcher-" + r.split("/")[1] not in listed]
+    why, missing = None, False
     for r in e["repos"]:
-        lines.append("  dispatcher-%s %s" % (r.split("/")[1], "unknown" if why else "missing" if r in missing else "running"))
+        try:
+            runs = dispatcher_runs(target, r.split("/")[1])
+            missing = missing or not runs
+            word = "running" if runs else "missing"
+        except Stop as stop:
+            why, word = why or str(stop), "unknown"
+        lines.append("  dispatcher-%s %s" % (r.split("/")[1], word))
     if why:
         lines.append("  " + why.replace("\n", "\n  "))
     return lines, state == "running" and serving and not missing and not why

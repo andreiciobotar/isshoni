@@ -151,7 +151,7 @@ class WizardFlow(Setup):
         self.assertEqual(self.created, [("octocat", None)])
         self.assertEqual(json.loads((self.store / "identity" / "app.json").read_text())["installation_id"], 7654321)
         self.assertNotIn("Nothing to do", self.out)
-        self.assertIn("/rename dispatcher-<repository directory name>", self.out)
+        self.assertNotIn("/rename", self.out)
         self.assertIn("/factory:dispatch", self.out)
         self.assertIn("site manager: starts with the dispatcher session", self.out)
         before, calls = self.snapshot(), len(self.machine.calls)

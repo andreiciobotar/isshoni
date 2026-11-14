@@ -511,7 +511,7 @@ class LgtmTests(World):
         calls.gather.return_value = {"rows": "fresh"}
         with mock.patch.object(factory, "lgtm_step", step), mock.patch.object(factory, "run_clean", calls.clean), \
                 mock.patch.object(factory, "gather", calls.gather), redirect_stdout(io.StringIO()):
-            got = factory.watch_lgtm({"repo": "r", "dispatcher": "d", "rows": "old"})
+            got = factory.watch_lgtm({"repo": "r", "fallback": "d", "rows": "old"})
             self.assertEqual(got, {"rows": "fresh", "lgtm": results, "lgtm_unread": "why"})
             self.assertEqual(calls.mock_calls, [mock.call.clean(), mock.call.gather("r", "d")])
             results.clear()
