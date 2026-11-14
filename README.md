@@ -60,18 +60,55 @@ Optional:
 
 ## Factory
 
+### Option M
+
 ```mermaid
-flowchart TD
-    you([You]) <-- tasks, questions --> disp[Dispatcher]
-    disp <-- brief, questions --> lead
-    subgraph task [One per task, in its own worktree]
-        lead[Lead · Fable] --> subs[explorer · Haiku<br>coder · Sonnet<br>reviewer · Opus<br>lander · Sonnet]
+flowchart LR
+    you([You]) -- brief --> disp[Dispatcher · Fable]
+    disp -- one lead per task --> lead
+    subgraph task [one task · its own worktree]
+        lead[Lead · Fable] --> ex[explorer · Haiku]
+        lead --> co[coder · Sonnet]
+        lead --> rv[reviewer · Opus]
     end
-    subs -- opens --> pr[Draft pull request]
-    you -- approves --> pr
-    sm[Site manager<br>every 30 min] -- alerts --> disp
-    lander[Lander · Sonnet] -- merges --> pr
+    ex & co & rv --> lander[Lander · Sonnet]
+    lander -- tests, pushes --> pr[Pull request<br>draft → ready]
+    pr -- review or lgtm --> you2([You])
+    you2 -- lander merges --> main[main]
+    watcher[watcher · every 2 min] -. comments, draft ↔ ready, starts lander .-> pr
+    sm[site manager · Sonnet · every 30 min] -. escalates .-> disp
+    classDef yellow stroke:#FFD34E,stroke-width:2px
+    classDef teal stroke:#3FD8C4,stroke-width:2px
+    classDef blue stroke:#5E9BFF,stroke-width:2px
+    classDef pink stroke:#FF6FAE,stroke-width:2px
+    classDef lime stroke:#ACD56E,stroke-width:2px
+    classDef muted stroke:#8E8BA8,stroke-width:2px,stroke-dasharray:4
+    class disp,lead yellow
+    class ex teal
+    class co blue
+    class rv pink
+    class lander,main lime
+    class watcher,sm muted
 ```
+
+```mermaid
+flowchart LR
+    tasks[every task: feedback, decisions,<br>retrospective, cost] -.-> disp[Dispatcher]
+    disp -. proposes rule edits .-> you([You])
+    you -. decide .-> rules[rules for the next task]
+    rules -.-> next[next task]
+    classDef yellow stroke:#FFD34E,stroke-width:2px
+    class disp yellow
+```
+
+### Option S
+
+<p align="center">
+  <picture>
+    <source media="(max-width: 600px)" srcset="assets/diagrams/factory-narrow.svg">
+    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief. It starts one lead per task, in its own worktree; the lead dispatches an explorer, a coder and a reviewer until the reviewer approves. The lander tests and pushes a pull request that stays a draft until checks are green. You approve with a review or a comment lgtm, and the lander merges it to main. Every task leaves feedback, decisions, a retrospective and its cost; the dispatcher proposes rule edits, you decide, and the rules apply to the next task.">
+  </picture>
+</p>
 
 A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the lander merges it within a few minutes once checks are green. Your other comments on a pull request reach its lead on the next watch tick.
 
@@ -93,13 +130,6 @@ The dispatcher reads it all and proposes edits to the factory's own rules; you d
 <p align="center">
   <img src="assets/tabs/kaizen.webp" alt="The Kaizen view, page by page: Pulse (cost, time and review rounds per task), Flow (where money and time went), Anatomy (each release compared) and Board (open issues by topic)">
 </p>
-
-```mermaid
-flowchart TD
-    tasks[Every task] -. feedback, decisions,<br>retrospectives, cost .-> disp[Dispatcher]
-    disp -. proposes edits .-> you([You])
-    you -. accepts .-> rules[Rules for the next task]
-```
 
 On day one, agents reported the same shell friction eleven times and counting. It became a rule that day ([#8](https://github.com/andreiciobotar/isshoni/pull/8)).
 
