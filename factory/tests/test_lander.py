@@ -361,12 +361,28 @@ class TickTests(SchedHarness, World):
         self.tick([reviewed(1)], at=NOW + 240)
         self.assertEqual(self.landers(), [])
 
+    def test_a_run_by_hand_while_the_lead_is_busy_does_not_use_up_the_retry(self):
+        key = {"1": f"{SHA}:{iso(NOW - 60)}:busy"}
+        self.tick([reviewed(1)], answer=reply("#1 stopped handover: busy"), sessions=self.busy_lead())
+        self.assertEqual(lander_state()["noticed"], key)
+        answers, _, slugs = self.world([reviewed(1)])
+        answers[LIST] = (0, json.dumps([reviewed(1)]), "")
+        answers[("claude", "-p")] = reply("#1 stopped handover: busy")
+        self.cli("lander", "1", answers=answers, sessions=self.busy_lead(), entries=slugs, at=NOW + 60)
+        self.assertEqual(len(self.landers()), 1)
+        self.assertEqual(lander_state()["noticed"], key)
+        self.tick([reviewed(1)], at=NOW + 120, answer=reply("#1 stopped ci: red"))  # the lead is free now
+        self.assertEqual(len(self.landers()), 1)
+        self.tick([reviewed(1)], at=NOW + 240)
+        self.assertEqual(self.landers(), [])
+
     def test_a_stop_that_wakes_the_lead_gives_two_runs_in_four_ticks_not_four(self):
         busy, free = (0, json.dumps(self.busy_lead()), ""), (0, json.dumps(self.busy_lead()[:1]), "")
         runs = 0
-        for later in (0, 120, 240, 360):  # free before the run, busy after it, on every tick
+        for later in (0, 120, 240, 360):  # free before the run, busy after it; the retry's notice lists once more
+            listings = [free, free, busy] if later == 0 else [free, free, free, busy]
             self.tick([reviewed(1)], at=NOW + later, answer=reply("#1 stopped ci: red"),
-                      extra={("claude", "agents"): [free, free, busy]})
+                      extra={("claude", "agents"): listings})
             runs += len(self.landers())
         self.assertEqual(runs, 2)
 

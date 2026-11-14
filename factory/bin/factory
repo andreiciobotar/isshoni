@@ -4374,7 +4374,8 @@ def run_lander(repo, snap, given, word, name):
         """`busy` when the lead was busy before the run or is after it (a lead that frees during the run keeps its
         retry), except for a run that already was the retry of this head and approval: one retry each, or a stop that
         wakes the lead would start a run on every tick."""
-        if state["noticed"].get(str(pr["number"])) == f"{pr['headRefOid']}:{approved_at(pr)}:busy":
+        if (state["noticed"].get(str(pr["number"])) == f"{pr['headRefOid']}:{approved_at(pr)}:busy"
+                and lead_state(repo, before, pr) == "free"):  # a run by hand while it is busy is not the retry
             return "free"
         return "busy" if "busy" in (lead_state(repo, before, pr), lead_state(repo, sessions, pr)) else "free"
     # Only this run's pull requests get a new key, with the stamp read before the run: an approval that came
