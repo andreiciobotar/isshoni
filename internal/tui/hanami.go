@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"hash/fnv"
 	"image/color"
 	"math"
+	"math/bits"
 	"slices"
 	"strconv"
 	"strings"
@@ -31,6 +33,7 @@ const (
 	maxPetals    = 300
 	maxLanterns  = 60
 	maxRipples   = 40
+	maxRings     = 60 // rings on the water, one per tool call
 	maxCanopy    = 14 // blossoms on one branch; the longest closed go first
 	maxStars     = 64
 	noteDrift    = 4.0  // cells per second, right to left
@@ -73,6 +76,11 @@ func (a hrgb) mix(b hrgb, t float64) hrgb {
 // lit is the colour with light added, as a lamp adds to a wall.
 func (a hrgb) lit(l hrgb) hrgb {
 	return hrgb{math.Min(255, a.r+l.r), math.Min(255, a.g+l.g), math.Min(255, a.b+l.b)}
+}
+
+// over is what a exceeds b by, channel by channel: the light a colour adds to a background.
+func (a hrgb) over(b hrgb) hrgb {
+	return hrgb{math.Max(0, a.r-b.r), math.Max(0, a.g-b.g), math.Max(0, a.b-b.b)}
 }
 
 func (a hrgb) times(k float64) hrgb { return hrgb{a.r * k, a.g * k, a.b * k} }
@@ -243,6 +251,8 @@ type hanamiScene struct {
 	starred  int // stars ever placed: where the next one sits
 	bells    []*hBell
 	ripples  []hRipple
+	rings    []hRipple // flat ellipses on the water: one per tool call
+	ringDebt float64   // rings owed: a fast replay thins them like sparks
 }
 
 func newHanamiScene(th *Theme) *hanamiScene {
@@ -261,6 +271,8 @@ func newHanamiScene(th *Theme) *hanamiScene {
 type hGeo struct {
 	W, H      float64 // the field in dots (2 per cell across, 4 down)
 	staffTop  int     // first cell row of the staff; h when there is none
+	waterRow  int     // first cell row of the water; staffTop when there is none
+	waterY    float64 // the waterline, in dots: the sky is above it
 	cx, cy, R float64
 }
 
@@ -270,10 +282,15 @@ func (s *hanamiScene) geo() hGeo {
 		staff = 0
 	}
 	rows := s.h - staff
-	g := hGeo{W: float64(2 * s.w), H: float64(4 * rows), staffTop: rows}
+	water := 0
+	if staff > 0 {
+		water = max(3, rows/5)
+	}
+	g := hGeo{W: float64(2 * s.w), H: float64(4 * rows), staffTop: rows, waterRow: rows - water}
+	g.waterY = float64(4 * g.waterRow)
 	g.R = math.Max(7, math.Min(g.H*0.26, g.W*0.105))
 	g.cx = g.W * 0.15
-	g.cy = g.H - g.R - 3
+	g.cy = g.waterY - g.R + 0.12*g.R // the disc stands in the water, a little dipped
 	return g
 }
 
@@ -318,7 +335,7 @@ func blossomSize(g hGeo, work float64) float64 {
 
 func (s *hanamiScene) lanternTarget(g hGeo, l *hLantern) (x, y float64) {
 	x = g.W * (0.42 + 0.54*frac(l.slot, 0.1))
-	y = 8 + frac(l.slot, 0.55)*g.H*0.42
+	y = 8 + frac(l.slot, 0.55)*g.waterY*0.42
 	return x + math.Sin(s.t*0.7+float64(l.slot))*1.6, y + math.Sin(s.t*0.5+float64(l.slot)*2)*0.8 // ambient sway
 }
 
@@ -453,6 +470,8 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 		}
 		if e.Kind == "tool" {
 			s.note(g, e.Tool, col, e.Session+"/"+e.Agent)
+			x, _ := s.origin(g, b, bl)
+			s.ring(g, x, e.Session+"/"+e.Agent, col)
 			return
 		}
 		s.cacheAcc += float64(e.CacheRead)
@@ -576,6 +595,21 @@ func (s *hanamiScene) ripple(r hRipple) {
 	}
 }
 
+// ring drops a ring on the water under x: one agent always lands at one depth.
+func (s *hanamiScene) ring(g hGeo, x float64, who string, col hrgb) {
+	depth := g.H - g.waterY
+	if depth < 6 {
+		return
+	}
+	s.ringDebt = math.Min(4, s.ringDebt+1/math.Sqrt(s.scale))
+	h := fnv.New32a()
+	h.Write([]byte(who))
+	y := g.waterY + 3 + float64(h.Sum32()%1000)/1000*(depth-6)
+	for ; s.ringDebt >= 1 && len(s.rings) < maxRings; s.ringDebt-- {
+		s.rings = append(s.rings, hRipple{x: x, y: y, r: 1, speed: 7.5, maxR: 9, alpha: 0.9, col: col})
+	}
+}
+
 // star leaves a merge's mark where its lantern was.
 func (s *hanamiScene) star(g hGeo, x, y float64, at time.Time) {
 	if len(s.stars) >= maxStars {
@@ -585,7 +619,7 @@ func (s *hanamiScene) star(g hGeo, x, y float64, at time.Time) {
 	k := float64(s.starred % maxStars) // a new star takes the place of the one it puts out
 	s.starred++
 	x, y = x+(3+1.6*math.Sqrt(k)*4)*math.Cos(2.4*k), y+(2+1.1*math.Sqrt(k)*4)*math.Sin(2.4*k)
-	s.stars = append(s.stars, hStar{u: math.Max(0.02, math.Min(0.98, x/g.W)), v: math.Max(0.04, math.Min(0.9, y/g.H)), at: at})
+	s.stars = append(s.stars, hStar{u: math.Max(0.02, math.Min(0.98, x/g.W)), v: math.Max(0.04, math.Min(0.9, y/g.waterY)), at: at})
 }
 
 // note strikes a tool call on its voice. It sounds until who calls again, so who's held note is released.
@@ -831,13 +865,19 @@ func (s *hanamiScene) Step(now time.Time) {
 	}
 	s.fire = fire
 
-	ripples := s.ripples[:0]
-	for _, r := range s.ripples {
+	s.ripples = spread(s.ripples, dt)
+	s.rings = spread(s.rings, dt)
+}
+
+// spread widens ripples and drops those that have reached their size.
+func spread(rs []hRipple, dt float64) []hRipple {
+	kept := rs[:0]
+	for _, r := range rs {
 		if r.r += r.speed * dt; r.r < r.maxR {
-			ripples = append(ripples, r)
+			kept = append(kept, r)
 		}
 	}
-	s.ripples = ripples
+	return kept
 }
 
 // withdrawn says a branch has nothing left to show: its place went to a newer session, what it bore has faded,
@@ -864,17 +904,52 @@ func (s *hanamiScene) Arrive(now time.Time) {
 	}
 }
 
+// The hours of the day, as the light they put over the waterline: additive colour, and how night it is.
+const horizonRows = 5
+
+var hanamiHours = []struct {
+	at    float64
+	c     hrgb
+	night float64
+}{
+	{0, hrgb{10, 10, 34}, 1}, {5, hrgb{12, 10, 38}, 1}, {6.5, hrgb{100, 44, 62}, 0.5}, {8, hrgb{84, 50, 62}, 0.1},
+	{9.5, hrgb{16, 30, 44}, 0}, {16, hrgb{18, 32, 46}, 0}, {17.5, hrgb{112, 72, 38}, 0.1}, {19.5, hrgb{92, 40, 62}, 0.5},
+	{21, hrgb{20, 14, 46}, 1}, {24, hrgb{10, 10, 34}, 1},
+}
+
+type hHour struct {
+	c     hrgb
+	night float64
+}
+
+// hour is the light of the hour of event time in the viewer's time zone; a scene with no events yet is at night.
+func (s *hanamiScene) hour() hHour {
+	h := 0.0
+	if !s.now.IsZero() {
+		t := s.now.Local()
+		h = float64(t.Hour()) + float64(t.Minute())/60
+	}
+	for i := 1; i < len(hanamiHours); i++ {
+		a, b := hanamiHours[i-1], hanamiHours[i]
+		if h <= b.at {
+			f := (h - a.at) / (b.at - a.at)
+			return hHour{a.c.mix(b.c, f), a.night + (b.night-a.night)*f}
+		}
+	}
+	return hHour{hanamiHours[0].c, 1}
+}
+
 func (s *hanamiScene) cacheLevel() float64 { return 1 - math.Exp(-s.cacheRate/60000) }
 
 // windTarget is how many wind dots fly: a few always (ambient), more with cache reads.
 func (s *hanamiScene) windTarget(g hGeo) float64 {
-	most := math.Min(float64(len(s.wind)), g.W*g.H/120)
+	most := math.Min(float64(len(s.wind)), g.W*g.waterY/120)
 	return most * (0.3 + 0.7*s.cacheLevel())
 }
 
 // busy says whether anything beyond the ambient breeze is in motion (the tests' definition of idle).
 func (s *hanamiScene) busy() bool {
-	return len(s.petals)+len(s.sparks)+len(s.notes)+len(s.fire)+len(s.ripples) > 0
+	return len(s.petals)+len(s.sparks)+len(s.notes)+len(s.fire)+len(s.ripples)+len(s.rings) > 0
 }
 
 // ---- drawing --------------------------------------------------------------------------
@@ -896,17 +971,18 @@ type hCell struct {
 // colour, so the dots of the front-most layer in a cell decide it, and among those the strongest: wind
 // behind a blossom does not grey the blossom, and two colours of a firework do not average to mud.
 type hCanvas struct {
-	w, h  int
-	maxY  int // dots at or below this row are not drawn: the staff is not part of the field
-	layer int
-	cells []hCell
+	w, h   int
+	lo, hi int // dots outside lo..hi are not drawn: the sky, then the water, are drawn in turn
+	sky    int // cell rows above the water: glow does not fall below
+	layer  int
+	cells  []hCell
 }
 
 var brailleBit = [4][2]uint8{{0x01, 0x08}, {0x02, 0x10}, {0x04, 0x20}, {0x40, 0x80}}
 
 func (cv *hCanvas) plot(x, y float64, c hrgb, a float64) {
 	xi, yi := int(math.Floor(x)), int(math.Floor(y))
-	if xi < 0 || yi < 0 || xi >= 2*cv.w || yi >= cv.maxY || a <= 0 {
+	if xi < 0 || yi < cv.lo || xi >= 2*cv.w || yi >= cv.hi || a <= 0 {
 		return
 	}
 	cell := &cv.cells[(yi/4)*cv.w+xi/2]
@@ -922,7 +998,7 @@ func (cv *hCanvas) glow(x, y, r float64, c hrgb, k float64) {
 	if r <= 0 || k <= 0 {
 		return
 	}
-	for cy := max(0, int((y-r)/4)); cy <= min(cv.maxY/4-1, int((y+r)/4)); cy++ {
+	for cy := max(0, int((y-r)/4)); cy <= min(cv.sky-1, int((y+r)/4)); cy++ {
 		for cx := max(0, int((x-r)/2)); cx <= min(cv.w-1, int((x+r)/2)); cx++ {
 			d := math.Hypot(float64(2*cx+1)-x, float64(4*cy+2)-y) / r
 			if d < 1 {
@@ -1054,7 +1130,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 	w, h := s.w, s.h
 	th := s.th
 	g := s.geo()
-	cv := &hCanvas{w: w, h: h, maxY: int(g.H), cells: make([]hCell, w*h)}
+	cv := &hCanvas{w: w, h: h, hi: int(g.waterY), sky: g.waterRow, cells: make([]hCell, w*h)}
 	bg, faint, muted, text := toRGB(th.Bg), toRGB(th.Faint), toRGB(th.Muted), toRGB(th.Text)
 	level := math.Max(0, math.Min(1.3, s.swell.x)) // how busy: the dynamics of the whole stage
 	fl := math.Max(0, math.Min(1, s.flash.x))
@@ -1065,9 +1141,14 @@ func (s *hanamiScene) draw(legend bool) []string {
 
 	// a merge lights the whole stage for a moment
 	if forte > 0.02 {
-		for i := range cv.cells[:g.staffTop*w] {
+		for i := range cv.cells[:g.waterRow*w] {
 			cv.cells[i].light = pink.mix(text, 0.5).times(0.16 * forte)
 		}
+	}
+
+	hour := s.hour()
+	if !th.NoColor {
+		s.horizon(cv, g, hour)
 	}
 
 	// wind: cache reads, behind everything; a far layer and a near one
@@ -1090,7 +1171,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 		}
 		for k := 0; k < n; k++ {
 			u := p.u - float64(k)/g.W
-			x, y := u*g.W, (p.v+0.035*math.Sin(5*u+p.phase+s.t*0.15))*g.H
+			x, y := u*g.W, (p.v+0.035*math.Sin(5*u+p.phase+s.t*0.15))*g.waterY
 			if d := (y - g.cy) / (2.2 * g.R); d > -1 && d < 1 { // the stream parts around the disc
 				side := 1.0
 				if d < 0 {
@@ -1122,8 +1203,8 @@ func (s *hanamiScene) draw(legend bool) []string {
 	gold := toRGB(th.Yellow)
 	for _, st := range s.stars {
 		age := math.Min(1, s.now.Sub(st.at).Seconds()/(3*hanamiKeep.Seconds()))
-		x, y := st.u*g.W, st.v*g.H
-		cv.glyph(int(x/2), int(y/4), '✶', bg.mix(gold, 0.6-0.4*age), false) // faint: a record, behind the work
+		x, y := st.u*g.W, st.v*g.waterY
+		cv.glyph(int(x/2), int(y/4), '✶', bg.mix(gold, (0.6-0.4*age)*(0.4+0.6*hour.night)), false) // faint: a record, behind the work; fainter by day
 	}
 
 	// the tree: branches, the canopy of closed blossoms, then the open ones
@@ -1222,7 +1303,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 		if a > 0.7 && f.twink > 6 {
 			cv.glow(pos.X, pos.Y, 6, f.col, 0.1*a)
 		}
-		if f.star && a > 0.6 && a < 0.9 && pos.Y < g.H {
+		if f.star && a > 0.6 && a < 0.9 && pos.Y < g.waterY {
 			cv.glyph(int(pos.X/2), int(pos.Y/4), '*', col, true)
 		}
 	}
@@ -1233,7 +1314,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 	grad := func(dx, dy float64) hrgb { return toRGB(th.gradientAt((dx-dy)*0.3536 + 0.5)) }
 	halo := grad(0.3, -0.3).mix(s.flashCol, fl)
 	cv.glow(g.cx, g.cy, rim*(2.5+0.6*math.Min(1, level)+0.6*fl)+2*math.Sin(s.t*0.9), halo, 0.27+0.22*math.Min(1, level)+0.3*fl+0.2*forte)
-	for cy := max(0, int((g.cy-rim)/4)-1); cy <= min(g.staffTop-1, int((g.cy+rim)/4)+1); cy++ {
+	for cy := max(0, int((g.cy-rim)/4)-1); cy <= min(g.waterRow-1, int((g.cy+rim)/4)+1); cy++ {
 		for cx := max(0, int((g.cx-rim)/2)-1); cx <= min(w-1, int((g.cx+rim)/2)+1); cx++ {
 			cell := &cv.cells[cy*w+cx]
 			inside := 0
@@ -1335,6 +1416,27 @@ func (s *hanamiScene) draw(legend bool) []string {
 		cv.glyph(int(x/2), int(y/4), '✦', text, true)
 	}
 
+	// the water: the waterline, the rings of tool calls, and the sky reflected, flatter and dimmer
+	if g.waterRow < g.staffTop {
+		cv.layer, cv.lo, cv.hi = 0, int(g.waterY), int(g.H)
+		for x := 0; x < 2*w; x += 2 {
+			if !inDisc(float64(x), g.waterY) {
+				cv.plot(float64(x), g.waterY, muted, 0.5)
+			}
+		}
+		cv.layer = 2
+		for _, r := range s.rings {
+			fade := r.alpha * (1 - r.r/r.maxR)
+			for k, n := 0, max(10, int(2*math.Pi*r.r/1.2)); k < n; k++ {
+				a := 2 * math.Pi * float64(k) / float64(n)
+				cv.plot(r.x+r.r*math.Cos(a), r.y+r.r/3*math.Sin(a), r.col, fade)
+			}
+		}
+		if !th.NoColor {
+			s.reflect(cv, g)
+		}
+	}
+
 	// the staff: a voice per tool kind. A note is struck at its call and sounds until its agent's next one.
 	if g.staffTop < h {
 		sheet := bg.mix(toRGB(th.Surface), 0.55)
@@ -1381,6 +1483,53 @@ func (s *hanamiScene) draw(legend bool) []string {
 	return cv.lines(th)
 }
 
+// horizon puts a band of light over the waterline in the colour of the hour, the same along a row.
+func (s *hanamiScene) horizon(cv *hCanvas, g hGeo, hour hHour) {
+	for i := 0; i < horizonRows && i < g.waterRow; i++ {
+		fall := 1 - float64(i)/horizonRows
+		band := hour.c.times(fall * fall)
+		for x := 0; x < cv.w; x++ {
+			c := &cv.cells[(g.waterRow-1-i)*cv.w+x]
+			c.light = c.light.lit(band)
+		}
+	}
+}
+
+// reflect lights the water cells with the sky above the waterline, mirrored and compressed: two rows of sky
+// to a row of water, shifted sideways by a shimmer that grows with depth, dimmer the deeper it is.
+func (s *hanamiScene) reflect(cv *hCanvas, g hGeo) {
+	bg := toRGB(s.th.Bg)
+	rows := g.staffTop - g.waterRow
+	seen := func(c *hCell) hrgb { // what a cell shows: light or body, and its dots or glyph by their cover
+		l := c.light
+		if c.filled {
+			l = c.fill.over(bg)
+		}
+		switch {
+		case c.ch != 0 && !c.filled:
+			l = l.lit(c.c.over(bg).times(0.35))
+		case c.mask != 0 && !c.filled:
+			l = l.lit(c.c.over(bg).times(c.a * math.Min(1, float64(bits.OnesCount8(c.mask))/3)))
+		}
+		return l
+	}
+	for j := 0; j < rows; j++ {
+		depth := float64(j) / float64(max(1, rows-1))
+		k := (0.42 - 0.22*depth) / 2
+		shift := int(math.Round(2 * depth * math.Sin(float64(g.waterRow+j)*1.7+s.t*0.9)))
+		for x := 0; x < cv.w; x++ {
+			sx := min(cv.w-1, max(0, x-shift))
+			var l hrgb
+			for d := 0; d < 2; d++ {
+				if r := g.waterRow - 1 - 2*j - d; r >= 0 {
+					l = l.lit(seen(&cv.cells[r*cv.w+sx]))
+				}
+			}
+			cv.cells[(g.waterRow+j)*cv.w+x].light = l.times(k)
+		}
+	}
+}
+
 // hanamiLegend says what every moving thing is; the scene's mapping in one place.
 var hanamiLegend = [][2]string{
 	{"●", "the disc: all the work. It swells and brightens with the rate of events"},
@@ -1396,6 +1545,7 @@ var hanamiLegend = [][2]string{
 	{"*✶", "hanabi: a merge lights the stage, and leaves a star for 6 h"},
 	{"✦", "a ringed star above the disc: a question waiting for the human"},
 	{"◌", "a ripple from the disc: the site manager's tick"},
+	{"⠒", "water: a ring a tool call, the sky mirrored. Horizon: the hour"},
 	{"", "colour: the agent's role, on blossoms, notes, streaks and petals"},
 	{"", "ambient, not data: the breath, the lanterns' sway, the slowest breeze"},
 }

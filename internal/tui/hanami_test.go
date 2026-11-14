@@ -676,3 +676,143 @@ func TestHanamiReplayLoopsAndReturnsToLive(t *testing.T) {
 		t.Fatal("p does not leave the replay")
 	}
 }
+
+// The sky ends at the waterline: nothing of the scene's own hangs below it, at any size.
+func TestHanamiSkyEndsAtTheWaterline(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {100, 30}, {140, 40}} {
+		s := newHanamiScene(NewTheme(true))
+		s.w, s.h = sz[0], sz[1]
+		g := s.geo()
+		if g.waterRow >= g.staffTop || g.waterY != float64(4*g.waterRow) || g.cy+g.R*0.88 > g.waterY+0.01 {
+			t.Fatalf("%v: no water, or the disc does not stand on it: %+v", sz, g)
+		}
+		for slot := 0; slot < hanamiSlots; slot++ {
+			b := &hBranch{slot: slot}
+			for u := 0.0; u <= 1; u += 0.02 {
+				if _, y := b.point(g, u); y >= g.waterY {
+					t.Fatalf("%v: branch %d reaches the water at %.2f", sz, slot, u)
+				}
+			}
+			if _, y := s.lanternTarget(g, &hLantern{slot: slot}); y >= g.waterY {
+				t.Fatalf("%v: lantern %d hangs in the water", sz, slot)
+			}
+			if _, y := bellAt(g, slot); y >= g.waterY {
+				t.Fatalf("%v: bell %d is in the water", sz, slot)
+			}
+		}
+		s.star(g, g.W, g.waterY+10, goldenNow)
+		if st := s.stars[0]; st.v*g.waterY >= g.waterY {
+			t.Fatalf("%v: a star in the water", sz)
+		}
+		// the row under the waterline holds the waterline's dots only
+		for _, c := range []rune(ansi.Strip(s.draw(false)[g.waterRow])) {
+			if c != ' ' && c != '⠁' {
+				t.Fatalf("%v: something is drawn through the waterline: %q", sz, c)
+			}
+		}
+	}
+	short := newHanamiScene(NewTheme(true))
+	short.w, short.h = 80, 12 // no staff, no water
+	if g := short.geo(); g.waterRow != g.staffTop || g.waterY != g.H {
+		t.Fatalf("a short screen has water: %+v", g)
+	}
+}
+
+func TestHanamiRingsOnTheWater(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	s.w, s.h = 100, 30
+	g := s.geo()
+	call := func(agent string, settled bool) {
+		s.Apply(ev("tool", 0, func(e *data.Event) { e.Agent, e.Role, e.Tool = agent, "coder", "edit" }), settled)
+	}
+	s.Apply(ev("spawn", 0, func(e *data.Event) { e.Agent, e.Role = "a1", "coder" }), false)
+	stepFor(s, goldenNow, 3*time.Second)
+	call("a1", true)
+	if len(s.rings) != 0 {
+		t.Fatal("a settled call dropped a ring")
+	}
+	call("a1", false)
+	bx, _ := s.origin(g, s.branches[0], s.branches[0].blossoms[0])
+	if r := s.rings; len(r) != 1 || r[0].x != bx || r[0].y < g.waterY || r[0].y >= g.H {
+		t.Fatalf("a call drops one ring on the water under its blossom: %+v", s.rings)
+	}
+	y := s.rings[0].y
+	stepFor(s, goldenNow, 2*time.Second)
+	call("a1", false)
+	if len(s.rings) != 1 || s.rings[0].y != y {
+		t.Fatal("one agent lands in two places")
+	}
+	for i := 0; i < 500; i++ {
+		call(fmt.Sprint("x", i), false)
+	}
+	if len(s.rings) != maxRings {
+		t.Fatalf("%d rings, want the cap %d", len(s.rings), maxRings)
+	}
+	stepFor(s, goldenNow, 2*time.Second)
+	if len(s.rings) != 0 {
+		t.Fatal("rings never fade")
+	}
+	s.scale, s.ringDebt = 60, 0 // a replay thins them like sparks
+	for i := 0; i < 60; i++ {
+		call("a1", false)
+	}
+	if n := len(s.rings); n < 6 || n > 9 {
+		t.Fatalf("a replay at x60 dropped %d rings of 60 calls", n)
+	}
+	for _, line := range s.draw(false) {
+		if strings.Contains(line, "\x1b") {
+			t.Fatal("no-colour output has an escape sequence")
+		}
+	}
+}
+
+func TestHanamiWaterMirrorsTheSky(t *testing.T) {
+	s := newHanamiScene(NewTheme(false))
+	s.w, s.h = 100, 30
+	g := s.geo()
+	cv := &hCanvas{w: s.w, h: s.h, hi: int(g.waterY), sky: g.waterRow, cells: make([]hCell, s.w*s.h)}
+	for x := 0; x < s.w; x++ { // whole rows: the shimmer moves a cell sideways
+		cv.cells[(g.waterRow-1)*s.w+x].light = hrgb{100, 60, 20}
+		cv.cells[(g.waterRow-3)*s.w+x].light = hrgb{100, 60, 20}
+	}
+	s.reflect(cv, g)
+	if cv.cells[g.waterRow*s.w+40].light.r == 0 || cv.cells[(g.waterRow+1)*s.w+40].light.r == 0 {
+		t.Fatal("a lit cell above the waterline has no lit mirror cell")
+	}
+	if deep, near := cv.cells[(g.staffTop-1)*s.w+40].light.r, cv.cells[g.waterRow*s.w+40].light.r; deep >= near {
+		t.Fatalf("the water is not dimmer with depth: %.1f against %.1f", deep, near)
+	}
+}
+
+func TestHanamiHorizonTellsTheHour(t *testing.T) {
+	at := func(h int) hHour {
+		s := newHanamiScene(NewTheme(false))
+		s.now = time.Date(2026, 11, 14, h, 0, 0, 0, time.Local)
+		return s.hour()
+	}
+	seen := map[hrgb]int{}
+	for _, h := range []int{3, 7, 12, 19} {
+		seen[at(h).c] = h
+	}
+	if len(seen) != 4 {
+		t.Fatalf("the band's colour is not different at 03:00, 07:00, 12:00 and 19:00: %v", seen)
+	}
+	if at(3).night != 1 || at(12).night != 0 || newHanamiScene(NewTheme(false)).hour().night != 1 {
+		t.Fatal("night is not night: 03:00, noon, and a scene with no events")
+	}
+	s := newHanamiScene(NewTheme(false))
+	s.w, s.h = 100, 30
+	g := s.geo()
+	cv := &hCanvas{w: s.w, h: s.h, hi: int(g.waterY), sky: g.waterRow, cells: make([]hCell, s.w*s.h)}
+	s.horizon(cv, g, at(19))
+	for r := g.waterRow - horizonRows; r < g.waterRow; r++ {
+		for x := 1; x < s.w; x++ {
+			if cv.cells[r*s.w+x].light != cv.cells[r*s.w].light {
+				t.Fatalf("row %d is not one colour along its length", r)
+			}
+		}
+	}
+	if cv.cells[(g.waterRow-1)*s.w].light.r <= cv.cells[(g.waterRow-horizonRows)*s.w].light.r {
+		t.Fatal("the band is not strongest at the line")
+	}
+}
