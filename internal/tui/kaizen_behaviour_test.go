@@ -378,7 +378,7 @@ func TestKaizenNullsShowDashes(t *testing.T) {
 // ---- sections ---------------------------------------------------------------------
 
 func TestKaizenPulseSections(t *testing.T) {
-	out := plain(kaizenModel(t, true, 140, 40, pagePulse))
+	out := plain(kaizenModel(t, true, 140, 50, pagePulse))
 	for _, want := range []string{"LANDED", "3 in flight", "COST / TASK", "$6.20", "↓ 44% vs earlier 10", "BRIEF → PR", "25m50s", "PR → MERGE", "5m45s", "FIRST PASS", "7/19", "rework 9% of cost",
 		"✦ 4 landed first-pass in a row · fx-quiet-refactor", "✦ record low cost: $2.31", "cost per task", "brief → pull request", "review rounds", "pull request → merge",
 		"v0.3.0", "defects caught by", "tests 5", "reviewer 39", "human 1", "14 open issues · 7 decisions · 7 acted on  → Board", "★"} {
@@ -452,6 +452,35 @@ func TestKaizenSiteManagerRecord(t *testing.T) {
 		"precision 0%  0 acted on of 1 with an outcome", "recall 0%  0 acted on of 1 that needed the human", "1 missed (0 suppressed first, 1 never fired)")
 }
 
+func TestKaizenTechLeadRecord(t *testing.T) {
+	pulse := func(s data.TechLead, w int) string {
+		doc := kaizenDoc(t)
+		doc.TechLead = s
+		m := fakeModel(true, w, 200)
+		setKaizen(m, doc, pagePulse)
+		out := plain(m)
+		return strings.Join(strings.Fields(out[strings.Index(out, "tech lead"):strings.Index(out, "open issues")]), " ")
+	}
+	has := func(out string, wants ...string) {
+		t.Helper()
+		for _, want := range wants {
+			if !strings.Contains(out, want) {
+				t.Errorf("lacks %q:\n%s", want, out)
+			}
+		}
+	}
+	for _, w := range []int{140, 60} {
+		has(pulse(kaizenDoc(t).TechLead, w), "9 came back 6 resolved 2 escalated 0 stopped 1 went to the lead unstarted",
+			"$1.18 per resolution", "3 lead wake-ups after hand-over over 20 landed tasks")
+	}
+	has(pulse(data.TechLead{}, 140), "nothing came back from the merge queue yet")
+	// resolutions without a price are unpriced, and no resolution has no cost per resolution
+	has(pulse(data.TechLead{CameBack: 2, Resolved: 2, Landed: 4}, 140), "unpriced per resolution", "0 lead wake-ups after hand-over over 4 landed tasks")
+	if out := pulse(data.TechLead{CameBack: 1, Escalated: 1, Cost: ptr(1.5)}, 140); strings.Contains(out, "per resolution") {
+		t.Errorf("no resolution, no cost per resolution:\n%s", out)
+	}
+}
+
 func TestKaizenStopReasonIsShownInFull(t *testing.T) {
 	why := "Should the hook payload keep the legacy session field? Two consumers still read it, and dropping it would break the replay tool until both are migrated."
 	for _, w := range []int{140, 100, 80, 60} {
@@ -469,7 +498,7 @@ func TestKaizenStopReasonIsShownInFull(t *testing.T) {
 
 func TestKaizenFlowSections(t *testing.T) {
 	out := plain(kaizenModel(t, true, 140, 100, pageFlow))
-	for _, want := range []string{"where the money went", "lead $35.85 28%", "rework 9% (subagent runs after the first review)", "where the time went", "building 8h19m 69%", "waiting for merge 2h16m 19%",
+	for _, want := range []string{"where the money went", "lead $32.65 26%", "rework 9% (subagent runs after the first review)", "where the time went", "building 8h19m 69%", "waiting for merge 2h16m 19%",
 		"fixture-alpha  18 tasks", "SLUG", "ROLES", "✓ landed", "▲ blocked", "◆ handed-over", "· dismissed", "● working"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("flow lacks %q:\n%s", want, out)
@@ -720,7 +749,7 @@ func TestKaizenFlowMixShowsAnAddedRole(t *testing.T) {
 	m := fakeModel(true, 140, 200)
 	setKaizen(m, doc, pageFlow)
 	out := plain(m)
-	for _, want := range []string{"planner $5.00", "planner 5%", "lead $35.85", "other $5.86", "coder 38%", "reviewer 20%", "other 14%", "lead 15%", "explorer 8%"} {
+	for _, want := range []string{"planner $5.00", "planner 5%", "lead $32.65", "other $5.86", "coder 38%", "reviewer 20%", "other 14%", "lead 15%", "explorer 8%"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("the legend and the chart name the new role beside the others: no %q\n%s", want, out)
 		}
@@ -1053,7 +1082,7 @@ func TestAnatomyOneVersionAndNone(t *testing.T) {
 
 func TestAnatomyRoleThatDidNotRunShowsDashes(t *testing.T) {
 	out := plain(kaizenModel(t, true, 140, 100, pageAnatomy))
-	if !strings.Contains(out, "lander    0 → 3     - → 6%") {
+	if !strings.Contains(out, "lander     0 → 3     - → 6%") {
 		t.Fatalf("the lander did not run before: its row shows - and both ns:\n%s", out)
 	}
 }

@@ -15,6 +15,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+os.environ.pop("FACTORY_ROLE", None)  # a tech lead session runs `make test`: the tests must not see its role
 BIN = Path(__file__).resolve().parent.parent / "bin" / "factory"
 os.environ.pop("FACTORY_HOME", None)  # the tests make their own homes; an ambient one would move the script's store
 _loader = importlib.machinery.SourceFileLoader("factory_bin", str(BIN))

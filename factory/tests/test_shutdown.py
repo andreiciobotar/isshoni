@@ -491,13 +491,13 @@ class StaleLinesTests(unittest.TestCase):
 
     def test_every_name_the_factory_writes_in_the_store_is_not_a_stranger(self):
         store = self.tmp / "store"
-        for name in ("events", "tasks", "feedback", "firings", "retros", "comments", "gh"):
+        for name in ("events", "tasks", "feedback", "firings", "retros", "comments", "gh", "techlead"):
             factory.log(name, {"ts": factory.now()})
         root = "/some/repo"
-        for kind, ext in (("dispatcher", "json"), ("comments", "json"), ("lander", "json"), ("watch", "lock"),
+        for kind, ext in (("dispatcher", "json"), ("comments", "json"), ("lander", "json"), ("watch", "lock"), ("tech-lead-a-task", "lock"),
                           ("lander", "lock"), ("word", "json"), ("word", "json.tmp"), ("dispatcher", "json.tmp"), ("comments", "json.tmp"), ("lander", "json.tmp")):
             factory.repo_state(root, kind, ext).write_text("x")
-        for name in ("tasks.jsonl", "events.jsonl", "settings.json", "settings.toml","watch.log", "hosts.json", "hosts.json.tmp",
+        for name in ("tasks.jsonl", "events.jsonl", "settings.json", "settings.toml", "watch.log", "tech-lead.log", "hosts.json", "hosts.json.tmp",
                      ".settings-ab12.tmp"):
             (store / name).write_text("x")
         for name in ("cache", "comments", "identity", "specs", "deliverables", "dashboard"):
