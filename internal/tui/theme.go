@@ -97,6 +97,8 @@ func (th *Theme) AgentColor(agent string) color.Color {
 		return th.Teal
 	case "coder":
 		return th.Blue
+	case "lander":
+		return mix(th.Yellow, th.Green, 0.5)
 	case "reviewer":
 		return th.Pink
 	case "general-purpose":
@@ -112,7 +114,7 @@ func (th *Theme) AgentColor(agent string) color.Color {
 }
 
 // agentOrder is the fixed order of the known agent types wherever agents are listed.
-var agentOrder = []string{"main", "coder", "reviewer", "explorer", "general-purpose", "Explore", "Plan", "fork"}
+var agentOrder = []string{"main", "coder", "reviewer", "explorer", "lander", "general-purpose", "Explore", "Plan", "fork"}
 
 // agentLess is the one agent ordering: the known types in agentOrder, then any other
 // type alphabetically; a plugin's agent sorts by its role, right after the bare type. Never by usage, so a colour keeps its place between sessions.

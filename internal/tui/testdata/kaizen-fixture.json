@@ -12,6 +12,7 @@
   "coder",
   "reviewer",
   "explorer",
+  "lander",
   "other"
  ],
  "repos": [
@@ -960,7 +961,8 @@
      "coder": 0.94,
      "reviewer": 0.55,
      "explorer": 0.18,
-     "other": 0.51
+     "lander": 0.2,
+     "other": 0.31
     },
     "rework": 0.0
    },
@@ -1001,7 +1003,8 @@
    "coder": 48.44,
    "reviewer": 24.96,
    "explorer": 10.36,
-   "other": 6.46
+   "lander": 1.2,
+   "other": 5.26
   },
   "mix": {
    "window": 5,
@@ -1124,7 +1127,8 @@
       "coder": 0.379545,
       "reviewer": 0.2,
       "explorer": 0.079545,
-      "other": 0.03038
+      "lander": 0.02,
+      "other": 0.01038
      }
     },
     {
@@ -1135,7 +1139,8 @@
       "coder": 0.379545,
       "reviewer": 0.2,
       "explorer": 0.079545,
-      "other": 0.030645
+      "lander": 0.02,
+      "other": 0.010645
      }
     },
     {
@@ -1146,7 +1151,8 @@
       "coder": 0.379545,
       "reviewer": 0.2,
       "explorer": 0.079545,
-      "other": 0.166667
+      "lander": 0.02,
+      "other": 0.146667
      }
     },
     {
@@ -1157,7 +1163,8 @@
       "coder": 0.379545,
       "reviewer": 0.2,
       "explorer": 0.079545,
-      "other": 0.178125
+      "lander": 0.02,
+      "other": 0.158125
      }
     },
     {
@@ -1168,7 +1175,8 @@
       "coder": 0.379545,
       "reviewer": 0.2,
       "explorer": 0.079545,
-      "other": 0.184091
+      "lander": 0.02,
+      "other": 0.164091
      }
     }
    ]

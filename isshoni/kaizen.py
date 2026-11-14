@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from . import metrics, transcript
 from .cli import fmt_duration
 
-ROLES = ("lead", "coder", "reviewer", "explorer", "other")
+ROLES = ("lead", "coder", "reviewer", "explorer", "lander", "other")
 DEFECT_KINDS = ("tests", "reviewer", "lead", "ci", "human", "other")
 STOP_KINDS = ("QUESTION", "BLOCKED", "OVERTIME")
 STATUSES = ("open", "accepted", "rejected", "done")

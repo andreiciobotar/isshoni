@@ -42,11 +42,11 @@ func TestKaizenDecodesTheFixtureAndPassesSince(t *testing.T) {
 		t.Fatalf("medians: %+v", s.Cost)
 	}
 	pts := s.Mix.Points
-	if !slices.Equal(doc.Roles, []string{"lead", "coder", "reviewer", "explorer", "other"}) || s.Mix.Window != 5 || len(pts) != 15 || pts[14].Share["other"] != 0.184091 || pts[14].Version != "0.3.0" {
+	if !slices.Equal(doc.Roles, []string{"lead", "coder", "reviewer", "explorer", "lander", "other"}) || s.Mix.Window != 5 || len(pts) != 15 || pts[14].Share["other"] != 0.164091 || pts[14].Version != "0.3.0" {
 		t.Fatalf("roles and mix: %v %+v", doc.Roles, s.Mix)
 	}
 	last := doc.Tasks[20]
-	if last.Slug != "fx-quiet-refactor" || !last.Landed || last.PR == nil || last.PR.Number != 120 || last.Cost == nil || last.Cost.Total != 2.31 || last.Rounds == nil || *last.Rounds != 1 {
+	if last.Slug != "fx-quiet-refactor" || !last.Landed || last.PR == nil || last.PR.Number != 120 || last.Cost == nil || last.Cost.Total != 2.31 || last.Cost.ByRole["lander"] != 0 || last.Rounds == nil || *last.Rounds != 1 {
 		t.Fatalf("task: %+v", last)
 	}
 	if doc.Tasks[3].Cost != nil || doc.Tasks[3].Rounds != nil || doc.Tasks[5].PR != nil || doc.Tasks[5].State != "dismissed" {
