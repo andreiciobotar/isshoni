@@ -10,7 +10,7 @@ It is taste, not procedure: who commits, reviews and lands is in your role file.
 
 ## The smallest complete design
 
-Complete comes first: the behavior asked for, with its security and validation, its wiring into the callers, its migration and its cleanup. Small is measured over the whole system, not in lines, and never by leaving a feature out.
+Complete comes first: the behavior asked for, with its security and validation, its wiring into every place that reaches it (callers, configuration, build), its migration and its cleanup. Small is measured over the whole system, not in lines, and never by leaving a feature out.
 
 Choose against a written target: what becomes true, what stays true, the interfaces and trust boundaries touched, the tests that show it, what is left out. The scope never moves.
 
@@ -28,9 +28,9 @@ Refused: building for a future nobody asked for (frameworks, extension points, f
 
 ## Building
 
-- Before writing, find where the behavior lives, how it is reached at run time, and the narrowest test that exercises it. Follow the repository's instructions and conventions, reuse its helpers, work in its toolchain, touch nothing unrelated.
+- Before writing, find where the behavior lives, how it is reached at run time, and the narrowest test that exercises it. Follow the repository's instructions and conventions, reuse its helpers, work in its toolchain, make no unrelated edit, and leave changes already in the worktree as you found them.
 - Check, do not assume: a fact from memory or a sample is a guess. Count them all, run the tool, read the source.
-- Build it end to end: the change is reachable from the real public entry point, not only from a test. Bring what the task needs and nothing else, and that covers code, error handling, security, tests, configuration and docs alike.
+- The change must be reachable from the real public entry point, not only from a test. Bring exactly what the task needs: its tests and docs, its configuration, its error handling and security, and the code itself.
 - Prefer a script to a model for anything a script can decide.
 - Code that deletes names the condition that makes deleting safe and keeps everything else; it never lists what to spare.
 - Every call that leaves the process has a timeout and a visible failure; one slow dependency must not blank the result.
@@ -40,14 +40,14 @@ Refused: building for a future nobody asked for (frameworks, extension points, f
 
 ## Then cut
 
-Once it works, go back over the change and take out what it does not need: repeated code, a level of nesting, a layer of indirection, a flag, a wrapper, a file, a comment. Stop when one more removal would cost needed behavior or clarity.
+Once it works, read the change again as if someone else wrote it, and delete: a comment, a file, a wrapper, a flag, a layer of indirection, a level of nesting, code that repeats other code. Keep going until the next deletion would lose behavior the task needs or make the code harder to follow.
 
 ## Proof
 
 - A test fails without the change it tests, waits for the event rather than the clock, and leaves no process behind.
 - Prove it where it runs: the narrow test of the real behavior, then integration, then an end-to-end run, then the repository's own checks. A failure is fixed and the whole set run again; so is the set after the last cut.
-- It is finished when the behavior works on the real path, the diff holds nothing but the change, the checks pass on that final diff, and whatever is unverified is named.
+- It is not finished until whatever is unverified is named, the checks have passed on the final diff, that diff holds only the change, and the behavior works on the real path.
 
 ## Words
 
-The reader bills you a dollar a word. So nothing is padding, nothing is said twice, no routine step is narrated and no claim is vague: statements are short and concrete, with the exact name, path, command or SHA. The outcome comes first, then each blocker, its owner and the next action. A doubt is stated as a doubt.
+The reader bills you a dollar a word. So nothing is padding, nothing is said twice, no routine step is narrated and no claim is vague: write the exact name, path, command or SHA instead of describing it, one short concrete claim to a sentence. The outcome comes first, then the next action, then each blocker with its owner. A doubt is stated as a doubt.
