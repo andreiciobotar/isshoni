@@ -17,6 +17,7 @@ const (
 	meterCells  = 20 // beyond this many slots the meter is a bar
 	baseMax     = 24
 	prMax       = 24
+	phaseMax    = 24 // PHASE keeps more than this only when every column fits at it
 	slugLeast   = 16
 	nameLeast   = 12 // cells the repository name keeps before the meter shrinks
 	bandDoLeast = 30 // cells the band's do cell needs to stay on its row
@@ -87,7 +88,7 @@ func (m *model) factoryLines(p paint, w, h int) block {
 			}
 			lines = append(lines, cols.header(p))
 			for _, t := range sortedTasks(r.st.Rows) {
-				lines = append(lines, m.taskRow(p, cols, t))
+				lines = append(lines, m.taskRow(p, cols, t, w)...)
 			}
 		}
 	}
@@ -117,7 +118,7 @@ func (m *model) prLine(r factoryRepo) string {
 
 // ---- what waits on the human ------------------------------------------------------
 
-// waitItem is a task that waits on the human: in review (its pull request ready, not a draft), or blocked.
+// waitItem is a task that waits on the human: in review (its pull request ready, not a draft), or blocked on the human.
 type waitItem struct {
 	repo string
 	task data.FactoryTask
@@ -132,7 +133,7 @@ func (m *model) waiting() []waitItem {
 			continue
 		}
 		for _, t := range r.st.Rows {
-			if (t.Phase == "review" && !t.PRDraft) || t.Phase == "blocked" {
+			if (t.Phase == "review" && !t.PRDraft) || t.WaitsOnHuman() {
 				items = append(items, waitItem{r.name, t})
 			}
 		}
@@ -416,6 +417,9 @@ func phaseLabel(phase string, long bool) string {
 func (m *model) phaseLook(t data.FactoryTask, long bool) (glyph, label string, c color.Color) {
 	th := m.th
 	label = phaseLabel(t.Phase, long)
+	if t.Phase == "blocked" && !t.WaitsOnHuman() {
+		label = "blocked on " + t.WaitsOn
+	}
 	switch t.Phase {
 	case "motion":
 		glyph = "●"
@@ -428,6 +432,9 @@ func (m *model) phaseLook(t data.FactoryTask, long bool) (glyph, label string, c
 	case "merged":
 		return "✓", label, m.mergedColor()
 	case "blocked":
+		if !t.WaitsOnHuman() {
+			return "▲", label, th.Muted // not waiting on you
+		}
 		return "▲", label, th.Orange
 	case "settled":
 		return "·", label, th.Faint
@@ -494,6 +501,9 @@ func (m *model) factoryCols(p paint, w int, tasks []data.FactoryTask) factoryCol
 		c.base = max(c.base, min(width(base), baseMax))
 		c.flags = max(c.flags, width(flagPills(p, t)))
 	}
+	if free := w - (2 + c.phase + c.flags + 4 + 2*3 + c.elapsed + c.pr + c.base); free < c.slug {
+		c.phase = min(c.phase, phaseMax)
+	}
 	for step := 0; ; step++ {
 		cc := c
 		if step >= 1 {
@@ -537,7 +547,9 @@ func (c factoryCols) header(p paint) string {
 	return c.join(p, f("SLUG", c.slug, false), f("PHASE", c.phase, false), f("ELAPSED", c.elapsed, true), f("PR", c.pr, false), f("BASE", c.base, false), f("FLAGS", c.flags, false))
 }
 
-func (m *model) taskRow(p paint, c factoryCols, t data.FactoryTask) string {
+// taskRow is a task's table line, and under a task blocked on someone else the reason it
+// gave, faint, from the PHASE column.
+func (m *model) taskRow(p paint, c factoryCols, t data.FactoryTask, w int) block {
 	th := m.th
 	glyph, label, col := m.phaseLook(t, m.w >= 100)
 	elapsed, pr := "-", prText(t)
@@ -554,14 +566,19 @@ func (m *model) taskRow(p paint, c factoryCols, t data.FactoryTask) string {
 		baseCol = th.Purple
 	}
 	phase := p.t
-	if t.Phase == "blocked" {
+	if t.WaitsOnHuman() {
 		phase = p.b
 	}
-	return c.join(p,
+	row := block{c.join(p,
 		p.t(cell(t.Slug, c.slug, false), th.Text),
 		fit(phase(glyph+" ", col)+phase(label, col), c.phase, p),
 		p.t(cell(elapsed, c.elapsed, true), th.Muted),
 		p.t(cell(pr, c.pr, false), prCol),
 		p.t(cell(base, c.base, false), baseCol),
-		fit(flagPills(p, t), c.flags, p))
+		fit(flagPills(p, t), c.flags, p))}
+	if reason := strings.Join(strings.Fields(t.StopSummary), " "); t.Phase == "blocked" && !t.WaitsOnHuman() && reason != "" {
+		indent := 2 + c.slug + 2
+		row = append(row, fit(p.sp(indent)+p.t(trunc(reason, max(1, w-indent-1)), th.Faint), w, p))
+	}
+	return row
 }

@@ -532,6 +532,7 @@ def collect(repo, sessions, limit_hours, prs=None):
         row["pr_state"], row["pr_url"], row["pr_head"], row["pr_base"], row["pr_draft"] = prs.get(branch, UNKNOWN_PR)
         row["state"] = declared.get(slug, {}).get("state")
         row["deliverable"] = declared.get(slug, {}).get("deliverable")
+        row["waits_on"] = (declared[slug].get("waits_on") or "human") if row["state"] == "blocked" else None
         since = epoch(declared.get(slug, {}).get("ts"))
         row["waited"] = None if since is None else max(0, int(now - since))
         row["phase"] = phase(row["pr_state"], mine if placed else None, row["state"])
@@ -800,8 +801,8 @@ def handed_over(repo):
     return any(r["state"] == "handed-over" and slug in here for slug, r in read_tasks(repo.root).items())
 
 
-def declare(repo, slug, role, state, deliverable=None):
-    extra = {"deliverable": deliverable} if deliverable else {}
+def declare(repo, slug, role, state, deliverable=None, waits_on=None):
+    extra = {k: v for k, v in (("deliverable", deliverable), ("waits_on", waits_on)) if v}
     log("tasks", {**record(repo.root, slug, role, None, os.environ.get("CLAUDE_CODE_SESSION_ID")),
                   "state": state, **extra})
 
@@ -1101,17 +1102,24 @@ def cmd_state(args):
     task = next((t for t in repo.tasks if inside(cwd, t["path"])), None)
     if not task:
         raise Fail("state: run it from inside a task worktree")
-    deliverable = args.deliverable
-    if (args.state == "handed-over") != bool(deliverable):
-        raise Fail("state: handed-over needs a deliverable, the other states take none")
+    slug = os.path.basename(task["path"])
+    deliverable = waits_on = None
+    if args.state == "blocked":
+        waits_on = args.deliverable
+        others = [os.path.basename(t["path"]) for t in repo.tasks if t is not task]
+        if waits_on and waits_on not in ("human", "dispatcher", *others):
+            raise Fail(f"state: blocked waits on human, dispatcher or the slug of another open task, not {waits_on}")
+    elif (args.state == "handed-over") != bool(args.deliverable):
+        raise Fail("state: " + ("handed-over needs a deliverable" if args.state == "handed-over" else "working takes none"))
+    else:
+        deliverable = args.deliverable
     if deliverable and not LINK_RE.match(deliverable):
         deliverable = os.path.realpath(os.path.expanduser(deliverable))
         if not os.path.exists(deliverable):
             raise Fail(f"state: deliverable {deliverable} does not exist")
         if inside(deliverable, task["path"]):
             raise Fail(f"state: deliverable {deliverable} is inside the worktree, which clean removes")
-    slug = os.path.basename(task["path"])
-    declare(repo, slug, "lead", args.state, deliverable)
+    declare(repo, slug, "lead", args.state, deliverable, waits_on)
     if args.state in ("working", "blocked"):
         to_draft(repo, task["branch"])
     print(f"{slug}: {args.state}")
@@ -4414,7 +4422,9 @@ def parse_args(argv):
     clean.add_argument("--dry-run", action="store_true")
     state = sub.add_parser("state", help="declare the state of the task whose worktree this is (a lead runs it)")
     state.add_argument("state", choices=STATES[:3])
-    state.add_argument("deliverable", nargs="?", help="with handed-over: a link, or a path outside the worktree")
+    state.add_argument("deliverable", nargs="?", metavar="deliverable|whom",
+                       help="with handed-over: a link, or a path outside the worktree; with blocked: whom it waits on, "
+                            "human (default), dispatcher or the slug of another open task")
     ack = sub.add_parser("ack", help="record the human's word on a task whose work was handed over")
     ack.add_argument("slug")
     ack.add_argument("state", choices=SETTLED)
