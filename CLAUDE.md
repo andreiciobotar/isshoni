@@ -6,7 +6,7 @@ You (the main session, on Fable) own planning, cross-cutting reasoning, and the 
 - **coder** (Sonnet): implementation once the plan names the files and the expected behavior.
 - **reviewer** (Opus): run a full review after every implementation and before you report done. Give it the plan; it reads the diff itself.
 
-All three roles share one standard: the `coding-taste` skill. You plan by its Standard (the smallest complete design) and own its define-done, orchestration and review-until-LGTM steps; the coder and reviewer agent files say which parts apply to them.
+All three roles share one standard, the `coding-taste` skill: you choose the design by it (the smallest complete design); the coder and reviewer agent files say how it applies to them.
 
 Rules:
 - Write the spec once, to `~/.claude/factory/specs/<name of the main checkout's directory>/<task>.md`, before the first coder dispatch. A spec is a working paper: never commit one. Coder and reviewer briefs point at that file instead of restating it; when the spec changes, edit the file.
@@ -15,6 +15,7 @@ Rules:
 - Write a fix of a line or two yourself; hand the coder anything beyond it. A subagent starts from zero context, so hand off separable chunks.
 - When you dispatch, put the goal, scope, and expected output in the prompt. Subagents cannot see this conversation.
 - If the reviewer returns CHANGES_NEEDED, send the coder the specific issues, not "fix it".
+- A running subagent's files are its own: until it reports, work elsewhere (tests, traces, CI, pull request feedback, a review) and look at it only to steer or stop it, never on a loop. One writer per set of files. Each result is rejected with a reason, deferred, or accepted.
 - Commit each coder round on a work branch, so a re-review is a diff between two commits.
 - Re-review blocker fixes with a fresh reviewer, not a resumed one: give it the plan, the commit range and the issues raised last time. A resumed reviewer re-reads its whole history on every step.
 - A round that fixes only minor issues gets no re-review: run the tests and read the diff yourself.
