@@ -528,8 +528,8 @@ func TestHanamiSpritesAreCapped(t *testing.T) {
 	if len(s.petals) > maxPetals || len(s.ripples) > maxRipples {
 		t.Fatalf("unbounded: %d petals, %d ripples", len(s.petals), len(s.ripples))
 	}
-	if len(s.briefs) > maxBriefs || len(s.rings) > maxRings {
-		t.Fatalf("unbounded: %d briefs, %d rings", len(s.briefs), len(s.rings))
+	if len(s.briefs) > maxBriefs {
+		t.Fatalf("unbounded: %d briefs", len(s.briefs))
 	}
 	for _, br := range s.branches {
 		if len(br.beads) > maxBeads {
@@ -690,131 +690,44 @@ func TestHanamiReplayLoopsAndReturnsToLive(t *testing.T) {
 	}
 }
 
-// The sky ends at the waterline: nothing of the scene's own hangs below it, at any size.
-func TestHanamiSkyEndsAtTheWaterline(t *testing.T) {
-	for _, sz := range [][2]int{{80, 24}, {100, 30}, {140, 40}} {
+// Nothing of the scene's own hangs below the field, at any size: the sky is all the way down to the staff.
+func TestHanamiNothingBelowTheField(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {100, 30}, {140, 40}, {80, 12}} {
 		s := newHanamiScene(NewTheme(true))
 		s.w, s.h = sz[0], sz[1]
 		g := s.geo()
-		if g.waterRow >= g.staffTop || g.waterY != float64(4*g.waterRow) || g.cy+g.R*0.88 > g.waterY+0.01 {
-			t.Fatalf("%v: no water, or the disc does not stand on it: %+v", sz, g)
+		if g.cy+g.R > g.H-3+0.01 {
+			t.Fatalf("%v: the disc sits below the field: %+v", sz, g)
 		}
 		for slot := 0; slot < hanamiSlots; slot++ {
 			b := &hBranch{slot: slot}
 			for u := 0.0; u <= 1; u += 0.02 {
-				if _, y := b.point(g, u); y >= g.waterY {
-					t.Fatalf("%v: branch %d reaches the water at %.2f", sz, slot, u)
+				if _, y := b.point(g, u); y >= g.H {
+					t.Fatalf("%v: branch %d reaches the staff at %.2f", sz, slot, u)
 				}
 			}
-			if _, y := s.lanternTarget(g, &hLantern{slot: slot}); y >= g.waterY {
-				t.Fatalf("%v: lantern %d hangs in the water", sz, slot)
+			if _, y := s.lanternTarget(g, &hLantern{slot: slot}); y >= g.H {
+				t.Fatalf("%v: lantern %d hangs below the field", sz, slot)
 			}
-			if _, y := bellAt(g, slot); y >= g.waterY {
-				t.Fatalf("%v: bell %d is in the water", sz, slot)
-			}
-		}
-		s.star(g, g.W, g.waterY+10, goldenNow)
-		if st := s.stars[0]; st.v*g.waterY >= g.waterY {
-			t.Fatalf("%v: a star in the water", sz)
-		}
-		// the disc stands on the water: its solid dots stop at the waterline
-		for _, c := range ansi.Strip(s.draw(false)[g.waterRow]) {
-			if c == '⣿' {
-				t.Fatalf("%v: the disc is drawn through the waterline", sz)
+			if _, y := bellAt(g, slot); y >= g.H {
+				t.Fatalf("%v: bell %d is below the field", sz, slot)
 			}
 		}
-	}
-	short := newHanamiScene(NewTheme(true))
-	short.w, short.h = 80, 12 // no staff, no water
-	if g := short.geo(); g.waterRow != g.staffTop || g.waterY != g.H {
-		t.Fatalf("a short screen has water: %+v", g)
-	}
-}
-
-func TestHanamiRingsOnTheWater(t *testing.T) {
-	s := newHanamiScene(NewTheme(true))
-	s.w, s.h = 100, 30
-	g := s.geo()
-	call := func(agent string, settled bool) {
-		s.Apply(ev("tool", 0, func(e *data.Event) { e.Agent, e.Role, e.Tool = agent, "coder", "edit" }), settled)
-	}
-	s.Apply(ev("spawn", 0, func(e *data.Event) { e.Agent, e.Role = "a1", "coder" }), false)
-	stepFor(s, goldenNow, 3*time.Second)
-	call("a1", true)
-	if len(s.rings) != 0 {
-		t.Fatal("a settled call dropped a ring")
-	}
-	call("a1", false)
-	bx, _ := s.origin(g, s.branches[0], s.branches[0].blossoms[0])
-	if r := s.rings; len(r) != 1 || r[0].x != bx || r[0].y < g.waterY || r[0].y >= g.H {
-		t.Fatalf("a call drops one ring on the water under its blossom: %+v", s.rings)
-	}
-	y := s.rings[0].y
-	stepFor(s, goldenNow, 2*time.Second)
-	call("a1", false)
-	if len(s.rings) != 1 || s.rings[0].y != y {
-		t.Fatal("one agent lands in two places")
-	}
-	for i := 0; i < 500; i++ {
-		call(fmt.Sprint("x", i), false)
-	}
-	if len(s.rings) != maxRings {
-		t.Fatalf("%d rings, want the cap %d", len(s.rings), maxRings)
-	}
-	stepFor(s, goldenNow, 2*time.Second)
-	if len(s.rings) != 0 {
-		t.Fatal("rings never fade")
-	}
-	s.scale, s.ringDebt = 60, 0 // a replay thins them like sparks
-	for i := 0; i < 60; i++ {
-		call("a1", false)
-	}
-	if n := len(s.rings); n < 6 || n > 9 {
-		t.Fatalf("a replay at x60 dropped %d rings of 60 calls", n)
-	}
-	for _, line := range s.draw(false) {
-		if strings.Contains(line, "\x1b") {
-			t.Fatal("no-colour output has an escape sequence")
+		s.star(g, g.W, g.H+10, goldenNow)
+		if st := s.stars[0]; st.v*g.H >= g.H {
+			t.Fatalf("%v: a star below the field", sz)
 		}
-	}
-}
-
-func TestHanamiWaterMirrorsTheSky(t *testing.T) {
-	s := newHanamiScene(NewTheme(false))
-	s.w, s.h = 100, 30
-	g := s.geo()
-	cv := &hCanvas{w: s.w, h: s.h, hi: int(g.waterY), sky: g.waterRow, cells: make([]hCell, s.w*s.h)}
-	for x := 0; x < s.w; x++ { // whole rows: the shimmer moves a cell sideways
-		cv.cells[(g.waterRow-1)*s.w+x].light = hrgb{100, 60, 20}
-	}
-	s.reflect(cv, g, hHour{})
-	if cv.cells[g.waterRow*s.w+40].light.r == 0 {
-		t.Fatal("a lit cell above the waterline has no lit mirror cell")
-	}
-	if deep, near := cv.cells[(g.staffTop-1)*s.w+40].light.r, cv.cells[g.waterRow*s.w+40].light.r; deep >= near {
-		t.Fatalf("the water is not dimmer with depth: %.1f against %.1f", deep, near)
-	}
-
-	// the whole sky is mirrored: a blossom's glow high up has light in the water under it
-	cv = &hCanvas{w: s.w, h: s.h, hi: int(g.waterY), sky: g.waterRow, cells: make([]hCell, s.w*s.h)}
-	cv.cells[2*s.w+40] = hCell{light: hrgb{120, 90, 160}}
-	s.reflect(cv, g, hHour{})
-	lit := false
-	for r := g.waterRow; r < g.staffTop; r++ {
-		for x := 38; x <= 42; x++ {
-			lit = lit || cv.cells[r*s.w+x].light.r > 0
+		lines := s.draw(false)
+		if len(lines) != sz[1] {
+			t.Fatalf("%v: %d lines", sz, len(lines))
 		}
-	}
-	if !lit {
-		t.Fatal("a cell at the top of the sky has no light in the water")
-	}
-	// a thin line is not a pillar: one dot of a branch lights the water far less than a lit cell
-	cv = &hCanvas{w: s.w, h: s.h, hi: int(g.waterY), sky: g.waterRow, cells: make([]hCell, s.w*s.h)}
-	cv.cells[(g.waterRow-1)*s.w+40] = hCell{mask: 1, a: 1, c: hrgb{200, 200, 200}}
-	cv.cells[(g.waterRow-1)*s.w+60] = hCell{light: hrgb{200, 200, 200}}
-	s.reflect(cv, g, hHour{})
-	if thin, lit := cv.cells[g.waterRow*s.w+40].light.r, cv.cells[g.waterRow*s.w+60].light.r; thin*4 > lit {
-		t.Fatalf("a one-dot line stands in the water: %.1f against %.1f", thin, lit)
+		for y := g.staffTop; y < len(lines); y++ {
+			for _, c := range ansi.Strip(lines[y]) {
+				if c >= 0x2800 && c <= 0x28ff {
+					t.Fatalf("%v: dots on the staff, row %d", sz, y)
+				}
+			}
+		}
 	}
 }
 
@@ -837,17 +750,20 @@ func TestHanamiHorizonTellsTheHour(t *testing.T) {
 	s := newHanamiScene(NewTheme(false))
 	s.w, s.h = 100, 30
 	g := s.geo()
-	cv := &hCanvas{w: s.w, h: s.h, hi: int(g.waterY), sky: g.waterRow, cells: make([]hCell, s.w*s.h)}
+	cv := &hCanvas{w: s.w, h: s.h, maxY: int(g.H), cells: make([]hCell, s.w*s.h)}
 	s.horizon(cv, g, at(19))
-	for r := g.waterRow - horizonRows; r < g.waterRow; r++ {
+	for r := g.staffTop - horizonRows; r < g.staffTop; r++ {
 		for x := 1; x < s.w; x++ {
 			if cv.cells[r*s.w+x].light != cv.cells[r*s.w].light {
 				t.Fatalf("row %d is not one colour along its length", r)
 			}
 		}
 	}
-	if cv.cells[(g.waterRow-1)*s.w].light.r <= cv.cells[(g.waterRow-horizonRows)*s.w].light.r {
-		t.Fatal("the band is not strongest at the line")
+	if foot, top := cv.cells[(g.staffTop-1)*s.w].light.r, cv.cells[(g.staffTop-horizonRows)*s.w].light.r; foot <= top || top > foot/3 {
+		t.Fatal("the glow is not strongest at the foot, easing to almost nothing above")
+	}
+	if cv.cells[(g.staffTop-horizonRows-1)*s.w].light != (hrgb{}) {
+		t.Fatal("the glow has an edge above its rows")
 	}
 }
 
@@ -958,7 +874,7 @@ func TestHanamiCirculation(t *testing.T) {
 	}
 	g := s.geo()
 	b := s.branches[0]
-	if x, y := b.run(g, nil, 1); x < 0 || x >= g.W || y < 0 || y >= g.waterY {
+	if x, y := b.run(g, nil, 1); x < 0 || x >= g.W || y < 0 || y >= g.H {
 		t.Fatalf("sap ends outside the sky, at %.0f,%.0f", x, y)
 	}
 
@@ -1000,7 +916,7 @@ func TestHanamiCirculation(t *testing.T) {
 	if len(s.bells) != 1 || s.bells[0].state != bellWaiting {
 		t.Fatal("a question from history waits at its bell at once")
 	}
-	if x, y := bellAt(g, 0); x > 10 || y >= g.waterY {
+	if x, y := bellAt(g, 0); x > 10 || y >= g.H {
 		t.Fatalf("the bell is not at the left edge of the sky: %.0f, %.0f", x, y)
 	}
 }
@@ -1065,43 +981,6 @@ func TestHanamiSmallWords(t *testing.T) {
 	}
 }
 
-// The water's glitter is a fixed pattern: the same every time, kept in the water, and plain without colour.
-func TestHanamiGlitterStaysOnTheWater(t *testing.T) {
-	for _, noColor := range []bool{false, true} {
-		for _, sz := range [][2]int{{80, 24}, {140, 40}} {
-			s := newHanamiScene(NewTheme(noColor))
-			s.w, s.h = sz[0], sz[1]
-			g := s.geo()
-			stepFor(s, goldenNow, 3*time.Second)
-			rnd := s.rnd
-			lines := s.draw(false)
-			if s.rnd != rnd || strings.Join(lines, "\n") != strings.Join(s.draw(false), "\n") {
-				t.Fatalf("%v: the glitter is not a fixed pattern", sz)
-			}
-			dashes := 0
-			for y, l := range lines {
-				for _, c := range ansi.Strip(l) {
-					if c < 0x2800 || c > 0x28ff {
-						continue
-					}
-					if y >= g.staffTop {
-						t.Fatalf("%v: braille below the field, row %d", sz, y)
-					}
-					if y > g.waterRow {
-						dashes++
-					}
-				}
-				if noColor && strings.Contains(l, "\x1b") {
-					t.Fatalf("%v: an escape sequence without colour", sz)
-				}
-			}
-			if dashes == 0 {
-				t.Fatalf("%v noColor %v: no glitter on the water", sz, noColor)
-			}
-		}
-	}
-}
-
 // A question asked again while its old bell's light is still going home is not lost.
 func TestHanamiQuestionAskedAgain(t *testing.T) {
 	s := newHanamiScene(NewTheme(true))
@@ -1117,15 +996,9 @@ func TestHanamiQuestionAskedAgain(t *testing.T) {
 	}
 }
 
-// Without colour the waterline is still there, and a word that cannot sit on free cells moves a row or is skipped.
-func TestHanamiNoColourWaterlineAndWords(t *testing.T) {
-	s := newHanamiScene(NewTheme(true))
-	s.w, s.h = 100, 30
-	g := s.geo()
-	if !strings.Contains(s.draw(false)[g.waterRow], "⠁") {
-		t.Fatal("no waterline without colour")
-	}
-	cv := &hCanvas{w: 20, h: 6, sky: 4, cells: make([]hCell, 120)}
+// A word that cannot sit on free cells moves a row or is skipped.
+func TestHanamiWordsFindFreeCells(t *testing.T) {
+	cv := &hCanvas{w: 20, h: 6, maxY: 16, cells: make([]hCell, 120)}
 	cv.cells[2*20+5].ch = 'x' // the word's row is blocked: it goes one row up
 	cv.word(4, 2, "abc", hrgb{})
 	if cv.cells[1*20+4].ch != 'a' || cv.cells[2*20+4].ch != 0 {
