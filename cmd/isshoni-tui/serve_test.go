@@ -843,13 +843,14 @@ func TestServeAFailedAuthenticationKeepsItsSlot(t *testing.T) {
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
 	t.Cleanup(unblock)
+	refused, second := newSigner(t), newSigner(t) // made here: newSigner may call t.Fatal
 	done := make(chan error, 1)
 	go func() {
 		// The first key is refused; the second is only asked for after that refusal.
 		_, err := gossh.Dial("tcp", addr, &gossh.ClientConfig{
 			User: "viewer",
 			Auth: []gossh.AuthMethod{gossh.PublicKeysCallback(func() ([]gossh.Signer, error) {
-				return []gossh.Signer{newSigner(t), blockingSigner{newSigner(t), asked, release}}, nil
+				return []gossh.Signer{refused, blockingSigner{second, asked, release}}, nil
 			})},
 			HostKeyCallback: gossh.InsecureIgnoreHostKey(),
 			Timeout:         10 * time.Second,
