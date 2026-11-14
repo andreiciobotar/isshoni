@@ -388,7 +388,7 @@ class AckTests(unittest.TestCase):
 
 DEFAULT_SETTINGS = {
     "worktree_cap": 5, "reserve_percent": 10, "task_time_limit_hours": 2, "lead_permission_mode": "auto",
-    "lean_start": True, "dispatchers": None, "lgtm_from_author": True, "monitor": None,
+    "lean_start": True, "mode": "single", "dispatchers": None, "lgtm_from_author": True, "monitor": None,
     "models": {"dispatcher": "fable", "lead": "fable", "explorer": "haiku", "coder": "sonnet", "reviewer": "opus",
                "lander": "sonnet", "site_manager": "sonnet", "courier": "haiku", "tech_lead": "opus"}}
 
@@ -468,6 +468,7 @@ task_time_limit_hours = 0.5
 [sessions]
 lead_permission_mode = "plan"
 lean_start = false
+mode = "team"
 dispatchers = ["dispatcher-a"]
 [merging]
 lgtm_from_author = false
@@ -476,7 +477,7 @@ monitor = "/bin/isshoni"
 ''')
         self.assertEqual(got, {
             "worktree_cap": 2, "reserve_percent": 25, "task_time_limit_hours": 0.5, "lead_permission_mode": "plan",
-            "lean_start": False, "dispatchers": ["dispatcher-a"], "lgtm_from_author": False, "monitor": "/bin/isshoni",
+            "lean_start": False, "mode": "team", "dispatchers": ["dispatcher-a"], "lgtm_from_author": False, "monitor": "/bin/isshoni",
             "models": {"dispatcher": "opus", "lead": "claude-opus-4-1[1m]", "explorer": "sonnet", "coder": "haiku",
                        "reviewer": "fable", "lander": "claude-haiku-4-5", "site_manager": "opus", "courier": "sonnet",
                        "tech_lead": "haiku"}})
@@ -496,7 +497,8 @@ monitor = "/bin/isshoni"
                 ("limits", "task_time_limit_hours", "true"), ("limits", "reserve_percent", "true"),
                 ("limits", "reserve_percent", "-1"), ("limits", "reserve_percent", "101"), ("limits", "reserve_percent", "2.5"),
                 ("limits", "reserve_percent", '"10"'), ("sessions", "lead_permission_mode", '"yolo"'),
-                ("sessions", "lean_start", '"yes"'), ("sessions", "lean_start", "1"),
+                ("sessions", "lean_start", '"yes"'), ("sessions", "lean_start", "1"), ("sessions", "mode", '"both"'),
+                ("sessions", "mode", '""'), ("sessions", "mode", "true"),
                 ("sessions", "dispatchers", '"a"'), ("sessions", "dispatchers", "[1]"), ("sessions", "dispatchers", '[""]'),
                 ("merging", "lgtm_from_author", '"no"'), ("merging", "lgtm_from_author", "0"),
                 ("paths", "monitor", '""'), ("paths", "monitor", "3")):
@@ -603,10 +605,16 @@ class SetTests(InStore):
             self.assertEqual(factory.set_setting("limits.worktree_cap", "5"), "set limits.worktree_cap = 5")  # the default, new file
             self.assertTrue((self.dir / "sub" / "settings.toml").exists())
 
+    def test_the_mode_is_set_like_its_neighbours(self):
+        self.assertEqual(self.set("sessions.mode", "team", text=None), 'set sessions.mode = "team"')
+        self.assertEqual(self.load()["mode"], "team")
+        self.assertEqual(self.set("sessions.mode", "single"), 'set sessions.mode = "single"')
+        self.assertEqual(self.load()["mode"], "single")
+
     def test_an_invalid_value_leaves_the_file_byte_identical(self):
         for key, value in (("limits.worktree_cap", "0"), ("limits.worktree_cap", "many"), ("models.coder", "sonet"),
                            ("sessions.lean_start", "maybe"), ("sessions.dispatchers", "a,b"), ("paths.monitor", " "),
-                           ("sessions.lead_permission_mode", "yolo"), ("nope.key", "1"), ("limits.nope", "1")):
+                           ("sessions.lead_permission_mode", "yolo"), ("sessions.mode", "both"), ("nope.key", "1"), ("limits.nope", "1")):
             with self.subTest(f"{key} {value}"):
                 self.path.write_text(HAND_EDITED)
                 with self.assertRaises(factory.Fail):
@@ -910,6 +918,34 @@ class NewTests(unittest.TestCase):
                 "Your time limit is 120 minutes. Your brief follows.\n\ndo it"]
         self.assertEqual(fake.calls[-1], want)
 
+    def test_the_mode_reaches_the_argv_and_the_started_event(self):
+        roles = BIN.resolve().parent.parent / "roles"
+        single = (roles / "lead.md").read_text()
+        team = single + "\n\n" + (roles / "lead-team.md").read_text()
+        denied = ["Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
+                  "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)"]
+        cases = [([], {"mode": "team"}, "team"), (["--mode", "team"], {}, "team"),
+                 (["--mode", "single"], {"mode": "team"}, "single"), ([], {}, "single")]
+        for extra, settings, mode in cases:
+            for lean in (True, False):
+                with self.subTest(extra=extra, settings=settings, lean=lean), mock.patch.object(factory, "task_event") as event:
+                    code, _, err, fake = invoke(self.ARGS + extra, self.answers([], (), self.OK),
+                                                "[sessions]\n" + "".join(f"{k} = {json.dumps(v)}\n" for k, v in {**settings, "lean_start": lean}.items()))
+                    argv = fake.calls[-1]
+                    rules = argv.index("--append-system-prompt")
+                    self.assertEqual(code, 0, err)
+                    self.assertEqual(event.call_args.kwargs["mode"], mode)
+                    self.assertEqual(argv[rules + 1], team if mode == "team" else single)
+                    self.assertTrue(argv[-1].endswith("do it"))
+                    self.assertEqual(rules + 2, len(argv) - 1)
+                    self.assertEqual("--disallowedTools" in argv, mode == "team")
+                    if mode == "team":
+                        self.assertEqual(argv[rules - len(denied) - 1:rules], ["--disallowedTools", *denied])
+
+    def test_a_mode_that_is_not_one_is_refused(self):
+        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+            factory.parse_args(self.ARGS + ["--mode", "both"])
+
     def test_lean_start_off_launches_the_old_argv_without_listing_plugins(self):
         with mock.patch.object(factory.time, "time", return_value=1794610677):
             _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), '[sessions]\nlean_start = false\n')
@@ -971,7 +1007,7 @@ class NewTests(unittest.TestCase):
         argv = fake.calls[-1]
         self.assertEqual(argv[argv.index("--model") + 1], "opus")
         self.assertEqual(started, [("TaskStarted", "demo-task", {
-            "base": "main", "lead_model": "opus",
+            "base": "main", "lead_model": "opus", "mode": "single",
             "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet", "reviewer": "opus"}})])
         started.clear()
         with mock.patch.object(factory, "task_event", lambda kind, repo, slug, **kw: started.append((kind, slug, kw))):
