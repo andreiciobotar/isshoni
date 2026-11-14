@@ -35,6 +35,13 @@ DEFAULT_STORE = Path("~/.claude/factory")
 STORE = Path(os.environ.get("FACTORY_HOME") or DEFAULT_STORE)
 SETTINGS_PATH = STORE / "settings.json"
 IDENTITY = STORE / "identity"
+CACHE = STORE / "cache"
+GH_TIMEOUT = 30
+GH_SLOW = 2
+PR_TIMEOUT = 10
+PR_BUDGET = 20
+PR_LIST_LIMIT = 100
+STATUS_PR_FIELDS = "state,url,headRefOid,baseRefName,headRefName"
 KEEP_MONTHS = 12
 BOUND_RE = re.compile(r"\d{4}-\d{2}(-\d{2}(T\d{2}(:\d{2}(:\d{2}Z?)?)?)?)?")
 WORKTREE_RE = re.compile(r"(.*?)/\.claude/worktrees/([^/]+)(?:/|$)")
@@ -72,9 +79,11 @@ def why(e):
 
 
 def run(argv, cwd=None, timeout=None, input=None, env=None):
-    """The only place a subprocess starts. Returns (returncode, stdout, stderr). `gh` acts as the App when an identity is installed.
+    """The only place a subprocess starts. Returns (returncode, stdout, stderr). `gh` acts as the App when an identity
+    is installed, gets GH_TIMEOUT seconds unless told otherwise, and a call that is slow or fails is logged to gh-YYYY-MM.jsonl.
     A `claude` child gets no `ANTHROPIC_LOG`: its debug logging would share the stdout that is read as JSON."""
     if argv[0] == "gh":
+        timeout = timeout or GH_TIMEOUT
         try:
             if found := acting_identity(cwd):
                 env = {**os.environ, "GH_TOKEN": app_token(*found)}
@@ -82,13 +91,22 @@ def run(argv, cwd=None, timeout=None, input=None, env=None):
             return 1, "", why(e)
     if argv[0] == "claude":
         env = {k: v for k, v in (os.environ if env is None else env).items() if k != "ANTHROPIC_LOG"}
+    started = time.monotonic()
     try:
         p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, input=input, env=env)
+        result = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
-        return 124, "", "timed out"
+        result = 124, "", "timed out"
     except OSError as e:
-        return 127, "", str(e)
-    return p.returncode, p.stdout, p.stderr
+        result = 127, "", str(e)
+    seconds = time.monotonic() - started
+    if argv[0] == "gh" and (seconds > GH_SLOW or result[0] != 0):
+        try:
+            log("gh", {"ts": now(), "argv": argv, "cwd": cwd, "seconds": round(seconds, 1), "rc": result[0],
+                       "error": (result[2].strip().splitlines() or [""])[0]})
+        except OSError:  # the log only helps debugging
+            pass
+    return result
 
 
 def validate_slug(slug):
@@ -251,23 +269,113 @@ def sessions_in(sessions, root, path):
     return mine
 
 
-def pull_request(repo, branch):
-    """(state, url, head sha, base branch); state is 'unknown' when gh cannot answer."""
-    rc, out, _ = run(
-        ["gh", "pr", "list", "--head", branch, "--state", "all", "--limit", "1",
-         "--json", "state,url,headRefOid,baseRefName"], cwd=repo.root)
+UNKNOWN_PR = ("unknown", "", "", "")
+
+
+def pr_fields(pr):
+    """(state, url, head sha, base branch) of one entry of `gh pr list --json`."""
+    if not isinstance(pr, dict) or not isinstance(pr.get("state"), str):
+        return UNKNOWN_PR
+    return pr["state"].lower(), pr.get("url", ""), pr.get("headRefOid", ""), pr.get("baseRefName", "")
+
+
+def gh_list(repo, *args, timeout=PR_TIMEOUT):
+    """(list of what `gh pr list` printed, None) or (None, the one-line reason it could not)."""
+    rc, out, err = run(["gh", "pr", "list", *args, "--json", STATUS_PR_FIELDS], cwd=repo.root, timeout=timeout)
     try:
         prs = json.loads(out)
     except ValueError:
         prs = None
-    if rc != 0 or not isinstance(prs, list):
-        return "unknown", "", "", ""
-    if not prs:
-        return "none", "", "", ""
-    pr = prs[0]
-    if not isinstance(pr, dict) or not isinstance(pr.get("state"), str):
-        return "unknown", "", "", ""
-    return pr["state"].lower(), pr.get("url", ""), pr.get("headRefOid", ""), pr.get("baseRefName", "")
+    if rc == 0 and isinstance(prs, list):
+        return (prs, None) if all(isinstance(pr, dict) for pr in prs) else (None, "gh answered with an unexpected shape")
+    return None, f"timed out after {timeout:.0f} s" if rc == 124 else (err.strip().splitlines() or ["gh failed"])[0]
+
+
+def pull_request(repo, branch, timeout=PR_TIMEOUT):
+    """(state, url, head sha, base branch); state is 'unknown' when gh cannot answer."""
+    prs, _ = gh_list(repo, "--head", branch, "--state", "all", "--limit", "1", timeout=timeout)
+    if prs is None:
+        return UNKNOWN_PR
+    return pr_fields(prs[0]) if prs else ("none", "", "", "")
+
+
+def needed_branches(repo):
+    """The task branches and the recorded bases that still exist locally: the pull requests a status row reads."""
+    needed = [wt["branch"] for wt in repo.tasks if wt["branch"]]
+    for branch in list(needed):
+        base = repo.git("config", "--get", f"branch.{branch}.factoryBase")[1].strip()
+        if base and base not in needed and repo.git("rev-parse", "--verify", "--quiet", f"refs/heads/{base}")[0] == 0:
+            needed.append(base)
+    return needed
+
+
+def ask_pull_requests(repo, needed):
+    """({branch: pull request}, None) from GitHub for `needed`: one `gh pr list`, and for a branch a full list lacks one
+    call of its own, all within PR_BUDGET seconds. Else (None, the one-line reason); never a partial answer."""
+    deadline = time.monotonic() + PR_BUDGET
+    listed, error = gh_list(repo, "--state", "all", "--limit", str(PR_LIST_LIMIT))
+    if listed is None:
+        return None, error
+    first = {}
+    for pr in listed:
+        first.setdefault(pr.get("headRefName"), pr)
+    found = {}
+    for b in needed:
+        if b in first:
+            found[b] = pr_fields(first[b])
+        elif len(listed) >= PR_LIST_LIMIT:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None, f"no answer within {PR_BUDGET} s"
+            found[b] = pull_request(repo, b, min(PR_TIMEOUT, left))
+        else:
+            found[b] = ("none", "", "", "")
+    if UNKNOWN_PR in found.values():
+        return None, "GitHub could not say for every branch"
+    return found, None
+
+
+def pull_requests(repo, cached=False, max_age=0):
+    """({branch: pull request}, as_of, error, fetched) for the branches the rows need, for `status` alone: through the
+    disk cache. One ask of GitHub unless `cached`, or the last attempt (recorded in the cache, failed or not) is younger
+    than `max_age` seconds: a failed one is not repeated, a successful one is reused when it holds every branch. A failed
+    ask keeps the cached values (as_of is theirs) and says why in `error`; with none, a branch is 'unknown'."""
+    needed = needed_branches(repo)
+    if not needed:
+        return {}, None, None, False
+    path = CACHE.expanduser() / f"prs-{hashlib.sha256(repo.root.encode()).hexdigest()[:16]}.json"
+    try:
+        stored = json.loads(path.read_text())
+        as_of = None if stored["as_of"] is None else float(stored["as_of"])
+        held = {b: tuple(v) for b, v in stored["prs"].items() if isinstance(v, list) and len(v) == 4}
+        asked, failure = stored.get("asked"), stored.get("error")
+        asked = float(asked) if asked is not None else as_of
+        failure = failure if isinstance(failure, str) and failure else None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        as_of, held, asked, failure = None, {}, None, None
+    have = {b: held.get(b, UNKNOWN_PR) for b in needed}
+    if cached:
+        return have, as_of, None, False
+    if asked is not None and time.time() - asked < max_age:
+        if failure:
+            return have, as_of, failure, False
+        if all(b in held for b in needed):
+            return have, as_of, None, False
+    fetched, error = ask_pull_requests(repo, needed)
+    at = time.time()
+    if fetched is not None:
+        as_of, held = at, fetched
+    tmp = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"as_of": as_of, "asked": at, "error": error, "prs": held}, f)
+        os.replace(tmp, path)
+    except OSError:  # the cache only saves asks
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
+    return (fetched if fetched is not None else have), as_of, error, fetched is not None
 
 
 def session_block(mine):
@@ -311,12 +419,15 @@ def base_counts(repo, base, prs):
     return not (pr[0] == "merged" and pr[3] == repo.default)
 
 
-def collect(repo, sessions, limit_hours):
-    """One row per task worktree; `sessions` is None when they cannot be listed."""
+def collect(repo, sessions, limit_hours, prs=None):
+    """One row per task worktree; `sessions` is None when they cannot be listed. `prs` is the batch of `pull_requests`,
+    asked for here (always from GitHub) when the caller has none."""
     now = time.time()
     placed = sessions is not None and not unplaced_block(sessions)
     declared = read_tasks(repo.root)
-    prs = {wt["branch"]: pull_request(repo, wt["branch"]) for wt in repo.tasks if wt["branch"]}
+    if prs is None:  # not through the cache: what GitHub says now, 'unknown' when it cannot say
+        needed = needed_branches(repo)
+        prs = (ask_pull_requests(repo, needed)[0] if needed else {}) or {b: UNKNOWN_PR for b in needed}
     rows = []
     for wt in repo.tasks:
         path, branch = wt["path"], wt["branch"]
@@ -741,7 +852,8 @@ def cmd_status(args):
     repo = Repo()
     settings = load_settings()
     cap = settings["worktree_cap"]
-    rows = collect(repo, list_sessions(), settings["task_time_limit_hours"])
+    prs, as_of, pr_error, fetched = pull_requests(repo, args.cached, args.max_age)
+    rows = collect(repo, list_sessions(), settings["task_time_limit_hours"], prs)
     counts = {key: sum(r["phase"] == p for r in rows)
               for key, p in (("blocked", "blocked"), ("in_review", "review"), ("merged", "merged"),
                              ("settled", "settled"))}
@@ -756,7 +868,8 @@ def cmd_status(args):
     if args.json:
         doc = {"rows": rows, "cap": cap, "open": len(rows), **counts,
                "leftover_agent_worktrees": repo.leftover, "outside_worktrees": repo.outside, "identity": bot or None,
-               "repository_selection": stored and stored.get("repository_selection")}
+               "repository_selection": stored and stored.get("repository_selection"),
+               "prs": {"as_of": as_of, "error": pr_error}}
         print(json.dumps(doc, indent=2))
         return 0
     now = time.time()
@@ -773,6 +886,9 @@ def cmd_status(args):
     if rows:
         for row in table:
             print("  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip())
+    if pr_error or (as_of is not None and not fetched):
+        since = "not fetched yet" if as_of is None else f"as of {age(as_of, now)}" + ("" if age(as_of, now) == "now" else " ago")
+        print(f"pull requests {since}" + (f" (GitHub: {pr_error})" if pr_error else ""))
     print(f"in motion {counts['in_motion']}/{cap} ({counts['blocked']} blocked); "
           f"waiting for review {counts['in_review']}; merged, not cleaned {counts['merged']}; "
           f"settled, not cleaned {counts['settled']}; leftover agent worktrees {repo.leftover}; "
@@ -2518,7 +2634,7 @@ def github_api(method, path, bearer=None, body=None):
     data = json.dumps(body).encode() if body is not None else b"" if method == "POST" else None
     request = urllib.request.Request(GITHUB + path, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=10) as response:
             status, raw = response.status, response.read()
     except urllib.error.HTTPError as e:
         status, raw = e.code, e.read()
@@ -3174,6 +3290,9 @@ def parse_args(argv):
     new.add_argument("--base", help="slug of an open task to stack this task on")
     status = sub.add_parser("status", help="one row per task worktree")
     status.add_argument("--json", action="store_true")
+    status.add_argument("--cached", action="store_true", help="never contact GitHub: pull requests come from the cache")
+    status.add_argument("--max-age", type=float, default=0, metavar="SECONDS",
+                        help="contact GitHub only when the cache is older than this or lacks a branch (default 0: always)")
     clean = sub.add_parser("clean", help="remove finished tasks")
     clean.add_argument("--dry-run", action="store_true")
     state = sub.add_parser("state", help="declare the state of the task whose worktree this is (a lead runs it)")

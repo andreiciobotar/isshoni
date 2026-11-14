@@ -49,7 +49,7 @@ func TestShareConcurrentIdenticalCallsRunOneProcess(t *testing.T) {
 			if _, err := r.Agents(context.Background(), "7d"); err != nil {
 				t.Error(err)
 			}
-			if _, err := r.FactoryStatus(context.Background(), repo); err != nil {
+			if _, err := r.FactoryStatus(context.Background(), repo, false); err != nil {
 				t.Error(err)
 			}
 		})
@@ -126,7 +126,7 @@ func TestShareForgetForcesARerun(t *testing.T) {
 	ctx := context.Background()
 	repo := t.TempDir()
 	for range 2 {
-		if _, err := r.FactoryStatus(ctx, repo); err != nil {
+		if _, err := r.FactoryStatus(ctx, repo, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -134,7 +134,7 @@ func TestShareForgetForcesARerun(t *testing.T) {
 		t.Fatalf("%d runs before Forget, want 1", n)
 	}
 	r.Forget()
-	if _, err := r.FactoryStatus(ctx, repo); err != nil {
+	if _, err := r.FactoryStatus(ctx, repo, false); err != nil {
 		t.Fatal(err)
 	}
 	if n := calls(t, dir, "factory"); n != 2 {

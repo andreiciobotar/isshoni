@@ -38,11 +38,14 @@ type SiteManager struct {
 	Recall           *float64 `json:"recall"`
 }
 
-// KaizenRepo says whether the pull requests of one repository could be read.
+// KaizenRepo says whether the pull requests of one repository could be read, and how old
+// they are.
 type KaizenRepo struct {
 	Repo     string `json:"repo"`
 	RepoPath string `json:"repo_path"`
-	PRs      string `json:"prs"` // "ok", else why gh could not be used
+	PRs      string `json:"prs"`       // "ok" when pull request data was applied, else why gh could not be used
+	PRsAsOf  string `json:"prs_as_of"` // ISO time of the cached data; empty when there is none
+	PRsError string `json:"prs_error"` // why this run could not refresh it; empty when it could
 }
 
 type KaizenVer struct {
@@ -270,10 +273,13 @@ type KaizenOutbox struct {
 	Entries   []OutboxEntry `json:"entries"`
 }
 
-// Kaizen runs `isshoni kaizen [--since X] --json`.
-func (r *Runner) Kaizen(ctx context.Context, since string) (*Kaizen, error) {
+// Kaizen runs `isshoni kaizen [--since X] [--cached] --json`; cached never asks GitHub.
+func (r *Runner) Kaizen(ctx context.Context, since string, cached bool) (*Kaizen, error) {
 	var out Kaizen
 	args := append([]string{"kaizen"}, sinceArgs(since)...)
+	if cached {
+		args = append(args, "--cached")
+	}
 	if err := r.run(ctx, &out, args...); err != nil {
 		return nil, err
 	}

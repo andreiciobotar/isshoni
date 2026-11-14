@@ -74,6 +74,19 @@ func FmtDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh%02dm", m/60, m%60)
 }
 
+// ago renders how long ago something was, to one unit: 42s, 12m, 3h, 2d.
+func ago(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", max(0, int(d.Seconds())))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(d.Hours())/24)
+}
+
 // FmtDurationMS formats a millisecond count, "-" when nil.
 func FmtDurationMS(ms *float64) string {
 	if ms == nil {
