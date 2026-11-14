@@ -208,7 +208,7 @@ class MergeInOrderTests(Loop):
         self.sim.add(1, approved=False, conflicts=["a.txt"])
         self.sim.add(2, approved=False)
         code, out, _ = self.go("lander")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
         self.assertIn("#1 stopped conflict: conflicts with main in a.txt (told lead)\n", out)
         self.assertEqual(self.sim.events("undo"), [("undo", 1)])
         self.assertTrue(self.sim.lead_lines()[0].startswith("LANDER: t1: #1 went back to you: it conflicts with main in a.txt."))

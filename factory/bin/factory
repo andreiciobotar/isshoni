@@ -4561,7 +4561,7 @@ def drain(repo, fallback, tick=False, deadline=None):
         if not line and first and not tick:
             print("nothing ready")
         merged, stops, flight = lander_pass(repo, fallback, p, snap, line, updated)
-        stopped, first = stopped | set(stops), False
+        stopped, first = stopped | (set(stops) & {pr["number"] for pr, _ in line}), False
         if not (merged or flight):
             break
         if not merged:
