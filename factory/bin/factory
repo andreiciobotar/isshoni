@@ -387,7 +387,7 @@ def checked(data, where):
     return values
 
 
-CARRIED = {s.key: s for s in SETTINGS if s.table != "models" and s.key != "mode"} | {"lead_model": next(s for s in SETTINGS if s.key == "lead"),
+CARRIED = {s.key: s for s in SETTINGS if s.table != "models"} | {"lead_model": next(s for s in SETTINGS if s.key == "lead"),
                                                           "tech_lead_model": next(s for s in SETTINGS if s.key == "tech_lead")}
 
 
@@ -5892,7 +5892,7 @@ def parse_args(argv):
     new.add_argument("--lead-model", help="the lead's model for this task instead of models.lead in the settings")
     new.add_argument("--base", help="slug of an open task to stack this task on")
     new.add_argument("--mode", choices=MODES, help="single: the lead builds with its own subagents; team: a tech lead "
-                     "runs the build (default: the setting mode)")
+                     "runs the build (default: sessions.mode in the settings)")
     new.add_argument("--critical", action="store_true",
                      help="use the slots held in reserve: the default branch is red, the factory is broken, "
                           "or the human says so")
