@@ -106,6 +106,25 @@ class Schedule(unittest.TestCase):
         self.assertEqual(a, self.label_and_env("/tmp/a")[0])
         self.assertEqual(env, {"PATH": "/bin", "FACTORY_HOME": "/tmp/a"})
 
+    def test_the_real_home_written_out_is_the_real_home(self):
+        real = Path(factory.DEFAULT_STORE).expanduser()
+        label, env = self.label_and_env(str(real))
+        self.assertEqual(label, self.label_and_env(None)[0])
+        self.assertEqual(env, {"PATH": "/bin"})
+
+    def test_another_home_leaves_a_legacy_plist_alone(self):
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}), \
+                mock.patch.object(factory, "STORE", Path("/tmp/a")), \
+                mock.patch.object(factory, "run", lambda argv, **kw: (0, "", "")):
+            label = factory.job_label(ROOT)
+            legacy = Path(home) / "Library" / "LaunchAgents" / f"{label.rsplit('-', 1)[0]}.plist"
+            legacy.parent.mkdir(parents=True)
+            legacy.write_bytes(factory.plistlib.dumps({"WorkingDirectory": ROOT}))
+            backend = factory.Launchd()
+            backend.install(label, ["/py"], ROOT, {"PATH": "/bin"}, "/log")
+            backend.remove(label, ROOT)
+            self.assertTrue(legacy.exists())
+
     def test_each_backend_writes_the_environment(self):
         env, calls = {"PATH": "/bin", "FACTORY_HOME": "/tmp/a b"}, []
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": home, "HOME": home}), \

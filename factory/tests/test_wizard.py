@@ -348,9 +348,8 @@ class RerunTests(Wizard):
 
     def test_a_renamed_app_is_verified_and_recorded(self):
         self.stored()
-        cache = self.home / ".claude" / "factory" / "tokens" / "one"
-        cache.parent.mkdir(parents=True)
-        cache.write_text("{}")
+        cache = self.identity / "token-one.json"
+        cache.write_text('{"token": "t"}')
         new = "https://github.com/apps/isshoni-lander"
         github = routes(self.pem, {("GET", "/app"): (200, {"slug": "isshoni-lander", "html_url": new}),
                                    ("GET", "/users/isshoni-lander%5Bbot%5D"): (200, {"id": 99999999}),
@@ -365,7 +364,7 @@ class RerunTests(Wizard):
         self.assertIn(f"App isshoni-lander: {new}", self.out)
         self.assertIn("https://github.com/settings/apps/isshoni-lander/advanced", self.out)
         self.assertNotIn("factory-octocat\n", self.out.replace("renamed: factory-octocat -> isshoni-lander\n", ""))
-        self.assertTrue(cache.exists())
+        self.assertEqual(cache.read_text(), '{"token": "t"}')
 
     def test_an_unchanged_app_prints_no_renamed_line(self):
         self.stored()

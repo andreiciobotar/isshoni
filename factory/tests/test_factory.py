@@ -1162,6 +1162,14 @@ class CleanTests(unittest.TestCase):
         self.assertFalse(fake.ran("git", "worktree", "remove"))
         self.assertFalse(fake.ran("git", "branch"))
 
+    def test_the_session_removed_is_the_lead_not_a_probe_listed_before_it(self):
+        probe = {"id": "pr1", "name": "probe-x", "kind": "background", "state": "done", "cwd": f"{WT}/x"}
+        lead = {"id": "ld1", "name": "x", "kind": "background", "state": "done", "cwd": f"{WT}/x"}
+        code, out, _, fake = self.clean(sessions=[probe, lead])
+        self.assertEqual((code, out.strip()), (0, "removed x"))
+        self.assertIn(["claude", "rm", "ld1"], fake.calls)
+        self.assertNotIn(["claude", "rm", "pr1"], fake.calls)
+
     def test_a_turn_that_has_ended_is_finished_whatever_the_state_word(self):
         live = {"id": "ab12", "cwd": f"{WT}/x", "kind": "background", "status": "idle", "pid": 7}
         cases = {"idle, working": (live | {"state": "working"}, "ab12"),

@@ -39,7 +39,7 @@ test: fmt-check test-factory
 	go test ./...
 
 fmt-check:
-	@files=$$(gofmt -l .); [ -z "$$files" ] || { echo "isshoni: gofmt would change these files:" >&2; echo "$$files" >&2; echo "Fix with: gofmt -w $$files" >&2; exit 1; }
+	@files=$$(gofmt -l $$(git ls-files -co --exclude-standard '*.go')); [ -z "$$files" ] || { echo "isshoni: gofmt would change these files:" >&2; echo "$$files" >&2; echo "Fix with: gofmt -w $$files" >&2; exit 1; }
 
 test-factory:
 	python3 -m unittest discover -s factory/tests

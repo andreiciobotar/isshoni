@@ -81,7 +81,7 @@ def run(argv, cwd=None, timeout=None, input=None, env=None):
         except Exception as e:  # fail closed: no token, and no `gh` run with the human's login
             return 1, "", why(e)
     if argv[0] == "claude":
-        env = {k: v for k, v in (env or os.environ).items() if k != "ANTHROPIC_LOG"}
+        env = {k: v for k, v in (os.environ if env is None else env).items() if k != "ANTHROPIC_LOG"}
     try:
         p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, input=input, env=env)
     except subprocess.TimeoutExpired:
@@ -278,7 +278,7 @@ def session_block(mine):
         if not finished(s):
             return (f"background session {s.get('id')} is not finished "
                     f"(status {s.get('status', 'missing')}, state {s.get('state', 'missing')})")
-    if sum("pid" not in s and not WORKTREE_RE.match(s.get("cwd", "")) for s in mine) > 1:  # exited leads sit at the main checkout
+    if sum("pid" not in s and not WORKTREE_RE.match(s.get("cwd", "")) for s in mine) > 1:  # a session in a worktree belongs to it by its cwd; only pid-less ones at the main checkout, matched by name, can be ambiguous
         return "more than one exited session could be its lead; cannot tell which owns the worktree"
     return None
 
@@ -321,7 +321,8 @@ def collect(repo, sessions, limit_hours):
         slug = os.path.basename(path)
         row = {"slug": slug, "branch": branch, "path": path, "locked": wt["locked"]}
         mine = sessions_in(sessions, repo.root, path) if sessions is not None else []
-        session = next((s for s in mine if s.get("kind") == "background"), mine[0] if mine else None)
+        session = next((s for s in mine if s.get("name") == slug),
+                       next((s for s in mine if s.get("kind") == "background"), mine[0] if mine else None))
         row["session_id"] = session.get("id") if session else None
         row["session"] = "unknown" if sessions is None else (
             (session.get("state") or session.get("status", "unknown")) if session else "none")
@@ -2004,9 +2005,14 @@ def cmd_firings(args):
 # ---- platform ---------------------------------------------------------------
 # Everything that names an operating-system tool: the scheduler backends, the job's PATH, the notifier.
 
+def other_home():
+    """Whether `FACTORY_HOME` names a home other than the real one, however either is written."""
+    return STORE.expanduser() != DEFAULT_STORE.expanduser()
+
+
 def job_label(root):
     """Under another `FACTORY_HOME` the home is hashed in too: that job is never the real one."""
-    key = root if STORE == DEFAULT_STORE else f"{root}\0{STORE.expanduser()}"
+    key = f"{root}\0{STORE.expanduser()}" if other_home() else root
     return f"com.claude.factory.watch.{os.path.basename(root)}-{hashlib.sha256(key.encode()).hexdigest()[:8]}"
 
 
@@ -2040,7 +2046,7 @@ class Launchd:
 
     def drop_legacy(self, label, root):
         """The job of the version without the hash in its label, when it belongs to this repository (and the real home)."""
-        if STORE != DEFAULT_STORE:
+        if other_home():
             return False
         old = label.rsplit("-", 1)[0]
         try:
@@ -2163,7 +2169,7 @@ def schedule_install(repo, dispatcher, backend):
     """Install the watch job, replacing the one there; returns its label."""
     label, log = job_label(repo.root), STORE.expanduser() / "watch.log"
     log.parent.mkdir(parents=True, exist_ok=True)
-    env = {"PATH": job_path(), **({} if STORE == DEFAULT_STORE else {"FACTORY_HOME": str(STORE.expanduser())})}
+    env = {"PATH": job_path(), **({"FACTORY_HOME": str(STORE.expanduser())} if other_home() else {})}
     backend.install(label, [sys.executable, str(FACTORY), "watch", "--dispatcher", dispatcher], repo.root, env, log)
     return label
 
