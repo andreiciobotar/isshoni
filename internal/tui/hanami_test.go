@@ -280,7 +280,7 @@ func TestHanamiSpritesAreCapped(t *testing.T) {
 	if len(s.petals) > maxPetals || len(s.ripples) > maxRipples {
 		t.Fatalf("unbounded: %d petals, %d ripples", len(s.petals), len(s.ripples))
 	}
-	if len(s.notes) > maxNotes || len(s.sparks) > maxSparks || len(s.fire) > maxFire || len(s.lanterns) > 20000/50+50 {
+	if len(s.notes) > maxNotes || len(s.sparks) > maxSparks || len(s.fire) > maxFire || len(s.lanterns) > maxLanterns {
 		t.Fatalf("unbounded: %d notes, %d sparks, %d fire, %d lanterns", len(s.notes), len(s.sparks), len(s.fire), len(s.lanterns))
 	}
 }

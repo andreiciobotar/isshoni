@@ -28,6 +28,7 @@ const (
 	maxFire      = 600
 	maxNotes     = 600
 	maxPetals    = 300
+	maxLanterns  = 60
 	maxRipples   = 40
 	noteDrift    = 4.0 // cells per second, right to left
 	staffRows    = 6
@@ -270,7 +271,7 @@ func (b *hBranch) blossomAt(g hGeo, t float64, bl *hBlossom) (x, y, bx, by float
 
 func (s *hanamiScene) lanternTarget(g hGeo, l *hLantern) (x, y float64) {
 	x = g.W * (0.42 + 0.53*frac(l.slot, 0.1))
-	y = g.H*0.16 + float64(l.slot%3)*g.H*0.08
+	y = 7 + float64(l.slot%3)*g.H*0.07
 	return x + math.Sin(s.t*0.7+float64(l.slot))*1.6, y + math.Sin(s.t*0.5+float64(l.slot)*2)*0.8 // ambient sway
 }
 
@@ -322,6 +323,9 @@ func (s *hanamiScene) lantern(g hGeo, pr int, settled bool) *hLantern {
 		slot++
 	}
 	l := &hLantern{pr: pr, slot: slot}
+	if len(s.lanterns) >= maxLanterns {
+		return l // the sky is full: this one is not hung, and what the caller sets on it is dropped
+	}
 	if settled {
 		l.x.x, l.y.x = s.lanternTarget(g, l)
 		l.placed = true
@@ -683,7 +687,7 @@ func (s *hanamiScene) windTarget(g hGeo) float64 {
 	return most * (0.14 + 0.86*s.cacheLevel())
 }
 
-// Moving says whether anything beyond the ambient breeze is in motion.
+// busy says whether anything beyond the ambient breeze is in motion (the tests' definition of idle).
 func (s *hanamiScene) busy() bool {
 	return len(s.petals)+len(s.sparks)+len(s.notes)+len(s.fire)+len(s.ripples) > 0
 }
@@ -1051,7 +1055,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 // hanamiLegend says what every moving thing is; the scene's mapping in one place.
 var hanamiLegend = [][2]string{
 	{"◯", "the disc: all the work. Its rim swells with the rate of events"},
-	{"─•", "a branch: one session, grown while it works"},
+	{"─•", "a branch: one session at work. Its tip glows at each tool call"},
 	{"✿❀✾✽", "a blossom: an agent (coder, reviewer, explorer, other)"},
 	{"⠶", "petals: an agent returns to the disc. Turned back: changes needed"},
 	{"⠐⠂", "wind: cache reads (faint). Bright streaks: output tokens"},

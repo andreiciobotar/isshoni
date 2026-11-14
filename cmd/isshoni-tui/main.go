@@ -27,7 +27,7 @@ func main() {
 		noColor  = flag.Bool("no-color", false, "plain rendering (also honors NO_COLOR)")
 		follow   = flag.Bool("follow", false, "start in follow mode")
 		replay   = flag.String("replay", "", "open the Hanami tab replaying this events file (JSON lines, as python3 -m isshoni events prints)")
-		speed    = flag.Float64("replay-speed", 0, "replay: event seconds per second (default: the whole file in two minutes)")
+		speed    = flag.Float64("replay-speed", 0, "replay: event seconds per second (default 60)")
 		at       = flag.Duration("at", 0, "hanami snapshot: time of the first frame (default 4s)")
 		frames   = flag.Int("frames", 1, "hanami snapshot: number of frames, separated by a form-feed line")
 		step     = flag.Duration("frame-step", 0, "hanami snapshot: time between frames (default 400ms)")

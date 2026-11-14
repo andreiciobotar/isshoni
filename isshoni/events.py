@@ -102,6 +102,7 @@ class _Transcript(_Source):
         self.started = not agent  # the spawn is the first line of a subagent file
         self.texts = {}  # message id -> text blocks seen so far (reviewers only)
         self.returned = set()
+        self.done = False  # it has returned at least once
 
 
 class Feed:
@@ -152,9 +153,12 @@ class Feed:
             else:
                 records += self._records(src)
         out += self._tasks(sorted(records, key=lambda r: r[0]))
-        # a viewer that just arrived still sees a question asked before the cutoff and not yet answered
+        # a viewer that just arrived still sees what began before the cutoff and is not over: a question not yet
+        # answered, an agent that has not returned
         waiting = {slug for _, slug in self.open_questions} if self.follow else ()
-        keep = lambda e: e["ts"] >= self.cutoff or (e["kind"] == "question" and e["slug"] in waiting)  # noqa: E731
+        running = {t.agent for t in self.transcripts.values() if t.agent and not t.done} if self.follow else ()
+        keep = lambda e: (e["ts"] >= self.cutoff or (e["kind"] == "question" and e["slug"] in waiting)  # noqa: E731
+                          or (e["kind"] == "spawn" and e["agent"] in running))
         return sorted(filter(keep, out), key=lambda e: e["ts"])
 
     def history(self):
@@ -197,6 +201,7 @@ class Feed:
                     given = b.get("input")
                     given = given.get("message") if isinstance(given, dict) else None
                     out.append(_ev(ts, "return", verdict=_verdict(t.role, given if isinstance(given, str) else ""), **who))
+                    t.done = True
         key = next((v for v in (msg.get("id"), obj.get("requestId"), obj.get("uuid")) if isinstance(v, str) and v), str(id(obj)))
         if msg.get("model") != "<synthetic>" and isinstance(msg.get("usage"), dict) and key not in self.messages:
             self.messages.add(key)
@@ -207,6 +212,7 @@ class Feed:
                 t.texts.setdefault(key, []).extend(b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str))
             if msg.get("stop_reason") == "end_turn" and key not in t.returned:
                 t.returned.add(key)
+                t.done = True
                 text = "\n".join(t.texts.pop(key, []))
                 out.append(_ev(ts, "return", verdict=_verdict(t.role, text), **who))
         return out
@@ -236,7 +242,7 @@ class Feed:
             repo, slug, state = rec.get("repo"), rec.get("slug"), rec.get("state")
             if not (isinstance(repo, str) and isinstance(slug, str) and isinstance(state, str) and repo and slug and state):
                 continue
-            if ts >= self.cutoff:
+            if ts >= self.cutoff or self.follow:  # a follower sees every open pull request, however long its repository was quiet
                 self.repos.add(repo)
             if state == "blocked" and (repo, slug) not in self.open_questions:
                 self.open_questions.add((repo, slug))

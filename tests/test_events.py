@@ -135,6 +135,25 @@ class TestHistory(Env):
         got = [(e["slug"], e["ts"]) for e in self.history(cutoff=late, follow=True) if e["kind"] == "question"]
         self.assertEqual(got, [("two", at("10:03:30"))])  # not "one": that was answered
 
+    def test_an_agent_dispatched_before_the_cutoff_and_not_returned_shows_to_a_follower_only(self):
+        sub = os.path.join(self.root, SUBAGENTS)
+        with open(os.path.join(sub, "agent-abc999.meta.json"), "w") as f:
+            f.write('{"agentType":"coder"}')
+        with open(os.path.join(sub, "agent-abc999.jsonl"), "w") as f:  # dispatched at 10:01, still working
+            f.write('{"type":"user","timestamp":"2026-11-14T10:01:00.000Z","message":{}}\n')
+        late = at("10:30:00")
+        early = lambda **kw: [e["agent"] for e in self.history(cutoff=late, **kw) if e["kind"] == "spawn" and e["ts"] < late]  # noqa: E731
+        returned = {e["agent"] for e in self.history() if e["kind"] == "return"}
+        self.assertTrue(returned and "abc999" not in returned)
+        self.assertEqual(early(), [])
+        self.assertEqual(early(follow=True), ["abc999"])  # not the ones that returned
+
+    def test_a_follower_sees_the_open_pull_request_of_a_repository_quiet_since_before_the_cutoff(self):
+        gh = FakeGh({"/r/old": [{**pr(5, "worktree-zero", "OPEN", "09:00:00"), "createdAt": "2026-11-13T09:00:00Z"}]})
+        self.assertEqual([e for e in self.history(gh=gh) if e["kind"] == "pr"], [])  # /r/old's only record is from 09:59
+        got = [(e["pr"], e["slug"], e["state"]) for e in self.history(gh=gh, follow=True) if e["kind"] == "pr"]
+        self.assertEqual(got, [(5, "zero", "open")])
+
     def test_watch_ticks_only(self):
         self.assertEqual([e["ts"].strftime("%H:%M:%S") for e in self.of("watch")], ["10:05:00", "10:35:00"])
 

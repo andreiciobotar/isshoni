@@ -83,7 +83,7 @@ The fifth view (`5`) draws the same work as motion, for a second screen. Nothing
 | you see | it is |
 |---|---|
 | the disc, its rim swelling | all the work; the rate of events |
-| a branch growing out of the disc | a session, while it works (it withdraws after 3 minutes of silence) |
+| a branch growing out of the disc, its tip glowing | a session, while it works (it withdraws after 3 minutes of silence); a tool call |
 | a blossom opening on a branch (`✿` coder, `❀` reviewer, `✾` explorer, `✽` other, in the role's colour) | a subagent dispatched |
 | petals flying to the disc; turned back at the disc in red, with a red ring | a subagent returned; a reviewer asked for changes |
 | faint wind; bright streaks off an agent | cache reads; output tokens |
@@ -97,7 +97,7 @@ Ambient, and not data: the disc's slow breath, the sway of branches and lanterns
 
 Colour is always the agent's role, as everywhere in the dashboard. Keys: `l` legend, `z` hides the header and footer, `p` replays the last 24 hours (again: back to live). A replay runs at a minute a second and skips stretches where nothing happened, so a day takes as many seconds as it had busy minutes; its clock is in the sub-header, and its rates (the disc, the wind) are per event second, so they read as they would have live. Below 110 columns the tab is a blossom, `5 ✿`.
 
-It runs at 30 frames a second (springs need about that to look like springs; measured on a 140x40 terminal it takes about 6% of one core, idle or busy) and only while it is shown: the view starts `isshoni events --follow` when you open it and stops it when you leave. What had happened before you opened it sets the scene without animation: the last 30 minutes of sessions and agents, every open pull request and every unanswered question. An agent dispatched more than 30 minutes earlier and still running has no blossom until it next does something. Pull requests come from `gh`, polled once a minute, so a lantern or a firework can be up to a minute late; check states are known live only, so a replay's lanterns do not flicker. Without colour (`--no-color`) shapes and motion carry it; a terminal without truecolor gets the nearest colours it has.
+It runs at 30 frames a second (springs need about that to look like springs; measured on a 140x40 terminal it takes about 6% of one core, idle or busy) and only while it is shown: the view starts `isshoni events --follow` when you open it and stops it when you leave. What had happened before you opened it sets the scene without animation: the last 30 minutes of sessions and agents, every open pull request and every unanswered question. An agent whose transcript was last written more than 30 minutes earlier and that is still running has no blossom until it next writes. Pull requests come from `gh`, polled once a minute, so a lantern or a firework can be up to a minute late; check states are known live only, so a replay's lanterns do not flicker. Without colour (`--no-color`) shapes and motion carry it; a terminal without truecolor gets the nearest colours it has.
 
 ```sh
 bin/isshoni-tui --replay events.jsonl              # replay a recording (python3 -m isshoni events --since 24h > events.jsonl), looping
