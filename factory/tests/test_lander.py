@@ -11,8 +11,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 import test_health
-from test_factory import ROOT, WT, factory
-from test_health import NOW, TimedRun, iso
+from test_factory import ROOT, WT, FakeRun, factory
+from test_health import NOW, iso
 from test_merge import SESSION, World, pr, review
 
 GREEN = [{"name": "test", "bucket": "pass"}]
@@ -135,14 +135,14 @@ class Sim:
         return None
 
 
-class LoopRun(TimedRun):
+class LoopRun(FakeRun):
     def __init__(self, answers, sim):
         super().__init__(answers)
         self.sim, self.cwd = sim, None
 
     def __call__(self, argv, cwd=None, timeout=None, input=None, env=None):
         self.cwd = cwd
-        return super().__call__(argv, cwd, timeout, input, env)
+        return super().__call__(argv, cwd=cwd, timeout=timeout, input=input, env=env)
 
     def resolve(self, argv):
         found = self.sim.handle(argv, self.cwd)
@@ -155,7 +155,7 @@ class Loop(World):
     def setUp(self):
         super().setUp()
         self.sim = Sim()
-        patcher = mock.patch.object(test_health, "TimedRun", lambda answers: LoopRun(answers, self.sim))
+        patcher = mock.patch.object(test_health, "FakeRun", lambda answers: LoopRun(answers, self.sim))
         patcher.start()
         self.addCleanup(patcher.stop)
 

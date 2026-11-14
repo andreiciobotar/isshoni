@@ -38,6 +38,7 @@ factory wizard [--yes] [--list] [--owner <account>] [--name <app name>]   # the 
 factory uninstall [--yes] [--list]                                       # remove what the wizard and the factory put here
 factory env                                                              # exports that make git and gh act as the App
 factory land (<slug> | --all)
+factory tech-lead <slug> <number> <evidence> [--dispatcher <session-name>]   # started by the lander's loop; usable by hand
 ```
 
 - **`new`** starts a lead: a background session in a new worktree, with `factory/roles/lead.md` appended to its system prompt, declared `working`. The calling session must be named `--dispatcher` (default `dispatcher-<main checkout's directory name>`; set it with `/rename`), and no other session may carry that name. It refuses a slug whose worktree, branch, session or pull request (in any state) already exists, and one whose branch is on the remote (`git ls-remote`; when `gh` or the remote cannot say, it warns and goes on), and a repository at its limit. `--critical` lets the task use the slots held in reserve (see Settings). `--base` stacks the task on another open task's branch.
@@ -49,6 +50,7 @@ factory land (<slug> | --all)
 - **`env`** prints `export` lines that make `git` and `gh` act as the App, or nothing (exit 0) when no installed identity is stored; on a terminal the token is shown as `***`. See Identity.
 - **`retro`** takes the task from the working directory and reads the JSON from `<file>` when one is given (exit 2 if it cannot be read), else from stdin. On success it prints `retro: stored for <slug>`; a failure prints nothing on stdout.
 - **`land`** lands a handed-over task whose base moved or merged, or whose pull request conflicts, without waking its lead (see Landing without the lead). It is for use by hand: merging no longer goes through it, and a waiting branch is updated only by the lander in its turn.
+- **`tech-lead`** runs a tech lead on a pull request that came back from the merge queue, in the foreground (see Tech lead). The lander's loop starts it detached.
 - **`merge`** and **`lander`** take a pull request from approved to the default branch (see Merging).
 
 ## Declared state, phases and the cap
@@ -82,7 +84,8 @@ The cap (`worktree_cap`) counts slots per repository. Only `new` checks it, so a
 | `lead_permission_mode` | `auto` | `acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan` |
 | `task_time_limit_hours` | 2 | after it `status` shows `overtime` while the lead's turn has not ended; the lead stops and reports |
 | `lgtm_from_author` | `true` | `true` or `false`: whether an `lgtm` by the pull request's author counts; set `false` once the factory has its own account (see Merging) |
-| `lean_start` | `true` | `true` or `false`: whether the lead, the site manager run and the lander run start with only what they use (see Lean start); `false` restores the plain command line for all three |
+| `lean_start` | `true` | `true` or `false`: whether the lead, the site manager run, the lander run and the tech lead run start with only what they use (see Lean start); `false` restores the plain command line for all four |
+| `tech_lead_model` | `opus` | the model of the tech lead session (see Tech lead); a non-empty string |
 | `monitor` | none | the path of the monitor's `isshoni` command; the cost criteria need it (see Criteria) |
 
 ### Lean start
@@ -152,6 +155,22 @@ Limits. Busy is told from the session list at two moments: when it starts and af
 
 Metric: dispatcher messages to a lead after its first hand-over, per landed task. In the events log a dispatcher message is a `PostToolUse` event with `tool_name` `SendMessage`, `role` `other` and `to` the lead's name (the slug); count those of a slug whose `ts` is after the first `handed-over` record of that slug in the task state log, and divide by the number of tasks that landed in the period (`factory log events --since <ts>`).
 
+## Tech lead
+A handed-over pull request that the lander's loop cannot ship (it conflicts with the default branch, or its checks are red once it is up to date) is not sent to its lead. The task is declared `working` and the pull request goes back to draft; then `factory tech-lead <slug> <number> <evidence>` starts detached, one run per come-back.
+
+- **What it gets.** A fresh headless session (`claude -p`, model `tech_lead_model`, default Opus) in the task's worktree, with `factory/roles/tech-lead.md` appended to its system prompt, the plugin loaded, `FACTORY_ROLE=tech-lead` in its environment, and a prompt with the slug, the pull request, the evidence, the spec's path, the default branch and remote, the head it came back at and the notes of earlier runs on this pull request. It is a top-level session whose coder and reviewer are its direct subagents.
+- **Tools.** Read, Edit, Write, Grep, Glob, Agent, Skill, ToolSearch, and Bash for `git *`, `make *`, `gh pr view|diff|checks *` and `gh run view *`; force pushes, rebase, `commit --amend` and `git worktree` are denied. Dispatched subagents are under the same rule.
+- **Bound.** 30 minutes and 5 USD per run, constants in `factory/bin/factory`, not settings.
+- **Outcomes.** The model answers `resolved` or `escalate` with a note of five lines at most; the script decides the outcome:
+  - `resolved`: the checks below pass. The script comments `Tech lead: <note>` on the pull request (a failed comment is recorded as `noted: false` and stops nothing), declares the task `handed-over` with the pull request's URL, and messages nobody. The lander's loop takes it from there.
+  - `escalated`: the model says the resolution is a behaviour question. The task stays `working`; the script comments `Tech lead: stopped, the lead decides. <note>` and sends the lead's session (else the dispatcher's, else the human) `TECH LEAD: <slug>: #N came back from the merge queue (<evidence>) and is yours: <note>. ...`, with the worktree's head, whether it is clean and whether it is pushed.
+  - `stopped`: the same as `escalated`, with the reason in place of the note: `reached 30 minutes`, `reached 5 USD`, `ended without an answer` (non-zero exit or no parsable answer), or, for a `resolved` answer, the check that failed.
+- **Checks, all in the worktree, for `resolved`.** `git status --porcelain` is empty; the branch is the pull request's; the head it came back at is an ancestor of HEAD; `<remote>/<default>` is an ancestor of HEAD; after `git fetch <remote> <branch>`, `<remote>/<branch>` is HEAD; the spec file's sha256 is unchanged. Not checked: a weakened or deleted test (the role file forbids it and a reviewer looks at logic): a known limit.
+- **One at a time.** A per-task lock (`tech-lead-<slug>` beside `lander.lock`): a second run for the task fails with `a tech lead run is already going`. A second conflict later on the same pull request is a new run, whose prompt carries the earlier notes.
+- **The fallback.** The run is not started, an `unstarted` record says why, and the lead is sent the `LANDER:` line as before, when the spec file or the worktree is missing, a run is going, the process cannot start, or the evidence is red checks at the very head a tech lead pushed (so a red pull request does not loop between the tech lead and the queue).
+- **Observing.** `~/.claude/factory/tech-lead.log` holds the output of every detached run; the `techlead` log (see Logs) has one record per come-back; the pull request carries the note; `events` give the session's role `tech-lead`, not `lead`, through `FACTORY_ROLE`.
+- **Turning it off.** There is no switch. Remove the three lines of `send_back` that start it, or leave a task without its spec file: it then always goes to its lead.
+
 ## Stacked tasks
 `new --base <slug>` branches the worktree from the base task's branch and records it in `git config branch.worktree-<slug>.factoryBase`; the pull request targets that branch. The record is never cleared: `status` stops showing a base once it has merged into the default branch, and `clean` stops treating a merged task as stacked. When a base merges, a lead still working on top of it has its lander merge the default branch in (the `base-merged` criterion flags it), and a task already handed over is landed by `factory land`; `merge` retargets a stacked pull request itself when its turn comes.
 
@@ -165,6 +184,7 @@ All under `~/.claude/factory/`, JSON lines, append-only, mode 0600. Except where
 | feedback | `feedback-YYYY-MM.jsonl` | hooks; `feedback add`, `decide`, `set` | `open` and `accepted` forever, `done` and `rejected` at least 12 months |
 | task state | `tasks-YYYY-MM.jsonl` | `new`, `state`, `ack` | the current month and the 12 before it, and the newest record of every task that still has a worktree |
 | firings | `firings-YYYY-MM.jsonl` | `watch`, `firing`, `miss` | the current month and the 12 before it, and every miss and every firing that is still open or was escalated, with its records |
+| tech lead | `techlead-YYYY-MM.jsonl` | `factory tech-lead`; the lander's loop (an `unstarted` record) | the current month and the 12 before it |
 | gh calls | `gh-YYYY-MM.jsonl` | every `gh` call that took over 2 s or failed: `ts`, `argv`, `cwd`, `seconds`, `rc`, `error` (the first stderr line; never the token). A `gh` call without a timeout is cut at 30 s. `isshoni kaizen` appends to the same file | pruned like the other logs: the current month and the 12 before it |
 
 Unsuffixed `events.jsonl`, `retros.jsonl`, `feedback.jsonl`, `tasks.jsonl` and `firings.jsonl` from older versions are still read, as the oldest. Old files are deleted when a log's first record of a new month is written; the lines still needed (the Kept column) are first carried, unchanged, into the current month's file. What goes after 12 months: a task's records once its worktree is gone, and firings that cleared and were suppressed or never decided. A task's state is its record with the newest `ts`, whichever file holds it.
@@ -194,6 +214,8 @@ Unsuffixed `events.jsonl`, `retros.jsonl`, `feedback.jsonl`, `tasks.jsonl` and `
 {"defects": [{"caught_by": "tests|reviewer|lead|ci|human", "what": "..."}],
  "slowed": ["..."], "rules_missing": ["..."], "rules_dead_weight": ["..."], "brief_questions": ["..."]}
 ```
+
+**Tech lead** (`techlead`, one record per come-back) adds `role` (`tech-lead`), `model`, `version`, `session` (the run's Claude session id, `null` when unstarted or unparsed), `pr`, `evidence`, `outcome` (`resolved`, `escalated`, `stopped` or `unstarted`), `reason` (why stopped or unstarted), `note` (the model's note), `noted` (whether the pull request comment was posted), `head_before`, `head_after` (full SHAs), `cost_usd` (`total_cost_usd` of the run, `null` when unpriced, never 0) and `seconds`.
 
 **Task state** adds `state` and, from the hand-over on, `deliverable`. A task's state is its last record.
 
@@ -263,7 +285,7 @@ A digest answers where a task's money goes. It is a set of findings computed by 
 To turn the digest off, delete the five `"job": "digest"` lines of `criteria.json`, or one of them to drop that finding. Without `monitor` in the settings it is skipped. A sixth finding is one line in `criteria.json`, one function and one entry in `CRITERIA`.
 
 ## Merging
-The lander is a script loop in `factory/bin/factory` (`drain`), with no model: it takes the pull requests that are ready to the default branch in order, and brings each up to date, when its turn comes, with a plain merge of the default branch. Whatever does not merge cleanly or is red goes back to its lead, who is responsible for it: the lander wants the pull requests green and judges nothing else. Two scripts:
+The lander is a script loop in `factory/bin/factory` (`drain`), with no model: it takes the pull requests that are ready to the default branch in order, and brings each up to date, when its turn comes, with a plain merge of the default branch. Whatever does not merge cleanly or is red goes back to a tech lead (see Tech lead), and to its lead only when there is none: the lander wants the pull requests green and judges nothing else. Two scripts:
 - **`factory merge`** merges pull requests with no model. It merges only what is mechanical and stops at the first thing that is not. `factory merge <number>...` and `--all` (every open pull request whose task is handed over; the others print `#N skipped: <why>`; with none left, `nothing to merge`) are the caller vouching for the human's word. `--approved` makes GitHub's own records the gate: each pull request is merged only when it holds a valid approval, read at that moment. `--approved --all` merges every handed-over pull request that is approved and prints `#N skipped: <why>` (not approved, or a stale approval) for the others; only an approved one that then fails its merge stops the run. One command merges at most one pull request, so the next approved one stops `behind` (see the `behind` blocker). The lander calls the same `merge_one` for every merge.
 - **`factory lander [<number>...]`** runs the loop in the foreground, with no deadline, and exits 0 when nothing among the pull requests it worked on is still stopped, else 1. Numbers are recorded as the human's word for an hour (`WORD_SECONDS`) first; each must be an open pull request (else exit 2, nothing recorded). One loop per repository at a time (`fcntl.flock` on `lander-<repository>-<8 hex>.lock` in `~/.claude/factory/`); when it is held, the command prints `a lander run is already going: it takes everything that is ready` (with numbers: ` (#65, #66 are now in its queue)`) and exits 0: the running loop reads the word on its next full pass. With an empty queue it prints `nothing ready`. **`factory lander --window <minutes>`** (1 to 720) records the human's word for every handed-over pull request, prints `merge window open until <UTC time>: ...` and returns: the next tick starts the loop. `--window 0` prints `merge window closed`. `--window` with numbers is exit 2.
 - **The tick** (see Site manager) runs the same loop last, when a task is handed over or a word stands, until health is next due (`state["health"] + HEALTH_SECONDS`); the next tick continues, since everything the loop knows is on GitHub or in `lander.json`.
@@ -297,8 +319,9 @@ The lander is a script loop in `factory/bin/factory` (`drain`), with no model: i
 | `conflict` | 0 | no | lead |
 | the rest (`unapproved`, `stale`, `head-time`, `base`, `merge`, `fork`, `other`) | 0 | no | dispatcher |
 
-A stop is reported once per (number, head, kind): `lander.json` keeps `waiting` (`{"<n>": {head, kind, since}}`) for stops inside their patience, so `lgtm-blocked` does not fire on them, `health` (when health last ran), and `stopped` (`{"<n>": {head, kind, text, ts}}`) for the reported ones; records of pull requests that are no longer open, or whose stop is gone or changed, are dropped. A `handover` stop on a pull request already sent back at the same head (its task is working) stays quiet. Reporting prints `#N stopped <kind>: <one line> (told lead|dispatcher|human)` and fires `lgtm-blocked` (subject `#<n>/<kind>`), then:
-- *told lead* (the pull request goes back to its lead): the task is declared `working` and the pull request goes back to draft (so it leaves the queue until its lead hands over again), then one line is sent to the lead's session: `LANDER: <slug>: #N went back to you: <evidence>. Fix it on your branch (merge <remote>/<default> in), re-review what you change, and hand over again: it is then merged by itself.` The evidence is one line, `it conflicts with <default> in <files>` or `red checks: <name> <link>, ...` (from `gh pr checks <n> --json name,bucket,link`). No live lead session, or it could not be delivered: the dispatcher gets `LANDER: <slug> (not delivered to its lead): ...`; no live dispatcher: the human is notified.
+A stop is reported once per (number, head, kind): `lander.json` keeps `waiting` (`{"<n>": {head, kind, since}}`) for stops inside their patience, so `lgtm-blocked` does not fire on them, `health` (when health last ran), and `stopped` (`{"<n>": {head, kind, text, ts}}`) for the reported ones; records of pull requests that are no longer open, or whose stop is gone or changed, are dropped. A `handover` stop on a pull request already sent back at the same head (its task is working) stays quiet. Reporting prints `#N stopped <kind>: <one line> (told tech lead|lead|dispatcher|human)` and fires `lgtm-blocked` (subject `#<n>/<kind>`), then:
+- *told tech lead* (the pull request goes back): the task is declared `working` and the pull request goes back to draft (so it leaves the queue until it is handed over again), then a tech lead run starts for it and nobody is messaged (see Tech lead).
+- *told lead* (the fallback: no spec file, no worktree, a run already going, red checks at the head a tech lead pushed, or the process could not start; the reason is the `unstarted` record of the `techlead` log): the same, then one line is sent to the lead's session: `LANDER: <slug>: #N went back to you: <evidence>. Fix it on your branch (merge <remote>/<default> in), re-review what you change, and hand over again: it is then merged by itself.` The evidence is one line, `it conflicts with <default> in <files>` or `red checks: <name> <link>, ...` (from `gh pr checks <n> --json name,bucket,link`). No live lead session, or it could not be delivered: the dispatcher gets `LANDER: <slug> (not delivered to its lead): ...`; no live dispatcher: the human is notified.
 - *told dispatcher*: `LANDER: #N stopped <kind>: <one line>`, else the human is notified.
 - When a session was told, the firing is logged as escalated (`by` `lander`); `notify` logs its own. Lines go through `courier`, the one way into a live session.
 
@@ -330,7 +353,7 @@ Per pull request, bottom-up through a stack (a pull request based on another sel
 | `base` | its base is neither the default branch nor the head of a pull request merged into it |
 | `ci` | no checks, a failed or cancelled check, or no passed check |
 | `pending` | a check is still running; GitHub has not computed mergeability after 5 asks 3 seconds apart; the base's pull request cannot be read |
-| `conflict` | it conflicts with its base (the lander's loop sends it back to its lead) |
+| `conflict` | it conflicts with its base (the lander's loop sends it back: to a tech lead, else its lead) |
 | `unapproved` | (`--approved` only) no valid approval on GitHub |
 | `stale` | the head changed after the approval (a review on a commit that is not an approved head, or an `lgtm` older than the last change off the approved heads): a fresh one is needed |
 | `head-time` | (`lgtm` only) the activity feed does not name the pull request's head, so when it changed cannot be told |

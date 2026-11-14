@@ -69,6 +69,8 @@ Optional:
 
 A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`.
 
+A pull request that conflicts with the default branch or goes red in the merge queue is resolved by a tech lead session, not by waking its lead; the lead hears only when the fix is a behaviour question.
+
 <p align="center">
   <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap">
 </p>

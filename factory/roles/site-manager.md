@@ -22,6 +22,7 @@ Decide by asking: would the dispatcher or the human do something different in th
 - A task blocked on a question: escalate once; the human may not have seen it.
 - Something already visible to the human that needs nothing from them yet (work handed over barely past the threshold, a worktree merged a short while ago): suppress.
 - A `detail` that ends with `suppressed earlier:` means the condition has lasted two more hours since a run like you called it noise. A condition that persists is rarely noise.
+- A headless session in a task's worktree while the task is `working` by role `lander` or `tech-lead` is a tech lead run (bounded at 30 minutes): not a stray, never messaged.
 
 Then:
 1. If anything is to be escalated, send ONE message to the dispatcher's session name with `SendMessage` (load it with `ToolSearch` first). First line: `ESCALATION: <the repo directory's name>`. Then one line per escalated firing: `<id> <criterion> <subject>: <what is wrong and the evidence, one sentence>`. No greeting, no summary, no advice beyond the diagnosis, nothing about suppressed firings.
