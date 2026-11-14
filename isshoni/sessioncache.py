@@ -37,8 +37,11 @@ def _signature(path):
     try:
         with os.scandir(os.path.splitext(path)[0] + os.sep + "subagents") as it:
             for e in it:
-                s = e.stat()
-                subs.append((e.name, s.st_size, s.st_mtime_ns))
+                try:
+                    s = e.stat(follow_symlinks=False)
+                    subs.append((e.name, s.st_size, s.st_mtime_ns))
+                except OSError:
+                    subs.append((e.name,))
     except OSError:
         pass
     return (st.st_size, st.st_mtime_ns), sorted(subs)
@@ -77,6 +80,7 @@ class SessionCache:
             with open(entry, "rb") as f:
                 cached = pickle.load(f)
             if cached[0] == fp and cached[1] == sig:
+                cached[2].path = path
                 return cached[2]
         except Exception:
             pass

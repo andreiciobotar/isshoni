@@ -27,7 +27,7 @@ def listing(root):
 
 class SessionCacheTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         self.projects = os.path.join(tmp, "projects")
         shutil.copytree(PROJECTS, self.projects)
@@ -65,13 +65,53 @@ class SessionCacheTests(unittest.TestCase):
     def test_appended_and_new_subagent_files_are_parsed_again(self):
         self.cache.load(self.path)
         sub = next(os.path.join(self.sub_dir, n) for n in sorted(os.listdir(self.sub_dir)) if n.endswith(".jsonl"))
-        for change in (lambda: write(sub, "not json\n"),
-                       lambda: write(os.path.join(self.sub_dir, "agent-zzz.meta.json"), "{}", "w")):
+        malformed = self.cache.load(self.path).malformed
+        write(sub, "not json\n")
+        self.assertEqual(self.cache.load(self.path).malformed, malformed + 1)
+        with mock.patch.object(transcript, "load_session", wraps=transcript.load_session) as m:
             self.cache.load(self.path)
-            change()
-            with mock.patch.object(transcript, "load_session", wraps=transcript.load_session) as m:
-                self.cache.load(self.path)
+            self.assertEqual(m.call_count, 0)
+            write(os.path.join(self.sub_dir, "agent-zzz.jsonl"), "not json\n", "w")
+            self.assertEqual(self.cache.load(self.path).malformed, malformed + 2)
             self.assertEqual(m.call_count, 1)
+
+    def test_dangling_symlink_in_subagents_does_not_cut_the_signature_short(self):
+        os.symlink(os.path.join(self.sub_dir, "nowhere"), os.path.join(self.sub_dir, "agent-aaa.jsonl"))
+        self.cache.load(self.path)
+        malformed = self.cache.load(self.path).malformed
+        write(os.path.join(self.sub_dir, "agent-zzz.jsonl"), "not json\n", "w")
+        self.assertEqual(self.cache.load(self.path).malformed, malformed + 1)
+
+    def test_signature_is_taken_before_the_parse(self):
+        real = transcript.load_session
+
+        def appending(path, prices):
+            s = real(path, prices)
+            write(path, "not json\n")
+            return s
+
+        with mock.patch.object(transcript, "load_session", appending):
+            before = self.cache.load(self.path).malformed
+        self.assertEqual(self.cache.load(self.path).malformed, before + 1)
+
+    def test_relative_and_absolute_projects_dir_share_entries_and_print_their_own_path(self):
+        base = ["--agents-dir", AGENTS, "--prices", PRICES_PATH]
+        cwd = os.path.dirname(self.projects)
+        for argv in (["sessions", "--json"], ["session", "fixture", "--json"]):
+            outs = []
+            for pd in ("projects", self.projects):
+                full = argv + ["--projects-dir", pd] + base
+                old = os.getcwd()
+                os.chdir(cwd)
+                try:
+                    with mock.patch.dict(os.environ, {"ISSHONI_CACHE_DIR": ""}):
+                        off = run(*full)
+                    outs.append((off, run(*full)))
+                finally:
+                    os.chdir(old)
+            for off, on in outs:
+                self.assertEqual(off, on)
+        self.assertEqual(len(self.entries()), 1)
 
     def test_changed_price_file_is_a_miss(self):
         self.cache.load(self.path)
