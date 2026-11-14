@@ -1,24 +1,24 @@
- Isshoni [1 Dash] 2 Sess 3 Agents 4 Factory 5 Kaizen    24h 7d 30d [all] ○ idle 
+ Isshoni [1 Dash] 2 Agents 3 Factory 4 Kaizen  24h 7d 30d [all] ○ idle 00:00:00 
  Sessions  1 in 1 repos, 0 tas…  · no price for sonnet-5-5: excluded from cost  
-▌ COST               ▌ SUBAGENT SHARE    ▌ DISPATCHES        ▌ SIGNALS          
-▌ $0.0054*           ▌ 20.6%             ▌ 18                ▌ ↻1 ↺3 ⚠1         
-▌ 670 tok            ▌ ███░░░░░░░░░░░░   ▌ 18.0 per session  ▌ repeat · loop ·… 
- ↑ totals of all 1 session shown · the mix panels show the selected row         
+ all 1 session  $0.0054* · 670 tok · sub 21% · 18 disp · ↻1 ↺3 ⚠1               
 ╭─ Sessions 1 ─────────────────────────────────────────────────────────────────╮
 │    REPO / TASK    ACTIVE           COST MAIN│SUB     DISP REP LOOP RCHK WARN │
 │ >  all ×1         01-01 10:30  $0.0054* ██████████▓▓   18   1    3  67%    1 │
 │  · cwd fixture-   01-01 10:30  $0.0054* ██████████▓▓   18   1    3  67%    1 │
-│                                                                              │
-│                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Now running ────────────────────────────────────────────────────────────────╮
-│ nothing running                                                              │
-╰──────────────────────────────────────────────────────────────────────────────╯
- mix · all ×1 · $0.0054*                                                        
+ ○ all ×1  Jan 01 10:00 → 10:11 · 11m40s  $0.0054*  670 tok  main 79% · sub 21% 
  agents ██████████▒░░  █ main $0.0043 79%  ▓ coder $0* 0% +3                    
  models ██████████▓▓▒  █ fable-5-2 $0.0043 79%  ▓ haiku-5-5 $0.0009 16% +2      
-                                                                                
-                                                                                
-                                                                                
-                                                                                
+╭─ Now running ────────────────────────────────────────────────────────────────╮
+│ nothing running                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
  ↑↓/jk move  ·  enter open  ·  / filter  ·  ? help  ·  q quit                   

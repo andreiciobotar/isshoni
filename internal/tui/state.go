@@ -18,7 +18,6 @@ type viewID int
 
 const (
 	viewDashboard viewID = iota
-	viewSession
 	viewAgents
 	viewFactory
 	viewKaizen
@@ -36,6 +35,14 @@ func (s sortMode) String() string {
 	return [...]string{"recent", "cost", "subagent share"}[s]
 }
 
+// sortLabel is the sort as the subheader names it.
+func (m *model) sortLabel() string {
+	if m.holding() {
+		return m.sortBy.String() + ", held"
+	}
+	return m.sortBy.String()
+}
+
 type rangeOpt struct{ label, since string }
 
 var ranges = []rangeOpt{{"24h", "24h"}, {"7d", "7d"}, {"30d", "30d"}, {"all", ""}}
@@ -51,6 +58,8 @@ const (
 	pollEvery   = time.Second // transcript mtime poll interval
 	minWidth    = 60
 	minHeight   = 16
+
+	detailDebounce = 150 * time.Millisecond // how long the cursor rests on a row before its dispatches are fetched
 )
 
 // Options configures a model.
@@ -96,14 +105,20 @@ type model struct {
 
 	selID      string          // key of the row under the dashboard cursor: a session id, or a group row's key
 	folded     map[string]bool // keys of the repository rows collapsed to one row
+	lastCur    int             // table index of the cursor row when it was last found: where the cursor lands if its row vanishes
 	top        int             // first visible table row
-	dcursor    int             // dispatch cursor in session view
+	zoom       bool            // dashboard only: the session row under the cursor shown full screen
+	dcursor    int             // dispatch cursor in the zoom
 	dtop       int
-	detailOnly bool // narrow terminals: enter swaps the list for the detail pane
-	acursor    int
-	atop       int
-	fac        factoryState
-	kz         kaizenState
+	detailOnly bool // zoom, narrow terminals: enter swaps the list for the detail pane
+	selGen     int  // a selMsg carrying an older generation was superseded
+	// held is the cost, subagent cost and activity the sort reads for each session, so the tree
+	// does not reshuffle under a cursor that is on a row.
+	held    map[string]rankKey
+	acursor int
+	atop    int
+	fac     factoryState
+	kz      kaizenState
 
 	loading     bool
 	loadGen     int
@@ -160,7 +175,7 @@ func New(o Options) *model {
 		w: 100, h: 30, rangeIdx: idx, follow: o.Follow, loading: true,
 		sessions: map[string]*data.Session{}, details: map[string]*data.Session{},
 		dirty: map[string]bool{}, inflight: map[string]bool{}, retry: map[string]time.Time{}, counter: map[string]*Counter{},
-		rowTok: map[string]*Counter{}, flash: map[string]time.Time{}, folded: map[string]bool{},
+		rowTok: map[string]*Counter{}, flash: map[string]time.Time{}, folded: map[string]bool{}, held: map[string]rankKey{},
 	}
 	m.loadCtx, m.loadCancel = context.WithCancel(m.ctx)
 	for _, k := range append([]string{"tokens", "dispatches", "repeats", "loops", "warns", "share", "recheck"}, kaizenCounters...) {
@@ -197,6 +212,9 @@ type scanMsg struct {
 	err  error
 }
 type tickMsg struct{ gen int }
+
+// selMsg fires when the cursor has rested on a row for detailDebounce.
+type selMsg struct{ gen int }
 
 // ---- commands ----------------------------------------------------------------
 
@@ -336,7 +354,7 @@ const (
 type treeRow struct {
 	kind   rowKind
 	key    string          // what selID holds while the cursor is here: the session id when s is set, else a group key that is never an id
-	s      *data.Session   // set on session rows and merged rows only: the rows that open in the session view
+	s      *data.Session   // set on session rows and merged rows only: the rows that enter opens full screen
 	name   string          // repository, task or 8-character session id
 	suffix string          // faint, after the name: ×N sessions of a group, the id of a merged row
 	depth  int             // indent in steps of two cells
@@ -367,13 +385,39 @@ type unit struct {
 func (m *model) unit(group []*data.Session, name, tie string) unit {
 	u := unit{group: group, name: name, tie: tie}
 	for _, s := range group {
-		u.key.cost += s.Cost.Total
-		u.key.sub += s.Cost.Subagents
-		if a := m.activity(s); a.After(u.key.act) {
-			u.key.act = a
+		k, ok := m.held[s.ID]
+		if !ok {
+			k = m.liveRank(s)
+		}
+		u.key.cost += k.cost
+		u.key.sub += k.sub
+		if k.act.After(u.key.act) {
+			u.key.act = k.act
 		}
 	}
 	return u
+}
+
+func (m *model) liveRank(s *data.Session) rankKey {
+	return rankKey{s.Cost.Total, s.Cost.Subagents, m.activity(s)}
+}
+
+// holding is true while the cursor is on a row other than all: the order of the tree is held.
+func (m *model) holding() bool { return m.selID != "" && m.selID != groupKey("all") }
+
+// syncOrder brings the held sort values up to date: every session's when force is set or the cursor
+// is on the all row (or nowhere), else only those of sessions not held yet. Sessions that are gone are dropped.
+func (m *model) syncOrder(force bool) {
+	for id, s := range m.sessions {
+		if _, ok := m.held[id]; force || !m.holding() || !ok {
+			m.held[id] = m.liveRank(s)
+		}
+	}
+	for id := range m.held {
+		if m.sessions[id] == nil {
+			delete(m.held, id)
+		}
+	}
 }
 
 // sortUnits orders units by the sort mode, then latest activity, then name.
@@ -544,7 +588,7 @@ func (m *model) cursorRow(rows []treeRow) (cur, first int) {
 	return
 }
 
-// scope is the row under the cursor: what the mix panels show.
+// scope is the row under the cursor: what the pane, the mix and the zoom show.
 func (m *model) scope() (treeRow, bool) {
 	rows := m.rows()
 	if len(rows) == 0 {
@@ -552,6 +596,17 @@ func (m *model) scope() (treeRow, bool) {
 	}
 	cur, _ := m.cursorRow(rows)
 	return rows[cur], true
+}
+
+// zoomed is the dashboard showing one session full screen.
+func (m *model) zoomed() bool { return m.view == viewDashboard && m.zoom }
+
+// paneSession is the session under the cursor and its dispatches (nil until fetched); nil when the row is a group.
+func (m *model) paneSession() (s, d *data.Session) {
+	if row, _ := m.scope(); row.s != nil {
+		return row.s, m.details[row.s.ID]
+	}
+	return nil, nil
 }
 
 // mostRecent is the visible session with the latest activity.
@@ -565,18 +620,19 @@ func (m *model) mostRecent() *data.Session {
 	return best
 }
 
-// normalizeSelection keeps selID the key of a shown row: the all row when it is not. The session view never
-// shows a session that is gone.
+// normalizeSelection keeps selID the key of a shown row: when its row is gone the cursor takes the row now at
+// the same table index and the zoom ends. The zoom never shows a group row.
 func (m *model) normalizeSelection() {
 	rows := m.rows()
 	switch {
 	case len(rows) == 0:
 		m.selID = ""
 	case !slices.ContainsFunc(rows, func(r treeRow) bool { return r.holds(m.selID) }):
-		m.selID = rows[0].key
+		m.selID = rows[min(m.lastCur, len(rows)-1)].key
+		m.zoom = false
 	}
-	if m.view == viewSession && m.sessions[m.selID] == nil {
-		m.view = viewDashboard
+	if row, _ := m.scope(); row.s == nil {
+		m.zoom = false
 	}
 }
 
@@ -701,14 +757,6 @@ func (m *model) animating() bool {
 		return m.fac.busy || m.factoryWorking()
 	case viewKaizen:
 		return m.kaizenMoving()
-	case viewSession:
-		if d, s := m.details[m.selID], m.sessions[m.selID]; d != nil && s != nil && m.isLive(s) {
-			for _, x := range d.Dispatches {
-				if x.Status == "running" {
-					return true
-				}
-			}
-		}
 	}
 	return false
 }
@@ -793,7 +841,8 @@ func (m *model) mergeSession(ns *data.Session) {
 	if old == nil && !m.inRange(ns) {
 		return
 	}
-	if prev := m.details[ns.ID]; prev != nil && (m.follow || (m.view == viewSession && m.selID == ns.ID)) {
+	row, _ := m.scope()
+	if prev := m.details[ns.ID]; prev != nil && (m.follow || m.view == viewDashboard && row.s != nil && row.s.ID == ns.ID) {
 		m.diffToasts(prev, ns)
 	}
 	m.details[ns.ID] = ns
@@ -951,18 +1000,27 @@ func (m *model) followTarget() tea.Cmd {
 	if s == nil {
 		return nil
 	}
-	m.selID = s.ID
-	return m.ensureDetail()
+	if s.ID != m.selID {
+		m.selID = s.ID
+		m.dcursor, m.dtop = 0, 0
+	}
+	if row, _ := m.scope(); row.s == nil {
+		m.zoom = false // following onto a folded repository
+	}
+	return m.ensureDetail(s.ID)
 }
 
 // ---- update ------------------------------------------------------------------------
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	shown := ""
+	if s, _ := m.paneSession(); s != nil {
+		shown = s.ID
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
-		m.fixScroll()
 
 	case sessionsMsg:
 		if msg.gen != m.loadGen {
@@ -977,16 +1035,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshErr = ""
 		m.mergeLoad(msg)
+		m.syncOrder(true)
 		m.lastUpdate = m.now()
 		m.normalizeSelection()
 		m.retarget(false)
 		cmds = append(cmds, m.followTarget())
-		if m.view == viewSession {
-			cmds = append(cmds, m.ensureDetail())
+		if s, _ := m.paneSession(); s != nil {
+			cmds = append(cmds, m.ensureDetail(s.ID))
 		}
 		cmds = append(cmds, m.fetchLive()...)
 		cmds = append(cmds, m.refreshFactory(0))
-		m.fixScroll()
 
 	case agentsMsg:
 		if msg.gen != m.loadGen {
@@ -1024,7 +1082,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mergeSession(msg.res)
 			m.normalizeSelection()
 			cmds = append(cmds, m.followTarget())
-			m.fixScroll()
 		}
 		if m.dirty[msg.id] && exists {
 			cmds = append(cmds, m.fetchSession(msg.id))
@@ -1035,7 +1092,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setScanErr(msg.err)
 		if msg.err == nil {
 			cmds = append(cmds, m.applyScan(msg.seen)...)
-			m.fixScroll()
+		}
+
+	case selMsg:
+		if row, _ := m.scope(); msg.gen == m.selGen && row.s != nil {
+			cmds = append(cmds, m.ensureDetail(row.s.ID))
 		}
 
 	case tickMsg:
@@ -1062,6 +1123,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		cmds = append(cmds, m.handleKey(msg))
 	}
+	// the pane never waits for a key to load: a walking cursor fetches once it rests, a row the cursor was
+	// handed (its own row vanished) fetches at once
+	if s, _ := m.paneSession(); s != nil && s.ID != shown {
+		if _, key := msg.(tea.KeyPressMsg); key {
+			cmds = append(cmds, m.debounceDetail())
+		} else {
+			cmds = append(cmds, m.ensureDetail(s.ID))
+		}
+	}
+	m.syncOrder(false)
+	m.fixScroll()
 	cmds = append(cmds, m.ensureTick())
 	return m, tea.Batch(cmds...)
 }
@@ -1139,17 +1211,15 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.switchView(m.cycle(-1))
 	case key.Matches(msg, keys.Dash):
 		return m.switchView(viewDashboard)
-	case key.Matches(msg, keys.Sess):
-		return m.switchView(viewSession)
 	case key.Matches(msg, keys.Agents):
 		return m.switchView(viewAgents)
 	case key.Matches(msg, keys.Factory):
 		return m.switchView(viewFactory)
 	case key.Matches(msg, keys.Kaizen):
 		return m.switchView(viewKaizen)
-	case m.view == viewDashboard && key.Matches(msg, keys.Fold): // the same keys turn the page in the Kaizen view
+	case m.view == viewDashboard && !m.zoom && key.Matches(msg, keys.Fold): // the same keys turn the page in the Kaizen view
 		m.fold(true)
-	case m.view == viewDashboard && key.Matches(msg, keys.Unfold):
+	case m.view == viewDashboard && !m.zoom && key.Matches(msg, keys.Unfold):
 		m.fold(false)
 	case key.Matches(msg, keys.PageLeft):
 		if m.view == viewKaizen {
@@ -1191,9 +1261,10 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		m.setToast("follow mode off", false)
 	case key.Matches(msg, keys.Sort):
 		m.sortBy = (m.sortBy + 1) % 3
+		m.syncOrder(true)
 		m.setToast("sort: "+m.sortBy.String(), false)
 	case key.Matches(msg, keys.Filter):
-		if m.view == viewDashboard {
+		if m.view == viewDashboard && !m.zoom {
 			m.filterIn = true
 		}
 	case key.Matches(msg, keys.CapEdit):
@@ -1229,23 +1300,7 @@ func (m *model) filterKey(msg tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *model) switchView(v viewID) tea.Cmd {
-	if v == viewSession {
-		if m.view != viewSession {
-			row, ok := m.scope()
-			if !ok {
-				m.setToast("no sessions to open", false)
-				return nil
-			}
-			if row.s == nil {
-				m.openMostRecent(row)
-			}
-		}
-		m.view = v
-		m.dcursor, m.dtop = 0, 0
-		m.fixScroll()
-		return m.ensureDetail()
-	}
-	m.view = v
+	m.view, m.zoom, m.detailOnly = v, false, false
 	m.fixScroll()
 	switch v {
 	case viewFactory:
@@ -1255,20 +1310,6 @@ func (m *model) switchView(v viewID) tea.Cmd {
 		return m.loadKaizen()
 	}
 	return nil
-}
-
-// openMostRecent moves the selection from a group row to the session in it with the latest activity (the
-// smaller id on a tie) and says which one.
-func (m *model) openMostRecent(row treeRow) {
-	best := row.group[0]
-	for _, s := range row.group[1:] {
-		a, b := m.activity(s), m.activity(best)
-		if a.After(b) || (a.Equal(b) && s.ID < best.ID) {
-			best = s
-		}
-	}
-	m.selID = best.ID
-	m.setToast("opened "+short8(best.ID)+", the most recent in "+row.name, false)
 }
 
 // fold collapses the repository the cursor is in to its one row (on), or expands the collapsed repository
@@ -1296,38 +1337,57 @@ func (m *model) fold(on bool) {
 	}
 }
 
-// cycle is the next view in a direction; the session view is skipped when there is no session to open.
+// cycle is the next view in a direction.
 func (m *model) cycle(step int) viewID {
 	const n = int(viewKaizen) + 1
-	v := viewID((int(m.view) + step + n) % n)
-	if v == viewSession && len(m.rows()) == 0 {
-		v = viewID((int(v) + step + n) % n)
-	}
-	return v
+	return viewID((int(m.view) + step + n) % n)
 }
 
-// ensureDetail fetches the selected session's dispatches unless they are here or coming.
-func (m *model) ensureDetail() tea.Cmd {
-	if m.selID == "" || m.details[m.selID] != nil || m.inflight[m.selID] {
+// ensureDetail fetches a session's dispatches unless they are here or coming.
+func (m *model) ensureDetail(id string) tea.Cmd {
+	if id == "" || m.details[id] != nil || m.inflight[id] {
 		return nil
 	}
-	return m.fetchSession(m.selID)
+	return m.fetchSession(id)
 }
 
-func (m *model) enter() tea.Cmd {
-	switch m.view {
-	case viewDashboard:
-		return m.switchView(viewSession)
-	case viewSession:
-		m.detailOnly = !m.detailOnly
+// debounceDetail waits for the cursor to rest on a session row before fetching its dispatches, so a cursor
+// walking down the table starts one fetch, not one per row.
+func (m *model) debounceDetail() tea.Cmd {
+	s, d := m.paneSession()
+	if s == nil || d != nil || m.inflight[s.ID] || m.opts.Static {
+		return nil
 	}
-	return nil
+	m.selGen++
+	gen := m.selGen
+	return tea.Tick(detailDebounce, func(time.Time) tea.Msg { return selMsg{gen} })
+}
+
+// enter zooms into the session under the cursor; in the zoom it swaps the list for the detail pane.
+func (m *model) enter() tea.Cmd {
+	if m.view != viewDashboard {
+		return nil
+	}
+	if m.zoom {
+		m.detailOnly = !m.detailOnly
+		return nil
+	}
+	row, _ := m.scope()
+	if row.s == nil {
+		m.setToast("enter opens a session row", false)
+		return nil
+	}
+	m.zoom = true
+	m.dcursor, m.dtop = 0, 0
+	return m.ensureDetail(row.s.ID)
 }
 
 func (m *model) back() {
 	switch {
-	case m.view == viewSession && m.detailOnly:
+	case m.zoomed() && m.detailOnly:
 		m.detailOnly = false
+	case m.zoomed():
+		m.zoom = false
 	case m.view != viewDashboard:
 		m.view = viewDashboard
 	case m.filter != "":
@@ -1340,11 +1400,13 @@ func (m *model) back() {
 func (m *model) listLen() int {
 	switch m.view {
 	case viewDashboard:
-		return len(m.rows())
-	case viewSession:
-		if d := m.details[m.selID]; d != nil {
-			return len(d.Dispatches)
+		if m.zoom {
+			if _, d := m.paneSession(); d != nil {
+				return len(d.Dispatches)
+			}
+			return 0
 		}
+		return len(m.rows())
 	case viewAgents:
 		if m.agents != nil {
 			return len(m.agents.Agents)
@@ -1367,9 +1429,11 @@ func (m *model) move(delta int) {
 	var cur int
 	switch m.view {
 	case viewDashboard:
-		cur, _ = m.cursorRow(m.rows())
-	case viewSession:
-		cur = m.dcursor
+		if m.zoom {
+			cur = m.dcursor
+		} else {
+			cur, _ = m.cursorRow(m.rows())
+		}
 	case viewAgents:
 		cur = m.acursor
 	case viewFactory:
@@ -1388,13 +1452,16 @@ func (m *model) moveTo(i int) {
 	i = max(0, min(n-1, i))
 	switch m.view {
 	case viewDashboard:
+		if m.zoom {
+			m.dcursor = i
+			break
+		}
 		m.selID = m.rows()[i].key
+		m.dcursor, m.dtop = 0, 0
 		if m.follow {
 			m.follow = false
 			m.setToast("follow mode off", false)
 		}
-	case viewSession:
-		m.dcursor = i
 	case viewAgents:
 		m.acursor = i
 	case viewFactory:
@@ -1421,12 +1488,17 @@ func (m *model) fixScroll() {
 	}
 	rows := m.rows()
 	cur, first := m.cursorRow(rows)
+	if slices.ContainsFunc(rows, func(r treeRow) bool { return r.holds(m.selID) }) {
+		m.lastCur = cur
+	}
 	n := m.dashRows()
 	if first < m.top {
 		m.top = first
 	}
 	m.top = keep(cur, m.top, n)
-	m.dtop = keep(m.dcursor, m.dtop, m.sessRows())
+	if m.zoomed() {
+		m.dtop = keep(m.dcursor, m.dtop, m.sessRows())
+	}
 	m.atop = keep(m.acursor, m.atop, m.agentRows())
 	m.top = min(m.top, max(0, len(rows)-n))
 	switch m.view {

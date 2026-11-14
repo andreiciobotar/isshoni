@@ -263,11 +263,6 @@ func TestTruncByDisplayWidth(t *testing.T) {
 
 func TestViewSwitching(t *testing.T) {
 	m := fakeModel(true, 120, 40)
-	send(m, "j") // onto the session row
-	send(m, "tab")
-	if m.view != viewSession {
-		t.Fatalf("tab -> %v", m.view)
-	}
 	send(m, "tab")
 	if m.view != viewAgents {
 		t.Fatalf("tab -> %v", m.view)
@@ -292,21 +287,27 @@ func TestViewSwitching(t *testing.T) {
 	if m.view != viewDashboard {
 		t.Fatal("1")
 	}
-	send(m, "3")
-	if m.view != viewAgents {
-		t.Fatal("3")
+	for i, want := range []viewID{viewDashboard, viewAgents, viewFactory, viewKaizen} {
+		send(m, fmt.Sprint(i+1))
+		if m.view != want {
+			t.Fatalf("%d -> %v, want %v", i+1, m.view, want)
+		}
 	}
-	send(m, "esc")
+	send(m, "1", "5")
+	if m.view != viewDashboard {
+		t.Fatal("5 is unbound")
+	}
+	send(m, "2", "esc")
 	if m.view != viewDashboard {
 		t.Fatal("esc goes back to dashboard")
 	}
-	send(m, "enter")
-	if m.view != viewSession {
-		t.Fatal("enter opens session")
+	send(m, "j", "enter")
+	if !m.zoomed() {
+		t.Fatal("enter on a session row zooms")
 	}
 	send(m, "backspace")
-	if m.view != viewDashboard {
-		t.Fatal("backspace goes back")
+	if m.view != viewDashboard || m.zoom {
+		t.Fatal("backspace leaves the zoom")
 	}
 	send(m, "?")
 	if !m.help {
@@ -356,7 +357,7 @@ func TestCursorBounds(t *testing.T) {
 	if at() != last {
 		t.Fatal("G jumps to bottom")
 	}
-	// session view cursor
+	// dispatch cursor in the zoom
 	m.selID = "aaaaaaaa-0001"
 	send(m, "enter")
 	n := len(m.details[m.selID].Dispatches)
@@ -368,7 +369,7 @@ func TestCursorBounds(t *testing.T) {
 	}
 	send(m, "g")
 	if m.dcursor != 0 {
-		t.Fatal("g in session view")
+		t.Fatal("g in the zoom")
 	}
 }
 
@@ -596,7 +597,7 @@ func TestRenderAllViewsAllSizes(t *testing.T) {
 				m := fakeModel(nc, sz[0], sz[1])
 				switch view {
 				case "session":
-					m.view = viewSession
+					m.zoom = true
 				case "agents":
 					m.view = viewAgents
 				case "factory":
@@ -606,7 +607,7 @@ func TestRenderAllViewsAllSizes(t *testing.T) {
 				case "help":
 					m.help = true
 				case "detail":
-					m.view, m.detailOnly = viewSession, true
+					m.zoom, m.detailOnly = true, true
 				case "filter":
 					m.filter, m.filterIn = "alp", true
 				case "follow":
@@ -624,7 +625,7 @@ func TestRenderAllViewsAllSizes(t *testing.T) {
 
 func TestRenderEmptyAndStates(t *testing.T) {
 	for _, sz := range sizes {
-		for _, v := range []viewID{viewDashboard, viewSession, viewAgents, viewFactory, viewKaizen} {
+		for _, v := range []viewID{viewDashboard, viewAgents, viewFactory, viewKaizen} {
 			// empty data
 			m := New(Options{Static: true})
 			m.w, m.h = sz[0], sz[1]
@@ -649,8 +650,11 @@ func TestRenderEmptyAndStates(t *testing.T) {
 			checkFrame(t, "stale", m, false)
 			// session view without detail yet / unknown agent
 			m.selID = "bbbbbbbb-0002"
-			m.view = viewSession
-			checkFrame(t, "nodetail", m, false)
+			m.view = viewDashboard
+			checkFrame(t, "pane nodetail", m, false)
+			m.zoom = true
+			checkFrame(t, "zoom nodetail", m, false)
+			m.zoom = false
 			// agents not loaded yet
 			m.agents = nil
 			m.view = viewAgents
@@ -664,7 +668,7 @@ func TestRenderWideRunesAndLongNames(t *testing.T) {
 	m.sessions["aaaaaaaa-0001"].Project = strings.Repeat("日本語プロジェクト", 5)
 	m.details["aaaaaaaa-0001"].Dispatches[0].Description = strings.Repeat("🙂漢字 emoji ", 30)
 	m.selID = "aaaaaaaa-0001"
-	for _, v := range []viewID{viewDashboard, viewSession, viewAgents} {
+	for _, v := range []viewID{viewDashboard, viewAgents} {
 		m.view = v
 		checkFrame(t, "wide", m, false)
 	}
@@ -696,7 +700,7 @@ func TestNoColorHasNoEscapesAndColorDoes(t *testing.T) {
 func TestEveryCellHasBackground(t *testing.T) {
 	// no unpainted seams: after any reset, a background must be set before the next
 	// printable character.
-	for _, v := range []viewID{viewDashboard, viewSession, viewAgents} {
+	for _, v := range []viewID{viewDashboard, viewAgents} {
 		m := fakeModel(false, 120, 36)
 		m.view = v
 		for y, l := range m.frame() {

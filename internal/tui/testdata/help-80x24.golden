@@ -9,7 +9,7 @@
  │ esc           back                                                        │  
  │ tab           next view                                                   │  
  │ shift+tab     previous view                                               │  
- │ 1 2 3 4 5     dashboard · session · agents · factory · kaizen             │  
+ │ 1 2 3 4       dashboard · agents · factory · kaizen                       │  
  │ ←→/hl         kaizen page                                                 │  
  │ r             range                                                       │  
  │ s             sort                                                        │  
@@ -20,5 +20,5 @@
  │ q             quit                                                        │  
  │ r cycles 24h · 7d · 30d · all; on the error screen it retries.            │  
  │ s sorts by recent · cost · subagent share.                                │  
- │ Mix panels follow the cursor row; the tiles total every session.          │  
+ │ The mix and the pane under the table show the cursor row; enter opens a   │  
  ╰───────────────────────────────────────────────────────────────────────────╯  

@@ -6,14 +6,14 @@ import "charm.land/bubbles/v2/key"
 // footer and the help overlay read their text from it. A binding without help text
 // is a second key for the one documented before it.
 type keyMap struct {
-	Interrupt, Quit, Help                   key.Binding
-	Next, Prev, Dash, Sess, Agents, Factory key.Binding
-	Kaizen, PageLeft, PageRight             key.Binding
-	Down, Up, Top, Bottom, PageDown, PageUp key.Binding
-	Fold, Unfold, Open, Back                key.Binding
-	Range, Follow, Sort, Filter             key.Binding
-	FilterKeep, FilterClear, Erase, Wipe    key.Binding
-	CapEdit, CapSave, CapCancel             key.Binding
+	Interrupt, Quit, Help                     key.Binding
+	Next, Prev, Dash, Agents, Factory, Kaizen key.Binding
+	PageLeft, PageRight                       key.Binding
+	Down, Up, Top, Bottom, PageDown, PageUp   key.Binding
+	Fold, Unfold, Open, Back                  key.Binding
+	Range, Follow, Sort, Filter               key.Binding
+	FilterKeep, FilterClear, Erase, Wipe      key.Binding
+	CapEdit, CapSave, CapCancel               key.Binding
 }
 
 var keys = keyMap{
@@ -23,11 +23,10 @@ var keys = keyMap{
 
 	Next:    key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next view")),
 	Prev:    key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "previous view")),
-	Dash:    key.NewBinding(key.WithKeys("1"), key.WithHelp("1 2 3 4 5", "dashboard · session · agents · factory · kaizen")),
-	Sess:    key.NewBinding(key.WithKeys("2")),
-	Agents:  key.NewBinding(key.WithKeys("3")),
-	Factory: key.NewBinding(key.WithKeys("4")),
-	Kaizen:  key.NewBinding(key.WithKeys("5")),
+	Dash:    key.NewBinding(key.WithKeys("1"), key.WithHelp("1 2 3 4", "dashboard · agents · factory · kaizen")),
+	Agents:  key.NewBinding(key.WithKeys("2")),
+	Factory: key.NewBinding(key.WithKeys("3")),
+	Kaizen:  key.NewBinding(key.WithKeys("4")),
 
 	PageLeft:  key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("←→/hl", "kaizen page")),
 	PageRight: key.NewBinding(key.WithKeys("l", "right")),
@@ -72,7 +71,7 @@ func (m *model) footerKeys() []key.Binding {
 		return []key.Binding{keys.Down, keys.CapEdit, keys.Range, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewKaizen:
 		return []key.Binding{keys.PageLeft, keys.Down, keys.Range, keys.Next, keys.Help, keys.Quit}
-	case m.view == viewSession:
+	case m.zoomed():
 		return []key.Binding{keys.Down, keys.Open, keys.Back, keys.Follow, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewAgents:
 		return []key.Binding{keys.Down, keys.Range, keys.Next, keys.Back, keys.Help, keys.Quit}

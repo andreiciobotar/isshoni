@@ -209,43 +209,68 @@ bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-flow|k
 `--range` defaults to `7d`. `NO_COLOR` gives the plain rendering too. `--snapshot`
 prints one settled frame and exits, non-zero when the load fails; `--row N` puts the
 dashboard cursor on table row N (0 is the `all` row) and `--fold` collapses the
-repository that row is in; `make screenshot
+repository that row is in; `--snapshot session` is the full-screen session (the
+dashboard's zoom, below) of `--session ID`, else of the most recent one; `make screenshot
 VIEW=... SIZE=...` turns it into a PNG under `shots/` (needs Chrome).
 
 | Key | |
 |---|---|
-| `tab` `shift+tab`, `1` `2` `3` `4` `5` | switch view: dashboard, session, agents, factory, kaizen |
+| `tab` `shift+tab`, `1` `2` `3` `4` | switch view: dashboard, agents, factory, kaizen |
 | `↑` `↓` `j` `k`, `g` `G`, `pgup` `pgdn` | move, first and last, page |
 | `←` `→` `h` `l` | dashboard: collapse the repository the cursor is in (the cursor moves to its row), expand it. A collapsed row (`▸`) keeps its totals, and the tiles and follow mode still count what is inside; a filter leaves it collapsed, counting the matches. Folding turns follow mode off and is forgotten on exit |
-| `enter`, `esc` | open the session under the cursor; on `all`, a repository or a task, the most recently active session in it (a message names it); back |
+| `enter`, `esc` | dashboard: open the session row under the cursor full screen (the zoom; in it `↑` `↓` `g` `G` `pgup` `pgdn` move over the dispatches and `enter` swaps the list for the selected dispatch); on `all`, a repository or a task, a message says to pick a session row and the cursor stays. Back: first the detail, then the zoom, then the dashboard from any other view |
 | `r` | range: 24h, 7d, 30d, all (on the error screen: retry) |
-| `s` | sort: recent, cost, subagent share; within a repository, tasks and sessions without a task are one list |
+| `s` | sort: recent, cost, subagent share; within a repository, tasks and sessions without a task are one list; also puts the held order right |
 | `/` | filter by `repo`, `repo/task`, project or session id |
-| `f` | follow the most recently active session |
+| `f` | follow the most recently active session (off until pressed or `--follow`; any cursor key turns it off) |
 | `←` `→`, `h` `l` | kaizen view: previous and next page (Pulse, Flow, Board) |
 | `c` | factory view: edit the cap (digits or `↑` `↓`, `enter` saves, `esc` cancels) |
 | `?`, `q` | help, quit |
 
-- **Dashboard:** totals for the range, the sessions as a tree of repository, task and
-  session, the agent and model mix, and every dispatch running now. A group row sums
-  its sessions (rates from summed counts, never a mean of rates); a group of one
-  session is a single row. The cursor starts on the top row, `all`, which sums every
-  session shown, and moves over every row. The agent and model mix show the row under
-  it and name it, in their titles or, under 120 columns, in the heading above the two
-  strips; money and share are over that row's cost, and a strip ends in `+N` when N
-  entries do not fit. The tiles always total every session shown, and a line under them
-  says so. In the mix a plugin's agent counts with its role (`factory:coder` as
-  `coder`); the Agents view keeps them apart. A cursor row that disappears (filtered
-  out, merged away) falls back to `all`. Columns: time (last activity when sorted by
-  recent, else start), `COST`, `TOKENS`, `MAIN│SUB` and `SUB%` (shares of cost), `DISP`
-  (dispatches), `REP` (repeats), `LOOP` (review loops), `RCHK` (re-checks), `WARN`
-  (model warnings), `BAD` (malformed lines, only when there are any). A narrow
-  terminal drops `BAD`, `SUB%`, `TOKENS`, then the time.
-- **Session:** cost by agent, a timeline with a lane per agent type (dispatches of one
-  type that overlap stack on extra rows), the dispatch list and the selected dispatch
-  in detail. Idle stretches of the timeline collapse to a marker labelled with their
-  length. A dispatch still `running` in a session that is no longer live is labelled
-  `unfinished`.
+- **Dashboard:** one screen, from the top: the totals for the range, the sessions as a
+  tree of repository, task and session (with the agent and model mix beside it from 120
+  columns), a pane about the row under the cursor, and every dispatch running now.
+  A group row sums its sessions (rates from summed counts, never a mean of rates); a
+  group of one session is a single row. The cursor starts on the top row, `all`, which
+  sums every session shown, and moves over every row. The tiles always total every
+  session shown, and a line under them says so; under 30 rows one line stands for the
+  tiles and that line. In the mix a plugin's agent counts with its role
+  (`factory:coder` as `coder`); the Agents view keeps them apart. Columns: time (last
+  activity when sorted by recent, else start), `COST`, `TOKENS`, `MAIN│SUB` and `SUB%`
+  (shares of cost), `DISP` (dispatches), `REP` (repeats), `LOOP` (review loops), `RCHK`
+  (re-checks), `WARN` (model warnings), `BAD` (malformed lines, only when there are
+  any). A narrow terminal drops `BAD`, `SUB%`, `TOKENS`, then the time.
+  The rows under the tree are split by the terminal's size alone, never by the cursor's
+  row, so nothing moves as the cursor walks: the tree takes what it needs and the pane
+  the rest (with fewer than 4 rows left over there is no pane content: the tree keeps them). The **pane header** is one line
+  about the cursor row of any kind: live dot, the row, the repository and task of a
+  session, its span, cost, tokens, the main and subagent shares and the repeat, loop and
+  warning counts; fields drop from the right when the width is short. Money and share in
+  the mix are over that row's cost, and a strip (under 120 columns, below the pane
+  header) ends in `+N` when N entries do not fit. On a session row the pane shows its
+  **Timeline** (when there is room for its lanes) above its **Dispatches**, none
+  selected; the dispatches load a moment after the cursor rests on the row (the pane
+  says so meanwhile), the list starts at its first dispatch, and a list cut short says
+  how many there are in its title: `enter` shows them all. A group row has no pane
+  content: **Now running** grows into the room. Now running is always there, in full
+  width: every running dispatch of every live session, whatever the cursor is on (on a
+  session row up to 2 lines in a terminal under 35 rows, 4 under 45, else 8; the last
+  line is `+N more running` when cut).
+  **Zoom:** `enter` on a session row shows it full screen: cost by agent, the timeline
+  with a lane per agent type (dispatches of one type that overlap stack on extra rows),
+  the dispatch list and the selected dispatch in detail. Idle stretches of the timeline
+  collapse to a marker labelled with their length. A dispatch still `running` in a
+  session that is no longer live is labelled `unfinished`. `esc` returns.
+  **The cursor moves only when a key is pressed**, with one exception, follow mode
+  (`f`, `--follow`; off by default, `following` in the sub-header and `● follow` in the
+  footer), which any cursor key turns off. While the cursor is on a row other than `all`
+  the order of the tree is held (the sub-header says `sorted by recent, held`): a
+  refresh does not make rows trade places; `s`, `r`, or returning to `all` puts it
+  right. The COST and time columns always show live values. A cursor row that
+  disappears (filtered out, merged away) hands the cursor to the row now at the same
+  table index and ends the zoom. Two limits: a session that appears above the cursor's
+  row pushes the rows below it down a line, and a row that gains a second session splits
+  into a group and a child row, a line or two lower; the cursor stays on its session.
 - **Agents:** per agent type: dispatches, models, tokens and cost, p50/p90 cost and
   durations, repeats, review loops, warnings.
 - **Factory:** for each repository seen in the range that has task worktrees, what
@@ -254,7 +279,7 @@ VIEW=... SIZE=...` turns it into a PNG under `shots/` (needs Chrome).
   or `stale`. At the top, a band lists everything that waits on you across repositories,
   oldest first: tasks in review (the pull request or deliverable to look at) and blocked
   tasks (what they asked), each with how long it has waited; when nothing waits it says
-  so. The `4 Factory` tab carries `▲N` for the number waiting on every view (in a narrow
+  so. The `3 Factory` tab carries `▲N` for the number waiting on every view (in a narrow
   header the live count then shows as `● N`, without the word). It refreshes every 30
   seconds while shown, every 2 minutes otherwise. `c` sets `worktree_cap` (1 to
   999) in `~/.claude/factory/settings.json`, leaving the other keys as they were; a file

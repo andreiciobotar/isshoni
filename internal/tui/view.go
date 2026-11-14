@@ -55,14 +55,14 @@ func (m *model) frame() []string {
 	lines := []string{m.header(p), m.subheader(p)}
 	var body block
 	bh := h - 3
-	switch m.view {
-	case viewSession:
+	switch {
+	case m.zoomed():
 		body = m.sessionBody(p, w, bh)
-	case viewAgents:
+	case m.view == viewAgents:
 		body = m.agentsBody(p, w, bh)
-	case viewFactory:
+	case m.view == viewFactory:
 		body = m.factoryBody(p, w, bh)
-	case viewKaizen:
+	case m.view == viewKaizen:
 		body = m.kaizenBody(p, w, bh)
 	default:
 		body = m.dashBody(p, w, bh)
@@ -85,7 +85,7 @@ func (m *model) header(p paint) string {
 	bar := p.on(th.Surface)
 	title := bar.gradient(" "+brand+" ", true)
 	if m.w < 90 {
-		title = bar.gradient(" "+brand, true) // five tabs, the range and the live count share 80 columns
+		title = bar.gradient(" "+brand, true) // the tabs, the range and the live count share 80 columns
 	}
 	if m.w >= kanjiMinWidth {
 		title += bar.t(brandKanji+" ", th.Muted)
@@ -113,11 +113,11 @@ func (m *model) header(p paint) string {
 			return on.b(" "+txt, th.Text) + on.b(badge, th.Orange) + on.b(" ", th.Text)
 		}
 		if compact {
-			return bar.t(" "+txt, th.Muted) + bar.b(badge, th.Orange) // five tabs, the range and the live count share 80 columns
+			return bar.t(" "+txt, th.Muted) + bar.b(badge, th.Orange) // the tabs, the range and the live count share 80 columns
 		}
 		return bar.t(" "+txt, th.Muted) + bar.b(badge, th.Orange) + bar.t(" ", th.Muted)
 	}
-	tabs := tab(1, "Dashboard", viewDashboard, "Dash") + tab(2, "Session", viewSession, "Sess") + tab(3, "Agents", viewAgents, "Agents") + tab(4, "Factory", viewFactory, "Factory") + tab(5, "Kaizen", viewKaizen, "Kaizen")
+	tabs := tab(1, "Dashboard", viewDashboard, "Dash") + tab(2, "Agents", viewAgents, "Agents") + tab(3, "Factory", viewFactory, "Factory") + tab(4, "Kaizen", viewKaizen, "Kaizen")
 
 	var chips []string
 	for i, r := range ranges {
@@ -190,9 +190,9 @@ func (m *model) subheader(p paint) string {
 	switch {
 	case m.filterIn:
 		left = p.b("/ ", th.Purple) + p.t(m.filter, th.Text) + p.t("█", th.Purple) + p.t("  enter to keep · esc to clear", th.Faint)
-	case m.view == viewSession:
+	case m.zoomed():
 		name := m.selID
-		if s := m.sessions[m.selID]; s != nil {
+		if s, _ := m.paneSession(); s != nil {
 			name = s.Label() + " › " + short8(s.ID)
 		}
 		left = p.t("Dashboard › ", th.Faint) + p.b(name, th.Text)
@@ -208,7 +208,7 @@ func (m *model) subheader(p paint) string {
 		left = p.b("Agents", th.Text) + p.t(fmt.Sprintf("  per agent type across %d sessions in %s", n, ranges[m.rangeIdx].label), th.Muted)
 	default:
 		repos, tasks := shownGroups(m.tree())
-		left = p.b("Sessions", th.Text) + p.t(fmt.Sprintf("  %d in %d repos, %d tasks · %s · sorted by %s", len(m.visible()), repos, tasks, ranges[m.rangeIdx].label, m.sortBy), th.Muted)
+		left = p.b("Sessions", th.Text) + p.t(fmt.Sprintf("  %d in %d repos, %d tasks · %s · sorted by %s", len(m.visible()), repos, tasks, ranges[m.rangeIdx].label, m.sortLabel()), th.Muted)
 		if m.filter != "" {
 			left += p.t("  · filter ", th.Faint) + p.b(m.filter, th.Purple)
 		}
@@ -388,7 +388,9 @@ func (m *model) helpScreen(p paint) []string {
 	lines = append(lines, "",
 		p.t("r cycles 24h · 7d · 30d · all; on the error screen it retries.", th.Faint),
 		p.t("s sorts by recent · cost · subagent share.", th.Faint),
-		p.t("Mix panels follow the cursor row; the tiles total every session.", th.Faint),
+		p.t("The mix and the pane under the table show the cursor row; enter opens a", th.Faint),
+		p.t("session full screen. The tiles total every session.", th.Faint),
+		p.t("While a row is selected the order is held; s or the all row re-sorts.", th.Faint),
 		p.t("A dot pulses on sessions written in the last 30 seconds.", th.Faint),
 		p.t("The factory view refreshes every 30 s while shown, every 2 min otherwise.", th.Faint))
 	bw := 0

@@ -57,12 +57,12 @@ func TestNowRunning(t *testing.T) {
 	if !m.animating() {
 		t.Fatal("a running dispatch on screen animates")
 	}
-	m.view, m.selID = viewSession, sidA
+	m.zoom, m.selID = true, sidA
 	if out := plain(m); !strings.Contains(out, "running") || strings.Contains(out, "unfinished") {
 		t.Fatal("live session: running")
 	}
 	m.seen[sidA] = t0 // no longer live
-	m.view = viewSession
+	m.zoom = true
 	if out := plain(m); !strings.Contains(out, "unfinished") {
 		t.Fatalf("a running dispatch in a stale session is labelled unfinished:\n%s", out)
 	}
@@ -99,7 +99,7 @@ func TestTimelineSubLanes(t *testing.T) {
 
 func TestDispatchRowsAlignWithAndWithoutFlags(t *testing.T) {
 	m := fakeModel(true, 140, 40)
-	m.view, m.selID = viewSession, sidA
+	m.zoom, m.selID = true, sidA
 	var head string
 	col := -1
 	for _, l := range strings.Split(plain(m), "\n") {
@@ -126,7 +126,7 @@ func TestDispatchRowsAlignWithAndWithoutFlags(t *testing.T) {
 
 func TestSessionHeaderSignalsAndNoSignalsBox(t *testing.T) {
 	m := fakeModel(true, 140, 40)
-	m.view, m.selID = viewSession, sidA
+	m.zoom, m.selID = true, sidA
 	out := plain(m)
 	if strings.Contains(out, "Signals") {
 		t.Fatal("the Signals box is gone")
@@ -150,7 +150,7 @@ func TestMultiDaySpanShowsDates(t *testing.T) {
 	s.End = &end
 	d := m.details[sidA]
 	d.Dispatches = append(d.Dispatches, dispatchAt("late", "coder", 26*60, 120)) // the next day
-	m.view, m.selID = viewSession, sidA
+	m.zoom, m.selID = true, sidA
 	out := plain(m)
 	if !strings.Contains(out, "→ Nov 14 16:00") {
 		t.Fatalf("header span lacks the end date:\n%s", out)
@@ -280,7 +280,8 @@ func TestGoldenSnapshots(t *testing.T) {
 		row         int
 		fold        bool
 	}
-	plainShots := []shot{{view: "dashboard"}, {view: "session"}, {view: "agents"}, {view: "help"}}
+	plainShots := []shot{{view: "dashboard"}, {view: "session"}, {view: "agents"}, {view: "help"}} // session is the zoom
+	tallShots := []shot{{"dashboard-session", "repo cwd fixture-", 1, false}}                      // the pane has room for all 18 dispatches
 	groupShots := []shot{{"dashboard", "all ×9", 0, false}, {"dashboard-repo", "repo alpha ×7", 3, false}, {"dashboard-task", "task ci ×2", 8, false},
 		{"dashboard-session", "session a1000006", 5, false}, {"dashboard-folded", "repo alpha ×7", 5, true}} // folded from a session inside alpha
 	for _, fx := range []struct {
@@ -289,6 +290,7 @@ func TestGoldenSnapshots(t *testing.T) {
 		sizes        [][2]int
 	}{
 		{"projects", "", plainShots, [][2]int{{140, 40}, {80, 24}}},
+		{"projects", "", tallShots, [][2]int{{140, 64}}},
 		{"grouping", "grouping-", groupShots, [][2]int{{140, 40}, {100, 30}, {80, 24}}},
 	} {
 		projects := fixtureCopy(t, fx.root)
@@ -300,8 +302,8 @@ func TestGoldenSnapshots(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if sh.label != "" && !strings.Contains(got, "mix · "+sh.label) {
-						t.Fatalf("the mix panels do not name %q\n%s", sh.label, got)
+					if sh.label != "" && !strings.Contains(paneLine(got), sh.label) {
+						t.Fatalf("the pane header does not name %q\n%s", sh.label, got)
 					}
 					path := filepath.Join("testdata", name+".golden")
 					if *update {
@@ -362,7 +364,7 @@ func burstSession(m *model) (*data.Session, *data.Session) {
 		dispatchAt("b3", "reviewer", 10+66*60+9.99, 1.0/60),
 	}}
 	m.details[sidA] = d
-	m.view, m.selID = viewSession, sidA
+	m.zoom, m.selID = true, sidA
 	return s, d
 }
 
@@ -461,7 +463,7 @@ func TestListShortensFlagsDetailSpellsThemOut(t *testing.T) {
 	}
 	m := fakeModel(true, 140, 40)
 	m.details[sidA].Dispatches[0].Flags = []string{"review-loop(resume x1)"}
-	m.view, m.selID = viewSession, sidA
+	m.zoom, m.selID = true, sidA
 	out := plain(m)
 	if !strings.Contains(out, "[loop↻1]") || !strings.Contains(out, "[review-loop(resume x1)]") {
 		t.Fatalf("list abbreviates, detail pane spells out:\n%s", out)
@@ -472,7 +474,7 @@ func TestDetailStatusLineKeepsTheDuration(t *testing.T) {
 	m := fakeModel(true, 140, 40)
 	d := m.details[sidA]
 	d.Dispatches[0].AgentType = "general-purpose"
-	m.view, m.selID = viewSession, sidA
+	m.zoom, m.selID = true, sidA
 	if out := plain(m); !strings.Contains(out, "● general-purpose · completed") || !strings.Contains(out, "→ 10:04:00 · 3m00s") {
 		t.Fatalf("detail status or span line cut:\n%s", out)
 	}
@@ -481,7 +483,7 @@ func TestDetailStatusLineKeepsTheDuration(t *testing.T) {
 func TestUnknownStatusIsNotGreen(t *testing.T) {
 	m := fakeModel(false, 140, 40)
 	m.details[sidA].Dispatches[0].Status = "killed"
-	m.view, m.selID = viewSession, sidA
+	m.zoom, m.selID = true, sidA
 	out := m.Render()
 	i := strings.Index(out, "killed")
 	if i < 0 {
@@ -500,7 +502,7 @@ func TestBreakMarkersLineUpOnLaneAndAxis(t *testing.T) {
 			dispatchAt("a", "coder", 0, 5), dispatchAt("b", "coder", 5+gap, 5),
 		}}
 		m.details[sidA] = d
-		m.view, m.selID = viewSession, sidA
+		m.zoom, m.selID = true, sidA
 		var cols [][]int
 		for _, line := range strings.Split(plain(m), "\n") {
 			var c []int

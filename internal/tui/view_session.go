@@ -23,7 +23,7 @@ func (m *model) sessLayout() sessLayout {
 	var l sessLayout
 	bodyH := m.h - 3
 	tlH := 3 // an empty timeline: its axis in a box
-	if s, d := m.sessions[m.selID], m.details[m.selID]; s != nil && d != nil {
+	if s, d := m.paneSession(); s != nil && d != nil {
 		l.plan = m.timelinePlan(s, d, m.w, min(max(bodyH-sessHeaderH-2-8-3, 2), 8), min(m.dcursor, max(0, len(d.Dispatches)-1))) // keeps 8 rows for the list
 		tlH = l.plan.boxH()
 	}
@@ -75,11 +75,10 @@ func (m *model) unfinished(s *data.Session, x data.Dispatch) bool {
 
 func (m *model) sessionBody(p paint, w, h int) block {
 	th := m.th
-	s := m.sessions[m.selID]
+	s, d := m.paneSession()
 	if s == nil {
 		return p.center(block{p.t("No session selected — press esc and pick one.", th.Muted)}, w, h)
 	}
-	d := m.details[s.ID]
 	l := m.sessLayout()
 	out := m.sessionHeader(p, s, w)
 	out = append(out, m.agentBar(p, s, w)...)
@@ -92,20 +91,20 @@ func (m *model) sessionBody(p paint, w, h int) block {
 		out[len(out)/2] = p.sp(max(0, (w-20)/2)) + msg
 		return out
 	}
-	out = append(out, m.timeline(p, s, d, l.plan, w)...)
 	cur := min(m.dcursor, max(0, len(d.Dispatches)-1))
+	out = append(out, m.timeline(p, s, d, l.plan, w, cur)...)
 	switch {
 	case m.detailOnly:
 		out = append(out, m.detailBox(p, s, d, cur, w, l.listH)...)
 	case l.detailW > 0:
-		list := m.dispatchList(p, s, d, l.listW, l.listH, cur)
+		list := m.dispatchList(p, s, d, l.listW, l.listH, cur, m.dtop)
 		det := m.detailBox(p, s, d, cur, l.detailW, l.listH)
 		out = append(out, joinCols(p, l.listH, 1, []int{l.listW, l.detailW}, list, det)...)
 	case l.detailH > 0:
-		out = append(out, m.dispatchList(p, s, d, w, l.listH, cur)...)
+		out = append(out, m.dispatchList(p, s, d, w, l.listH, cur, m.dtop)...)
 		out = append(out, m.detailBox(p, s, d, cur, w, l.detailH)...)
 	default:
-		out = append(out, m.dispatchList(p, s, d, w, l.listH, cur)...)
+		out = append(out, m.dispatchList(p, s, d, w, l.listH, cur, m.dtop)...)
 	}
 	return out
 }
@@ -393,10 +392,10 @@ func (pl tlPlan) axisLabels() string {
 	return string(row)
 }
 
-func (m *model) timeline(p paint, s, d *data.Session, pl tlPlan, w int) block {
+// timeline draws the plan, the dispatch cur brighter (-1: none).
+func (m *model) timeline(p paint, s, d *data.Session, pl tlPlan, w, cur int) block {
 	th := m.th
 	in := p.on(th.Surface)
-	cur := min(m.dcursor, max(0, len(d.Dispatches)-1))
 	live := m.isLive(s)
 	frame := m.spinFrame() / 2
 	var lines []string
@@ -617,7 +616,8 @@ func modelsText(x data.Dispatch) string {
 	return strings.Join(ms, ",")
 }
 
-func (m *model) dispatchList(p paint, s, d *data.Session, w, h, cursor int) block {
+// dispatchList lists the dispatches from row top, the dispatch cursor marked (-1: none).
+func (m *model) dispatchList(p paint, s, d *data.Session, w, h, cursor, top int) block {
 	th := m.th
 	in := p.on(th.Surface)
 	iw := w - 4
@@ -642,13 +642,13 @@ func (m *model) dispatchList(p paint, s, d *data.Session, w, h, cursor int) bloc
 	if len(d.Dispatches) == 0 {
 		lines = append(lines, "", in.t("  This session has no subagent dispatches yet.", th.Muted))
 	}
-	for i := m.dtop; i < len(d.Dispatches) && i < m.dtop+rows; i++ {
+	for i := top; i < len(d.Dispatches) && i < top+rows; i++ {
 		lines = append(lines, m.dispatchRow(s, d.Dispatches[i], i == cursor, c, iw, in))
 	}
 	title := fmt.Sprintf("Dispatches %d", len(d.Dispatches))
 	box := p.boxed(title, lines, w, h, th.Pink)
 	if len(d.Dispatches) > rows {
-		box = m.scrollMark(p, box, m.dtop, rows, len(d.Dispatches))
+		box = m.scrollMark(p, box, top, rows, len(d.Dispatches))
 	}
 	return box
 }
