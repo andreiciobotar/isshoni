@@ -489,7 +489,7 @@ class LandTests(unittest.TestCase):
         module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_land_nobranch", loader))
         loader.exec_module(module)
         with mock.patch.object(module, "declare") as declare, mock.patch.object(module, "run") as run:
-            module.Landing(mock.Mock(), {"path": "/x/t1", "branch": None}).mark_working()
+            module.Landing(mock.Mock(), {"path": "/x/t1", "branch": None}, False).mark_working()
         declare.assert_called_once()
         run.assert_not_called()
 
