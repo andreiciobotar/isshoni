@@ -12,8 +12,8 @@
 </p>
 
 <p align="center">
-  Give Claude Code a brief, get back a reviewed pull request,<br>
-  see where every token went, and watch the factory improve with every task.
+  A software factory for Claude Code that gets better with every task.<br>
+  Give it a brief, get back a reviewed pull request, and see where every token went on a live terminal dashboard.
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/tabs/dashboard.webp" alt="The dashboard: the cursor moves over a repository, its tasks and a session; cost, agent mix and dispatches follow the selected row">
+  <img src="assets/tabs/dashboard.webp" alt="The live terminal dashboard: the cursor moves over a repository, its tasks and a session; cost, agent mix and dispatches follow the selected row">
 </p>
 
 Isshoni is two tools for people who run [Claude Code](https://claude.com/claude-code) on their repositories. Each works without the other.
@@ -29,7 +29,7 @@ Isshoni is two tools for people who run [Claude Code](https://claude.com/claude-
 | | What it does | You run |
 |---|---|---|
 | **Monitor** | Shows where the money and tokens went: per repository, task, session, agent and model | `isshoni`, `isshoni-tui` |
-| **Factory** | Builds several tasks in parallel, each in its own git worktree, each ending in a draft pull request | `/factory:dispatch`, from the `factory` plugin |
+| **Factory** | Orchestrates Claude Code agents: several tasks in parallel, each in its own git worktree, each ending in a draft pull request | `/factory:dispatch`, from the `factory` plugin |
 
 ## Setup
 
@@ -58,7 +58,7 @@ Optional:
 
 `make uninstall` removes what the wizard put on the machine.
 
-## Factory
+## The software factory
 
 ```mermaid
 flowchart TD
@@ -81,7 +81,7 @@ A lead asks you only what it cannot decide itself. Nothing merges without you: a
 
 ## Kaizen (改善), built in
 
-Most agent setups run on day 100 the way they ran on day 1. Isshoni's factory learns from every task:
+Most multi-agent setups run on day 100 the way they ran on day 1. Isshoni's factory is self-improving. On every task:
 
 - Every agent reports what slowed it down.
 - Every lead records the key calls it made without asking, and why.
