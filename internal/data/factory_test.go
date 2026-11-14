@@ -193,9 +193,9 @@ func TestFactoryStatusRealScriptInEmptyRepo(t *testing.T) {
 	}
 }
 
-func settings(t *testing.T, content string) string {
+func settingsNamed(t *testing.T, name, content string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "factory", "settings.json")
+	path := filepath.Join(t.TempDir(), "factory", name)
 	if content != "" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -204,50 +204,139 @@ func settings(t *testing.T, content string) string {
 			t.Fatal(err)
 		}
 	}
-	return path
+	return filepath.Join(filepath.Dir(path), "settings.toml")
 }
 
+func settings(t *testing.T, content string) string { return settingsNamed(t, "settings.toml", content) }
+
+// handEdited is a settings file as a human leaves it: tables and keys in their own order, comments, blank lines, an unknown key.
+const handEdited = `# my notes
+[paths]
+monitor = "/x" # mine
+
+[limits]   # the caps
+reserve_percent = 20
+worktree_cap = 3   # three is enough
+task_time_limit_hours = 1.5
+
+[sessions]
+dispatchers = [
+  "dispatcher-a", # first
+  "dispatcher-b",
+]
+extra = 1
+`
+
 func TestReadWorktreeCap(t *testing.T) {
-	ok := map[string]int{"": 5, `{}`: 5, `{"lead_model":"x"}`: 5, `{"worktree_cap": 12}`: 12}
+	ok := map[string]int{"": 5, "[limits]\n": 5, "[models]\nlead = \"x\"\n": 5, "[limits]\nworktree_cap = 12\n": 12,
+		"worktree_cap = 9\n[limits]\nreserve_percent = 1\n": 5, "[sessions]\nworktree_cap = 9\n": 5, handEdited: 3,
+		"[limits]\nworktree_cap=7#seven\n": 7, "[ limits ]\n  worktree_cap  =  4  \n": 4}
 	for content, want := range ok {
 		if got, err := ReadWorktreeCap(settings(t, content)); err != nil || got != want {
 			t.Errorf("%q: %d, %v; want %d", content, got, err, want)
 		}
 	}
-	for _, content := range []string{`{"worktree_cap":0}`, `{"worktree_cap":-1}`, `{"worktree_cap":1.5}`, `{"worktree_cap":2.0}`, `{"worktree_cap":true}`, `{"worktree_cap":"3"}`, `{"worktree_cap":null}`} {
-		path := settings(t, content)
+	for _, value := range []string{`0`, `-1`, `1.5`, `true`, `"3"`, `abc`, ``} {
+		path := settings(t, "[limits]\nworktree_cap = "+value+"\n")
 		if _, err := ReadWorktreeCap(path); !errors.Is(err, ErrWorktreeCap) || !strings.Contains(err.Error(), path) {
-			t.Errorf("%q: want an invalid-value error naming the file, got %v", content, err)
+			t.Errorf("%q: want an invalid-value error naming the file, got %v", value, err)
 		}
 	}
-	for content, kind := range map[string]string{`[1]`: "not a JSON object", `5`: "not a JSON object", `null`: "not a JSON object", `not json`: "not valid JSON", `{"a":`: "not valid JSON"} {
-		path := settings(t, content)
-		if _, err := ReadWorktreeCap(path); err == nil || errors.Is(err, ErrWorktreeCap) || !strings.Contains(err.Error(), path+" is "+kind) {
-			t.Errorf("%q: want %q naming the file, got %v", content, kind, err)
-		}
+	path := settings(t, "[limits]\nworktree_cap = [1\n")
+	if _, err := ReadWorktreeCap(path); err == nil || !strings.HasPrefix(err.Error(), path+" line 2: ") || errors.Is(err, ErrWorktreeCap) {
+		t.Errorf("a list it cannot read is an error naming the file and the line: %v", err)
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	os.WriteFile(filepath.Join(home, "s.json"), []byte("[]"), 0o644)
-	if _, err := ReadWorktreeCap(filepath.Join(home, "s.json")); err == nil || err.Error() != "~/s.json is not a JSON object" {
+	os.WriteFile(filepath.Join(home, "s.toml"), []byte("[limits]\nworktree_cap = 0\n"), 0o644)
+	if _, err := ReadWorktreeCap(filepath.Join(home, "s.toml")); err == nil || err.Error() != "~/s.toml: worktree_cap is invalid" {
 		t.Errorf("the home directory is shown as ~: %v", err)
 	}
 }
 
+func TestReadSettingRefusesWhatItCannotClassify(t *testing.T) {
+	for name, content := range map[string]string{
+		"dotted key":        "limits.worktree_cap = 9\n",
+		"quoted key":        "[limits]\n\"worktree_cap\" = 9\n",
+		"quoted header":     "[\"limits\"]\nworktree_cap = 9\n",
+		"inline table":      "limits = { worktree_cap = 9 }\n",
+		"array of tables":   "[limits]\nreserve_percent = 1\n[[foo]]\nx = 1\n",
+		"multi-line string": "[x]\ny = \"\"\"\n[limits]\nworktree_cap = 9\n\"\"\"\n",
+		"literal string":    "[x]\ny = '''\nz\n'''\n",
+		"bare words":        "[limits]\nworktree_cap 9\n",
+		"unclosed header":   "[limits\nworktree_cap = 9\n",
+		"stray list line":   "[limits]\nworktree_cap = 9\n\"a\",\n",
+		"triple in a list":  "[x]\ny=[\"\"\"\n]\n[limits]\nworktree_cap = 9\n\"\"\"]\n",
+		"triple mid-value":  "[x]\ny = [1, \"\"\"a\n[limits]\nworktree_cap = 9\n\"\"\"]\n[limits]\nworktree_cap = 4\n",
+	} {
+		path := settings(t, content)
+		for _, read := range []func() error{func() error { _, err := ReadWorktreeCap(path); return err }, func() error { _, err := ReadDispatchers(path); return err }} {
+			// the stray line comes after the key the cap reads: only the dispatchers read gets that far
+			if err := read(); name != "stray list line" && (err == nil || !strings.HasPrefix(err.Error(), path+" line ")) {
+				t.Errorf("%s: want an error naming the file and a line, got %v", name, err)
+			}
+		}
+	}
+	got, err := ReadWorktreeCap(settings(t, "[paths]\nmonitor='/a/[b'\n[limits]\nworktree_cap=9\n[sessions]\ndispatchers=['d]']\n"))
+	if err != nil || got != 9 {
+		t.Errorf("a literal string holds a bracket: %d, %v", got, err)
+	}
+	got, err = ReadWorktreeCap(settings(t, "[a]\nxs = ['x]', \"y[\"]\n[limits]\nworktree_cap = 6\n"))
+	if err != nil || got != 6 {
+		t.Errorf("brackets inside both kinds of string: %d, %v", got, err)
+	}
+	got, err = ReadWorktreeCap(settings(t, "[a]\nxs = [\n  1, 2,\n  [3], # c ]\n  \"]\",\n]\n[limits]\nworktree_cap = 4\n"))
+	if err != nil || got != 4 {
+		t.Errorf("another key's list over several lines is skipped whole: %d, %v", got, err)
+	}
+}
+
+func TestReadSettingsFromALegacyJSONWhenThereIsNoTOML(t *testing.T) {
+	for content, want := range map[string]int{`{"worktree_cap": 12}`: 12, `{}`: 5, `{"lead_model":"x"}`: 5} {
+		if got, err := ReadWorktreeCap(settingsNamed(t, "settings.json", content)); err != nil || got != want {
+			t.Errorf("%q: %d, %v; want %d", content, got, err, want)
+		}
+	}
+	for _, content := range []string{`{"worktree_cap":0}`, `{"worktree_cap":1.5}`, `{"worktree_cap":true}`, `{"worktree_cap":"3"}`, `{"worktree_cap":null}`} {
+		path := settingsNamed(t, "settings.json", content)
+		if _, err := ReadWorktreeCap(path); !errors.Is(err, ErrWorktreeCap) {
+			t.Errorf("%q: want an invalid-value error, got %v", content, err)
+		}
+	}
+	for content, kind := range map[string]string{`[1]`: "not a JSON object", `not json`: "not valid JSON"} {
+		path := settingsNamed(t, "settings.json", content)
+		if _, err := ReadWorktreeCap(path); err == nil || !strings.Contains(err.Error(), "settings.json is "+kind) {
+			t.Errorf("%q: want %q naming the file, got %v", content, kind, err)
+		}
+	}
+	path := settingsNamed(t, "settings.json", `{"worktree_cap": 12}`)
+	os.WriteFile(path, []byte("[limits]\nworktree_cap = 2\n"), 0o644)
+	if got, _ := ReadWorktreeCap(path); got != 2 {
+		t.Errorf("the TOML wins when both exist: %d", got)
+	}
+	if got, err := ReadDispatchers(settingsNamed(t, "settings.json", `{"dispatchers": ["dispatcher-a"]}`)); err != nil || !slices.Equal(got, []string{"dispatcher-a"}) {
+		t.Errorf("legacy dispatchers: %v, %v", got, err)
+	}
+}
+
 func TestReadDispatchers(t *testing.T) {
-	got, err := ReadDispatchers(settings(t, `{"dispatchers": ["dispatcher-b", "-x", "a.b_c", "", "has space", "dispatcher-a"]}`))
+	got, err := ReadDispatchers(settings(t, "[sessions]\ndispatchers = [\"dispatcher-b\", \"-x\", \"a.b_c\", \"\", \"has space\", \"dispatcher-a\"]\n"))
 	if err != nil || !slices.Equal(got, []string{"dispatcher-b", "a.b_c", "dispatcher-a"}) {
 		t.Fatalf("order kept, unsafe names dropped: %v, %v", got, err)
 	}
+	got, err = ReadDispatchers(settings(t, handEdited))
+	if err != nil || !slices.Equal(got, []string{"dispatcher-a", "dispatcher-b"}) {
+		t.Fatalf("a list over several lines, with comments and a trailing comma: %v, %v", got, err)
+	}
 	for content, why := range map[string]string{
-		``:                            "is not set",
-		`{}`:                          "is not set",
-		`{"dispatchers": []}`:         "is empty",
-		`{"dispatchers": ["-x"]}`:     "is empty",
-		`{"dispatchers": "a"}`:        "is not a list of strings",
-		`{"dispatchers": ["a", 1]}`:   "is not a list of strings",
-		`{"dispatchers": null}`:       "is empty",
-		`{"dispatchers": {"a": "b"}}`: "is not a list of strings",
+		``:                                     "is not set",
+		"[sessions]\n":                         "is not set",
+		"[sessions]\ndispatchers = []\n":       "is empty",
+		"[sessions]\ndispatchers = [\n]\n":     "is empty",
+		"[sessions]\ndispatchers = [\"-x\"]\n": "is empty",
+		"[sessions]\ndispatchers = \"a\"\n":    "is not a list of strings",
+		"[sessions]\ndispatchers = 3\n":        "is not a list of strings",
+		"[merging]\ndispatchers = [\"a\"]\n":   "is not set",
 	} {
 		path := settings(t, content)
 		_, err := ReadDispatchers(path)
@@ -255,96 +344,100 @@ func TestReadDispatchers(t *testing.T) {
 			t.Errorf("%q: want %q naming the file, got %v", content, why, err)
 		}
 	}
-	if _, err := ReadDispatchers(settings(t, `not json`)); err == nil || !strings.Contains(err.Error(), "not valid JSON") {
-		t.Errorf("an unreadable file is an error: %v", err)
+	for content, line := range map[string]int{
+		"[sessions]\ndispatchers = [\"a\", 1]\n":    2,
+		"[sessions]\ndispatchers = [\"a\" \"b\"]\n": 2,
+		"[sessions]\n\ndispatchers = [\"a\"\n":      3,
+		"[sessions]\ndispatchers = [\n\"a\",\n,]\n": 4,
+		"[sessions]\ndispatchers = [\"a\"] x\n":     2,
+		"[sessions]\ndispatchers = [\"a\n":          2,
+	} {
+		path := settings(t, content)
+		if _, err := ReadDispatchers(path); err == nil || !strings.HasPrefix(err.Error(), path+" line "+strconv.Itoa(line)+": ") {
+			t.Errorf("%q: want an error naming the file and line %d, got %v", content, line, err)
+		}
 	}
 }
 
-func TestWriteWorktreeCapCreatesDirectoryAndFile(t *testing.T) {
-	path := settings(t, "")
-	if err := WriteWorktreeCap(path, 8); err != nil {
+// stubFactory makes a checkout (ISSHONI_ROOT) whose factory/bin/factory records its arguments, and fails with `fail`
+// on stderr when that is set. Nothing is put on PATH: the dashboard must not need it.
+func stubFactory(t *testing.T, fail string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, d := range []string{"isshoni", "factory/bin"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "isshoni", "__init__.py"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(path)
-	if string(b) != "{\n  \"worktree_cap\": 8\n}\n" {
-		t.Fatalf("file: %q", b)
+	script := "#!/bin/sh\necho \"$@\" > \"" + dir + "/args\"\n"
+	if fail != "" {
+		script += "echo 'noise' >&2\necho '" + fail + "' >&2\nexit 2\n"
 	}
-	if st, _ := os.Stat(path); st.Mode().Perm() != 0o644 {
-		t.Fatalf("a new file is 0644, got %v", st.Mode().Perm())
+	if err := os.WriteFile(filepath.Join(dir, "factory", "bin", "factory"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if got, err := ReadWorktreeCap(path); err != nil || got != 8 {
-		t.Fatalf("round trip: %d, %v", got, err)
+	t.Setenv("ISSHONI_ROOT", dir)
+	t.Setenv("PATH", t.TempDir())
+	requireTempFactoryHome(t)
+	return dir
+}
+
+func TestWriteWorktreeCapRunsTheFactoryCommand(t *testing.T) {
+	dir := stubFactory(t, "")
+	if err := WriteWorktreeCap(8); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "args")); string(b) != "settings set limits.worktree_cap 8\n" {
+		t.Fatalf("arguments: %q", b)
+	}
+	stubFactory(t, "factory: limits.worktree_cap must be an integer of at least 1")
+	if err := WriteWorktreeCap(0); err == nil || err.Error() != "limits.worktree_cap must be an integer of at least 1" {
+		t.Fatalf("the command's last stderr line is the error: %v", err)
+	}
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "isshoni"), 0o755)
+	os.WriteFile(filepath.Join(root, "isshoni", "__init__.py"), nil, 0o644)
+	t.Setenv("ISSHONI_ROOT", root)
+	requireTempFactoryHome(t)
+	if err := WriteWorktreeCap(3); err == nil || err.Error() != "factory command not found: "+filepath.Join(root, "factory", "bin", "factory") {
+		t.Fatalf("a checkout without the script names the path it looked for: %v", err)
 	}
 }
 
-func TestWriteWorktreeCapKeepsTheRest(t *testing.T) {
-	nested := "{\"a\":  [1,\n 2], \"b\":null}"
-	path := settings(t, "{\"z\": 2.0, \"lead_model\": \"fable\", \"nested\": "+nested+", \"worktree_cap\": 3}")
-	if err := WriteWorktreeCap(path, 12); err != nil {
+func TestWriteWorktreeCapWithTheRealFactoryChangesOneLine(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is missing")
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ISSHONI_ROOT", root)
+	home := t.TempDir()
+	t.Setenv("FACTORY_HOME", home)
+	requireTempFactoryHome(t)
+	path := filepath.Join(home, "settings.toml")
+	if err := os.WriteFile(path, []byte(handEdited), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteWorktreeCap(8); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(path)
-	want := "{\n  \"lead_model\": \"fable\",\n  \"nested\": " + nested + ",\n  \"worktree_cap\": 12,\n  \"z\": 2.0\n}\n"
-	if string(b) != want {
+	if want := strings.Replace(handEdited, "worktree_cap = 3   # three", "worktree_cap = 8   # three", 1); string(b) != want {
 		t.Fatalf("got %q\nwant %q", b, want)
 	}
-	if st, _ := os.Stat(path); st.Mode().Perm() != 0o640 {
-		t.Fatalf("an existing file keeps its mode, got %v", st.Mode().Perm())
+	if got, err := ReadWorktreeCap(path); err != nil || got != 8 {
+		t.Fatalf("the reader sees the new value: %d, %v", got, err)
 	}
-	entries, _ := os.ReadDir(filepath.Dir(path))
-	if len(entries) != 1 {
-		t.Fatalf("a temporary file was left behind: %v", entries)
+	if err := WriteWorktreeCap(0); err == nil || !strings.Contains(err.Error(), "limits.worktree_cap must be an integer of at least 1") {
+		t.Fatalf("the factory's refusal is the error: %v", err)
 	}
-}
-
-func TestWriteWorktreeCapRefusesANonObject(t *testing.T) {
-	for _, content := range []string{`[1, 2]`, `null`, `oops`} {
-		path := settings(t, content)
-		err := WriteWorktreeCap(path, 4)
-		if err == nil || !strings.Contains(err.Error(), path) {
-			t.Fatalf("%q: want an error naming the file, got %v", content, err)
-		}
-		if b, _ := os.ReadFile(path); string(b) != content {
-			t.Fatalf("%q was overwritten: %q", content, b)
-		}
-		if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 1 {
-			t.Fatalf("temporary file left: %v", entries)
-		}
-	}
-}
-
-func TestWriteWorktreeCapThroughASymlink(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "real.json")
-	link := filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(target, []byte(`{"lead_model": "x"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	if err := WriteWorktreeCap(link, 9); err != nil {
-		t.Fatal(err)
-	}
-	if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("the link must stay a link: %v %v", st, err)
-	}
-	if got, err := ReadWorktreeCap(target); err != nil || got != 9 {
-		t.Fatalf("the target holds the new value: %d, %v", got, err)
-	}
-	if st, _ := os.Stat(target); st.Mode().Perm() != 0o600 {
-		t.Fatalf("the target keeps its mode: %v", st.Mode().Perm())
-	}
-
-	dangling := filepath.Join(dir, "dangling.json")
-	if err := os.Symlink(filepath.Join(dir, "missing.json"), dangling); err != nil {
-		t.Fatal(err)
-	}
-	if err := WriteWorktreeCap(dangling, 9); err == nil {
-		t.Fatal("a link to a missing file must be refused")
-	}
-	if st, err := os.Lstat(dangling); err != nil || st.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("the dangling link must stay a link: %v %v", st, err)
+	if b2, _ := os.ReadFile(path); string(b2) != string(b) {
+		t.Fatalf("a refused value leaves the file as it was: %q", b2)
 	}
 }
 
@@ -355,10 +448,8 @@ func TestSettingsErrorsNameTheFileShort(t *testing.T) {
 	if err := os.MkdirAll(path, 0o755); err != nil { // a directory where the file should be
 		t.Fatal(err)
 	}
-	for name, err := range map[string]error{"read": func() error { _, err := ReadWorktreeCap(path); return err }(), "write": WriteWorktreeCap(path, 3)} {
-		if err == nil || !strings.HasPrefix(err.Error(), "~/.claude/factory/settings.json: ") || strings.Contains(err.Error(), home) {
-			t.Errorf("%s: want an error starting with the ~ path and no absolute path, got %v", name, err)
-		}
+	if _, err := ReadWorktreeCap(path); err == nil || !strings.HasPrefix(err.Error(), "~/.claude/factory/settings.toml: ") || strings.Contains(err.Error(), home) {
+		t.Errorf("want an error starting with the ~ path and no absolute path, got %v", err)
 	}
 }
 

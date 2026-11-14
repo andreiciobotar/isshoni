@@ -170,7 +170,7 @@ class HookTests(StoreCase):
         self.event({"hook_event_name": "Mystery", "tool_name": "x"}, event="Mystery")
 
     def run_subprocess(self, stdin, home):
-        env = {**os.environ, "HOME": str(home), "CLAUDE_PROJECT_DIR": TASK}
+        env = {**os.environ, "HOME": str(home), "FACTORY_HOME": str(Path(home) / ".claude" / "factory"), "CLAUDE_PROJECT_DIR": TASK}
         return subprocess.run([sys.executable, str(BIN), "hook"], input=stdin, capture_output=True, text=True, env=env)
 
     def test_invalid_json_exits_silently(self):
@@ -437,7 +437,8 @@ class TaskEventTests(StoreCase):
         (e,) = self.lines()
         self.assertEqual({k: v for k, v in e.items() if k != "ts"},
                          {"repo": tf.ROOT, "slug": "demo-task", "role": "dispatcher", "model": None, "version": VERSION,
-                          "session": "sid-d", "event": "TaskStarted", "base": "main", "lead_model": "fable"})
+                          "session": "sid-d", "event": "TaskStarted", "base": "main", "lead_model": "fable",
+                          "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet", "reviewer": "opus"}})
 
     def test_clean_records_task_removed(self):
         code, out, _, _ = self.clean()

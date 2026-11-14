@@ -419,15 +419,12 @@ def login(c):
 
 
 def merge_settings(c):
-    want = {"monitor": MONITOR, "dispatchers": ["dispatcher-" + r.split("/")[1] for r in c.repos]}
-    try:
-        have = json.loads(box(c.target, "cat ~/.claude/factory/settings.json")[1])
-    except ValueError:
-        have = {}
-    if all(have.get(k) == v for k, v in want.items()):
-        return False
-    need(box(c.target, MERGE, MERGE_PY, "~/.claude/factory/settings.json", stdin=json.dumps(want).encode()), "writing the settings")
-    return True
+    want = {"paths.monitor": MONITOR, "sessions.dispatchers": json.dumps(["dispatcher-" + r.split("/")[1] for r in c.repos])}
+    changed = False
+    for key, value in want.items():
+        out = need(box(c.target, '"$HOME/.isshoni/factory/bin/factory" settings set "$1" "$2"', key, value), "writing the settings")
+        changed |= out.strip() != "unchanged"
+    return changed
 
 
 def repositories(c):
@@ -673,7 +670,7 @@ def cmd_remove(args):
     save_registry(reg)
     print("Removed host %s: container and image are gone. %s" % (args.name, "The state directory was deleted." if args.purge_state
           else "The state directory %s on the server is kept." % state))
-    if not reg and (store() / "identity/app.json").exists() and not (store() / "settings.json").exists():
+    if not reg and (store() / "identity/app.json").exists() and not any((store() / n).exists() for n in ("settings.toml", "settings.json")):
         print("No install uses the GitHub App any more: `make uninstall` (or `factory uninstall`) removes its installation and the identity kept here.")
     return 0
 

@@ -106,7 +106,8 @@ class LandTests(unittest.TestCase):
             tool.write_text(text)
             tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
         self.bump = bindir / "bump"
-        self.env = {**os.environ, "HOME": str(self.home), "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        self.env = {**os.environ, "HOME": str(self.home), "FACTORY_HOME": str(self.home / ".claude" / "factory"),
+                    "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
                     "FAKE_STATE": str(self.state), "FAKE_LANDER": "stop", "TEST_CMD": "true",
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                     "GIT_COMMITTER_EMAIL": "t@t"}
@@ -337,15 +338,23 @@ class LandTests(unittest.TestCase):
 
     def test_lean_start_off_gives_the_lander_its_old_argv(self):
         (self.home / ".claude" / "factory").mkdir(parents=True)
-        (self.home / ".claude" / "factory" / "settings.json").write_text('{"lean_start": false}')
+        (self.home / ".claude" / "factory" / "settings.toml").write_text('[sessions]\nlean_start = false\n')
         self.conflict()
         self.land("t1")
         (call,) = self.claude_calls()
         self.assertFalse(any(a.startswith("--strict") or a == "--settings" for a in call["argv"]))
 
+    def test_the_lander_runs_on_the_configured_model(self):
+        (self.home / ".claude" / "factory").mkdir(parents=True)
+        (self.home / ".claude" / "factory" / "settings.toml").write_text('[models]\nlander = "claude-haiku-4-5"\n')
+        self.conflict()
+        self.land("t1")
+        (call,) = self.claude_calls()
+        self.assertEqual(call["argv"][call["argv"].index("--model") + 1], "claude-haiku-4-5")
+
     def test_a_broken_settings_file_stops_the_land_before_anything_is_declared(self):
         (self.home / ".claude" / "factory").mkdir(parents=True)
-        (self.home / ".claude" / "factory" / "settings.json").write_text('{"lean_start": "no"}')
+        (self.home / ".claude" / "factory" / "settings.toml").write_text('[sessions]\nlean_start = "no"\n')
         self.conflict()
         p = self.land("t1")
         self.assertEqual(p.returncode, 2)
@@ -812,7 +821,7 @@ class LandTests(unittest.TestCase):
 
     def test_the_lander_gets_the_mode_the_deny_rules_and_the_commands(self):
         (self.home / ".claude" / "factory").mkdir(parents=True)
-        (self.home / ".claude" / "factory" / "settings.json").write_text('{"lead_permission_mode": "acceptEdits"}')
+        (self.home / ".claude" / "factory" / "settings.toml").write_text('[sessions]\nlead_permission_mode = "acceptEdits"\n')
         wt, _ = self.conflict()
         self.commands(wt, "test", "./check.sh")
         self.commands(wt, "golden", "./gen.sh")

@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -109,6 +110,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	e := &testEnv{t: t, stub: t.TempDir(), home: t.TempDir(), logs: &syncBuf{}}
 	t.Setenv("STUBDIR", e.stub)
 	t.Setenv("HOME", e.home)
+	t.Setenv("FACTORY_HOME", filepath.Join(e.home, ".claude", "factory")) // where the dashboard looks, and the script writes
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
@@ -556,11 +558,20 @@ func TestServeColourFollowsTheClientTerminal(t *testing.T) {
 }
 
 func settingsPath(e *testEnv) string {
-	return filepath.Join(e.home, ".claude", "factory", "settings.json")
+	return filepath.Join(e.home, ".claude", "factory", "settings.toml")
 }
 
 func TestServeOnlyAWriteKeyChangesTheCap(t *testing.T) {
 	e := newTestEnv(t)
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is missing")
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ISSHONI_ROOT", root)
+	requireTempFactoryHome(t)
 	ro, rw := newSigner(t), newSigner(t)
 	e.allow(keyLine(ro, ""), keyLine(rw, "write"))
 	addr, _ := e.start()
@@ -580,7 +591,7 @@ func TestServeOnlyAWriteKeyChangesTheCap(t *testing.T) {
 	w.send("3c\x7f6\r")
 	waitFor(t, "the cap in the settings file", func() bool {
 		b, _ := os.ReadFile(settingsPath(e))
-		return strings.Contains(string(b), `"worktree_cap": 6`)
+		return strings.Contains(string(b), "worktree_cap = 6\n")
 	})
 	if !strings.Contains(e.logs.String(), "write") {
 		t.Fatalf("the log does not say the session may write: %s", e.logs.String())
