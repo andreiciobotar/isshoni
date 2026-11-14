@@ -564,7 +564,8 @@ class LgtmTests(World):
 
     def test_a_later_verdict_withdraws_an_approval_and_a_comment_does_not(self):
         cases = {"changes requested": ([review(at=NOW - 120), review("CHANGES_REQUESTED")], False),
-                 "dismissed": ([review("DISMISSED")], False),
+                 "dismissed": ([review(at=NOW - 120), review("DISMISSED")], False),
+                 "listed out of order": ([review("CHANGES_REQUESTED"), review(at=NOW - 120)], False),
                  "commented": ([review(at=NOW - 120), review("COMMENTED")], True)}
         for label, (reviews, merged) in cases.items():
             with self.subTest(label):
@@ -572,6 +573,12 @@ class LgtmTests(World):
                 _, out, _ = self.tick_lgtm([pr(1)], {}, reviews={1: reviews})
                 self.assertEqual(self.merges(), ["1"] if merged else [])
                 self.assertNotIn("blocked", out)
+
+    def test_an_approval_on_the_head_is_preferred_to_a_newer_one_on_an_older_commit(self):
+        _, out, _ = self.tick_lgtm([pr(1)], {}, reviews={1: [review(at=NOW - 120), review(login="andrea", sha="old")]},
+                                   extra={("gh", "api", "repos/{owner}/{repo}/collaborators/andrea/permission"):
+                                          raw({"permission": "write"})})
+        self.assertIn(f"#1 merged on approval https://x/pull/1#r{NOW - 120}\n", out)
 
     def test_a_review_on_the_head_wins_and_an_lgtm_rescues_an_older_one(self):
         _, out, _ = self.tick_lgtm([pr(1)], {1: [comment()]}, reviews={1: [review()]})
