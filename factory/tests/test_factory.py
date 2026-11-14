@@ -156,6 +156,14 @@ class PhaseTests(unittest.TestCase):
         self.assertEqual(factory.phase("open", done), "review")
         self.assertEqual(factory.phase("none", done, "handed-over"), "review")
 
+    def test_finished_probes_in_the_worktree_do_not_hold_the_task(self):
+        lead = {"id": "ld", "kind": "background", "status": "idle", "state": "done", "pid": 7, "cwd": f"{WT}/x"}
+        probes = [{"id": "p1", "name": "probe-x", "kind": "background", "state": "done", "cwd": f"{WT}/x"},
+                  {"id": "p2", "name": "probe2-x", "kind": "background", "state": "stopped", "cwd": f"{WT}/x"}]
+        self.assertIsNone(factory.session_block([lead, *probes]))
+        self.assertEqual(factory.phase("open", [lead, *probes], "handed-over"), "review")
+        self.assertIsNone(factory.session_block([EXITED, *probes]))
+
     def test_state_defaults_to_undeclared(self):
         self.assertEqual(factory.phase("open", []), "review")
         self.assertEqual(factory.phase("none", []), "motion")
