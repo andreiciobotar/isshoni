@@ -4362,11 +4362,11 @@ def cmd_uninstall(args):
 LAND_TEST_TIMEOUT = 1800
 LAND_TIMEOUT = 1800
 LAND_TOOLS = ("Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
-              "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)", "Bash(factory commands *)")
+              "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)")
 ROLE_DENIED = ("Bash(gh pr merge*)", "Bash(gh pr review*)", "Bash(gh pr comment*)", "Bash(gh pr ready*)", "Bash(gh api*)",
                "Bash(gh repo*)", "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)",
                "Bash(git commit --amend*)", "Bash(git worktree*)")
-LAND_REASONS =("dirty", "conflict", "golden", "tests", "denied", "other")
+LAND_REASONS = ("dirty", "conflict", "golden", "tests", "denied", "other")
 LAND_RESULT_RE = re.compile(r"(LANDED, LOOK|LANDED|STOPPED)(?: (\S+))?")
 WORKFLOWS_REFUSAL = "without `workflows` permission"
 
@@ -4396,7 +4396,7 @@ def test_command(repo, path, branch):
         return stated, "stated for this task"
     if last := config_value(repo, "factory.lastTest"):
         return last, "last handed over in this repository"
-    return ("make test", "Makefile rule") if no_test_rule(path) is None else (None, "not stated")
+    return ("make test", "Makefile rule") if has_test_rule(path) else (None, "not stated")
 
 
 def golden_command(repo, branch):
@@ -4418,6 +4418,8 @@ def cmd_commands(args):
     cwd = os.path.realpath(os.getcwd())
     task = next((t for t in repo.tasks if inside(cwd, t["path"])), None)
     path, branch = (task["path"], task["branch"]) if task else (repo.root, None)
+    if task and not branch and args.value is not None:
+        raise Fail(f"commands: the worktree is on a detached HEAD; check out worktree-{os.path.basename(path)}", 1)
     test, source = test_command(repo, path, branch)
     golden = golden_command(repo, branch)
     if args.value is not None:
@@ -4453,16 +4455,13 @@ def land_busy(repo, path):
     return unplaced_block(sessions) or session_block(sessions_in(sessions, repo.root, path))
 
 
-def no_test_rule(path):
-    """Why `make test` is not known in `path`, or None: the first makefile make reads must have a `test:` rule.
-    Included files and rules naming several targets are not read."""
-    present = os.listdir(path)
+def has_test_rule(path):
+    """Whether the first makefile make reads in `path` has a `test:` rule. Included files and rules naming several
+    targets are not read."""
     for name in ("GNUmakefile", "makefile", "Makefile"):
-        if name not in present:
-            continue
-        text = (Path(path) / name).read_text()
-        return None if re.search(r"^test\s*:(?!:?=)", text, re.M) else f"no `test:` rule in {name}"
-    return "no Makefile"
+        if name in os.listdir(path):
+            return bool(re.search(r"^test\s*:(?!:?=)", (Path(path) / name).read_text(), re.M))
+    return False
 
 
 def lander_sections(text):
@@ -4559,10 +4558,10 @@ class Landing:
     """One handed-over task brought up to its base, as factory/agents/lander.md defines it. `run` gives
     (result, facts, needs): the result is LANDED, LANDED, LOOK or STOPPED <reason>."""
 
-    def __init__(self, repo, task, lean):
+    def __init__(self, repo, task, lean, mode):
         self.repo, self.path, self.branch, self.remote = repo, task["path"], task["branch"], repo.remote
         self.slug = os.path.basename(self.path)
-        self.lean = lean
+        self.lean, self.mode = lean, mode
         self.declared = False
 
     def mark_working(self):
@@ -4708,13 +4707,14 @@ class Landing:
         brief = "\n".join([
             f"Your task slug is {self.slug}.", base, f"The reviewed head is {self.old_head}.",
             "There is no pull request title, body file or retrospective file. Do not declare the hand-over.",
-            "Edit files with the Edit tool; shell commands that write files, and `gh` other than `pr view` and `pr edit`, are denied.",
+            "Edit files with the Edit tool. `gh` other than `pr view` and `pr edit` is not yours to run; merging, reviewing, "
+            "commenting, forced pushes, rebases, amends and `git worktree` are denied.",
             f"The golden files this task means to change: {', '.join(task_files) or 'none'}. A generated file on this "
             "list may be regenerated with the repository's documented command; any other golden that changes is a stop.",
             commands_line(self.repo, self.path, self.branch)])
         lean = lean_flags() if self.lean else []
         argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", "sonnet",
-                "--permission-mode", load_settings()["lead_permission_mode"], *lean, "--allowedTools", *LAND_TOOLS,
+                "--permission-mode", self.mode, *lean, "--allowedTools", *LAND_TOOLS,
                 "--disallowedTools", *ROLE_DENIED, "--output-format", "json", brief]
         rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT, group=True)
         try:
@@ -4752,14 +4752,14 @@ class Landing:
                 f"{'some' if self.out('status', '--porcelain') else 'none'}, merge in progress: {'yes' if merging else 'no'}")
 
 
-def land_one(repo, slug, lean):
+def land_one(repo, slug, lean, mode):
     """Land one task and print its report; True when the result is LANDED."""
     task = next((t for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
     if task is None:
         raise Fail(f"land: {slug} is not a task worktree")
     if read_tasks(repo.root).get(slug, {}).get("state") != "handed-over":
         raise Fail(f"land: {slug} is not handed over")
-    landing = Landing(repo, task, lean)
+    landing = Landing(repo, task, lean, mode)
     result, facts, needs = landing.run()
     if result not in ("LANDED", "STOPPED busy"):
         landing.mark_working()
@@ -4793,7 +4793,8 @@ def land_candidates(repo):
 def cmd_land(args):
     if bool(args.slug) == args.all:
         raise Fail("land: name a task or give --all, not both")
-    lean = load_settings()["lean_start"]
+    settings = load_settings()
+    lean, mode = settings["lean_start"], settings["lead_permission_mode"]
     repo = Repo()
     slugs = [args.slug] if args.slug else land_candidates(repo)
     if not slugs:
@@ -4802,7 +4803,7 @@ def cmd_land(args):
     for slug in slugs:
         if args.all:
             print(f"# {slug}")
-        landed.append(land_one(repo, slug, lean))
+        landed.append(land_one(repo, slug, lean, mode))
     return 0 if all(landed) else 1
 
 
@@ -5550,7 +5551,7 @@ def parse_args(argv):
     commands = sub.add_parser("commands", help="state or print the test and golden commands of a task (a lead runs it in its worktree)")
     commands.add_argument("which", nargs="?", choices=("test", "golden"))
     commands.add_argument("value", nargs="?", metavar="command|none", help="record it for this task; none: there is none")
-    ack = sub.add_parser("ack",help="record the human's word on a task whose work was handed over")
+    ack = sub.add_parser("ack", help="record the human's word on a task whose work was handed over")
     ack.add_argument("slug")
     ack.add_argument("state", choices=SETTLED)
     sub.add_parser("hook", help="record one hook payload read from stdin (run by the plugin's hooks)")

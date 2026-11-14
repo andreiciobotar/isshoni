@@ -367,7 +367,7 @@ class LandTests(unittest.TestCase):
             {"disableBundledSkills": True, "enabledPlugins": {"alpha@m": False}})])
         tools = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
         self.assertEqual(tools, ["Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
-                                 "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)", "Bash(factory commands *)"])
+                                 "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)"])
         self.assertEqual(argv[argv.index("--disallowedTools") + 1:-3], list(FACTORY.ROLE_DENIED))
         self.assertEqual(argv[argv.index("--output-format") + 1], "json")
         brief = argv[-1]
@@ -595,7 +595,7 @@ class LandTests(unittest.TestCase):
         module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_land_nobranch", loader))
         loader.exec_module(module)
         with mock.patch.object(module, "declare") as declare, mock.patch.object(module, "run") as run:
-            module.Landing(mock.Mock(), {"path": "/x/t1", "branch": None}, False).mark_working()
+            module.Landing(mock.Mock(), {"path": "/x/t1", "branch": None}, False, "auto").mark_working()
         declare.assert_called_once()
         run.assert_not_called()
 
@@ -792,6 +792,13 @@ class LandTests(unittest.TestCase):
         p = self.commands(self.repo, "test", "./x.sh")
         self.assertEqual((p.returncode, p.stdout), (1, ""))
         self.assertIn("inside a task worktree", p.stderr)
+
+    def test_a_detached_task_worktree_gets_its_own_refusal(self):
+        wt = self.task("t1", state="working")
+        self.git("checkout", "-q", "--detach", cwd=wt)
+        p = self.commands(wt, "test", "./x.sh")
+        self.assertEqual((p.returncode, p.stdout), (1, ""))
+        self.assertIn("detached HEAD; check out worktree-t1", p.stderr)
 
     def test_handing_over_records_the_stated_command_for_the_next_task_but_not_none(self):
         wt = self.task("t1", state="working")
