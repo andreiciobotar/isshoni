@@ -20,8 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CONTAINER = IMAGE = PROJECT = "isshoni-factory"
-SOURCE = "~/code/isshoni"
-MONITOR = "/state/home/code/isshoni/bin/isshoni"
+MONITOR = "/state/home/.isshoni/bin/isshoni"
 NAME_RE = re.compile(r"[^A-Za-z0-9_-]")
 REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 ALIAS_RE = re.compile(r"[A-Za-z0-9_.-]+")
@@ -75,7 +74,7 @@ IDENTITY_PUT = (
     'tar -x -C "$d" -f -; chmod 600 "$d/key.pem" "$d/app.json"'
 )
 SOURCE_PUT = """set -eu
-d=$HOME/code/isshoni
+d=$HOME/.isshoni
 mkdir -p "$HOME/code"
 rm -rf "$d.new"; mkdir "$d.new"
 tar -x -C "$d.new" -f -
@@ -91,7 +90,7 @@ mkdir -p "$HOME/code"; cd "$HOME/code"
 if GIT_TERMINAL_PROMPT=0 git clone "https://github.com/$1" "$2"; then exit 0; fi
 rm -rf "$2"; git init -q "$2"; cd "$2"
 git remote add origin "https://github.com/$1"
-eval "$("$HOME/code/isshoni/factory/bin/factory" env)"
+eval "$("$HOME/.isshoni/factory/bin/factory" env)"
 branch=$(git ls-remote --symref origin HEAD | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2}')
 git fetch origin
 git checkout -B "$branch" "origin/$branch"
@@ -305,7 +304,7 @@ def container(c):
 
 
 def source(c):
-    if box(c.target, "cat ~/code/isshoni/.rev")[1].strip() == c.head:
+    if box(c.target, "cat ~/.isshoni/.rev")[1].strip() == c.head:
         return False
     need(box(c.target, SOURCE_PUT, c.head, stdin=git("archive", "HEAD")), "installing the source and the plugin")
     return True
@@ -490,8 +489,8 @@ def cmd_add(args):
     for r in repos:
         if not REPO_RE.fullmatch(r):
             raise Stop("%r is not a repository (owner/name)." % r)
-    if len(set(names)) != len(names) or "isshoni" in names:
-        raise Stop("repository names must be unique, and none may be called isshoni: that is the factory's own source at %s." % SOURCE)
+    if len(set(names)) != len(names):
+        raise Stop("two repositories have the same name; they would share ~/code/<name>.")
     alias = args.alias or entry.get("alias")
     if alias:
         if not ALIAS_RE.fullmatch(alias):
@@ -516,7 +515,7 @@ def host_status(name, e, head):
     if ssh(target, "true")[0]:
         return ["%s: unreachable over ssh" % name], False
     state = ssh(target, "docker inspect -f '{{.State.Status}}' %s" % CONTAINER)[1].strip() or "missing"
-    rev = box(target, "cat ~/code/isshoni/.rev")[1].strip()
+    rev = box(target, "cat ~/.isshoni/.rev")[1].strip()
     serving = box(target, DASHBOARD_SERVING)[0] == 0
     listed = running_dispatchers(target) or set()
     lines = ["%s: container %s" % (name, state),

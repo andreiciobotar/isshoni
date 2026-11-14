@@ -22,7 +22,7 @@ from isshoni import cli, host
 
 TOKEN = "sk-ant-oat01-E2ESECRETTOKEN"
 KEY = "-----BEGIN RSA PRIVATE KEY-----\nE2ESECRETKEYMATERIAL\n-----END RSA PRIVATE KEY-----\n"
-REPO = "octocat/Hello-World"  # public, cloned anonymously; not isshoni itself, whose source lives at ~/code/isshoni
+REPO = "andreiciobotar/isshoni"  # public, cloned anonymously
 STUB_PATH = "/state/stub:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
@@ -104,12 +104,12 @@ class HostEndToEnd(unittest.TestCase):
                          [0o700, 0o600, 0o600, 0o600])
         self.assertEqual(json.loads((home / "settings.json").read_text())["env"], {"CLAUDE_CODE_OAUTH_TOKEN": TOKEN})
         self.assertEqual(json.loads((home / "factory/settings.json").read_text()),
-                         {"monitor": "/state/home/code/isshoni/bin/isshoni", "dispatchers": ["dispatcher-Hello-World"]})
+                         {"monitor": "/state/home/.isshoni/bin/isshoni", "dispatchers": ["dispatcher-isshoni"]})
         pub = (laptop / "id.pub").read_text().strip()
         self.assertEqual((home / "factory/dashboard/authorized_keys").read_text(), "write " + pub + "\n")
-        self.assertTrue((self.state / "home/code/Hello-World/.git").is_dir())
+        self.assertTrue((self.state / "home/code/isshoni/.git").is_dir())
         stub = [json.loads(l) for l in (self.state / "home/stub-claude.log").read_text().splitlines()]
-        self.assertTrue([c for c in stub if c["argv"][:3] == ["--bg", "-n", "dispatcher-Hello-World"] and c["cwd"] == "/state/home/code/Hello-World"], stub)
+        self.assertTrue([c for c in stub if c["argv"][:3] == ["--bg", "-n", "dispatcher-isshoni"] and c["cwd"] == "/state/home/code/isshoni"], stub)
 
         ssh_args = ["-p", str(port), "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "IdentitiesOnly=yes",
                     "-o", "BatchMode=yes", "-tt", "127.0.0.1"]

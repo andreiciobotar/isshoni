@@ -8,7 +8,9 @@ touch "$HOME/.crontab"
 # Wanted: a key is in the file (docs/container.md) and the dashboard is built. The server is not
 # restarted if it ends; the container's restart brings it back.
 keys="$HOME/.claude/factory/dashboard/authorized_keys"
-tui="$HOME/code/isshoni/bin/isshoni-tui"
+# The CI container job still builds it at ~/code/isshoni, so that is the fallback.
+tui="$HOME/.isshoni/bin/isshoni-tui"
+[ -x "$tui" ] || tui="$HOME/code/isshoni/bin/isshoni-tui"
 if [ -s "$keys" ] && [ -x "$tui" ]; then
 	"$tui" --serve 0.0.0.0:2222 &
 fi

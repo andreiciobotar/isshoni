@@ -27,11 +27,11 @@ The laptop keeps its records in `~/.claude/factory/hosts.json` (`$FACTORY_HOME` 
 2. **State directory.** `mkdir -p` of `--state`, and the SSH user's user and group id, which the image takes so that files in it are yours.
 3. **Image.** Built on the server from `git archive HEAD:docker` sent over SSH, labelled with the git tree id of `docker/`; skipped when the image carries that label. No registry, no clone on the server.
 4. **Container.** `docker compose up -d --no-build` with [docker/compose.yaml](../docker/compose.yaml) from `HEAD`, which stays the one definition of mounts, limits and hardening. Recreated when the image changed.
-5. **Source and plugin.** `HEAD` is extracted to `~/code/isshoni` in the container (the tree is replaced), `make install` builds the dashboard, and the plugin is installed from it (`claude plugin marketplace add`, `claude plugin install factory@factory`; on a new revision the `update` forms).
+5. **Source and plugin.** `HEAD` is extracted to `~/.isshoni` in the container (the tree is replaced), `make install` builds the dashboard, and the plugin is installed from it (`claude plugin marketplace add`, `claude plugin install factory@factory`; on a new revision the `update` forms).
 6. **GitHub identity.** Copies the App's private key and `app.json` into the container's `~/.claude/factory/identity/` (directory 0700, files 0600); skipped when their checksums match.
 7. **Claude login.** See below.
 8. **Settings.** Merges `"monitor"` and `"dispatchers"` into the container's `~/.claude/factory/settings.json`; every other key is kept.
-9. **Repositories.** `git clone https://github.com/owner/name` into `~/code/<name>`; a private repository is instead fetched as the App (`factory env`). The factory's own repository cannot be one of them: its source lives at `~/code/isshoni`.
+9. **Repositories.** `git clone https://github.com/owner/name` into `~/code/<name>`; a private repository is instead fetched as the App (`factory env`). The factory's own tooling lives apart, in `~/.isshoni`, so a repository of this name can be one of them.
 10. **Dashboard key.** Lists your public key in `~/.claude/factory/dashboard/authorized_keys` with `write` (an existing line without it is upgraded). The dashboard is started by the container's start script only when the file exists, so the container is restarted once if it was not serving.
 11. **Dispatchers.** For each repository with no `dispatcher-<name>` in `claude agents --json`: `claude --bg -n dispatcher-<name> --permission-mode auto "/factory:dispatch"` in `~/code/<name>`.
 12. **Connect.** Prints how to reach the dashboard.
@@ -100,7 +100,7 @@ Everything that must survive is under the state directory, mounted at `/state`. 
     .gitconfig
     .crontab                 the site manager's job
     code/<repository>/       the repositories; task worktrees under .claude/worktrees/
-    code/isshoni/            this repository's source, replaced on every update
+    .isshoni/                this repository's source and build, replaced on every update
     go/  .cache/             Go modules and build caches
   tmp/                       temporary files (TMPDIR); safe to empty while nothing runs
 ```
