@@ -437,7 +437,7 @@ def dashboard_key(c):
         if box(c.target, DASHBOARD_SERVING)[0] == 0:
             return True
         time.sleep(1)
-    raise Stop("the dashboard is not serving; run it in the foreground to see why: `ssh -t %s docker exec -it %s sh -c '~/.isshoni/bin/isshoni-tui --serve 0.0.0.0:2222'`." % (c.target, CONTAINER))
+    raise Stop("the dashboard is not serving; run it in the foreground to see why: `ssh -t %s \"docker exec -it %s sh -c 'exec ~/.isshoni/bin/isshoni-tui --serve 0.0.0.0:2222'\"`." % (c.target, CONTAINER))
 
 
 def running_dispatchers(target):
@@ -517,8 +517,8 @@ def cmd_add(args):
     state, port = values["state"], values["dashboard_port"] or 2222
     if not state:
         raise Stop("--state DIR is required the first time: the directory on the server that holds the factory's state, e.g. --state /srv/factory.")
-    if not state.startswith("/") or state == "/":
-        raise Stop("--state must be an absolute directory on the server, e.g. /srv/factory.")
+    if state == "/":
+        raise Stop("--state must not be the server's root: name a directory, e.g. /srv/factory.")
     repos = list(dict.fromkeys(entry.get("repos", []) + args.repo))
     names = [r.split("/")[-1] for r in repos]
     for r in repos:
