@@ -172,7 +172,7 @@ class CliTests(unittest.TestCase):
 
     def test_shim_json_is_clean(self):
         p = subprocess.run([sys.executable, os.path.join(ROOT, "bin", "isshoni"), "session", "fixture", "--json", *BASE],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, timeout=60)
         self.assertEqual(p.returncode, 0, p.stderr)
         json.loads(p.stdout)
 

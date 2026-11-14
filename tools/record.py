@@ -7,7 +7,7 @@ directories, and are drawn by tools/strip.py. Nothing is rendered until every fr
 see "Privacy gate" in docs/isshoni.md. Flags: --scenes, --chrome, --out. Environment: SIZE=WxH (default 110x32),
 HANAMI_AT=<duration>, ALLOW="word word" (whole words that may appear although they are another repository's or task's name).
 """
-import argparse,glob,json,os,re,shutil,subprocess,sys,tempfile,time
+import argparse,glob,json,os,re,shutil,sys,tempfile,time
 from datetime import datetime,timedelta
 
 HERE=os.path.dirname(os.path.abspath(__file__))
@@ -32,7 +32,7 @@ SCENES={
 }
 
 def main_root():
-    git=subprocess.check_output(['git','rev-parse','--path-format=absolute','--git-common-dir'],cwd=ROOT,text=True).strip()
+    git=strip.run(['git','rev-parse','--path-format=absolute','--git-common-dir'],strip.GIT_TIMEOUT,cwd=ROOT,capture_output=True,text=True).stdout.strip()
     return os.path.dirname(git)
 
 def encode(path):
@@ -95,12 +95,12 @@ def save_webp(imgs,path,frame_ms):
                  duration=frame_ms,loop=0)
 
 def snapshot(args):
-    return subprocess.run([os.path.join(ROOT,'bin','isshoni-tui')]+args,cwd=ROOT,capture_output=True,text=True,check=True).stdout
+    return strip.run([os.path.join(ROOT,'bin','isshoni-tui')]+args,cwd=ROOT,capture_output=True,text=True).stdout
 
 def hanami_fill(argl,projects,tmp):
     """Write the events file and fill {replay} and {at} (no --at at all when there is no merge to aim at)."""
-    ev=subprocess.run([sys.executable,'-m','isshoni','events','--since','24h','--projects-dir',projects],cwd=ROOT,
-                      capture_output=True,text=True,check=True).stdout
+    ev=strip.run([sys.executable,'-m','isshoni','events','--since','24h','--projects-dir',projects],cwd=ROOT,
+                 capture_output=True,text=True).stdout
     path=os.path.join(tmp,'events.jsonl')
     with open(path,'w',encoding='utf-8') as f: f.write(ev)
     at=os.environ.get('HANAMI_AT')
@@ -134,8 +134,8 @@ def main():
     projects=os.path.expanduser('~/.claude/projects')
     own=scoped_dirs(os.listdir(projects),root)
     if not own: sys.exit('record: no project directory of this repository under %s.'%projects)
-    sessions=json.loads(subprocess.run([os.path.join(ROOT,'bin','isshoni'),'sessions','--json'],cwd=ROOT,capture_output=True,
-                                       text=True,check=True).stdout)['sessions']
+    sessions=json.loads(strip.run([os.path.join(ROOT,'bin','isshoni'),'sessions','--json'],cwd=ROOT,capture_output=True,
+                                  text=True).stdout)['sessions']
     words=deny_words(sessions,set(own))
     allow=os.environ.get('ALLOW','').split()
     home=os.path.expanduser('~')

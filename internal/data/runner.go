@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -147,6 +148,16 @@ func (r *Runner) run(ctx context.Context, out any, args ...string) error {
 	return nil
 }
 
+// groupCmd is a command in its own process group, killed as a whole on cancel or timeout, so no child of
+// it outlives the call; WaitDelay bounds the wait for pipes a survivor might hold.
+func groupCmd(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = time.Second
+	return cmd
+}
+
 // output is one `isshoni <args> --json` process and what it printed.
 func (r *Runner) output(ctx context.Context, args []string) ([]byte, error) {
 	if !r.begin() {
@@ -171,9 +182,8 @@ func (r *Runner) output(ctx context.Context, args []string) ([]byte, error) {
 	if r.Prices != "" {
 		full = append(full, "--prices", r.Prices)
 	}
-	cmd := exec.CommandContext(ctx, r.python(), full...)
+	cmd := groupCmd(ctx, r.python(), full...)
 	cmd.Dir = r.Root
-	cmd.WaitDelay = time.Second
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
 	if err := cmd.Run(); err != nil {

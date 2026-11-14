@@ -16,6 +16,7 @@ import plistlib
 import queue
 import re
 import secrets
+import signal
 import shlex
 import shutil
 import statistics
@@ -41,6 +42,10 @@ SETTINGS_PATH = STORE / "settings.json"
 IDENTITY = STORE / "identity"
 CACHE = STORE / "cache"
 GH_TIMEOUT = 30
+RUN_TIMEOUT = 120
+NETWORK_TIMEOUT = 300
+JOBS_DIR = Path("~/.claude/jobs")
+STALE_HOURS = 24
 GH_SLOW = 2
 PR_TIMEOUT = 10
 PR_BUDGET = 20
@@ -82,12 +87,26 @@ def why(e):
     return str(e) or type(e).__name__ if isinstance(e, Fail) else f"{type(e).__name__}: {e}"
 
 
-def run(argv, cwd=None, timeout=None, input=None, env=None):
-    """The only place a subprocess starts. Returns (returncode, stdout, stderr). `gh` acts as the App when an identity
-    is installed, gets GH_TIMEOUT seconds unless told otherwise, and a call that is slow or fails is logged to gh-YYYY-MM.jsonl.
+GROUPS = set()  # process groups of the live `group=True` children
+
+
+def kill_group(pgid):
+    """SIGKILL a child's process group; never this script's own group, nor a system one."""
+    if pgid <= 1 or pgid == os.getpgrp():
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):  # macOS: PermissionError when all members are zombies
+        os.killpg(pgid, signal.SIGKILL)
+
+
+def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
+    """The only place a subprocess starts, and the owner of its lifetime. Returns (returncode, stdout, stderr).
+    Every call ends after `timeout` seconds (RUN_TIMEOUT unless told otherwise; `gh` gets GH_TIMEOUT). A `group=True`
+    child, one that starts children of its own, runs in a process group of its own, which a timeout or a signal to
+    this script kills whole; any other child stays in the script's group and only it is killed on a timeout.
+    `gh` acts as the App when an identity is installed, and a call that is slow or fails is logged to gh-YYYY-MM.jsonl.
     A `claude` child gets no `ANTHROPIC_LOG`: its debug logging would share the stdout that is read as JSON."""
+    timeout = timeout or (GH_TIMEOUT if argv[0] == "gh" else RUN_TIMEOUT)
     if argv[0] == "gh":
-        timeout = timeout or GH_TIMEOUT
         try:
             if found := acting_identity(cwd):
                 env = {**os.environ, "GH_TOKEN": app_token(*found)}
@@ -97,10 +116,24 @@ def run(argv, cwd=None, timeout=None, input=None, env=None):
         env = {k: v for k, v in (os.environ if env is None else env).items() if k != "ANTHROPIC_LOG"}
     started = time.monotonic()
     try:
-        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, input=input, env=env)
-        result = p.returncode, p.stdout, p.stderr
-    except subprocess.TimeoutExpired:
-        result = 124, "", "timed out"
+        with subprocess.Popen(argv, cwd=cwd, stdin=None if input is None else subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, env=env, start_new_session=group) as p:
+            try:
+                if group:
+                    GROUPS.add(p.pid)
+                out, err = p.communicate(input, timeout=timeout)
+                result = p.returncode, out, err
+                if group:
+                    kill_group(p.pid)  # a grandchild that let go of the pipes
+            except subprocess.TimeoutExpired:
+                kill_group(p.pid) if group else p.kill()
+                p.wait()
+                result = 124, "", "timed out"
+            except BaseException:  # a signal ends the script: the child goes with it
+                kill_group(p.pid) if group else p.kill()
+                raise
+            finally:
+                GROUPS.discard(p.pid)
     except OSError as e:
         result = 127, "", str(e)
     seconds = time.monotonic() - started
@@ -239,7 +272,8 @@ class Repo:
         live = [e for e in entries[1:] if not e["prunable"]]
         under = [e for e in live if os.path.dirname(e["path"]) == base]
         self.tasks = [e for e in under if not os.path.basename(e["path"]).startswith("agent-")]
-        self.leftover = len(under) - len(self.tasks)
+        self.agents = [e["path"] for e in under if os.path.basename(e["path"]).startswith("agent-")]
+        self.leftover = len(self.agents)
         self.outside = len(live) - len(under)
         rc, out, _ = run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=self.root)
         head = out.strip().removeprefix("refs/remotes/") if rc == 0 else ""
@@ -1296,6 +1330,7 @@ SITE_MANAGER_MODEL = "sonnet"
 RESURFACE_MINUTES = 120
 WATCH_INTERVAL = 120
 HEALTH_SECONDS = 1800 - 60
+EVERY_TICK = {"busy-after-handover"}  # criteria the watch evaluates on every tick, not only on the health pass
 WATCH_TIMEOUT = 600
 MONITOR_TIMEOUT = 120
 MIN_LANDED = 5
@@ -1498,6 +1533,59 @@ def c_handover_unacknowledged(p, threshold):
         ts = r["phase"] == "review" and r["state"] == "handed-over" and declared_before(p, r, threshold * 3600)
         if ts:
             found.append((r["slug"], r["slug"], f"handed over {age(ts, p['now'])} ago"))
+    return found
+
+
+def descendants(table, pid):
+    """The rows of `ps -axo pid=,ppid=,etime=,command=` output below `pid`, as (seconds running, pid, elapsed time, command), oldest first."""
+    kids = {}
+    for line in table.splitlines():
+        fields = line.split(None, 3)
+        if len(fields) == 4 and fields[0].isdigit() and fields[1].isdigit():
+            kids.setdefault(int(fields[1]), []).append((etime_seconds(fields[2]), int(fields[0]), fields[2], fields[3]))
+    found, todo = [], [pid]
+    while todo:
+        for kid in kids.get(todo.pop(), []):
+            found.append(kid)
+            todo.append(kid[1])
+    return sorted(found, reverse=True)
+
+
+def etime_seconds(text):
+    """`ps` elapsed time, [[dd-]hh:]mm:ss, in seconds."""
+    days, _, clock = text.rpartition("-")
+    secs = 0
+    for part in clock.split(":"):
+        secs = secs * 60 + int(part)
+    return secs + 86400 * int(days or 0)
+
+
+def handed_over_before(p, threshold):
+    """(slug, worktree path, declared ts) of the tasks whose worktree is there and whose hand-over, still not
+    acknowledged or dismissed, is older than `threshold` minutes. Reads no process and no session."""
+    here = {os.path.basename(t["path"]): t["path"] for t in p["repo"].tasks}
+    return [(slug, here[slug], ts) for slug, r in p["declared"].items()
+            if slug in here and r["state"] == "handed-over" and (ts := epoch(r.get("ts"))) and p["now"] - ts > threshold * 60]
+
+
+def c_busy_after_handover(p, threshold):
+    """Needs only `declared`, `repo.tasks` and `sessions`, so the watch can run it on every tick."""
+    due, held, table, found = handed_over_before(p, threshold), [], None, []
+    if due and (p["sessions"] is None or unplaced_block(p["sessions"])):
+        raise NotEvaluated("sessions cannot be listed with `claude agents --json --all`, or one has no working directory")
+    for slug, path, ts in due:
+        s = task_session(p, path)
+        if s and not finished(s):
+            held.append((slug, s, ts))
+    for slug, s, ts in held:
+        if table is None:
+            table = run(["ps", "-axo", "pid=,ppid=,etime=,command="])[1]
+        kids = descendants(table, s["pid"]) if isinstance(s.get("pid"), int) else []
+        what = "; ".join(f"{pid} up {etime}: {command[:120]}" for _, pid, etime, command in kids[:5])
+        if len(kids) > 5:
+            what += f"; +{len(kids) - 5} more"
+        what = what or "no child process (a subagent waiting without a process cannot be seen from outside)"
+        found.append((slug, slug, f"handed over {age(ts, p['now'])} ago, lead session {s.get('status')}/{s.get('state')}: {what}"))
     return found
 
 
@@ -1861,7 +1949,7 @@ CRITERIA = {  # name -> (function, whether it needs a threshold)
     "past-limit": (c_past_limit, False), "ci-red-default": (c_ci_red_default, False),
     "dispatcher-missing": (c_dispatcher_missing, False), "quiet": (c_quiet, True),
     "ended-undeclared": (c_ended_undeclared, True), "blocked-unanswered": (c_blocked_unanswered, True),
-    "handover-unacknowledged": (c_handover_unacknowledged, True), "review-loops": (c_review_loops, True),
+    "handover-unacknowledged": (c_handover_unacknowledged, True), "busy-after-handover": (c_busy_after_handover, True), "review-loops": (c_review_loops, True),
     "wrong-model": (c_wrong_model, False), "ci-red-handover": (c_ci_red_handover, False),
     "deep-stack": (c_deep_stack, True), "merged-not-cleaned": (c_merged_not_cleaned, True),
     "lgtm-blocked": (c_lgtm_blocked, False), "base-merged": (c_base_merged, False),
@@ -2001,6 +2089,7 @@ def firing_for_run(p, f):
     """A firing as the site manager is given it: its fields, and for a task its status row and transcript tail."""
     out = {k: f[k] for k in ("id", *FIRED_KEYS, "what")}
     row = next((r for r in p["rows"] or [] if r["slug"] == f["slug"]), None)
+    path = row["path"] if row else p["repo"].worktree_path(f["slug"]) if f.get("slug") and p.get("sessions") else None
     if row:
         n = p["now"]
         out["task"] = {"phase": row["phase"], "state": row["state"], "session": row["session"],
@@ -2008,7 +2097,8 @@ def firing_for_run(p, f):
                        "last_commit": age(row["last_commit"], n), "dirty": row["dirty"], "ahead": row["ahead"],
                        "behind": row["behind"], "pr_state": row["pr_state"], "pr_url": row["pr_url"],
                        "overtime": row["overtime"]}
-        session = task_session(p, row["path"])
+    if path:
+        session = task_session(p, path)
         sid = session.get("sessionId") if session else None
         main = next((t for t in transcripts(session) if t.name == f"{sid}.jsonl"), None)
         tail = transcript_tail(main) if main else None
@@ -2081,26 +2171,85 @@ def cmd_health(args):
         print("nothing fired")
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
+    for line in stale_lines(repo):
+        print(line)
     return 0
 
 
+def stale_lines(repo):
+    """Leftovers Claude Code does not remove, older than STALE_HOURS: subagent worktrees and finished job directories. Read-only."""
+    limit = time.time() - STALE_HOURS * 3600
+    def older(path):
+        try:
+            return path.stat().st_mtime < limit
+        except OSError:
+            return False
+    lines = []
+    agents = [Path(a) for a in repo.agents if older(Path(a))]
+    if agents:
+        lines.append(f"{len(agents)} subagent worktrees (agent-*) older than {STALE_HOURS} h: "
+                     f"{', '.join(a.name for a in agents[:5])}")
+    jobs = []
+    for d in sorted(JOBS_DIR.expanduser().glob("*/")):
+        try:
+            state = json.loads((d / "state.json").read_text()).get("state")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if state in ("done", "stopped") and older(d):
+            jobs.append(d)
+    if jobs:
+        size = 0
+        for f in (f for d in jobs for f in d.rglob("*")):
+            with contextlib.suppress(OSError):
+                size += f.lstat().st_size if f.is_file() else 0
+        lines.append(f"{len(jobs)} finished job directories older than {STALE_HOURS} h under ~/.claude/jobs ({size / 1e6:.1f} MB)")
+    return lines
+
+
 def cmd_watch(args):
-    """The scheduled tick: the cheap part every time (comments, draft flags, approvals), and every HEALTH_SECONDS the health run."""
+    """One scheduled tick at a time per repository: cron starts one every two minutes, whatever the last one still does."""
     repo = Repo()
+    with repo_lock(repo, "watch") as free:
+        if not free:
+            print("watch: a tick is already running")
+            return 0
+        return watch_tick(args, repo)
+
+
+def tick_picture(repo, fallback, criteria):
+    """The picture for the criteria of EVERY_TICK: no pull requests, no git, and the session list only when a
+    task qualifies, so a tick with nothing handed over for long runs nothing. The dispatcher is found as in
+    `gather` whenever the sessions are listed."""
+    p = {"now": time.time(), "repo": repo, "dispatcher": None, "dispatcher_why": "sessions not listed",
+         "sessions": None, "rows": None, "declared": read_tasks(repo.root)}
+    if any(handed_over_before(p, c["threshold"]) for c in criteria):
+        p["sessions"], p["lean_start"] = list_sessions(), load_settings()["lean_start"]
+        found, p["dispatcher_why"] = ((None, "cannot list sessions") if p["sessions"] is None
+                                      else find_dispatcher(p["sessions"], repo.root, fallback))
+        p["dispatcher"] = found and found["name"]
+    return p
+
+
+def watch_tick(args, repo):
+    """The cheap part every time (comments, draft flags, approvals), the criteria of EVERY_TICK, and every
+    HEALTH_SECONDS the health run."""
     every = load_criteria()
     criteria = job_criteria(every, "watch")
     print(f"{now()} watch {os.path.basename(repo.root)}")
     cheap_tick(repo, args.dispatcher)
     state = read_lander(repo)
-    if time.time() - state["health"] < HEALTH_SECONDS:
-        return 0
-    write_lander(repo, {**state, "health": time.time()})
-    p = gather(repo, args.dispatcher)
+    full = time.time() - state["health"] >= HEALTH_SECONDS
+    if full:
+        write_lander(repo, {**state, "health": time.time()})
+        p = gather(repo, args.dispatcher)
+    else:
+        criteria = [c for c in criteria if c["name"] in EVERY_TICK]
+        p = tick_picture(repo, args.dispatcher, criteria)
     orphaned = str(p["dispatcher_why"]).startswith("no dispatcher session")  # not a shared or missing name
     current, skipped = evaluate(p, criteria)
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
-    evaluated = {c["name"] for c in every} - {s["criterion"] for s in skipped}
+    evaluated = {c["name"] for c in (every if full else criteria)} - {s["criterion"] for s in skipped}
     opened = {(f["criterion"], f["subject"]): f
               for f in fold(repo_log("firings", repo.root) or [])[0] if not f["cleared"]}
     for key, f in opened.items():
@@ -2114,7 +2263,7 @@ def cmd_watch(args):
             f, old = {**f, "detail": f"{f['detail']}; suppressed earlier: {old['reason']}"}, None
         if old is None:
             send.append(fire(repo, f))
-        elif old["decision"] is None:
+        elif old["decision"] is None and full:  # between health passes only new findings are sent
             send.append({**f, "id": old["id"]})
     if not send:
         print("nothing new")
@@ -2125,6 +2274,8 @@ def cmd_watch(args):
         report(repo, send)
     else:
         run_site_manager(p, send)
+    if not full:
+        return 0
     if orphaned and "dispatcher-missing" not in {s["criterion"] for s in skipped} and not handed_over(repo):
         print(f"no dispatcher session for {repo.root}: removing the schedule", flush=True)  # launchd kills this process in remove
         schedule_remove(repo, scheduler())
@@ -2179,7 +2330,7 @@ def cmd_digest(args):
 
 def run_site_manager(p, send, job="watch"):
     repo = p["repo"]
-    rc, out, err = run(site_manager_argv(p, send, job), cwd=repo.root, timeout=WATCH_TIMEOUT)
+    rc, out, err = run(site_manager_argv(p, send, job), cwd=repo.root, timeout=WATCH_TIMEOUT, group=True)
     try:
         doc = json.loads(out)
     except ValueError:
@@ -3002,7 +3153,7 @@ def courier(repo, name, line):
     """Whether a headless run sent `line` to the session `name`: the only way to put text into a live session."""
     argv = ["claude", "-p", "--model", COMMENT_MODEL, "--permission-mode", "dontAsk", "--allowedTools", "SendMessage",
             "ToolSearch", "--output-format", "json", COURIER.format(name=name, line=line)]
-    rc, out, _ = run(argv, cwd=repo.root, timeout=COMMENT_TIMEOUT)
+    rc, out, _ = run(argv, cwd=repo.root, timeout=COMMENT_TIMEOUT, group=True)
     try:
         reply = json.loads(out).get("result")
     except (ValueError, AttributeError):
@@ -3278,7 +3429,8 @@ def act_git(path, *args, timeout=None):
     exports, error = identity_exports()
     if error:
         return 1, "", error
-    return run(["git", *args], cwd=path, timeout=timeout, env={**os.environ, **exports} if exports else None)
+    return run(["git", *args], cwd=path, timeout=timeout or NETWORK_TIMEOUT,
+               env={**os.environ, **exports} if exports else None)
 
 
 def cmd_env(args):
@@ -3600,7 +3752,7 @@ def dashboard_act(args, detail):
         raise Skip("Go 1.27+ is missing: https://go.dev/dl, then run the wizard again")
     if not ask("Build the dashboard (make build)?", args.yes):
         raise Skip("declined")
-    rc, out, err = run(["make", "build"], cwd=clone())
+    rc, out, err = run(["make", "build"], cwd=clone(), timeout=LAND_TEST_TIMEOUT)
     if rc != 0:
         raise Fail(f"make build failed: {((err or out).strip().splitlines() or ['no output'])[-1]}")
     return "built the dashboard (make build)"
@@ -3633,7 +3785,7 @@ def plugin_act(args, detail):
                    f"then run the wizard again")
     commands = [*([] if market else [["claude", "plugin", "marketplace", "add", SOURCE]]), ["claude", "plugin", "install", PLUGIN]]
     for argv in commands:
-        rc, out, err = run(argv)
+        rc, out, err = run(argv, timeout=NETWORK_TIMEOUT)
         if rc != 0:
             raise Fail(f"`{shlex.join(argv)}` failed: {(err or out).strip()}\n    By hand: "
                        + "; ".join(shlex.join(c) for c in commands))
@@ -4152,7 +4304,7 @@ class Landing:
         if missing:
             return self.stop("tests", f"no test command: {missing}; the worktree is on the "
                              f"merge commit at {new_head}, unpushed", unpushed)
-        rc, out, err = run(["make", "test"], cwd=self.path, timeout=LAND_TEST_TIMEOUT)
+        rc, out, err = run(["make", "test"], cwd=self.path, timeout=LAND_TEST_TIMEOUT, group=True)
         if rc != 0:
             tail = "\n".join((out + err).splitlines()[-40:])
             return self.stop("tests", f"make test {'timed out' if rc == 124 else 'failed'}; the worktree is on the "
@@ -4229,7 +4381,7 @@ class Landing:
         lean = lean_flags() if self.lean else []
         argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", "sonnet",
                 "--permission-mode", "dontAsk", *lean, "--allowedTools", *LAND_TOOLS, "--output-format", "json", brief]
-        rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT)
+        rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT, group=True)
         try:
             text = json.loads(out).get("result")
         except (ValueError, AttributeError):
@@ -4462,9 +4614,9 @@ def write_lander(repo, state):
 
 
 @contextlib.contextmanager
-def lander_lock(repo):
-    """Hold the lander lock of this repository; yields whether it was free."""
-    path = repo_state(repo.root, "lander", "lock")
+def repo_lock(repo, name):
+    """Hold the lock `name` ("lander" or "watch") of this repository; yields whether it was free."""
+    path = repo_state(repo.root, name, "lock")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         try:
@@ -4485,6 +4637,17 @@ def approved_at(pr):
     times += [c.get("createdAt") for c in pr.get("comments") or [] if str(c.get("body")).strip().lower() == "lgtm"
               and c.get("authorAssociation") in HUMAN_ASSOCIATIONS]
     return max((t for t in times if t), default=None)
+
+
+def lead_state(repo, sessions, pr):
+    """`busy` while the lead session of the task of `pr` is not finished, or when sessions could not be listed
+    (None), else `free` (also with no session): the last part of a `noticed` key, so a pull request noticed while
+    its lead was busy is run once more when it is free."""
+    if sessions is None:
+        return "busy"
+    slug = task_slug(repo, pr)
+    s = slug and sessions and task_session({"sessions": sessions, "repo": repo}, repo.worktree_path(slug))
+    return "busy" if s and not finished(s) else "free"
 
 
 def candidates(repo, snap):
@@ -4541,7 +4704,7 @@ def run_lander(repo, snap, given, word, fallback):
     # `factory land` finds this script and, as the job's PATH has them, `claude`, `git` and `gh`.
     env = {**os.environ, "PATH": f"{FACTORY.parent}{os.pathsep}{os.environ.get('PATH', '')}",
            "BASH_DEFAULT_TIMEOUT_MS": MERGE_BASH_MS, "BASH_MAX_TIMEOUT_MS": MERGE_BASH_MS}
-    rc, out, _ = run(argv, cwd=repo.root, timeout=MERGE_TIMEOUT, env=env)
+    rc, out, _ = run(argv, cwd=repo.root, timeout=MERGE_TIMEOUT, env=env, group=True)
     results, reply = lander_results(rc, out, [pr["number"] for pr in given])
     try:
         snap, opened = snapshot(repo), True  # the heads and approvals as the run left them
@@ -4555,11 +4718,21 @@ def run_lander(repo, snap, given, word, fallback):
                 results[n] = ("other", "the lander said merged but it is still open")
             elif kind != "merged" and n not in shown and rc:
                 results[n] = ("merged", pr["url"])
+    before, sessions = sessions, list_sessions()
     state, heads = read_lander(repo), {pr["number"]: pr["headRefOid"] for pr in snap}
+
+    def lead(pr):
+        """`busy` when the lead was busy before the run or is after it (a lead that frees during the run keeps its
+        retry), except for a run that already was the retry of this head and approval: one retry each, or a stop that
+        wakes the lead would start a run on every tick."""
+        if (state["noticed"].get(str(pr["number"])) == f"{pr['headRefOid']}:{approved_at(pr)}:busy"
+                and lead_state(repo, before, pr) == "free"):  # a run by hand while it is busy is not the retry
+            return "free"
+        return "busy" if "busy" in (lead_state(repo, before, pr), lead_state(repo, sessions, pr)) else "free"
     # Only this run's pull requests get a new key, with the stamp read before the run: an approval that came
-    # during it, or on another pull request, starts the next run.
+    # during it, or on another pull request, starts the next run. Its last part says whether the lead is busy.
     state["noticed"] = {**{n: k for n, k in state["noticed"].items() if int(n) in heads},
-                        **{str(pr["number"]): f"{heads[pr['number']]}:{at}" for pr in given
+                        **{str(pr["number"]): f"{heads[pr['number']]}:{at}:{lead(pr)}" for pr in given
                            if (at := approved_at(pr)) and pr["number"] in heads}}
     state["stopped"] = {n: s for n, s in state["stopped"].items() if int(n) in heads}
     for n, (kind, text) in results.items():
@@ -4622,10 +4795,17 @@ def cheap_tick(repo, fallback):
 
 def notice(repo, fallback, snap):
     """Pull requests of `snap` approved since last noticed start one lander run."""
-    noticed = read_lander(repo)["noticed"]
-    new = [pr for pr in candidates(repo, snap) if noticed.get(str(pr["number"])) != f"{pr['headRefOid']}:{approved_at(pr)}"]
+    noticed, sessions, new = read_lander(repo)["noticed"], False, []
+    for pr in candidates(repo, snap):
+        head, stored = f"{pr['headRefOid']}:{approved_at(pr)}", noticed.get(str(pr["number"]))
+        if stored is None or not (stored == head or stored.startswith(f"{head}:")):  # a new head or approval
+            new.append(pr)
+        elif stored.endswith(":busy"):  # a stored two-part key counts as noticed: no burst after an upgrade
+            sessions = list_sessions() if sessions is False else sessions
+            if lead_state(repo, sessions, pr) == "free":
+                new.append(pr)
     if new:
-        with lander_lock(repo) as free:
+        with repo_lock(repo, "lander") as free:
             if free:
                 run_lander(repo, snap, new, set(), fallback)
 
@@ -4645,7 +4825,7 @@ def cmd_lander(args):
     if not given:
         print("nothing approved")
         return 0
-    with lander_lock(repo) as free:
+    with repo_lock(repo, "lander") as free:
         if not free:
             print("a lander run is already going; run it again when it ends")
             return 1
@@ -4775,5 +4955,17 @@ def main(argv=None):
         return 1
 
 
+def stop_on_signal(signum, _frame):
+    """Kill the children that run in groups of their own, then leave with 128+signal; `finally` blocks and context
+    managers run, and the kernel releases the locks."""
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):  # a second signal must not cut the unwind short
+        signal.signal(sig, signal.SIG_IGN)
+    for pgid in list(GROUPS):
+        kill_group(pgid)
+    sys.exit(128 + signum)
+
+
 if __name__ == "__main__":
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, stop_on_signal)
     sys.exit(main())

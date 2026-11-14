@@ -65,7 +65,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "isshoni-tui: --serve and --snapshot cannot be combined")
 			os.Exit(2)
 		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 		defer stop()
 		ln, err := net.Listen("tcp", *serveAt)
 		if err == nil {
@@ -89,9 +89,16 @@ func main() {
 			fmt.Fprintln(os.Stderr, "isshoni-tui: unknown snapshot view", *snapshot)
 			os.Exit(2)
 		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		defer stop()
+		o.Ctx = ctx
 		out, err := tui.Snapshot(tui.SnapshotOptions{Options: o, View: *snapshot, Session: *session, Row: *row, Fold: *fold, W: w, H: h, At: *at, FrameStep: *step, Frames: *frames, Legend: *legend})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "isshoni-tui:", err)
+			os.Exit(1)
+		}
+		if ctx.Err() != nil { // a signal cut the render short: no partial frame
+			fmt.Fprintln(os.Stderr, "isshoni-tui:", ctx.Err())
 			os.Exit(1)
 		}
 		fmt.Println(out)
