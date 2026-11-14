@@ -55,9 +55,12 @@ elif a[:2] == ["agents", "--json"] and os.path.exists(home + "/agents-broken"):
     print("supervisor unreachable")
     sys.exit(1)
 elif a[:2] == ["agents", "--json"]:
-    print(json.dumps([{"name": n, "kind": "background"} for n in s["agents"]]))
+    cwds = s.get("cwds", {})
+    print(json.dumps([{"name": n, "kind": "background", "status": "busy", "pid": 1, **({"cwd": cwds[n]} if n in cwds else {})}
+                      for n in s["agents"]]))
 elif "--bg" in a:
     s["agents"].append(a[a.index("-n") + 1])
+    s.setdefault("cwds", {})[a[a.index("-n") + 1]] = os.getcwd()
 elif a[:2] == ["plugin", "list"]:
     print(json.dumps([{"id": p} for p in s["plugins"]]))
 elif a[:3] == ["plugin", "marketplace", "list"]:
