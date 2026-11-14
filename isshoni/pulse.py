@@ -9,11 +9,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time, timedelta, timezone
 
 from . import kaizen, metrics, transcript
-from .kaizen import GhError, _iso, _seconds, _ts
+from .kaizen import SIZES, GhError, _iso, _seconds, _ts
 
 GIT_TIMEOUT = 10
 GH_WORKERS = 8
-SIZES = ("small", "medium", "large")
 _MERGE_SUBJECT = re.compile(r"Merge pull request #(\d+) ")
 _FAILED = object()  # a lookup that failed: not cached, not in the split
 
