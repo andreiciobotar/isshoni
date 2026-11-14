@@ -71,7 +71,7 @@ A lead asks you only what it cannot decide itself; comment on its pull request a
 What the merge queue cannot merge cleanly goes to a tech lead (Opus): it resolves the conflict, notes it on the pull request and hands over again, and wakes the lead only when the resolution would change the behaviour that was asked for.
 
 <p align="center">
-  <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time against its limit and pull request, within the cap and its reserve">
+  <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap and its reserve">
 </p>
 
 ## Kaizen (改善), built in
