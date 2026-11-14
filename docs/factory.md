@@ -3,7 +3,7 @@
 The `factory` command of the plugin (Python 3.11+, standard library; needs `git`, `claude` and, for pull request state, `gh`). Run it inside a repository: the main checkout or any task worktree. Exit codes: 0 ok, 2 usage or precondition error (one line on stderr), 1 a `claude`, `git`, `gh` or scheduler step failed or a log could not be written.
 
 ## Install
-In a clone of the repository, `make wizard` does every setup step (see Setup and uninstall); with only the plugin, run `factory wizard` after installing it. By hand, in Claude Code: `/plugin marketplace add andreiciobotar/isshoni`, then `/plugin install factory@factory`; `/rename dispatcher-<repository directory name>` and `/factory:dispatch` make the session the dispatcher. To try it for one session without installing, start `claude --plugin-dir <clone>/factory`. `gh` must be authenticated (`gh auth status`). macOS and Linux; Windows is not supported. Leads run unattended: nobody watches a lead's session (`lead_permission_mode`, see Settings).
+In a clone of the repository, `make wizard` does every setup step (see Setup and uninstall); with only the plugin, run `factory wizard` after installing it (in a Claude Code session the plugin's `bin/` is on the Bash tool's `PATH`, so `factory` works there). By hand, in Claude Code: `/plugin marketplace add andreiciobotar/isshoni`, then `/plugin install factory@factory`; `/rename dispatcher-<repository directory name>` and `/factory:dispatch` make the session the dispatcher. To try it for one session without installing, start `claude --plugin-dir <clone>/factory`. `gh` must be authenticated (`gh auth status`). macOS and Linux; Windows is not supported. Leads run unattended: nobody watches a lead's session (`lead_permission_mode`, see Settings).
 
 ## Tasks
 A task is one slug: lowercase letters, digits and single hyphens, 3 to 40 characters, not starting with `agent-`. From it follow the worktree `.claude/worktrees/<slug>`, the branch `worktree-<slug>`, the lead's session name `<slug>`, and the spec `~/.claude/factory/specs/<repository directory name>/<slug>.md`. Specs are working papers and are never committed; they outlive the worktree.
@@ -32,8 +32,8 @@ factory firing <id> acted|ignored                                        # id or
 factory miss <text> [--slug <slug>] [--firing <id>]
 factory firings [--json]
 factory merge (<number>... | --all) [--dry-run]
-factory wizard [--yes] [--list] [--owner <account>] [--name <app name>]
-factory uninstall [--yes] [--list]
+factory wizard [--yes] [--list] [--owner <account>] [--name <app name>]   # the whole setup walk; rerun to finish or repair
+factory uninstall [--yes] [--list]                                       # remove what the wizard and the factory put here
 factory env                                                              # exports that make git and gh act as the App
 factory land (<slug> | --all)
 ```
@@ -273,7 +273,7 @@ Then it retargets the pull request onto the default branch when its base is a me
 
 | Flag | Meaning |
 |---|---|
-| `--yes` | accept every offer without asking. Without it an offer prints `question [y/N]` and reads one line from stdin; anything but `y` or `yes` is no, and so is end of input: no answer is never consent |
+| `--yes` | accept every offer without asking. Without it an offer prints `question [y/N]` and reads one line from stdin; anything but `y` or `yes` is no, and so is end of input: no answer is never consent, so a non-interactive run (no terminal on stdin) declines every offer unless it has `--yes` |
 | `--list` | print each step and its state, change nothing; it runs only the read-only commands `gh auth status`, `claude auth status` and `claude plugin list --json`, and calls no network API |
 | `--owner`, `--name` | the GitHub App step: see Identity |
 
@@ -284,17 +284,17 @@ Then it retargets the pull request onto the default branch when its base is a me
 5. **cost criteria** (optional, clone only): `monitor` names an existing file. Offers to set it to `<clone>/bin/isshoni`, keeping every other key (unknown ones too); a `monitor` that points at a missing file is replaced and the line says what it pointed at.
 6. **GitHub App** (optional): see Identity. A failure here is printed, the run goes on to the summary and exits 1.
 
-The summary lists each step's state and says that the site manager starts with the dispatcher session and stops with it (the plugin's hook installs and removes its job), so nothing is installed for it. When every required step is done it prints the two commands to start working, and when the run changed nothing, `Nothing to do: everything is set up.`
+The summary lists each step's state and says that the site manager starts with the dispatcher session and stops with it (the plugin's hook installs and removes its job), so nothing is installed for it. A live dispatcher session installs that job again and recreates the home with its logs, so end dispatcher sessions before uninstalling. When every required step is done it prints the two commands to start working, and when the run changed nothing, `Nothing to do: everything is set up.`
 
 `factory uninstall` (or `make uninstall`) removes what the wizard and the factory put on the machine. `--list` says what each step would remove and does nothing; `--yes` confirms every step. Each step says what it found and what will be lost, then asks, then acts; a step with nothing to remove says so, and running it twice is safe. It deletes only on positive evidence that the thing is the factory's; everything else is kept and named in the final list. In order:
 
 1. **schedules**: the watch jobs of this home, for every repository (launchd, systemd or cron). Under another `FACTORY_HOME` a job is this home's when it records that `FACTORY_HOME`; otherwise when it records none. A job of another home, or a file that is not a factory job, stays.
 2. **GitHub App**: uninstalls the App's installation (`DELETE /app/installations/<id>` as the App; `404` is "already uninstalled"), then prints and opens the App's settings page: only you can delete the App itself (Advanced, Delete GitHub App). A failed call is reported and the run goes on.
-3. **plugin**: `claude plugin uninstall factory@factory` and `claude plugin marketplace remove factory`, only when the plugin is installed and the marketplace `factory` is `andreiciobotar/isshoni`.
+3. **plugin**: `claude plugin uninstall factory@factory` and `claude plugin marketplace remove factory`, the plugin (user scope) when installed, then the marketplace `factory`, whenever that marketplace is `andreiciobotar/isshoni`; a `factory` marketplace from another source is kept with the plugin.
 4. **home**: the factory's own names in `FACTORY_HOME` (settings, logs, specs, deliverables, `identity/`, `watch.log`), with counts first. Anything else is kept and listed, and the directory is removed only when it is then empty.
 5. **dashboard binary** (clone only): `bin/isshoni-tui`.
 
-It exits 0 unless a step failed, and ends with what it left: Claude Code's own transcripts and settings (`~/.claude/projects`), your repositories with their task worktrees and `worktree-*` branches (`factory clean` or `git worktree remove`, before the plugin is gone), the clone, git, `gh`, Go and Claude Code, the App on GitHub until you delete it, and whatever a step declined or kept.
+The home is removed only by its known names; under a `FACTORY_HOME` other than `~/.claude/factory` a directory holding anything else is left whole and named, since a mis-set variable must not delete a stranger's files. It exits 0 unless a step failed, and ends with what it left: Claude Code's own transcripts and settings (`~/.claude/projects`), your repositories with their task worktrees and `worktree-*` branches (`factory clean` or `git worktree remove`, before the plugin is gone), the clone, git, `gh`, Go and Claude Code, the App on GitHub until you delete it, and whatever a step declined or kept.
 
 ## Identity
 `factory wizard [--owner <account>] [--name <app name>]` (or `make wizard`) offers, as its last step, a GitHub App of its own for the factory. Once it is installed, the factory acts on GitHub as that App (see How the identity is used); with no identity stored, or an App stored but not installed, every command acts with your `gh` login, and `factory status` says which. It needs `openssl` on the `PATH` (it signs the App's JWT) and a browser.

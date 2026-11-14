@@ -29,6 +29,7 @@ class Machine:
         self.tools = {"git", "gh", "claude", "openssl", "go", "make"}
         self.gh_login, self.claude_login = True, True
         self.plugins, self.markets, self.fail, self.crontab = [], [], set(), ""
+        self.other_plugins, self.disabled = [], set()
         self.calls = []
 
     def which(self, tool):
@@ -42,10 +43,15 @@ class Machine:
         if a[:3] == ["gh", "api", "user"]:
             return 0, "octocat\n", ""
         if a[:3] == ["claude", "auth", "status"]:
+            if isinstance(self.claude_login, tuple):
+                return self.claude_login
             return 0, json.dumps({"loggedIn": self.claude_login}), ""
         if a[:3] == ["claude", "plugin", "list"]:
-            return 0, json.dumps([{"id": i, "scope": "user"} for i in self.plugins]), ""
+            return 0, json.dumps([{"id": i, "scope": "user", "enabled": i not in self.disabled} for i in self.plugins]
+                                 + self.other_plugins), ""
         if a[:4] == ["claude", "plugin", "marketplace", "list"]:
+            if "market-list" in self.fail:
+                return 1, "", "no"
             return 0, json.dumps(self.markets), ""
         if a[:2] == ["git", "remote"]:
             return 0, "git@github.com:someone-else/repo.git\n", ""
@@ -93,7 +99,11 @@ class Setup(unittest.TestCase):
         self.github = FakeGitHub({**routes("PEM"), ("DELETE", "/app/installations/7654321"): (204, None)})
         self.opened = []
         self.created = []
-        for patcher in (mock.patch.dict(os.environ, {"HOME": str(self.home), "DISPLAY": ":0"}),
+        for patcher in (mock.patch.dict(os.environ, {"HOME": str(self.home), "DISPLAY": ":0",
+                                                     "XDG_CONFIG_HOME": str(self.home / ".config")}),
+                        mock.patch.object(factory, "STORE", self.store),
+                        mock.patch.object(factory, "SETTINGS_PATH", self.store / "settings.json"),
+                        mock.patch.object(factory, "IDENTITY", self.store / "identity"),
                         mock.patch.object(factory, "run", self.machine),
                         mock.patch.object(factory.shutil, "which", self.machine.which),
                         mock.patch.object(factory, "clone", lambda: self.root if self.has_clone else None),
@@ -170,9 +180,10 @@ class WizardFlow(Setup):
         self.assertIn("gh is not logged in: run `gh auth login`", self.out)
 
     def test_an_unparsable_claude_answer_is_not_logged_in(self):
-        with mock.patch.object(self.machine, "claude_login", "garbage"):
-            self.assertEqual(self.command("wizard", "--yes"), 1)
-        self.assertIn("claude is not logged in", self.out)
+        for answer in ("garbage", (0, "not json", ""), (1, '{"loggedIn": true}', "")):
+            with mock.patch.object(self.machine, "claude_login", answer):
+                self.assertEqual(self.command("wizard", "--yes"), 1)
+            self.assertIn("claude is not logged in", self.out)
 
     def test_an_interrupted_run_resumes_after_the_failed_step(self):
         self.machine.fail.add("install")
@@ -204,6 +215,53 @@ class WizardFlow(Setup):
         self.assertIn("needs you: make build failed: it broke", self.out)
         self.assertIn(PLUGIN, self.machine.plugins)
         self.assertTrue((self.store / "settings.json").exists())
+
+    def test_a_long_name_exits_2_before_any_step(self):
+        self.assertEqual(self.command("wizard", "--yes", "--name", "n" * 35), 2)
+        self.assertIn("35 characters", self.err)
+        self.assertEqual(self.machine.calls, [])
+
+    def test_gh_auth_status_runs_outside_any_repository(self):
+        seen = []
+
+        def spy(argv, **kw):
+            seen.append((argv[:3], kw.get("cwd")))
+            return self.machine(argv, **kw)
+
+        with mock.patch.object(factory, "run", spy):
+            self.command("wizard", "--list")
+        self.assertIn((["gh", "auth", "status"], "/"), seen)
+
+    def test_the_plugin_must_be_in_user_scope_and_enabled(self):
+        self.machine.other_plugins.append({"id": PLUGIN, "scope": "project", "enabled": True, "projectPath": "/x"})
+        self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
+        self.assertIn(["claude", "plugin", "install", PLUGIN], self.machine.calls)
+        self.machine.calls.clear()
+        self.machine.disabled.add(PLUGIN)
+        self.assertEqual(self.command("wizard", "--yes"), 1)
+        self.assertIn("installed but disabled: run `claude plugin enable factory@factory`", self.out)
+        self.assertEqual(self.machine.mutations(), [])
+
+    def test_an_unreadable_marketplace_list_stops_before_adding(self):
+        self.machine.fail.add("market-list")
+        self.assertEqual(self.command("wizard", "--yes"), 1)
+        self.assertIn("cannot read `claude plugin marketplace list --json`", self.out)
+        self.assertEqual([c for c in self.machine.mutations() if c[0] == "claude"], [])
+
+    def test_a_directory_marketplace_is_named_by_its_path(self):
+        self.machine.markets.append({"name": "factory", "source": "directory", "path": "/some/dir"})
+        self.assertEqual(self.command("wizard", "--yes"), 1)
+        self.assertIn("exists from /some/dir", self.out)
+        self.assertNotIn("None", self.out)
+
+    def test_cost_alerts_are_skipped_from_a_task_worktree(self):
+        self.root = self.tmp / "repo" / ".claude" / "worktrees" / "task"
+        (self.root / "bin").mkdir(parents=True)
+        (self.root / "bin" / "isshoni").write_text("x")
+        (self.root / "go.mod").write_text("x")
+        self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
+        self.assertIn("skipped: this clone is a task worktree", self.out)
+        self.assertNotIn("monitor", self.settings())
 
     def test_the_plugin_step_reuses_the_marketplace_it_finds(self):
         self.machine.markets.append({"name": "factory", "source": "github", "repo": SOURCE})
@@ -346,7 +404,8 @@ class UninstallFlow(Setup):
         self.assertEqual(self.opened, [])
         self.assertEqual(self.snapshot(), before)
         self.assertTrue((self.root / "bin" / "isshoni-tui").exists())
-        for line in ("found: factory@factory", "found: the App factory-octocat", "settings, 0 log file(s)",
+        for line in ("found: the marketplace andreiciobotar/isshoni and factory@factory", "found: the App factory-octocat",
+                     str(self.store / "settings.json"), str(self.store / "identity") + " (",
                      "/settings/apps/factory-octocat/advanced", "found: " + str(self.root / "bin" / "isshoni-tui")):
             self.assertIn(line, self.out)
 
@@ -356,7 +415,7 @@ class UninstallFlow(Setup):
         self.assertEqual(self.machine.mutations(), [])
         self.assertFalse(self.github.called("DELETE", "/app/installations/7654321"))
         self.assertTrue((self.store / "settings.json").exists())
-        self.assertIn("the plugin: you declined", self.out)
+        self.assertIn("the plugin and its marketplace: you declined", self.out)
         self.assertIn(f"the home {self.store}: you declined", self.out)
         self.assertIn("the dashboard binary: you declined", self.out)
         self.assertEqual(self.opened, ["https://github.com/settings/apps/factory-octocat/advanced"])
@@ -377,7 +436,7 @@ class UninstallFlow(Setup):
         self.assertEqual(self.command("uninstall", "--yes"), 0, self.out + self.err)
         self.assertEqual(self.machine.mutations(), [])
         self.assertEqual(self.machine.plugins, [PLUGIN])
-        self.assertIn("not positively the factory's", self.out)
+        self.assertIn("not from andreiciobotar/isshoni", self.out)
 
     def test_without_claude_the_plugin_step_says_so_and_the_rest_goes_on(self):
         self.set_up()
@@ -404,12 +463,32 @@ class UninstallFlow(Setup):
         (self.store / "notes.txt").write_text("not ours")
         (self.store / "events.jsonl.bak").write_text("not ours")
         self.assertEqual(self.command("uninstall", "--list"), 0)
-        self.assertIn("settings, 3 log file(s), 1 spec file(s), 1 deliverable file(s)", self.out)
+        for name in ("settings.json", "watch.log", "events.jsonl", "tasks-2026-11.jsonl", ".settings-ab12.tmp"):
+            self.assertIn(str(self.store / name), self.out)
+        self.assertIn(f"{self.store / 'specs'} (1 files)", self.out)
         self.assertEqual(self.command("uninstall", "--yes"), 0, self.out + self.err)
         self.assertEqual(sorted(p.name for p in self.store.iterdir()), ["events.jsonl.bak", "notes.txt"])
         self.assertIn(f"not the factory's, kept: {self.store / 'notes.txt'}", self.out)
         self.assertIn("directory stays", self.out)
         self.assertIn("notes.txt: not the factory's", self.out)
+
+    def test_the_marketplace_of_the_factory_goes_alone_and_project_scope_is_left(self):
+        self.machine.markets.append({"name": "factory", "source": "github", "repo": SOURCE})
+        self.machine.other_plugins.append({"id": PLUGIN, "scope": "project", "enabled": True})
+        self.assertEqual(self.command("uninstall", "--yes"), 0, self.out + self.err)
+        self.assertEqual([c for c in self.machine.mutations() if c[0] == "claude"],
+                         [["claude", "plugin", "marketplace", "remove", "factory"]])
+
+    def test_a_foreign_file_under_another_factory_home_stops_the_home_step(self):
+        scratch = self.tmp / "scratch"
+        scratch.mkdir()
+        (scratch / "settings.json").write_text("{}")
+        (scratch / "thesis.tex").write_text("mine")
+        with mock.patch.object(factory, "STORE", scratch):
+            self.assertEqual(self.command("uninstall", "--yes"), 0, self.out + self.err)
+        self.assertEqual(sorted(p.name for p in scratch.iterdir()), ["settings.json", "thesis.tex"])
+        self.assertIn("does not look like a factory home: thesis.tex; nothing removed", self.out)
+        self.assertIn("does not look like a factory home", self.out.split("left behind:")[1])
 
     def test_a_home_of_strangers_loses_nothing(self):
         self.store.mkdir(parents=True)

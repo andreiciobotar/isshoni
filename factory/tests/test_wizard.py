@@ -81,7 +81,12 @@ class Wizard(unittest.TestCase):
                                                 "DISPLAY": ":0"})
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.identity = self.home / ".claude" / "factory" / "identity"
+        store = self.home / ".claude" / "factory"
+        for name, value in (("STORE", store), ("SETTINGS_PATH", store / "settings.json"), ("IDENTITY", store / "identity")):
+            patch = mock.patch.object(factory, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.identity = store / "identity"
         self.opened = []
         self.forms = []
         self.gh = None
@@ -208,7 +213,7 @@ class FirstRunTests(Wizard):
             "bot_login": "factory-octocat[bot]", "bot_id": 99999999,
             "bot_email": "99999999+factory-octocat[bot]@users.noreply.github.com"})
         for line in ("octocat/one", "octocat/two", "factory-octocat[bot]", str(factory.IDENTITY),
-                     "To remove it: factory uninstall"):
+                     "To remove it: `factory uninstall`"):
             self.assertIn(line, self.out)
         self.assertNotIn("advanced", self.out)
         self.assertQuiet()
@@ -235,9 +240,9 @@ class FirstRunTests(Wizard):
         self.assertIn("named my-factory", self.out)
 
     def test_a_name_over_34_characters_is_refused_not_cut(self):
-        self.assertEqual(self.wizard("--owner", "octocat", "--name", "n" * 35), 2)
-        self.assertIn("35 characters", self.err)
-        self.assertEqual(self.gh.calls, [])
+        with redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(factory.main(["wizard", "--name", "n" * 35]), 2)
+        self.assertIn("35 characters", err.getvalue())
         self.assertEqual(self.wizard("--owner", "octocat", "--name", "n" * 34), 0, self.err)
 
     def test_name_with_a_stored_identity_is_refused(self):
@@ -369,7 +374,7 @@ class RerunTests(Wizard):
             "bot_email": "99999999+isshoni-lander[bot]@users.noreply.github.com"})
         self.assertIn("renamed: factory-octocat -> isshoni-lander\n", self.out)
         self.assertIn(f"App isshoni-lander: {new}", self.out)
-        self.assertIn("To remove it: factory uninstall", self.out)
+        self.assertIn("To remove it: `factory uninstall`", self.out)
         self.assertNotIn("factory-octocat\n", self.out.replace("renamed: factory-octocat -> isshoni-lander\n", ""))
         self.assertEqual(cache.read_text(), '{"token": "t"}')
 
