@@ -76,7 +76,8 @@ the head branch `worktree-<slug>` (the newest when several). When `gh` cannot be
 (missing, not a GitHub repository, no such path, bad output) the repository's `prs` holds
 the reason, its tasks have no `pr`, and nothing there counts as landed.
 
-The document: `generated`, `factory_dir`, `store_found`, `prices`, `repos`
+The document: `generated`, `factory_dir`, `store_found`, `prices`, `roles` (the role
+names in display order; every `by_role` and `share` object has exactly these keys), `repos`
 (`repo`, `repo_path`, `prs`: `ok` or the reason), `versions` (each plugin version by its
 earliest record in any store), `tasks`, `summary`, `stops`, `slowed`, `rewards`, `outbox`,
 `site_manager`.
@@ -108,6 +109,16 @@ medians of `cost`, `brief_to_pr_s`, `pr_to_merge_s`, `review_rounds`; `first_pas
 `tasks` counts all, `in_flight` those not landed and not `acknowledged` or `dismissed`, and
 `defects` sums every task's newest retro. `trend` is null below `trend_min` (10) landed
 tasks; else the median of each measure over the latest half (`latest_n`) against the rest.
+
+`summary.mix` is how the cost mix by role moves: `window` (the integer 5) and `points`,
+one per landed task with a cost above zero, in start order, from the fifth such task on
+(so `points` is empty below five). A point has the task's `slug` and `version` (a string
+or null) and `share`: for each role, the median over the five tasks ending at that task
+of the role's share of the task's cost (`by_role` over `total`), a float from 0 to 1.
+The medians are taken per role, so a point's shares need not sum to 1. The window does
+not restart at a plugin version: a change in the mix shows in full three tasks after it.
+A role added to `ROLES` in `isshoni/kaizen.py` gets its own key everywhere; an agent
+whose role is not listed there is counted under `other`.
 
 `stops`, oldest first: a lead's `QUESTION`, `BLOCKED` or `OVERTIME` message (`waited_s`
 runs to the next prompt from the human or the dispatcher in the same session, null while
@@ -213,7 +224,12 @@ VIEW=... SIZE=...` turns it into a PNG under `shots/` (needs Chrome).
   plugin versions marked under it; who caught the defects; the site manager's record:
   precision and recall, then what it escalated with the outcomes, suppressed and missed,
   or one line saying nothing is logged yet), **Flow** (where the money
-  and the time went, a table of every task, the stops each with its reason in full or
+  and the time went; under the money, a line chart of each role's share of a task's cost
+  over the landed tasks in start order, each point the median of the five tasks ending
+  there (`summary.mix`), one line per role in its colour with its latest value at the
+  right, the plugin versions marked under it, and from six landed tasks with a cost,
+  below which one line says so; where two lines share a cell the role listed first
+  shows; a table of every task, the stops each with its reason in full or
   "reason not recorded", what slowed tasks) and **Board**
   (the factory's feedback outbox: open issues grouped by topic, what was acted on, the
   decisions). The columns of a chart use the colour of what they measure; review rounds
