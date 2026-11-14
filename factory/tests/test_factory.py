@@ -26,6 +26,35 @@ DAY = 86400
 BATCH = ("gh", "pr", "list", "--state", "all", "--limit", "100")  # the one call `status` makes per repository
 
 
+class StubProcess:
+    """A `subprocess.Popen` that answers through `spawn(argv, timeout=..., **popen_kwargs)` like `subprocess.run` did."""
+
+    def __init__(self, spawn, argv, **kw):
+        self.spawn, self.argv, self.kw = spawn, argv, kw
+        self.pid = 2**31 - 2  # no such process, so a killpg on it is harmless (0 would be the test's own group)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def communicate(self, input=None, timeout=None):
+        done = self.spawn(self.argv, timeout=timeout, **self.kw)
+        self.returncode = done.returncode
+        return done.stdout, done.stderr
+
+    def kill(self):
+        pass
+
+    def wait(self):
+        pass
+
+
+def stub_popen(spawn):
+    return lambda argv, **kw: StubProcess(spawn, argv, **kw)
+
+
 def porcelain(*entries):
     """entries: (path, branch or None, prunable[, lock reason; "" is a lock without one])."""
     out = []
@@ -53,7 +82,7 @@ class FakeRun:
         self.envs = []
         self.timeouts = []
 
-    def __call__(self, argv, cwd=None, input=None, timeout=None, env=None):
+    def __call__(self, argv, cwd=None, input=None, timeout=None, env=None, **_):
         self.calls.append(list(argv))
         self.inputs.append(input)
         self.envs.append(env)
@@ -1779,7 +1808,7 @@ class PullRequestBatchTests(unittest.TestCase):
         self.gh = 0, json.dumps(full), ""
         timeouts = []
 
-        def run(argv, cwd=None, input=None, timeout=None):
+        def run(argv, cwd=None, input=None, timeout=None, **_):
             timeouts.append(timeout)
             return self.gh if "--head" not in argv else (0, json.dumps([{"state": "OPEN"}]), "")
         clock = iter([0.0, 12.0, 25.0, 25.0, 25.0])
@@ -1832,7 +1861,7 @@ class GhLogTests(unittest.TestCase):
             if isinstance(result, Exception):
                 raise result
             return subprocess.CompletedProcess(argv, *result)
-        with mock.patch.object(factory.subprocess, "run", spawn), mock.patch.object(factory.time, "monotonic", lambda: next(clock)), \
+        with mock.patch.object(factory.subprocess, "Popen", stub_popen(spawn)), mock.patch.object(factory.time, "monotonic", lambda: next(clock)), \
                 mock.patch.object(factory, "acting_identity", lambda cwd=None: None):
             factory.run(argv, cwd="/some/repo")
         return [r for _, path in factory.log_files("gh") for r in factory.read_file(path)]
@@ -1856,13 +1885,14 @@ class GhLogTests(unittest.TestCase):
     def test_other_commands_are_not_logged(self):
         self.assertEqual(self.run_gh(["git", "status"], (1, "", "fatal")), [])
 
-    def test_a_gh_call_without_a_timeout_gets_30_s_and_a_given_one_stays(self):
+    def test_a_call_without_a_timeout_gets_a_default_and_a_given_one_stays(self):
         self.run_gh(["gh", "pr", "list"], (0, "", ""))
-        with mock.patch.object(factory.subprocess, "run", lambda argv, **kw: self.timeouts.append(kw["timeout"]) or
-                               subprocess.CompletedProcess(argv, 0, "", "")), mock.patch.object(factory, "acting_identity", lambda cwd=None: None):
+        spawn = lambda argv, **kw: self.timeouts.append(kw["timeout"]) or subprocess.CompletedProcess(argv, 0, "", "")
+        with mock.patch.object(factory.subprocess, "Popen", stub_popen(spawn)), \
+                mock.patch.object(factory, "acting_identity", lambda cwd=None: None):
             factory.run(["gh", "x"], timeout=1800)
             factory.run(["git", "status"])
-        self.assertEqual(self.timeouts, [30, 1800, None])
+        self.assertEqual(self.timeouts, [30, 1800, factory.RUN_TIMEOUT])
 
     def test_a_log_that_cannot_be_written_is_swallowed(self):
         with mock.patch.object(factory, "log", side_effect=OSError("read-only")):

@@ -11,10 +11,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 import test_wizard
-from test_factory import ROOT, WT, factory, invoke, repo_answers
+from test_factory import ROOT, WT, factory, invoke, repo_answers, stub_popen
 from test_wizard import INSTALL_URL, TOKEN, FakeGitHub
 
-real_subprocess_run = subprocess.run
+real_popen = subprocess.Popen
 BOT = "factory-octocat[bot]"
 EMAIL = "99999999+factory-octocat[bot]@users.noreply.github.com"
 MINT = ("POST", "/app/installations/7654321/access_tokens")
@@ -364,15 +364,15 @@ class HookTests(Identity):
 
 class RunTests(Identity):
     def spawn(self, argv, **kw):
-        """subprocess.run, except that `gh` and `git` are recorded instead of started (openssl signs for real)."""
+        """subprocess.Popen, except that `gh` and `git` are recorded instead of started (openssl signs for real)."""
         if argv[0] == "openssl":
-            return real_subprocess_run(argv, **kw)
+            return real_popen(argv, **kw)
         self.started.append((argv, kw["env"]))
-        return subprocess.CompletedProcess(argv, 0, "out", "")
+        return stub_popen(lambda argv, **_: subprocess.CompletedProcess(argv, 0, "out", ""))(argv, **kw)
 
     def run_with(self, argv):
         self.started = []
-        with mock.patch.object(factory.subprocess, "run", self.spawn):
+        with mock.patch.object(factory.subprocess, "Popen", self.spawn):
             result = factory.run(argv)
         return result, self.started[0][1] if self.started else "not started"
 
@@ -397,7 +397,7 @@ class RunTests(Identity):
             self.assertIsNone(self.run_with(["git", "status"])[1])
             explicit = {"A": "1", "ANTHROPIC_LOG": "debug"}
             self.started = []
-            with mock.patch.object(factory.subprocess, "run", self.spawn):
+            with mock.patch.object(factory.subprocess, "Popen", self.spawn):
                 factory.run(["claude", "-p"], env=explicit)
                 factory.run(["git", "status"], env=explicit)
             self.assertEqual([e for _, e in self.started], [{"A": "1"}, explicit])

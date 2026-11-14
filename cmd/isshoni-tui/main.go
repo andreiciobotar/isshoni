@@ -34,7 +34,7 @@ func main() {
 		replay   = flag.String("replay", "", "open the Hanami tab replaying this events file (JSON lines, as python3 -m isshoni events prints)")
 		speed    = flag.Float64("replay-speed", 0, "replay: event seconds per second (default 60)")
 		at       = flag.Duration("at", 0, "hanami snapshot: time of the first frame (default 4s)")
-		frames   = flag.Int("frames", 1, "hanami snapshot: number of frames, separated by a form-feed line")
+		frames   = flag.Int("frames", 1, "dashboard and hanami snapshots: number of frames, separated by a form-feed line (dashboard: one load, the cursor one row lower in each)")
 		step     = flag.Duration("frame-step", 0, "hanami snapshot: time between frames (default 400ms)")
 		legend   = flag.Bool("legend", false, "hanami snapshot: with the legend open")
 		serveAt  = flag.String("serve", "", "serve the dashboard over SSH on ADDR (e.g. 127.0.0.1:2222) instead of on this terminal; public keys only")
@@ -65,7 +65,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "isshoni-tui: --serve and --snapshot cannot be combined")
 			os.Exit(2)
 		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 		defer stop()
 		ln, err := net.Listen("tcp", *serveAt)
 		if err == nil {
@@ -89,9 +89,16 @@ func main() {
 			fmt.Fprintln(os.Stderr, "isshoni-tui: unknown snapshot view", *snapshot)
 			os.Exit(2)
 		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		defer stop()
+		o.Ctx = ctx
 		out, err := tui.Snapshot(tui.SnapshotOptions{Options: o, View: *snapshot, Session: *session, Row: *row, Fold: *fold, W: w, H: h, At: *at, FrameStep: *step, Frames: *frames, Legend: *legend})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "isshoni-tui:", err)
+			os.Exit(1)
+		}
+		if ctx.Err() != nil { // a signal cut the render short: no partial frame
+			fmt.Fprintln(os.Stderr, "isshoni-tui:", ctx.Err())
 			os.Exit(1)
 		}
 		fmt.Println(out)

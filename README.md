@@ -71,7 +71,7 @@ A lead asks you only what it cannot decide itself. Nothing merges without you: a
 A pull request that conflicts with the default branch or goes red in the merge queue is resolved by a tech lead session, not by waking its lead; the lead hears only when the fix is a behaviour question.
 
 <p align="center">
-  <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap">
+  <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap and its reserve">
 </p>
 
 ## Kaizen (改善), built in
@@ -100,7 +100,7 @@ Parsing a transcript is slow, so parsed sessions are cached, one file per transc
 Cost is the API list price, from [isshoni/prices.toml](isshoni/prices.toml). `isshoni-tui` is the same data live, plus the factory's tasks and whether it is getting better. Its fifth view, [Hanami (花見)](docs/isshoni.md#hanami-花見-the-work-as-something-to-watch), draws the work as motion: something to leave on a second screen.
 
 <p align="center">
-  <img src="assets/tabs/hanami.webp" alt="Hanami: a day of the factory replayed; blossoms open where agents work and a merge streams away">
+  <img src="assets/tabs/hanami.webp" alt="Hanami: a day of the factory replayed; blossoms open where agents work, and a merge bursts as a firework that lights the stage">
 </p>
 
 Every view, the Agents one too, and its keys: [docs/isshoni.md](docs/isshoni.md#dashboard-isshoni-tui).
@@ -109,6 +109,7 @@ Every view, the Agents one too, and its keys: [docs/isshoni.md](docs/isshoni.md#
 
 - [docs/factory.md](docs/factory.md): commands, states, settings, logs, the site manager
 - [docs/isshoni.md](docs/isshoni.md): the monitor's options and the dashboard's keys, and `isshoni-tui --serve`, which also opens the dispatcher's conversation over SSH for a `write` key
+- [docs/shutdown.md](docs/shutdown.md): what ends each process and what each leaves behind
 - `make test` runs everything
 
 ## Status

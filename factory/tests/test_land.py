@@ -78,6 +78,16 @@ git push -q origin worktree-t1
 """
 
 
+def load_factory():
+    loader = importlib.machinery.SourceFileLoader("factory_overlap", str(BIN))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_overlap", loader))
+    loader.exec_module(module)
+    return module
+
+
+FACTORY = load_factory()
+
+
 def lines(n=30):
     return [f"line {i}" for i in range(1, n + 1)]
 
@@ -107,7 +117,8 @@ class LandTests(unittest.TestCase):
         self.git("init", "-q", "--bare", "-b", "main", str(self.remote), cwd=tmp)
         self.git("init", "-q", "-b", "main", str(self.repo), cwd=tmp)
         (self.repo / "Makefile").write_text("test:\n\t@$(TEST_CMD)\n")
-        for name in ("a.txt", "b.txt"):
+        (self.repo / "docs").mkdir()
+        for name in ("a.txt", "b.txt", "README.md", "docs/a.md"):
             (self.repo / name).write_text("\n".join(lines()) + "\n")
         self.git("add", ".")
         self.git("commit", "-q", "-m", "init")
@@ -139,10 +150,10 @@ class LandTests(unittest.TestCase):
         self.edit(self.other, line, text, name)
         self.git("push", "-q", "origin", "main", cwd=self.other)
 
-    def task(self, slug, line=20, text="task line", base="main", state="handed-over", start="main"):
+    def task(self, slug, line=20, text="task line", base="main", state="handed-over", start="main", name="a.txt"):
         wt = self.repo / ".claude" / "worktrees" / slug
         self.git("worktree", "add", "-q", "-b", f"worktree-{slug}", str(wt), start)
-        self.edit(wt, line, text)
+        self.edit(wt, line, text, name)
         self.git("push", "-q", "-u", "origin", f"worktree-{slug}", cwd=wt)
         url = f"https://x/pull/{slug}"
         self.prs[f"worktree-{slug}"] = [{"state": "OPEN", "url": url, "baseRefName": base,
@@ -217,6 +228,100 @@ class LandTests(unittest.TestCase):
         self.assertEqual(self.last_state(), "working")
         self.assertIn("Result: LANDED, LOOK (the lead has been asked to look).", self.gh_calls()[0]["body"])
 
+    def test_overlap_prints_none_safe_and_look(self):
+        wt = self.task("t1", line=20, name="README.md")
+        self.advance_main(1, "main line", "b.txt")
+        self.git("fetch", "-q", "origin", cwd=wt)
+        base = self.git("merge-base", "HEAD", "origin/main", cwd=wt)
+        head = self.git("rev-parse", "HEAD", cwd=wt)
+        p = self.factory("overlap", base, head, "origin/main", cwd=wt)
+        self.assertEqual((p.returncode, p.stdout), (0, "overlap: none\nverdict: safe\n"))
+        self.advance_main(2, "main line", "README.md")
+        self.git("fetch", "-q", "origin", cwd=wt)
+        p = self.factory("overlap", base, head, "origin/main", cwd=wt)
+        self.assertEqual((p.returncode, p.stdout),
+                         (0, "overlap: README.md (prose, 17 lines apart, not looked at)\nverdict: safe\n"))
+        self.advance_main(3, "main line")
+        self.edit(wt, 4, "task line")
+        self.git("fetch", "-q", "origin", cwd=wt)
+        head = self.git("rev-parse", "HEAD", cwd=wt)
+        p = self.factory("overlap", base, head, "origin/main", cwd=wt)
+        self.assertEqual(p.stdout.splitlines()[:3], [
+            "overlap: README.md (prose, 17 lines apart, not looked at); a.txt (code)", "verdict: look", "a.txt: code"])
+        self.assertIn("the base changed:\ndiff --git a/a.txt b/a.txt", p.stdout)
+        self.assertIn("the task changed:\ndiff --git a/a.txt b/a.txt", p.stdout)
+        self.assertNotIn("README.md:", p.stdout)
+
+    def test_overlap_with_a_bad_ref_fails_and_is_never_safe(self):
+        wt = self.task("t1")
+        p = self.factory("overlap", "nosuchref", self.git("rev-parse", "HEAD", cwd=wt), "origin/main", cwd=wt)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("nosuchref", p.stderr)
+        self.assertNotIn("verdict", p.stdout)
+
+    def overlap(self, wt, base=None):
+        """`factory overlap` of the task's head against origin/main, run in the task worktree."""
+        self.git("fetch", "-q", "origin", cwd=wt)
+        base = base or self.git("merge-base", "HEAD", "origin/main", cwd=wt)
+        return self.factory("overlap", base, self.git("rev-parse", "HEAD", cwd=wt), "origin/main", cwd=wt)
+
+    def test_overlap_far_apart_in_prose_is_safe(self):
+        wt = self.task("t1", line=20, name="README.md")
+        self.advance_main(2, "main line", "README.md")
+        p = self.overlap(wt)
+        self.assertEqual(p.stdout, "overlap: README.md (prose, 17 lines apart, not looked at)\nverdict: safe\n")
+
+    def test_overlap_far_apart_in_code_is_a_look(self):
+        wt = self.task("t1", line=20)
+        self.advance_main(2, "main line")
+        p = self.overlap(wt)
+        self.assertEqual(p.stdout.splitlines()[:3], ["overlap: a.txt (code)", "verdict: look", "a.txt: code"])
+        self.assertIn("+main line", p.stdout)
+        self.assertIn("+task line", p.stdout)
+
+    def test_overlap_near_in_prose_is_a_look(self):
+        wt = self.task("t1", line=4, name="docs/a.md")
+        self.advance_main(2, "main line", "docs/a.md")
+        p = self.overlap(wt)
+        self.assertEqual(p.stdout.splitlines()[:3],
+                         ["overlap: docs/a.md (prose, 1 lines apart)", "verdict: look", "docs/a.md: prose, 1 lines apart"])
+
+    def test_overlap_of_the_same_line_in_prose_is_a_look_0_lines_apart(self):
+        wt = self.task("t1", line=5, name="README.md")
+        self.advance_main(5, "main line", "README.md")
+        p = self.overlap(wt)
+        self.assertEqual(p.stdout.splitlines()[:2], ["overlap: README.md (prose, 0 lines apart)", "verdict: look"])
+
+    def test_overlap_of_a_prose_file_renamed_on_one_side_is_a_look(self):
+        wt = self.task("t1", line=20, name="docs/a.md")
+        self.git("pull", "-q", "--ff-only", cwd=self.other)
+        self.git("mv", "docs/a.md", "docs/b.md", cwd=self.other)
+        self.git("commit", "-q", "-m", "rename", cwd=self.other)
+        self.git("push", "-q", "origin", "main", cwd=self.other)
+        p = self.overlap(wt)
+        self.assertEqual(p.stdout.splitlines()[:3], ["overlap: docs/a.md (added, deleted or renamed on one side)",
+                                                     "verdict: look", "docs/a.md: added, deleted or renamed on one side"])
+
+    def test_a_prose_path_with_non_ascii_letters_is_judged_as_prose(self):
+        (self.repo / "docs/café.md").write_text("\n".join(lines()) + "\n")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "add café")
+        self.git("push", "-q", "origin", "main")
+        wt = self.task("t1", line=20, name="docs/café.md")
+        self.advance_main(2, "main line", "docs/café.md")
+        p = self.overlap(wt)
+        self.assertEqual(p.stdout, "overlap: docs/café.md (prose, 17 lines apart, not looked at)\nverdict: safe\n")
+
+    def test_a_long_diff_is_cut_with_the_count_of_the_rest(self):
+        wt = self.task("t1", line=20)
+        self.advance_main(2, "main line")
+        self.git("fetch", "-q", "origin", cwd=wt)
+        base = self.git("merge-base", "HEAD", "origin/main", cwd=wt)
+        (wt / "a.txt").write_text("\n".join(f"new {i}" for i in range(100)) + "\n")
+        self.git("commit", "-q", "-am", "rewrite", cwd=wt)
+        p = self.factory("overlap", base, self.git("rev-parse", "HEAD", cwd=wt), "origin/main", cwd=wt)
+        self.assertRegex(p.stdout, r"\.\.\. \(\d+ more lines\)\n$")
+
     def test_a_base_that_has_not_moved_changes_nothing(self):
         wt = self.task("t1")
         p = self.land("t1")
@@ -262,7 +367,7 @@ class LandTests(unittest.TestCase):
             {"disableBundledSkills": True, "enabledPlugins": {"alpha@m": False}})])
         tools = argv[argv.index("--allowedTools") + 1:-3]
         self.assertEqual(tools, ["Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
-                                 "Bash(gh pr edit *)", "Bash(factory state working)"])
+                                 "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)"])
         self.assertEqual(argv[argv.index("--output-format") + 1], "json")
         brief = argv[-1]
         for text in ("Your task slug is t1.", "The base is main (remote origin).", f"The reviewed head is {old}.",
@@ -649,6 +754,42 @@ class LandTests(unittest.TestCase):
         self.assertEqual((self.git("rev-parse", "HEAD", cwd=wt), self.remote_head()), (old, old))
         self.assertFalse(touched.exists())
         self.assertEqual(self.gh_calls(), [])
+
+
+class OverlapRuleTests(unittest.TestCase):
+    def verdict(self, base_hunk, task_hunk, path="README.md"):
+        diffs = iter([f"@@ {base_hunk} @@", f"@@ {task_hunk} @@"])
+        return FACTORY.Overlap.judge(lambda *a: next(diffs), "b", {"base": {path: "M"}, "task": {path: "M"}}, path, "t", "h")
+
+    def test_the_gap_between_hunks_counts_the_unchanged_lines_between_them(self):
+        self.assertEqual(FACTORY.hunk_ranges("@@ -5,0 +6 @@\n@@ -9 +9 @@\n@@ -20,3 +20 @@"), [(6, 5), (9, 9), (20, 22)])
+        self.assertEqual(FACTORY.hunk_gap((2, 2), (12, 12)), 9)
+        self.assertEqual(FACTORY.hunk_gap((12, 12), (2, 2)), 9)
+        self.assertEqual(FACTORY.hunk_gap((6, 5), (7, 7)), 1)  # an insertion after line 5, then line 7
+        self.assertEqual(FACTORY.hunk_gap((6, 5), (6, 6)), 0)
+
+    def test_nine_lines_apart_is_a_look_and_ten_is_safe(self):
+        self.assertEqual(self.verdict("-2 +2", "-12 +12"), ("prose, 9 lines apart", False))
+        self.assertEqual(self.verdict("-2 +2", "-13 +13"), ("prose, 10 lines apart", True))
+        self.assertEqual(self.verdict("-5,0 +6", "-16 +16"), ("prose, 10 lines apart", True))  # lines 6..15 between
+        self.assertEqual(self.verdict("-5,0 +6", "-15 +15"), ("prose, 9 lines apart", False))
+
+    def test_no_hunks_is_a_look(self):
+        diffs = iter(["", "@@ -1 +1 @@"])
+        self.assertEqual(FACTORY.Overlap.judge(lambda *a: next(diffs), "b", {"base": {"README.md": "M"}, "task": {"README.md": "M"}},
+                                               "README.md", "t", "h"), ("no line changes to compare", False))
+
+    def test_prose_is_decided_by_path_alone(self):
+        for path in ("README.md", "sub/README.rst", "docs/a.md", "x/doc/y/z.TXT", "docs/deep/b.md"):
+            self.assertTrue(FACTORY.is_prose(path), path)
+        for path in ("a.md", "docs/a.py", "factory/agents/lander.md", "factory/roles/lead.md", "x/SKILL.md", "CLAUDE.md",
+                     "docs.md", "readme.md"):
+            self.assertFalse(FACTORY.is_prose(path), path)
+
+    def test_a_failing_git_is_a_fail_with_its_error(self):
+        out = FACTORY.checked_out(lambda *a: (128, "", "fatal: bad revision\n"))
+        with self.assertRaisesRegex(FACTORY.Fail, "fatal: bad revision"):
+            FACTORY.Overlap(out, "nosuchref", "h", "t")
 
 
 if __name__ == "__main__":

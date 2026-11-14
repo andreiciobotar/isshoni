@@ -3,6 +3,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -347,9 +348,19 @@ class TestFollow(Env):
 
 class TestCommand(Env):
     def run_cli(self, *args, stdout=subprocess.PIPE):
-        return subprocess.Popen([sys.executable, "-m", "isshoni", "events", "--projects-dir", self.projects,
-                                 "--factory-dir", self.factory, "--no-gh", "--since", "2026-11-14T10:00:00", *args],
-                                cwd=ROOT, stdout=stdout, stderr=subprocess.PIPE, text=True)
+        p = subprocess.Popen([sys.executable, "-m", "isshoni", "events", "--projects-dir", self.projects,
+                              "--factory-dir", self.factory, "--no-gh", "--since", "2026-11-14T10:00:00", *args],
+                             cwd=ROOT, stdout=stdout, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(self.reap, p)
+        return p
+
+    @staticmethod
+    def reap(p):
+        p.kill()  # a no-op once it has ended
+        p.wait()
+        for f in (p.stdout, p.stderr):
+            if f:
+                f.close()
 
     def test_history_prints_json_lines_and_exits(self):
         p = self.run_cli()
@@ -386,6 +397,51 @@ class TestCommand(Env):
         os.close(w)
         _, err = p.communicate(timeout=30)
         self.assertEqual((p.returncode, err), (0, ""))
+
+class FollowParentTests(unittest.TestCase):
+    CHILD = """
+import threading
+from isshoni import events
+class Feed:
+    def now(self): return "2026-11-14T10:00:00Z"
+    def history(self): return []
+    def poll(self, discover): return []
+    def poll_gh(self): return []
+events.follow(Feed(), lambda batch: print('started', flush=True), threading.Event(), tick=0.1)
+"""
+    # A parent that starts the follow and prints its pid, then waits to be killed.
+    PARENT = "import subprocess, sys, time\n" \
+             "p = subprocess.Popen([sys.executable, '-c', sys.argv[1]])\n" \
+             "print(p.pid, flush=True)\n" \
+             "time.sleep(60)\n"
+
+    @staticmethod
+    def kill_group(parent):
+        try:
+            os.killpg(parent.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        parent.wait()
+        parent.stdout.close()
+
+    def test_follow_ends_within_three_ticks_of_its_parent_being_killed(self):
+        parent = subprocess.Popen([sys.executable, "-c", self.PARENT, self.CHILD], cwd=ROOT, stdout=subprocess.PIPE, text=True,
+                                  start_new_session=True)
+        self.addCleanup(self.kill_group, parent)
+        lines = {parent.stdout.readline().strip(), parent.stdout.readline().strip()}  # the pid, and "started": the parent is recorded
+        child = int(next(l for l in lines if l.isdigit()))
+        self.assertIn("started", lines)
+        os.kill(child, 0)
+        parent.kill()
+        parent.wait()
+        end = time.monotonic() + 3 * 0.1 + 2  # three ticks, plus the scheduler's slack
+        while time.monotonic() < end:
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        self.fail("the follow process %d outlived its parent" % child)
 
 
 if __name__ == "__main__":

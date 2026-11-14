@@ -311,10 +311,13 @@ class Feed:
 def follow(feed, emit, stop, tick=0.5, discover=2.0, gh=60.0):
     """Emit the history, a `live` marker, then what is appended, until `stop` is set. `emit(batch)` gets sorted
     event lists. Everything before the marker had happened when the stream started; what follows is news,
-    however old its timestamp (gh is polled once a minute, and a watch tick's line lands when the tick ends)."""
+    however old its timestamp (gh is polled once a minute, and a watch tick's line lands when the tick ends).
+    Also ends when the parent process is gone: a parent killed with SIGKILL never closes the pipe, and the loop
+    only notices a closed pipe at its next write."""
+    parent = os.getppid()
     emit(feed.history() + [_ev(feed.now(), "live")])
     last_discover = last_gh = time.monotonic()
-    while not stop.wait(tick):
+    while not stop.wait(tick) and os.getppid() == parent:
         now = time.monotonic()
         due = now - last_discover >= discover
         last_discover = now if due else last_discover

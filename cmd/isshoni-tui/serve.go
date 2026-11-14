@@ -495,7 +495,18 @@ func (t *terminal) close() {
 // streams tea.Exec hands it.
 type attachCommand struct{ run func() error }
 
-func (c attachCommand) Run() error        { return c.run() }
+// Run waits 50 ms after the attach before it hands the terminal back. Bubble Tea v2.1.1 stops
+// its frame ticker in a goroutine that is still exiting when tea.Exec calls Run, and restarts the
+// same ticker when Run returns: an attach that fails at once (no claude on the PATH) came back
+// before that stop, which then landed on the restarted ticker, and the dashboard was never drawn
+// again. Asleep, this goroutine lets that one finish first. Fixed upstream after v2.1.1
+// (charmbracelet/bubbletea#1832): the wait goes with the release that has it.
+func (c attachCommand) Run() error {
+	err := c.run()
+	time.Sleep(50 * time.Millisecond)
+	return err
+}
+
 func (attachCommand) SetStdin(io.Reader)  {}
 func (attachCommand) SetStdout(io.Writer) {}
 func (attachCommand) SetStderr(io.Writer) {}

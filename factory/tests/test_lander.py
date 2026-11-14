@@ -12,7 +12,7 @@ from unittest import mock
 
 import test_health
 from test_factory import ROOT, WT, FakeRun, factory
-from test_health import NOW, iso
+from test_health import NOW, iso, register
 from test_merge import SESSION, World, pr, review
 
 GREEN = [{"name": "test", "bucket": "pass"}]
@@ -146,9 +146,9 @@ class LoopRun(FakeRun):
         super().__init__(answers)
         self.sim, self.cwd = sim, None
 
-    def __call__(self, argv, cwd=None, input=None, timeout=None, env=None):
+    def __call__(self, argv, cwd=None, input=None, timeout=None, env=None, **kw):
         self.cwd = cwd
-        return super().__call__(argv, cwd, input, timeout, env)
+        return super().__call__(argv, cwd, input, timeout, env, **kw)
 
     def resolve(self, argv):
         found = self.sim.handle(argv, self.cwd)
@@ -161,9 +161,21 @@ class Loop(World):
     def setUp(self):
         super().setUp()
         self.sim = Sim()
-        patcher = mock.patch.object(test_health, "FakeRun", lambda answers: LoopRun(answers, self.sim))
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.reruns = []
+        for patcher in (mock.patch.object(test_health, "FakeRun", lambda answers: LoopRun(answers, self.sim)),
+                        mock.patch.object(factory, "rerun_line", self.rerun_line)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def rerun_line(self, repo, n):
+        """The function behind `factory rerun`: what the test says it answers, and what it did to the checks."""
+        self.reruns.append(n)
+        started, line, checks = self.rerun_answer
+        if started:
+            self.sim.prs[int(n)]["checks"] = checks
+        return started, line
+
+    rerun_answer = (False, "no rerun: test double", None)
 
     def go(self, *argv, leads=True, dispatcher=True, state="handed-over", at=None):
         prs = [pr(n) for n in sorted(self.sim.prs)]
@@ -208,7 +220,7 @@ class MergeInOrderTests(Loop):
         self.sim.add(1, approved=False, conflicts=["a.txt"])
         self.sim.add(2, approved=False)
         code, out, _ = self.go("lander")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
         self.assertIn("#1 stopped conflict: conflicts with main in a.txt (told lead)\n", out)
         self.assertEqual(self.sim.events("undo"), [("undo", 1)])
         self.assertTrue(self.sim.lead_lines()[0].startswith("LANDER: t1: #1 went back to you: it conflicts with main in a.txt."))
@@ -230,6 +242,25 @@ class MergeInOrderTests(Loop):
         self.assertEqual(len(self.sim.lines), 1)
         self.assertTrue(self.sim.lines[0].startswith("LANDER: #1 stopped base:"))
 
+    def test_a_red_check_that_rerun_restarts_is_not_sent_back_stays_in_flight_and_merges_when_green(self):
+        self.sim.add(1, behind=False, checks=[RED])
+        self.sim.add(2)
+        self.rerun_answer = (True, "rerun: test: T (f.go) is outside what the branch changes; attempt 2 started", [PENDING, GREEN])
+        code, out, _ = self.go("lander")
+        self.assertEqual((code, self.stopped(out), self.sim.lead_lines(), self.sim.events("undo")), (0, [], [], []))
+        self.assertEqual(self.reruns, ["1"])
+        self.assertEqual(self.sim.merged[0], 1)
+        self.assertEqual(self.sim.pushes(), [2])  # not before #1 merged: it was in flight
+
+    def test_a_red_check_with_no_rerun_is_sent_back_with_the_reason_in_the_leads_line(self):
+        self.sim.add(1, behind=False, checks=[RED])
+        self.rerun_answer = (False, "no rerun: already re-run once; looks like a flake: T (f.go)", None)
+        code, out, _ = self.go("lander")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.reruns, ["1"])
+        [line] = self.sim.lead_lines()
+        self.assertIn("went back to you: red checks: test https://x/run/2; no rerun: already re-run once; looks like a flake: T (f.go).", line)
+
     def test_a_red_update_is_sent_back_and_the_next_one_is_updated(self):
         for n in range(1, 6):
             self.sim.add(n, after=[RED] if n == 2 else None)
@@ -237,7 +268,7 @@ class MergeInOrderTests(Loop):
         self.assertEqual(self.sim.merged, [1, 3, 4, 5])
         self.assertEqual(self.sim.pushes(), [1, 2, 3, 4, 5])
         self.assertEqual(code, 1)
-        self.assertIn("#2 stopped ci: failed or cancelled checks: test (told lead)\n", out)
+        self.assertIn("#2 stopped ci: failed or cancelled checks: test; no rerun: test double (told lead)\n", out)
 
     def test_a_conflict_is_sent_back_in_the_first_pass_with_no_push(self):
         for n in range(1, 6):
@@ -273,9 +304,9 @@ class MergeInOrderTests(Loop):
         self.assertEqual((code, self.sim.merged), (1, [2]))
         self.assertEqual(self.sim.events("undo"), [("undo", 1)])
         self.assertEqual(self.sim.lead_lines(), [
-            "LANDER: t1: #1 went back to you: red checks: test https://x/run/2. Fix it on your branch (merge origin/main in), "
+            "LANDER: t1: #1 went back to you: red checks: test https://x/run/2; no rerun: test double. Fix it on your branch (merge origin/main in), "
             "re-review what you change, and hand over again: it is then merged by itself."])
-        self.assertIn("#1 stopped ci: failed or cancelled checks: test (told lead)\n", out)
+        self.assertIn("#1 stopped ci: failed or cancelled checks: test; no rerun: test double (told lead)\n", out)
         self.sim.lines.clear()
         _, out, _ = self.go("lander")
         self.assertEqual((self.sim.lead_lines(), self.stopped(out)), ([], []))
@@ -363,7 +394,7 @@ class WordTests(Loop):
 
     def test_a_number_while_the_lock_is_held_joins_the_queue_of_the_running_loop(self):
         self.sim.add(7, approved=False, behind=False)
-        with factory.lander_lock(SimpleNamespace(root=ROOT)):
+        with factory.repo_lock(SimpleNamespace(root=ROOT), "lander"):
             code, out, _ = self.go("lander", "7")
         self.assertEqual((code, out), (0, "a lander run is already going: it takes everything that is ready (#7 is now in its queue)\n"))
         self.assertEqual(self.sim.merged, [])
@@ -372,6 +403,15 @@ class WordTests(Loop):
         with mock.patch.object(factory, "read_tasks", lambda root: {"t7": {"state": "handed-over"}}), \
                 mock.patch.object(factory, "task_slug", lambda repo, pr: "t7"):
             self.assertEqual([(p["number"], perm) for p, perm in factory.lander_queue(repo, snap, self.word())], [(7, None)])
+
+    def test_a_held_lock_skips_the_loop_of_a_tick_silently(self):
+        self.sim.add(1, behind=False)
+        with factory.repo_lock(SimpleNamespace(root=ROOT), "lander"):
+            code, out, _ = self.go("watch")
+        self.assertEqual((code, self.sim.merged), (0, []))
+        self.assertNotIn("lander", out)
+        self.go("watch", at=NOW + 120)
+        self.assertEqual(self.sim.merged, [1])
 
     def test_nothing_ready_is_said_once_and_exits_zero(self):
         self.assertEqual(self.go("lander")[:2], (0, "nothing ready\n"))
@@ -417,6 +457,15 @@ class ToldTests(Loop):
         [line] = self.sim.lead_lines()
         self.assertTrue(line.startswith("LANDER: t1 (not delivered to its lead): #1 went back to you: red checks"))
 
+    def test_the_dispatcher_is_found_by_its_registration_and_told_by_its_current_name(self):
+        self.sim.add(1, behind=False, checks=[RED])
+        register("sid-d")
+        answers, sessions, slugs = self.world([pr(1)])
+        sessions = [{"sessionId": "sid-d", "name": "renamed", "cwd": ROOT, "kind": "interactive", "pid": 7}, *sessions[1:]]
+        self.cli("lander", answers=answers, sessions=[s for s in sessions if s.get("name") != "t1"], entries=slugs)
+        [line] = [c[-1] for c in self.claude_runs()]
+        self.assertIn("session named renamed.", line)
+
     def test_without_a_dispatcher_either_the_human_is_notified(self):
         self.sim.add(1, behind=False, checks=[RED])
         _, out, _ = self.go("lander", leads=False, dispatcher=False)
@@ -438,8 +487,8 @@ class TickTests(Loop):
     def test_health_runs_before_the_loop_and_the_loop_ends_at_the_deadline_with_one_in_flight(self):
         self.sim.add(1, after=[PENDING])
         order = []
-        real_health, real_drain = factory.watch_health, factory.drain
-        with mock.patch.object(factory, "watch_health", lambda *a: order.append("health") or real_health(*a)), \
+        real_health, real_drain = factory.watch_tick, factory.drain
+        with mock.patch.object(factory, "watch_tick", lambda *a: order.append("health") or real_health(*a)), \
                 mock.patch.object(factory, "drain", lambda *a, **kw: order.append("drain") or real_drain(*a, **kw)), \
                 mock.patch.object(factory, "watch_snapshot", wraps=factory.watch_snapshot) as cheap:
             _, out, _ = self.go("watch")

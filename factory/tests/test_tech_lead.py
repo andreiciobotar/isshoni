@@ -178,7 +178,7 @@ class SendBackTests(Case):
     def test_a_run_that_is_going_falls_back_to_the_lead(self):
         self.use(Machine(self.root))
         repo = factory.Repo()
-        with factory.lander_lock(repo, f"tech-lead-{SLUG}") as free, mock.patch.object(factory, "spawn") as spawn:
+        with factory.repo_lock(repo, f"tech-lead-{SLUG}") as free, mock.patch.object(factory, "spawn") as spawn:
             self.assertTrue(free)
             to = factory.send_back(repo, "dispatcher-repo", self.pr(), SLUG, CONFLICT)
         spawn.assert_not_called()
@@ -382,7 +382,7 @@ class RunTests(Case):
 
     def test_a_second_run_while_one_is_going_fails_and_does_nothing(self):
         self.use(Machine(self.root))
-        with factory.lander_lock(factory.Repo(), f"tech-lead-{SLUG}"):
+        with factory.repo_lock(factory.Repo(), f"tech-lead-{SLUG}"):
             code, _, err, m = self.go()
         self.assertEqual(code, 2)
         self.assertIn(f"a tech lead run is already going for {SLUG}", err)
