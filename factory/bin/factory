@@ -2998,7 +2998,8 @@ REPO_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 GITHUB_REMOTE_RE = re.compile(r"(?:https://(?:[^/@\s]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)([^/\s:]+)/([^/\s]+?)(?:\.git)?/?", re.I)
 WIZARD_WAIT = 600
 INSTALL_POLL = 3
-PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read", "actions": "read"}
+PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read", "actions": "write"}
+PERMISSION_LEVELS = {"read": 1, "write": 2, "admin": 3}
 CALLBACK_DONE = "<!doctype html><meta charset=utf-8><p>Done. Go back to the terminal.</p>"
 
 
@@ -3286,9 +3287,13 @@ def create_app(owner, name):
     return identity
 
 
-def delete_url(identity):
+def settings_url(identity):
     where = f"organizations/{identity['owner']}/settings/apps" if identity["owner_type"] == "Organization" else "settings/apps"
-    return f"https://github.com/{where}/{identity['slug']}/advanced"
+    return f"https://github.com/{where}/{identity['slug']}"
+
+
+def delete_url(identity):
+    return f"{settings_url(identity)}/advanced"
 
 
 def undo_lines(identity):
@@ -3387,6 +3392,11 @@ def verify_app(identity):
         print(f"Acts as {bot}; reads and writes {len(repos)} repositories:")
         for name in repos:
             print(f"  {name}")
+    have = installation.get("permissions") or {}
+    for name, level in PERMISSIONS.items():
+        if PERMISSION_LEVELS.get(have.get(name), 0) < PERMISSION_LEVELS[level]:
+            print(f"WARNING: the installed App lacks {name}: {level} (it has {have.get(name, 'none')}). "
+                  f"Change it at {settings_url(identity)}/permissions, then accept the new permission at {installation['html_url']}.")
     print(f"Its private key is in {IDENTITY}. To remove it: `factory uninstall` (`make uninstall` in the clone)")
     return repaired or identity != stored
 
@@ -4174,13 +4184,101 @@ def cmd_land(args):
     return 0 if all(landed) else 1
 
 
+RUN_LINK_RE = re.compile(r"/actions/runs/(\d+)/")
+LOG_LINE_RE = re.compile(r"[^\t]*\t[^\t]*\t﻿?\S+Z (.*)")  # gh's prefix: job, step, timestamp
+FAILED_TEST_RES = (re.compile(r"\s*--- FAIL: (Test[^\s/]+)"), re.compile(r"(?:FAIL|ERROR): (test\w+) \("))
+
+
+def failing_tests(log):
+    """The Go and unittest tests a `gh run view --log-failed` log names as failed, in order."""
+    names = []
+    for line in log.splitlines():
+        text = LOG_LINE_RE.fullmatch(line)
+        for pattern in FAILED_TEST_RES:
+            found = pattern.match(text[1] if text else line)
+            if found and found[1] not in names:
+                names.append(found[1])
+    return names
+
+
+def rerun_line(repo, n):
+    """(whether a re-run started, the line to print after `#n `) for the failed checks of pull request `n`, as
+    docs/factory.md defines it. NotEvaluated when GitHub cannot be read."""
+    gh = lambda *args: gh_json(repo, *args)
+    no = lambda why: (False, f"no rerun: {why}")
+    pr = gh(dict, "pr", "view", n, "--json", "state,headRefName,baseRefName")
+    if pr.get("state") != "OPEN":
+        return no("the pull request is not open")
+    runs = {}  # run id -> names of its failed checks
+    for c in gh(list, "pr", "checks", n, "--json", "name,bucket,link"):
+        if c.get("bucket") == "fail":
+            link = RUN_LINK_RE.search(str(c.get("link")))
+            if not link:
+                return no(f"{c.get('name')} is not an Actions run")
+            runs.setdefault(link[1], []).append(str(c.get("name")))
+    if not runs:
+        return no("no failed check")
+    tests = {}  # run id -> names of its failing tests
+    for run_id, checks in runs.items():
+        tests[run_id] = failing_tests(run(["gh", "run", "view", run_id, "--log-failed"], cwd=repo.root)[1])
+        if not tests[run_id]:
+            return no(f"no failing test could be named in {', '.join(checks)}'s log")
+    base, head = pr["baseRefName"], f"{repo.remote}/{pr['headRefName']}"
+    if act_git(repo.root, "fetch", repo.remote)[0] != 0:
+        return no(f"git fetch {repo.remote} failed")
+    fork = repo.git("merge-base", f"{repo.remote}/{base}", head)[1].strip()
+    changed = repo.git("diff", "--name-only", fork, head)[1].split() if fork else []
+    where, own = {}, []
+    for name in sorted({t for names in tests.values() for t in names}):
+        files = [l.partition(":")[2] for l in repo.git("grep", "-l", "-E", rf"func {name}\(|def {name}\(", head)[1].splitlines()]
+        if not files:
+            return no(f"{name} was not found in the branch")
+        where[name] = f"{name} ({files[0]})"
+        if any(os.path.dirname(c) == os.path.dirname(f) for f in files for c in changed):
+            own.append(where[name])
+    if own:
+        return no(f"{', '.join(own)} is in what the branch changes")
+    tip = repo.git("rev-parse", f"{repo.remote}/{base}")[1].strip()
+    green = {c["name"] for c in gh(dict, "api", f"repos/{{owner}}/{{repo}}/commits/{tip}/check-runs?per_page=100").get("check_runs", [])
+             if c.get("conclusion") == "success"}
+    for check in (c for checks in runs.values() for c in checks):
+        if check not in green:
+            return no(f"{check} is not green on {base}")
+    for run_id, names in tests.items():
+        flake = ", ".join(where[t] for t in names)
+        if gh(dict, "run", "view", run_id, "--json", "attempt").get("attempt", 1) > 1:
+            return no(f"already re-run once; looks like a flake: {flake}")
+    for run_id, names in tests.items():
+        rc, out, err = run(["gh", "run", "rerun", run_id, "--failed"], cwd=repo.root)
+        if rc != 0:
+            return no(f"the App may not re-run checks; looks like a flake: {', '.join(where[t] for t in names)}. "
+                      f"From your own terminal: gh run rerun {run_id} --failed ({(err or out).strip() or rc})")
+    checks, flake = ", ".join(c for cs in runs.values() for c in cs), ", ".join(where[t] for ts in tests.values() for t in ts)
+    with tempfile.NamedTemporaryFile("w", suffix=".md") as f:
+        f.write(f"Re-ran the failed jobs of {checks} once (by factory rerun): {flake} is outside what this branch changes, "
+                f"and {checks} is green on {base} at {tip[:7]}.")
+        f.flush()
+        stop = gh_step(repo, "pr", "comment", n, "--body-file", f.name)
+    return True, (f"rerun: {checks}: {flake} is outside what the branch changes and {checks} is green on {base}; attempt 2 started"
+                  + (f" ({stop[1]})" if stop else ""))
+
+
+def cmd_rerun(args):
+    try:
+        started, line = rerun_line(Repo(), str(args.pr))
+    except NotEvaluated as e:
+        started, line = False, f"no rerun: {e}"
+    print(f"#{args.pr} {line}")
+    return 0 if started else 1
+
+
 # ---- lander -----------------------------------------------------------------
 
 MERGE_TIMEOUT = 3600
 MERGE_BASH_MS = "2400000"
 MERGE_TOOLS = ("Read", "Grep", "Glob", "SendMessage", "ToolSearch", "Bash(factory merge --approved *)",
                "Bash(factory land *)", "Bash(factory status *)", "Bash(factory status)", "Bash(gh pr view *)", "Bash(gh pr checks *)",
-               "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(sleep *)")
+               "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(sleep *)", "Bash(factory rerun *)")
 MERGE_KINDS = ("unapproved", "stale", "behind", "ci", "pending", "conflict", "tests", "handover", "base", "other")
 MERGE_LINE_RE = re.compile(r"#(\d+) (?:merged (\S.*)|stopped (\w+): (\S.*))")
 
@@ -4483,6 +4581,8 @@ def parse_args(argv):
     overlap.add_argument("old_base")
     overlap.add_argument("old_head")
     overlap.add_argument("target")
+    rerun = sub.add_parser("rerun", help="re-run the failed jobs of a pull request's red check once, when the failure looks like a flake")
+    rerun.add_argument("pr", type=int)
     schedule = sub.add_parser("schedule", help="install, remove or show the job that runs watch every 2 minutes")
     schedule.add_argument("action", choices=("install", "remove", "status"))
     schedule.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
@@ -4507,7 +4607,7 @@ def main(argv=None):
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "land": cmd_land, "overlap": cmd_overlap, "lander": cmd_lander, "schedule": cmd_schedule, "wizard": cmd_wizard,
+                "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander, "schedule": cmd_schedule, "wizard": cmd_wizard,
                 "uninstall": cmd_uninstall, "env": cmd_env}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)

@@ -31,7 +31,13 @@ const (
 	maxPetals    = 300
 	maxLanterns  = 60
 	maxRipples   = 40
-	maxCanopy    = 14 // blossoms on one branch; the longest closed go first
+	maxBriefs    = 60  // lights on their way to a new blossom
+	maxBeads     = 6   // beads of sap in flight on one branch
+	maxWords     = 6   // small words on screen: the oldest goes
+	briefTrip    = 0.9 // seconds a light takes from the disc to where it is going
+	beadTrip     = 1.2
+	maxOpen      = 14 // open blossoms on one branch; the oldest goes
+	maxClosed    = 6  // closed blossoms (outlines) on one branch; the longest closed go first
 	maxStars     = 64
 	noteDrift    = 4.0  // cells per second, right to left
 	noteHold     = 12.0 // event seconds a note is held at most while its agent has not called again
@@ -73,6 +79,11 @@ func (a hrgb) mix(b hrgb, t float64) hrgb {
 // lit is the colour with light added, as a lamp adds to a wall.
 func (a hrgb) lit(l hrgb) hrgb {
 	return hrgb{math.Min(255, a.r+l.r), math.Min(255, a.g+l.g), math.Min(255, a.b+l.b)}
+}
+
+// over is what a exceeds b by, channel by channel: the light a colour adds to a background.
+func (a hrgb) over(b hrgb) hrgb {
+	return hrgb{math.Max(0, a.r-b.r), math.Max(0, a.g-b.g), math.Max(0, a.b-b.b)}
 }
 
 func (a hrgb) times(k float64) hrgb { return hrgb{a.r * k, a.g * k, a.b * k} }
@@ -128,6 +139,12 @@ type hBlossom struct {
 	work        float64   // what its agent has done: tool calls, and output tokens by the 800
 	size        sv        // radius in dots, following work
 	heat        float64   // 1 at its agent's event, decaying
+	called      time.Time // its agent's last tool call
+	u           sv        // where along its branch its twig leaves it, 0 to 1: moves to its place on a spring
+	uT, sizeT   float64   // its place and its radius, as the layout of its branch wants them
+	side        int       // which side of the branch its twig takes
+	placed      bool      // false until the layout has put it in its place
+	bud         bool      // its brief has not arrived: it stays a bud
 	closed      time.Time // when its agent returned (or its session came to rest); zero while it works
 }
 
@@ -141,6 +158,22 @@ type hBranch struct {
 	blossoms []*hBlossom
 	spawned  int
 	leaving  bool // withdrawing: its slot went to a newer session
+	beads    []hBead
+}
+
+// hBead is a bead of sap rising from the disc to the branch's tip, or to the blossom that works.
+type hBead struct {
+	t, k float64 // seconds on the way; how bright: little for a call, full for output
+	bl   *hBlossom
+	col  hrgb
+}
+
+// hBrief is a light running out along a branch to where a blossom will open.
+type hBrief struct {
+	b   *hBranch
+	bl  *hBlossom
+	t   float64
+	col hrgb
 }
 
 type hPetal struct {
@@ -150,6 +183,7 @@ type hPetal struct {
 	spring     int
 	delay      int  // frames before it moves
 	bounce     bool // changes needed: turned back at the disc
+	group      *int // petals of its return still on their way: the last one's arrival is the return's
 	lead       bool // the first of its five: where it turns back, a red ring marks the refusal
 	back       bool // on its way back out
 	life, max_ float64
@@ -200,9 +234,28 @@ type hStar struct {
 	at   time.Time
 }
 
+// A question's light goes from the disc to the bell's place, the bell waits there, and an answer sends the light home.
+const (
+	bellGoing = iota
+	bellWaiting
+	bellReturning
+)
+
+// hWord is a small word that fades in over 0.3 s, holds, and fades out over 1 s, beside what it names.
+type hWord struct {
+	text     string
+	age, ttl float64
+	bl       *hBlossom // beside this blossom (on its branch), or under this lantern, or at x, y
+	b        *hBranch
+	l        *hLantern
+	x, y     float64
+}
+
 type hBell struct {
-	slug string
-	slot int
+	slug  string
+	slot  int
+	state int
+	p     float64 // how far the light is from the disc to the bell, 0 to 1
 }
 
 type hRipple struct {
@@ -226,6 +279,10 @@ type hanamiScene struct {
 	swell, flash        sv
 	flashCol            hrgb
 	forte               float64 // 1 at a merge, decaying: the whole stage is lit
+	toolAcc, toolRate   float64 // tool calls this frame; per event second, smoothed over 12 s: the tempo
+	beatPhase           float64 // beats since the start
+	beats               int     // beats that were struck
+	pulse, bar          float64 // the amp at a beat, and at every fourth, decaying in a quarter of a beat
 
 	branches []*hBranch
 	petals   []hPetal
@@ -242,6 +299,11 @@ type hanamiScene struct {
 	stars    []hStar
 	starred  int // stars ever placed: where the next one sits
 	bells    []*hBell
+	briefs   []hBrief
+	words    []hWord
+	sapDebt  float64 // beads owed, thinned in a replay like sparks
+	home     float64 // 1 when a return's last petal reaches the disc, decaying: the rim takes the petals' colour
+	homeCol  hrgb
 	ripples  []hRipple
 }
 
@@ -277,16 +339,49 @@ func (s *hanamiScene) geo() hGeo {
 	return g
 }
 
-// The branches fan up and to the right of the disc, as the blossoms of the mark do.
-var slotAngles = [hanamiSlots]float64{44, 24, 63, 34, 54, 13, 73, 5, 59, 19, 68, 49}
+// The branches fan over the whole stage. A branch's tip is a point on the far boundary: the path along the top
+// edge from just right of the disc to the top-right corner, then down the right edge. Slot i takes the point at
+// fraction (slotOrder[i]+0.5)/12 of that path, so the first sessions are far apart.
+var slotOrder = [hanamiSlots]int{5, 1, 9, 3, 7, 11, 0, 6, 2, 10, 4, 8}
+
+// path is the lengths of the top edge and the right edge of the path the tips lie on, in dots.
+func (g hGeo) path() (top, side float64) {
+	return math.Max(1, g.W-6-(g.cx+0.6*g.R)), math.Max(1, g.cy-0.5*g.R-5)
+}
+
+// spacing is the room one branch has on that path: no blossom is wider than a share of it.
+func (g hGeo) spacing() float64 {
+	top, side := g.path()
+	return (top + side) / hanamiSlots
+}
+
+// tip is where slot's branch is aimed.
+func (g hGeo) tip(slot int) (x, y float64) {
+	top, side := g.path()
+	f := (float64(slotOrder[slot]) + 0.5) / hanamiSlots * (top + side)
+	if f <= top {
+		return g.cx + 0.6*g.R + f, 5
+	}
+	return g.W - 6, 5 + (f - top)
+}
+
+// geom is where a branch starts (on the disc's rim), its direction, and its full length.
+func (b *hBranch) geom(g hGeo) (sx, sy, dx, dy, L float64) {
+	tx, ty := g.tip(b.slot)
+	a := math.Atan2(ty-g.cy, tx-g.cx) + b.jitter
+	dx, dy = math.Cos(a), math.Sin(a)
+	sx, sy = g.cx+(g.R+1)*dx, g.cy+(g.R+1)*dy
+	// neighbours along the path alternate between long and short, so tips sit at different depths
+	k := 0.58 + 0.12*frac(b.slot, 0.3)
+	if slotOrder[b.slot]%2 == 0 {
+		k = 0.9 + 0.1*frac(b.slot, 0.3)
+	}
+	return sx, sy, dx, dy, math.Max(6, math.Hypot(tx-sx, ty-sy)*k)
+}
 
 // point is where a branch is at u in 0..1 of its grown length.
 func (b *hBranch) point(g hGeo, u float64) (x, y float64) {
-	a := slotAngles[b.slot]*math.Pi/180 + b.jitter
-	dx, dy := math.Cos(a), -math.Sin(a)
-	sx, sy := g.cx+(g.R+1)*dx, g.cy+(g.R+1)*dy
-	reach := math.Min((g.W-6-sx)/math.Max(dx, 0.05), (sy-5)/math.Max(-dy, 0.05))
-	L := math.Max(6, reach*(0.78+0.22*frac(b.slot, 0.3)))
+	sx, sy, dx, dy, L := b.geom(g)
 	bend := 0.05
 	if b.slot%2 == 1 {
 		bend = -0.04
@@ -295,25 +390,140 @@ func (b *hBranch) point(g hGeo, u float64) (x, y float64) {
 	return sx + dx*u*L - dy*side, sy + dy*u*L + dx*side
 }
 
+// blossomU is where along its branch a blossom's twig leaves it.
+func (b *hBranch) blossomU(bl *hBlossom) float64 { return math.Max(0, math.Min(1, bl.u.x)) * b.grow.x } // a spring may overshoot: the tip is the end
+
+// run is where a light is at p in 0..1 on its way from the disc along the branch to a blossom's place,
+// or to the branch's tip when there is no blossom.
+func (b *hBranch) run(g hGeo, bl *hBlossom, p float64) (x, y float64) {
+	if bl == nil {
+		return b.point(g, p*b.grow.x)
+	}
+	if p < 0.85 {
+		return b.point(g, b.blossomU(bl)*p/0.85)
+	}
+	x, y, bx, by := b.blossomAt(g, bl)
+	f := (p - 0.85) / 0.15
+	return bx + (x-bx)*f, by + (y-by)*f
+}
+
 // blossomAt is where a blossom sits: on a short twig off its branch.
 func (b *hBranch) blossomAt(g hGeo, bl *hBlossom) (x, y, bx, by float64) {
-	u := (0.2 + 0.8*frac(bl.n, 0.21)) * b.grow.x
+	u := b.blossomU(bl)
 	bx, by = b.point(g, u)
-	x2, y2 := b.point(g, math.Min(1, u+0.02))
-	nx, ny := -(y2 - by), x2-bx
+	x0, y0 := b.point(g, math.Max(0, u-0.02)) // the direction of the branch where the twig leaves it
+	nx, ny := -(by - y0), bx-x0
 	if l := math.Hypot(nx, ny); l > 0 {
 		nx, ny = nx/l, ny/l
 	}
-	twig := (2.5 + 0.7*bl.size.x + 3*frac(bl.n, 0.7)) * b.grow.x
-	if bl.n%2 == 1 {
+	twig := (bl.size.x + 2) * b.grow.x
+	if bl.side == 1 {
 		twig = -twig
 	}
 	return bx + nx*twig, by + ny*twig, bx, by
 }
 
-// blossomSize is the radius, in dots, a blossom grows to for the work its agent has done.
-func blossomSize(g hGeo, work float64) float64 {
-	return math.Min(3.4+1.8*math.Sqrt(work), math.Max(7, g.R*0.48))
+// blossomSize is the radius, in dots, a blossom grows to for the work its agent has done, up to cap.
+func blossomSize(work, cap float64) float64 { return math.Min(3.4+1.8*math.Sqrt(work), cap) }
+
+// blossomCap is the largest radius a blossom may have: a share of the room a branch has, and the smaller the more
+// blossoms are open on it (live).
+func blossomCap(g hGeo, live int) float64 {
+	return math.Max(3.5, math.Min(g.R*0.48, 0.16*g.spacing())) / math.Sqrt(math.Max(1, float64(live)/5))
+}
+
+// layout gives every blossom of a branch its place. Open ones take places from the tip inward, in the order
+// they came; closed ones take the places inward of those, closer together. When they do not fit, the radius
+// cap shrinks until they do. Places and radii move on springs; with now (history) or for a blossom with no place
+// yet, they are set at once.
+func (s *hanamiScene) layout(g hGeo, b *hBranch, now bool) {
+	_, _, _, _, L := b.geom(g)
+	live := 0
+	for _, bl := range b.blossoms {
+		if bl.closed.IsZero() {
+			live++
+		}
+	}
+	capR := blossomCap(g, live)
+	du := math.Max(2.2*capR/L, 0.5/float64(max(live, 4)))
+	if live > 1 && 1-float64(live-1)*du < 0.4 {
+		du = 0.6 / float64(live-1)
+		capR = math.Min(capR, du*L/2.2)
+	}
+	i, last := 0, 1+du/2
+	var closed []*hBlossom
+	for _, bl := range b.blossoms {
+		if !bl.closed.IsZero() {
+			closed = append(closed, bl)
+			continue
+		}
+		bl.uT, bl.sizeT = 1-float64(i)*du, blossomSize(bl.work, capR)
+		last = bl.uT
+		i++
+	}
+	slices.SortStableFunc(closed, func(a, b *hBlossom) int { return b.closed.Compare(a.closed) }) // newest closed nearest the open ones
+	for _, bl := range closed {
+		last -= du / 2
+		bl.uT, bl.sizeT = math.Max(0.3, last), blossomSize(bl.work, capR)
+	}
+	for _, bl := range b.blossoms {
+		if !bl.placed {
+			bl.side = bl.n % 2 // given once, when it is first placed: a return does not flip the blossoms after it
+		}
+		if now || !bl.placed {
+			bl.u.x, bl.u.v, bl.size.x, bl.size.v, bl.placed = bl.uT, 0, bl.sizeT, 0, true
+		}
+	}
+}
+
+// closeQuiet closes the blossoms of a session at rest: whoever had not returned is no longer working.
+func (s *hanamiScene) closeQuiet(b *hBranch) {
+	if s.now.Sub(b.last) <= hanamiQuiet {
+		return
+	}
+	for _, bl := range b.blossoms {
+		if bl.closed.IsZero() {
+			bl.closed = b.last
+		}
+	}
+}
+
+// trim keeps at most maxClosed outlines on a branch (the longest closed go first) and maxOpen open blossoms.
+func (b *hBranch) trim() {
+	for {
+		closed, old, open := 0, -1, 0
+		for i, x := range b.blossoms {
+			if x.closed.IsZero() {
+				open++
+				continue
+			}
+			if closed++; old < 0 || x.closed.Before(b.blossoms[old].closed) {
+				old = i
+			}
+		}
+		switch {
+		case closed > maxClosed:
+			b.blossoms = slices.Delete(b.blossoms, old, old+1)
+		case open > maxOpen:
+			k := slices.IndexFunc(b.blossoms, func(y *hBlossom) bool { return y.closed.IsZero() })
+			b.blossoms = slices.Delete(b.blossoms, k, k+1)
+		default:
+			return
+		}
+	}
+}
+
+// memory is how long an outline stays: two hours, and sooner the more outlines the whole tree holds.
+func (s *hanamiScene) memory() time.Duration {
+	n := 0
+	for _, b := range s.branches {
+		for _, bl := range b.blossoms {
+			if !bl.closed.IsZero() {
+				n++
+			}
+		}
+	}
+	return time.Duration(float64(hanamiKeep) / math.Max(1, float64(n)/24))
 }
 
 func (s *hanamiScene) lanternTarget(g hGeo, l *hLantern) (x, y float64) {
@@ -419,7 +629,18 @@ func (s *hanamiScene) lantern(g hGeo, e data.Event, settled bool) *hLantern {
 		l.placed = true
 	}
 	s.lanterns = append(s.lanterns, l)
+	if !settled {
+		s.say(hWord{text: "#" + strconv.Itoa(e.PR), ttl: 6, l: l})
+	}
 	return l
+}
+
+// say shows a small word; at most six are up, and the oldest goes for a new one.
+func (s *hanamiScene) say(w hWord) {
+	if len(s.words) >= maxWords {
+		s.words = s.words[1:]
+	}
+	s.words = append(s.words, w)
 }
 
 // Apply feeds one event to the scene. A settled event is one that happened before the
@@ -431,6 +652,7 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 		s.now = e.TS
 	}
 	col := toRGB(s.th.AgentColor(e.Role))
+	wood, yellow := toRGB(mix(s.th.Border, s.th.Text, 0.3)), toRGB(s.th.Yellow)
 	switch e.Kind {
 	case "tool", "tokens":
 		b := s.branch(e.Session, e.TS)
@@ -441,9 +663,7 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 		bl := s.touch(b, e.Agent, e.TS, work)
 		if settled {
 			b.grow.x = 1
-			if bl != nil {
-				bl.size.x = blossomSize(g, bl.work)
-			}
+			s.layout(g, b, true)
 			return
 		}
 		s.acc++
@@ -452,11 +672,17 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 			bl.heat = 1
 		}
 		if e.Kind == "tool" {
+			s.sap(b, bl, wood.mix(yellow, 0.6), 0.45)
+			s.toolAcc++
+			if bl != nil {
+				bl.called = e.TS
+			}
 			s.note(g, e.Tool, col, e.Session+"/"+e.Agent)
 			return
 		}
 		s.cacheAcc += float64(e.CacheRead)
 		if e.Out > 0 {
+			s.sap(b, bl, col.mix(toRGB(s.th.Text), 0.35), math.Min(1, 0.6+float64(e.Out)/4000))
 			x, y := s.origin(g, b, bl)
 			s.sparkDebt = math.Min(8, s.sparkDebt+float64(min(8, 2+e.Out/400))/math.Sqrt(s.scale))
 			for ; s.sparkDebt >= 1 && len(s.sparks) < maxSparks; s.sparkDebt-- {
@@ -472,21 +698,18 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 		bl := &hBlossom{agent: e.Agent, role: e.Role, n: b.spawned}
 		b.spawned++
 		if settled {
-			bl.open.x, bl.size.x, b.grow.x = 1, blossomSize(g, 0), 1
+			bl.open.x, b.grow.x = 1, 1
 		} else {
 			s.acc++
 			bl.heat = 1
+			if len(s.briefs) < maxBriefs { // a brief goes out; the blossom is a bud until it arrives
+				bl.bud = true
+				s.briefs = append(s.briefs, hBrief{b: b, bl: bl, col: col})
+			}
 		}
 		b.blossoms = append(b.blossoms, bl)
-		if len(b.blossoms) > maxCanopy { // the longest closed makes room
-			old := -1
-			for i, x := range b.blossoms {
-				if !x.closed.IsZero() && (old < 0 || x.closed.Before(b.blossoms[old].closed)) {
-					old = i
-				}
-			}
-			b.blossoms = slices.Delete(b.blossoms, max(old, 0), max(old, 0)+1)
-		}
+		b.trim()
+		s.layout(g, b, settled)
 	case "return":
 		b := s.branch(e.Session, e.TS)
 		i := slices.IndexFunc(b.blossoms, func(bl *hBlossom) bool { return bl.agent == e.Agent && bl.closed.IsZero() })
@@ -495,17 +718,23 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 		}
 		bl := b.blossoms[i]
 		bl.closed = e.TS // it stays on the branch, closed: what the branch has borne
+		bl.bud = false   // back before its brief arrived: it opens at once, and closes
+		s.briefs = slices.DeleteFunc(s.briefs, func(x hBrief) bool { return x.bl == bl })
+		b.trim()
+		s.layout(g, b, settled)
 		if settled {
 			return
 		}
 		s.acc++
 		x, y, _, _ := b.blossomAt(g, bl)
+		left := new(int)
 		for k := 0; k < 5 && len(s.petals) < maxPetals; k++ {
 			a := s.rnd.span(0, 2*math.Pi)
 			s.petals = append(s.petals, hPetal{
-				x: sv{x, 30 * math.Cos(a)}, y: sv{y, 30 * math.Sin(a)}, ox: x, oy: y, col: col,
+				x: sv{x, 30 * math.Cos(a)}, y: sv{y, 30 * math.Sin(a)}, ox: x, oy: y, col: col, group: left,
 				spring: k % 3, delay: k * 2, bounce: e.Verdict == "changes", lead: k == 0, max_: 2.2,
 			})
+			*left++
 		}
 	case "pr":
 		switch {
@@ -515,7 +744,9 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 		case settled:
 			s.lanterns = slices.Delete(s.lanterns, s.lit(e), s.lit(e)+1)
 		default: // closed without a merge: it goes out
-			s.lanterns[s.lit(e)].gone = hanamiSecond
+			l := s.lanterns[s.lit(e)]
+			l.gone = hanamiSecond
+			s.words = slices.DeleteFunc(s.words, func(w hWord) bool { return w.l == l })
 		}
 	case "ci":
 		s.lantern(g, e, settled).ci = e.State
@@ -531,25 +762,36 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 		case i >= 0 && s.lanterns[i].placed:
 			l := s.lanterns[i]
 			s.lanterns = slices.Delete(s.lanterns, i, i+1)
-			s.hanabi(g, l.x.x, l.y.x)
+			s.hanabi(g, l)
 		default:
 			s.lantern(g, e, false).burst = true // rises first, then bursts
 		}
 	case "question":
-		if slices.ContainsFunc(s.bells, func(b *hBell) bool { return b.slug == e.Slug }) {
+		if i := slices.IndexFunc(s.bells, func(b *hBell) bool { return b.slug == e.Slug }); i >= 0 {
+			if b := s.bells[i]; b.state == bellReturning { // asked again before its light got home: it goes out again
+				b.state = bellGoing
+			}
 			return
 		}
 		slot := 0
 		for slices.ContainsFunc(s.bells, func(b *hBell) bool { return b.slot == slot }) {
 			slot++
 		}
-		s.bells = append(s.bells, &hBell{slug: e.Slug, slot: slot})
-		if !settled {
-			x, y := bellAt(g, slot)
-			s.ripple(hRipple{x: x, y: y, r: 5, speed: 24, maxR: 34, alpha: 1, col: toRGB(s.th.Text)})
+		bell := &hBell{slug: e.Slug, slot: slot, state: bellWaiting, p: 1}
+		if !settled { // its light goes out first
+			bell.state, bell.p = bellGoing, 0
 		}
+		s.bells = append(s.bells, bell)
 	case "answer":
-		s.bells = slices.DeleteFunc(s.bells, func(b *hBell) bool { return b.slug == e.Slug })
+		if settled {
+			s.bells = slices.DeleteFunc(s.bells, func(b *hBell) bool { return b.slug == e.Slug })
+			return
+		}
+		for _, b := range s.bells {
+			if b.slug == e.Slug {
+				b.state = bellReturning // the bell goes, and its light goes home
+			}
+		}
 	case "watch":
 		if !settled {
 			s.ripple(hRipple{x: g.cx, y: g.cy, r: g.R, speed: 75, maxR: math.Hypot(g.W, g.H), alpha: 0.7, col: toRGB(s.th.Purple), fromDisc: true})
@@ -567,7 +809,28 @@ func flicker(moment, pr, k int) bool {
 // bellAt is where a waiting question's point sits, in dots: above the disc's left shoulder, where no
 // branch grows.
 func bellAt(g hGeo, slot int) (x, y float64) {
-	return math.Max(7, g.cx-0.8*g.R) + 14*float64(slot), math.Max(7, g.cy-g.R-13)
+	return 7, math.Max(7, g.cy-g.R-9-12*float64(slot))
+}
+
+// lightTo is where a question's light is on its way from the disc's rim to its bell.
+func lightTo(g hGeo, b *hBell) (x, y float64) {
+	bx, by := bellAt(g, b.slot)
+	d := math.Hypot(bx-g.cx, by-g.cy)
+	sx, sy := g.cx+g.R*(bx-g.cx)/d, g.cy+g.R*(by-g.cy)/d
+	return sx + (bx-sx)*b.p, sy + (by-sy)*b.p
+}
+
+// sap adds a bead to the branch: dim for a call, bright for output. Past six in flight the last is brightened.
+func (s *hanamiScene) sap(b *hBranch, bl *hBlossom, col hrgb, k float64) {
+	if s.sapDebt = math.Min(2, s.sapDebt+1/math.Sqrt(s.scale)); s.sapDebt < 1 {
+		return
+	}
+	s.sapDebt--
+	if n := len(b.beads); n >= maxBeads {
+		b.beads[n-1].k = math.Max(b.beads[n-1].k, k)
+		return
+	}
+	b.beads = append(b.beads, hBead{bl: bl, col: col, k: k})
 }
 
 func (s *hanamiScene) ripple(r hRipple) {
@@ -625,7 +888,10 @@ func (s *hanamiScene) note(g hGeo, tool string, col hrgb, who string) {
 }
 
 // hanabi is a merge: the firework where the lantern was, the whole stage lit, and a star left behind.
-func (s *hanamiScene) hanabi(g hGeo, x, y float64) {
+func (s *hanamiScene) hanabi(g hGeo, l *hLantern) {
+	x, y := l.x.x, l.y.x
+	s.words = slices.DeleteFunc(s.words, func(w hWord) bool { return w.l == l })
+	s.say(hWord{text: "#" + strconv.Itoa(l.pr) + " merged", ttl: 3, x: x, y: y + 9})
 	size := math.Max(0.9, math.Min(g.W, 2*g.H)/170)
 	dt := harmonica.FPS(hanamiFPS)
 	for ring := 0; ring < 3; ring++ {
@@ -668,34 +934,53 @@ func (s *hanamiScene) Step(now time.Time) {
 	}
 	s.rate += (s.acc/dt/s.scale - s.rate) * dt / 0.9
 	s.cacheRate += (s.cacheAcc/dt/s.scale - s.cacheRate) * dt / 1.5
-	s.acc, s.cacheAcc = 0, 0
+	s.toolRate += (s.toolAcc/dt/s.scale - s.toolRate) * math.Min(0.1, dt*s.scale/12) // 12 event seconds, a tenth of the gap a frame at most: a fast replay does not jitter
+	s.acc, s.cacheAcc, s.toolAcc = 0, 0, 0
+	s.keepTime(g, dt)
 	s.swell.to(springSwell, 1-math.Exp(-s.rate/2.5))
 	s.flash.to(springSwell, 0)
 	s.windN.to(springSwell, s.windTarget(g))
 	s.forte *= 1 - dt/1.3
 
+	memory := s.memory()
 	for i := 0; i < len(s.branches); i++ {
 		b := s.branches[i]
-		quiet := s.now.Sub(b.last)
 		target := 1.0
 		if s.withdrawn(b) {
 			target = 0
 		}
 		b.grow.to(springGrow, target)
 		b.heat *= 1 - dt/0.7
+		beads := b.beads[:0]
+		for _, d := range b.beads {
+			if d.t += dt; d.t < beadTrip {
+				beads = append(beads, d)
+			}
+		}
+		b.beads = beads
+		s.closeQuiet(b)
 		kept := b.blossoms[:0]
 		for _, bl := range b.blossoms {
-			if bl.closed.IsZero() && quiet > hanamiQuiet {
-				bl.closed = b.last // the session is at rest: whoever had not returned is no longer working
-			}
-			bl.open.to(springBloom, 1)
-			bl.size.to(springSize, blossomSize(g, bl.work))
-			bl.heat *= 1 - dt/0.6
-			if (bl.closed.IsZero() || s.now.Sub(bl.closed) < hanamiKeep) && !(b.leaving && b.grow.x < 0.5) {
+			if bl.closed.IsZero() || s.now.Sub(bl.closed) < memory {
 				kept = append(kept, bl)
 			}
 		}
 		b.blossoms = kept
+		b.trim()
+		s.layout(g, b, false)
+		for _, bl := range b.blossoms {
+			open := 1.0
+			if bl.bud {
+				open = 0
+			}
+			bl.open.to(springBloom, open)
+			bl.u.to(springSize, bl.uT)
+			bl.size.to(springSize, bl.sizeT)
+			bl.heat *= 1 - dt/0.6
+		}
+		if b.leaving && b.grow.x < 0.5 {
+			b.blossoms = b.blossoms[:0]
+		}
 		if target == 0 && b.grow.x < 0.03 {
 			s.branches = slices.Delete(s.branches, i, i+1)
 			i--
@@ -706,7 +991,7 @@ func (s *hanamiScene) Step(now time.Time) {
 	}
 
 	c := s.cacheLevel()
-	gust := 1 + 2.5*s.forte
+	gust := 1 + 2.5*s.forte + 0.5*s.bar
 	for i := range s.wind {
 		p := &s.wind[i]
 		far := 1.0
@@ -748,6 +1033,9 @@ func (s *hanamiScene) Step(now time.Time) {
 			} else {
 				s.flash.v += 1.2
 				s.flashCol = p.col
+				if *p.group--; *p.group == 0 { // the last petal of its return: the rim takes its colour
+					s.home, s.homeCol = 1, p.col
+				}
 			}
 			continue
 		}
@@ -807,7 +1095,7 @@ func (s *hanamiScene) Step(now time.Time) {
 		if l.burst && math.Abs(l.y.x-ty) < 3 {
 			s.lanterns = slices.Delete(s.lanterns, i, i+1)
 			i--
-			s.hanabi(g, l.x.x, l.y.x)
+			s.hanabi(g, l)
 		}
 	}
 
@@ -831,6 +1119,41 @@ func (s *hanamiScene) Step(now time.Time) {
 	}
 	s.fire = fire
 
+	s.home *= 1 - dt/0.4
+	words := s.words[:0]
+	for _, w := range s.words {
+		if w.age += dt; w.age < w.ttl {
+			words = append(words, w)
+		}
+	}
+	s.words = words
+	briefs := s.briefs[:0]
+	for _, br := range s.briefs {
+		if br.t += dt / briefTrip; br.t < 1 {
+			briefs = append(briefs, br)
+		} else {
+			br.bl.bud = false // it arrived: the blossom opens, and says what it is
+			if br.bl.role != "" {
+				s.say(hWord{text: br.bl.role, ttl: 4, b: br.b, bl: br.bl})
+			}
+		}
+	}
+	s.briefs = briefs
+	for i := 0; i < len(s.bells); i++ {
+		switch bell := s.bells[i]; bell.state {
+		case bellGoing:
+			if bell.p += dt / briefTrip; bell.p >= 1 {
+				bell.p, bell.state = 1, bellWaiting
+				x, y := bellAt(g, bell.slot)
+				s.ripple(hRipple{x: x, y: y, r: 5, speed: 24, maxR: 34, alpha: 1, col: toRGB(s.th.Text)})
+			}
+		case bellReturning:
+			if bell.p -= dt / briefTrip; bell.p <= 0 {
+				s.bells = slices.Delete(s.bells, i, i+1)
+				i--
+			}
+		}
+	}
 	ripples := s.ripples[:0]
 	for _, r := range s.ripples {
 		if r.r += r.speed * dt; r.r < r.maxR {
@@ -838,6 +1161,28 @@ func (s *hanamiScene) Step(now time.Time) {
 		}
 	}
 	s.ripples = ripples
+}
+
+// bpm is the tempo: the rate of tool calls, from one lead thinking to a busy minute.
+func (s *hanamiScene) bpm() float64 { return 44 + 96*(1-math.Exp(-s.toolRate/0.6)) }
+
+// amp is how much the beat is felt: none without tool calls.
+func (s *hanamiScene) amp() float64 { return math.Min(1, s.toolRate/0.25) }
+
+// keepTime advances the beat: a pulse at each whole beat, a bar at every fourth, both decaying in a quarter of a beat.
+func (s *hanamiScene) keepTime(g hGeo, dt float64) {
+	bpm := s.bpm()
+	decay := 1 - dt*bpm/15
+	s.pulse *= decay
+	s.bar *= decay
+	before := math.Floor(s.beatPhase)
+	s.beatPhase += dt * bpm / 60
+	if a := s.amp(); a > 0.1 && math.Floor(s.beatPhase) > before {
+		s.pulse = a
+		if s.beats++; s.beats%4 == 0 {
+			s.bar = a
+		}
+	}
 }
 
 // withdrawn says a branch has nothing left to show: its place went to a newer session, what it bore has faded,
@@ -853,15 +1198,41 @@ func (s *hanamiScene) Arrive(now time.Time) {
 	if now.After(s.now) {
 		s.now = now
 	}
+	g := s.geo()
+	for _, b := range s.branches {
+		s.closeQuiet(b)
+	}
+	memory := s.memory()
 	s.branches = slices.DeleteFunc(s.branches, func(b *hBranch) bool {
 		b.blossoms = slices.DeleteFunc(b.blossoms, func(bl *hBlossom) bool {
-			return !bl.closed.IsZero() && s.now.Sub(bl.closed) >= hanamiKeep
+			return !bl.closed.IsZero() && s.now.Sub(bl.closed) >= memory
 		})
+		b.trim()
+		s.layout(g, b, true)
 		return s.withdrawn(b)
 	})
 	for len(s.stars) > 0 && s.now.Sub(s.stars[0].at) > 3*hanamiKeep {
 		s.stars = s.stars[1:]
 	}
+}
+
+// How night it is by the hour of the day: 1 in the dark, 0 in daylight, between at dawn and dusk.
+var hanamiNight = [][2]float64{{0, 1}, {5, 1}, {6.5, 0.5}, {8, 0.1}, {9.5, 0}, {16, 0}, {17.5, 0.1}, {19.5, 0.5}, {21, 1}, {24, 1}}
+
+// night is how night it is at event time, in the time zone of the machine running the scene; a scene with no
+// events yet is at night.
+func (s *hanamiScene) night() float64 {
+	if s.now.IsZero() {
+		return 1
+	}
+	t := s.now.Local()
+	h := float64(t.Hour()) + float64(t.Minute())/60
+	for i := 1; i < len(hanamiNight); i++ {
+		if a, b := hanamiNight[i-1], hanamiNight[i]; h <= b[0] {
+			return a[1] + (b[1]-a[1])*(h-a[0])/(b[0]-a[0])
+		}
+	}
+	return 1
 }
 
 func (s *hanamiScene) cacheLevel() float64 { return 1 - math.Exp(-s.cacheRate/60000) }
@@ -886,9 +1257,9 @@ type hCell struct {
 	ch     rune
 	c      hrgb // of the glyph, or of the dots
 	bold   bool
-	skip   bool // the right half of a double-width glyph
-	light  hrgb // glow falling on the cell: added to its background
-	fill   hrgb // a solid body behind the cell (the disc, the legend), in place of background and glow
+	skip   bool    // the right half of a double-width glyph
+	light  [2]hrgb // glow falling on the top and the bottom half of the cell: added to its background
+	fill   [2]hrgb // a solid body behind the cell (the disc, the legend), in place of background and glow
 	filled bool
 }
 
@@ -917,18 +1288,21 @@ func (cv *hCanvas) plot(x, y float64, c hrgb, a float64) {
 	cell.layer, cell.c, cell.a = cv.layer, c, math.Min(1, a)
 }
 
-// glow lights the cells around a point in the field (dots), strongest at the point, nothing at radius r.
+// glow lights the field around a point (dots), strongest at the point, nothing at radius r. Each cell has two
+// samples, its top and bottom half, so the light has pixels of 2 dots by 2 (square), not cells of 2 by 4.
 func (cv *hCanvas) glow(x, y, r float64, c hrgb, k float64) {
 	if r <= 0 || k <= 0 {
 		return
 	}
 	for cy := max(0, int((y-r)/4)); cy <= min(cv.maxY/4-1, int((y+r)/4)); cy++ {
 		for cx := max(0, int((x-r)/2)); cx <= min(cv.w-1, int((x+r)/2)); cx++ {
-			d := math.Hypot(float64(2*cx+1)-x, float64(4*cy+2)-y) / r
-			if d < 1 {
-				f := k * (1 - d) * (1 - d)
-				l := &cv.cells[cy*cv.w+cx].light
-				l.r, l.g, l.b = l.r+c.r*f, l.g+c.g*f, l.b+c.b*f
+			for half := 0; half < 2; half++ {
+				d := math.Hypot(float64(2*cx+1)-x, float64(4*cy+1+2*half)-y) / r
+				if d < 1 {
+					f := k * (1 - d) * (1 - d)
+					l := &cv.cells[cy*cv.w+cx].light[half]
+					l.r, l.g, l.b = l.r+c.r*f, l.g+c.g*f, l.b+c.b*f
+				}
 			}
 		}
 	}
@@ -956,6 +1330,29 @@ func (cv *hCanvas) text(cx, cy int, s string, c hrgb, bold bool) int {
 		cx += w
 	}
 	return cx
+}
+
+// word writes ASCII s from (cx, cy) in the sky where all its cells are free of glyphs and the disc; else one row
+// up, then one row down; else not this frame.
+func (cv *hCanvas) word(cx, cy int, s string, c hrgb) {
+	for _, row := range [3]int{cy, cy - 1, cy + 1} {
+		free := row >= 0 && row < cv.maxY/4
+		for i := 0; free && i < len(s); i++ {
+			x := cx + i
+			free = x >= 0 && x < cv.w && s[i] >= ' ' && s[i] <= '~'
+			if free {
+				cell := &cv.cells[row*cv.w+x]
+				free = cell.ch == 0 && !cell.filled && !cell.skip
+			}
+		}
+		if free {
+			for i := 0; i < len(s); i++ {
+				cell := &cv.cells[row*cv.w+cx+i]
+				cell.ch, cell.c, cell.bold = rune(s[i]), c, false
+			}
+			return
+		}
+	}
 }
 
 // flower draws a five-petalled blossom of radius r dots: filled while its agent works, an outline once it
@@ -1002,22 +1399,32 @@ func (cv *hCanvas) lines(th *Theme) []string {
 			if cell.skip {
 				continue
 			}
-			bg := base.lit(cell.light)
-			if cell.filled {
-				bg = cell.fill
+			// two samples a cell, stepped: a glow that breathes, or dots that brighten as the stage gets louder, then
+			// change a cell every few frames, not every frame, and the terminal has a fraction of the cells to repaint
+			var half [2]hrgb
+			for i := range half {
+				if cell.filled {
+					half[i] = cell.fill[i].stepped(6)
+					continue
+				}
+				// light is stepped by its magnitude, not per channel, so a fading glow keeps its hue
+				l := cell.light[i]
+				half[i] = base
+				if m := math.Max(l.r, math.Max(l.g, l.b)); math.Round(m/8) > 0 {
+					half[i] = base.lit(l.times(math.Round(m/8) * 8 / m))
+				}
 			}
-			// colours in steps: a glow that breathes, or dots that brighten as the stage gets louder, then change a
-			// cell every few frames, not every frame, and the terminal has a fraction of the cells to repaint
-			if l := cell.light; !cell.filled && l.r+l.g+l.b < 9 {
-				bg = base // too faint to see: not worth a colour change on the line
-			}
-			bg = bg.stepped(6)
+			bg := half[1]
 			ch, c, bold := cell.ch, cell.c, cell.bold
 			switch {
-			case ch != 0:
-			case cell.mask != 0:
-				ch = rune(0x2800 + int(cell.mask))
-				c = bg.mix(c, cell.a).stepped(8)
+			case ch != 0 || cell.mask != 0: // a glyph or dots need the foreground: one colour behind them
+				bg = half[0].mix(half[1], 0.5)
+				if ch == 0 {
+					ch = rune(0x2800 + int(cell.mask))
+					c = bg.mix(c, cell.a).stepped(8)
+				}
+			case !th.NoColor && key(half[0], 0) != key(half[1], 0): // only light: the upper half block, top over bottom
+				ch, c = '\u2580', half[0]
 			default:
 				ch = ' '
 			}
@@ -1066,7 +1473,8 @@ func (s *hanamiScene) draw(legend bool) []string {
 	// a merge lights the whole stage for a moment
 	if forte > 0.02 {
 		for i := range cv.cells[:g.staffTop*w] {
-			cv.cells[i].light = pink.mix(text, 0.5).times(0.16 * forte)
+			l := pink.mix(text, 0.5).times(0.16 * forte)
+			cv.cells[i].light = [2]hrgb{l, l}
 		}
 	}
 
@@ -1079,7 +1487,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 	for i := 0; i < windN && i < len(s.wind); i++ {
 		p := s.wind[i]
 		a, col := (0.34+0.36*c)*loud, muted
-		n := 2 + int((5*c+6*forte)*p.speed) // a streak: longer the harder it blows
+		n := 2 + int((5*c+6*forte+2*s.bar)*p.speed) // a streak: longer the harder it blows
 		if i%3 == 0 {
 			a, col, n = a*0.6, faint, 1+n/3
 		} else {
@@ -1123,7 +1531,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 	for _, st := range s.stars {
 		age := math.Min(1, s.now.Sub(st.at).Seconds()/(3*hanamiKeep.Seconds()))
 		x, y := st.u*g.W, st.v*g.H
-		cv.glyph(int(x/2), int(y/4), '✶', bg.mix(gold, 0.6-0.4*age), false) // faint: a record, behind the work
+		cv.glyph(int(x/2), int(y/4), '✶', bg.mix(gold, (0.6-0.4*age)*(0.4+0.6*s.night())), false) // faint: a record, behind the work; fainter by day
 	}
 
 	// the tree: branches, the canopy of closed blossoms, then the open ones
@@ -1149,6 +1557,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 			}
 		}
 	}
+	memory := s.memory()
 	for pass := 0; pass < 2; pass++ { // closed ones behind, open ones in front
 		cv.layer = 4 + pass
 		for _, b := range s.branches {
@@ -1159,6 +1568,11 @@ func (s *hanamiScene) draw(legend bool) []string {
 				x, y, bx, by := b.blossomAt(g, bl)
 				col := toRGB(th.AgentColor(bl.role))
 				r := math.Max(1.5, bl.size.x) * math.Max(0.15, bl.open.x)
+				throb := 0.0 // an open blossom whose agent called a tool lately keeps the beat
+				if pass == 1 && s.now.Sub(bl.called) < 10*time.Second {
+					throb = s.pulse
+				}
+				r *= 1 + 0.14*throb
 				cv.layer = 3
 				for k := 0; k <= 8; k++ {
 					f := float64(k) / 8
@@ -1166,14 +1580,17 @@ func (s *hanamiScene) draw(legend bool) []string {
 				}
 				cv.layer = 4 + pass
 				rot := 1.2 * frac(bl.n, 0.5)
-				if pass == 0 {
-					fade := s.now.Sub(bl.closed).Seconds() / hanamiKeep.Seconds()
-					cv.flower(x, y, 0.85*r, rot, col, 0.42-0.28*fade, true)
-					cv.glow(x, y, 1.6*r, col, 0.035*(1-fade))
+				if pass == 0 { // memory is light: a small outline that fades, with no glow
+					fade := s.now.Sub(bl.closed).Seconds() / memory.Seconds()
+					cv.flower(x, y, math.Min(0.85*r, 3.5), rot, col, 0.42-0.28*fade, true)
 					continue
 				}
 				cv.flower(x, y, r, rot, col.mix(text, 0.35*bl.heat), loud, false)
-				cv.glow(x, y, 2.4*r+4, col, 0.2+0.3*bl.heat)
+				glowR := 2.4*r + 4
+				if blossomCap(g, 0) <= 3.5 { // a small stage: glows must not merge into one band
+					glowR = math.Min(glowR, 1.2*r+2)
+				}
+				cv.glow(x, y, glowR, col, 0.2+0.3*bl.heat+0.15*throb)
 			}
 		}
 	}
@@ -1185,6 +1602,36 @@ func (s *hanamiScene) draw(legend bool) []string {
 		for k := 0; k < 5; k++ {
 			f := float64(k) * 0.022
 			cv.plot(p.x-p.vx*f, p.y-p.vy*f, p.col.mix(text, 0.4*a), a*(1-float64(k)/5))
+		}
+	}
+
+	// sap rises along the branches; a brief runs out to a blossom that is to open
+	for _, b := range s.branches {
+		for _, d := range b.beads {
+			col, a := d.col.mix(toRGB(s.th.Text), 0.25), 0.55+0.45*d.k // a bare call is dim, output bright
+			for k := 0; k < 6; k++ {                                   // a head of 2x2 dots with a glow, and a tail of six
+				x, y := b.run(g, d.bl, math.Max(0, d.t/beadTrip-0.014*float64(k)))
+				cv.plot(x, y, col, a*(1-float64(k)/7))
+				if k == 0 {
+					cv.plot(x+1, y, col, a)
+					cv.plot(x, y+1, col, a)
+					cv.plot(x+1, y+1, col, a)
+					cv.glow(x, y, 6, col, 0.2+0.3*d.k)
+				}
+			}
+		}
+	}
+	for _, br := range s.briefs {
+		col := br.col.mix(text, 0.55)
+		for k := 0; k < 10; k++ { // a head with a wide glow, and a tail of ten
+			x, y := br.b.run(g, br.bl, math.Max(0, br.t-0.012*float64(k)))
+			cv.plot(x, y, col, 1-float64(k)/11)
+			if k == 0 {
+				cv.plot(x+1, y, col, 1)
+				cv.plot(x, y+1, col, 1)
+				cv.plot(x+1, y+1, col, 1)
+				cv.glow(x, y, 8, br.col, 0.5)
+			}
 		}
 	}
 
@@ -1229,27 +1676,31 @@ func (s *hanamiScene) draw(legend bool) []string {
 
 	// the disc: a solid body with a breathing halo, and the name inside
 	cv.layer = 7
-	rim := g.R + 1.5*math.Min(1, level) + 0.5*math.Sin(s.t*0.9) // the sine is the ambient breath
+	rim := g.R + 1.5*math.Min(1, level) + 0.5*math.Sin(s.t*0.9) + 1.8*s.pulse // the sine is the ambient breath; the pulse is the beat
 	grad := func(dx, dy float64) hrgb { return toRGB(th.gradientAt((dx-dy)*0.3536 + 0.5)) }
 	halo := grad(0.3, -0.3).mix(s.flashCol, fl)
-	cv.glow(g.cx, g.cy, rim*(2.5+0.6*math.Min(1, level)+0.6*fl)+2*math.Sin(s.t*0.9), halo, 0.27+0.22*math.Min(1, level)+0.3*fl+0.2*forte)
+	cv.glow(g.cx, g.cy, rim*(2.5+0.6*math.Min(1, level)+0.6*fl)+2*math.Sin(s.t*0.9), halo, 0.27+0.22*math.Min(1, level)+0.3*fl+0.2*forte+0.2*s.pulse)
 	for cy := max(0, int((g.cy-rim)/4)-1); cy <= min(g.staffTop-1, int((g.cy+rim)/4)+1); cy++ {
 		for cx := max(0, int((g.cx-rim)/2)-1); cx <= min(w-1, int((g.cx+rim)/2)+1); cx++ {
 			cell := &cv.cells[cy*w+cx]
-			inside := 0
+			light := cell.light
+			var in [2]int // dots of each half (four a half) inside the rim
 			for d := 0; d < 8; d++ {
 				x, y := float64(2*cx+d%2)+0.5, float64(4*cy+d/2)+0.5
 				if math.Hypot(x-g.cx, y-g.cy) <= rim {
-					inside++
+					in[d/4]++
 				}
 			}
-			if inside == 0 {
+			if in[0]+in[1] == 0 {
 				continue
 			}
-			nx, ny := (float64(2*cx+1)-g.cx)/rim, (float64(4*cy+2)-g.cy)/rim
-			body := bg.mix(grad(nx, ny), 0.5+0.2*math.Min(1, level)+0.12*(-nx-ny)).mix(s.flashCol, 0.55*fl).mix(text, 0.3*forte)
-			if !th.NoColor { // the edge is shaded by how much of the cell the disc covers
-				*cell = hCell{fill: bg.lit(cell.light).mix(body, float64(inside)/8), filled: true}
+			if !th.NoColor { // the edge is shaded by how much of each half the disc covers
+				*cell = hCell{filled: true}
+				for half := range in {
+					nx, ny := (float64(2*cx+1)-g.cx)/rim, (float64(4*cy+1+2*half)-g.cy)/rim
+					body := bg.mix(grad(nx, ny), 0.5+0.2*math.Min(1, level)+0.12*(-nx-ny)).mix(s.flashCol, 0.55*fl).mix(text, 0.3*forte).mix(s.homeCol, 0.8*s.home*math.Max(0, (math.Hypot(nx, ny)-0.6)/0.4))
+					cell.fill[half] = bg.lit(light[half]).mix(body, float64(in[half])/4)
+				}
 				continue
 			}
 			*cell = hCell{}
@@ -1277,7 +1728,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 			col, ch := toRGB(th.AgentColor(bl.role)), roleGlyph(bl.role)
 			switch {
 			case !bl.closed.IsZero():
-				col = bg.mix(col, 0.6-0.35*s.now.Sub(bl.closed).Seconds()/hanamiKeep.Seconds())
+				col = bg.mix(col, 0.6-0.35*s.now.Sub(bl.closed).Seconds()/memory.Seconds())
 			case bl.open.x < 0.3:
 				ch = '·'
 			case bl.open.x < 0.7:
@@ -1325,14 +1776,47 @@ func (s *hanamiScene) draw(legend bool) []string {
 		}
 		cv.glyph(int(l.x.x/2), int(l.y.x/4), '◉', col.mix(text, 0.5), true)
 	}
-	for _, b := range s.bells { // still: a question does not move until it is answered
-		x, y := bellAt(g, b.slot)
+	for _, b := range s.bells {
+		if b.state != bellWaiting { // its pale light is on the way between the disc and its place
+			x, y := lightTo(g, b)
+			cv.plot(x, y, text, 1)
+			cv.plot(x+1, y, text, 1)
+			cv.plot(x, y+1, text, 1)
+			cv.glow(x, y, 10, text, 0.35)
+			continue
+		}
+		x, y := bellAt(g, b.slot) // still: a question does not move until it is answered
 		cv.glow(x, y, 15, text, 0.3)
 		for k := 0; k < 14; k++ {
 			a := 2 * math.Pi * float64(k) / 14
 			cv.plot(x+5.2*math.Cos(a), y+5.2*math.Sin(a), text, 1)
 		}
 		cv.glyph(int(x/2), int(y/4), '✦', text, true)
+	}
+
+	// small words: beside what they name, never over a glyph or the disc
+	for _, w := range s.words {
+		a := math.Min(1, math.Min(w.age/0.3, w.ttl-w.age))
+		if th.NoColor && a < 1 {
+			continue // without colour nothing can be faint: shown for the hold only
+		}
+		x, y := w.x, w.y
+		switch {
+		case w.bl != nil:
+			bx, by, _, _ := w.b.blossomAt(g, w.bl)
+			x, y = bx+math.Max(1.5, w.bl.size.x)+3, by
+		case w.l != nil:
+			x, y = w.l.x.x-float64(len(w.text)), w.l.y.x+9
+		default:
+			x -= float64(len(w.text))
+		}
+		cv.word(int(x/2), int(y/4), w.text, bg.mix(muted, 0.8*a))
+	}
+	for _, b := range s.bells { // a waiting question's slug stays
+		if b.state == bellWaiting {
+			x, y := bellAt(g, b.slot)
+			cv.word(int((x+10)/2), int(y/4), b.slug, muted)
+		}
 	}
 
 	// the staff: a voice per tool kind. A note is struck at its call and sounds until its agent's next one.
@@ -1345,16 +1829,17 @@ func (s *hanamiScene) draw(legend bool) []string {
 			v := math.Max(0, math.Min(1, s.voice[i].x))
 			for x := 0; x < w; x++ {
 				cell := &cv.cells[y*w+x]
-				*cell = hCell{fill: sheet, filled: true}
+				*cell = hCell{fill: [2]hrgb{sheet, sheet}, filled: true}
 				if d := float64(head - x); d >= 0 && d < 26 { // the voice glows at the playhead as loud as it is
-					cell.fill = sheet.mix(s.voiceCol[i], (0.1+0.3*v)*(1-d/26)*(0.4+0.6*math.Max(v, s.beat[i])))
+					lit := sheet.mix(s.voiceCol[i], (0.1+0.3*v)*(1-d/26)*(0.4+0.6*math.Max(v, math.Max(s.beat[i], s.pulse))))
+					cell.fill = [2]hrgb{lit, lit}
 				}
 				if x >= 3 && x < head {
 					cell.ch, cell.c = '─', line
 				}
 			}
 			cv.glyph(1, y, t.glyph, faint.mix(text, 0.3+0.7*s.beat[i]), false)
-			cv.glyph(head, y, '┃', line.mix(text, 0.25+0.75*s.beat[i]), false)
+			cv.glyph(head, y, '┃', line.mix(text, 0.25+0.75*math.Max(s.beat[i], s.pulse)), false)
 			meter := []rune(" ▁▂▃▄▅▆▇█")[int(v*8+0.5)]
 			cv.glyph(head+1, y, meter, s.voiceCol[i], false)
 			cv.glyph(head+2, y, meter, s.voiceCol[i].mix(sheet, 0.45), false)
@@ -1386,16 +1871,19 @@ var hanamiLegend = [][2]string{
 	{"●", "the disc: all the work. It swells and brightens with the rate of events"},
 	{"─•", "a branch: one session. Its tip glows at each call; at rest it dims"},
 	{"✿❀✾✽", "a blossom: an agent (coder, reviewer, explorer, other), as large as its work"},
-	{"⠶", "petals: it returns to the disc. An outline, for 2 h: it returned, or its"},
-	{"", "session has been silent for 3 minutes"},
+	{"⠶", "petals: it returns to the disc. An outline stays (6 a branch,"},
+	{"", "under 2 h): it returned, or its session was silent 3 minutes"},
 	{"⠶", "petals turned back in red, with a red ring: a reviewer asked for changes"},
 	{"⠐⠂", "wind: cache reads. Bright streaks off an agent: output tokens"},
 	{"●○◆■▲◇", "notes: shell, read, edit, write, dispatch, message. Each sounds until its"},
 	{"━▃", "agent's next call (12 s at most); the bars at the right: calls per second"},
 	{"◉", "a lantern: an open pull request. Flicker, green, red: its checks"},
 	{"*✶", "hanabi: a merge lights the stage, and leaves a star for 6 h"},
-	{"✦", "a ringed star above the disc: a question waiting for the human"},
+	{"✦", "a question: light runs to a bell at the edge and waits for you"},
+	{"✧", "light along a branch: a brief out to a new agent; work rising"},
+	{"Aa", "words: a blossom's role, a lantern's number, a question's slug"},
 	{"◌", "a ripple from the disc: the site manager's tick"},
+	{"◐", "the beat: tool-call rate; disc, staff, blossoms pulse"},
 	{"", "colour: the agent's role, on blossoms, notes, streaks and petals"},
 	{"", "ambient, not data: the breath, the lanterns' sway, the slowest breeze"},
 }
@@ -1427,7 +1915,7 @@ func (s *hanamiScene) drawLegend(cv *hCanvas) {
 			case x == x0 || x == x0+bw-1:
 				ch = '│'
 			}
-			cv.cells[y*cv.w+x] = hCell{ch: ch, c: border, fill: panel, filled: true}
+			cv.cells[y*cv.w+x] = hCell{ch: ch, c: border, fill: [2]hrgb{panel, panel}, filled: true}
 		}
 	}
 	cv.text(x0+2, y0, " legend ", border, true)

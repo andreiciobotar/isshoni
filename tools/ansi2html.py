@@ -9,8 +9,13 @@ def one_cell(c):
     # characters the fallback font draws wider than one cell: braille, block elements and the scene's glyphs
     return '⠀'<=c<='⣿' or '▀'<=c<='▟' or c in '✿❀✾✽∘•◉✦✶◇◆○●■▲━┃'
 
-def cell(c):
+def cell(c,st=None):
     # pinned to a fixed box so the line keeps one height and the next cell starts where the grid says
+    if c=='▀' and st is not None and 'fg' in st and 'bg' in st:
+        # the upper half block is drawn by the tool, not by whatever font supplies it: exactly the top half of the
+        # cell in the foreground over the bottom half in the background, with no seam to the cells around it
+        return ('<span style="display:inline-block;vertical-align:top;width:1ch;height:%dpx;'
+                'background:linear-gradient(rgb(%s) 50%%,rgb(%s) 50%%)"></span>')%(LINE_PX,st['fg'],st['bg'])
     if unicodedata.east_asian_width(c) in 'WF': w=2
     elif one_cell(c): w=1
     else: return html.escape(c)
@@ -32,7 +37,7 @@ def to_html(data):
         if 'bg' in st:  # a background fills its whole cell row, not just the font's box: no seams between lines
             css.append('display:inline-block;vertical-align:top;height:%dpx'%LINE_PX)
         # one span per line, so a block-level span never holds a line break
-        out.append('\n'.join('<span style="%s">%s</span>'%(';'.join(css),''.join(cell(c) for c in part)) if part else ''
+        out.append('\n'.join('<span style="%s">%s</span>'%(';'.join(css),''.join(cell(c,st) for c in part)) if part else ''
                              for part in t.split('\n')))
     pos=0
     for m in re.finditer(r'\x1b\[([0-9;]*)m',data):
