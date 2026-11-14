@@ -3096,7 +3096,8 @@ REPO_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 GITHUB_REMOTE_RE = re.compile(r"(?:https://(?:[^/@\s]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)([^/\s:]+)/([^/\s]+?)(?:\.git)?/?", re.I)
 WIZARD_WAIT = 600
 INSTALL_POLL = 3
-PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read", "actions": "read"}
+PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read", "actions": "write"}
+PERMISSION_LEVELS = {"read": 1, "write": 2, "admin": 3}
 CALLBACK_DONE = "<!doctype html><meta charset=utf-8><p>Done. Go back to the terminal.</p>"
 
 
@@ -3403,9 +3404,13 @@ def create_app(owner, name):
     return identity
 
 
-def delete_url(identity):
+def settings_url(identity):
     where = f"organizations/{identity['owner']}/settings/apps" if identity["owner_type"] == "Organization" else "settings/apps"
-    return f"https://github.com/{where}/{identity['slug']}/advanced"
+    return f"https://github.com/{where}/{identity['slug']}"
+
+
+def delete_url(identity):
+    return f"{settings_url(identity)}/advanced"
 
 
 def undo_lines(identity):
@@ -3504,6 +3509,11 @@ def verify_app(identity):
         print(f"Acts as {bot}; reads and writes {len(repos)} repositories:")
         for name in repos:
             print(f"  {name}")
+    have = installation.get("permissions") or {}
+    for name, level in PERMISSIONS.items():
+        if PERMISSION_LEVELS.get(have.get(name), 0) < PERMISSION_LEVELS[level]:
+            print(f"WARNING: the installed App lacks {name}: {level} (it has {have.get(name, 'none')}). "
+                  f"Change it at {settings_url(identity)}/permissions, then accept the new permission at {installation['html_url']}.")
     print(f"Its private key is in {IDENTITY}. To remove it: `factory uninstall` (`make uninstall` in the clone)")
     return repaired or identity != stored
 
@@ -3938,7 +3948,7 @@ def cmd_uninstall(args):
 LAND_TEST_TIMEOUT = 1800
 LAND_TIMEOUT = 1800
 LAND_TOOLS = ("Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
-              "Bash(gh pr edit *)", "Bash(factory state working)")
+              "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)")
 LAND_REASONS = ("dirty", "conflict", "golden", "tests", "denied", "other")
 LAND_RESULT_RE = re.compile(r"(LANDED, LOOK|LANDED|STOPPED)(?: (\S+))?")
 WORKFLOWS_REFUSAL = "without `workflows` permission"
@@ -3981,6 +3991,85 @@ def lander_sections(text):
         elif lines is not None and line.strip():
             lines.append(line)
     return sections
+
+
+PROSE_GAP = 10
+OVERLAP_QUOTE_LINES = 40
+
+
+def is_prose(path):
+    """Documentation by path alone: a .md, .rst or .txt file named README* or under a docs/ or doc/ directory."""
+    p = Path(path)
+    return p.suffix.lower() in (".md", ".rst", ".txt") and (p.name.startswith("README") or bool({"docs", "doc"} & set(p.parts[:-1])))
+
+
+def hunk_ranges(diff):
+    """The (first, last) old-side lines of each hunk of a `-U0` diff; a pure insertion after line a is (a+1, a)."""
+    ranges = []
+    for m in re.finditer(r"^@@ -(\d+)(?:,(\d+))? ", diff, re.M):
+        a, b = int(m[1]), 1 if m[2] is None else int(m[2])
+        ranges.append((a, a + b - 1) if b else (a + 1, a))
+    return ranges
+
+
+def hunk_gap(one, two):
+    """The unchanged old-side lines between two hunks, from the (first, last) ranges."""
+    return max(two[0] - one[1] - 1, one[0] - two[1] - 1)
+
+
+def checked_out(git):
+    """`out(*git_args)` for the overlap rule from `git(*args)` -> (rc, stdout, stderr): stdout with paths unquoted,
+    and a git that fails is a Fail, never an empty (safe) answer."""
+    def out(*args):
+        rc, stdout, err = git("-c", "core.quotePath=false", *args)
+        if rc != 0:
+            raise Fail(f"git {' '.join(args)} failed: {err.strip()}", 1)
+        return stdout.strip()
+    return out
+
+
+class Overlap:
+    """What the base and a task both changed, and whether anyone must look: the one owner of the rule in
+    factory/agents/lander.md. `out(*git_args)` (see `checked_out`) gives a git command's stdout. `summary` is the
+    Facts fragment, `look` the verdict, `quoted` the lines for the files that need a look."""
+
+    def __init__(self, out, old_base, old_head, target):
+        sides = {side: {path: status for status, path in (l.split("\t", 1) for l in
+                                                           out("diff", "--no-renames", "--name-status", old_base, ref).splitlines())}
+                 for side, ref in (("base", target), ("task", old_head))}
+        parts, self.quoted = [], []
+        for path in sorted(sides["base"].keys() & sides["task"].keys()):
+            reason, safe = self.judge(out, old_base, sides, path, target, old_head)
+            parts.append(f"{path} ({reason}{', not looked at' if safe else ''})")
+            if not safe:
+                self.quoted.append(f"{path}: {reason}")
+                for what, ref in (("base", target), ("task", old_head)):
+                    shown = out("diff", "--no-renames", old_base, ref, "--", path).splitlines()
+                    more = [f"... ({len(shown) - OVERLAP_QUOTE_LINES} more lines)"] if len(shown) > OVERLAP_QUOTE_LINES else []
+                    self.quoted += [f"the {what} changed:", *shown[:OVERLAP_QUOTE_LINES], *more]
+        self.summary = "; ".join(parts) or "none"
+        self.look = bool(self.quoted)
+
+    @staticmethod
+    def judge(out, old_base, sides, path, target, old_head):
+        """(reason, whether the file is safe) for one file both sides changed."""
+        if sides["base"][path] != "M" or sides["task"][path] != "M":
+            return "added, deleted or renamed on one side", False
+        if not is_prose(path):
+            return "code", False
+        ranges = [hunk_ranges(out("diff", "-U0", "--no-renames", old_base, ref, "--", path)) for ref in (target, old_head)]
+        if not all(ranges):
+            return "no line changes to compare", False
+        gap = max(0, min(hunk_gap(a, b) for a in ranges[0] for b in ranges[1]))
+        return f"prose, {gap} lines apart", gap >= PROSE_GAP
+
+    def text(self):
+        return "\n".join([f"overlap: {self.summary}", f"verdict: {'look' if self.look else 'safe'}", *self.quoted])
+
+
+def cmd_overlap(args):
+    print(Overlap(checked_out(lambda *a: run(["git", *a])), args.old_base, args.old_head, args.target).text())
+    return 0
 
 
 class Landing:
@@ -4230,13 +4319,127 @@ def cmd_land(args):
     return 0 if all(landed) else 1
 
 
+RUN_LINK_RE = re.compile(r"/actions/runs/(\d+)/")
+LOG_LINE_RE = re.compile(r"[^\t]*\t[^\t]*\t\ufeff?\S+Z (.*)")  # gh's prefix: job, step, timestamp
+FAILED_TEST_RES = (re.compile(r"\s*--- FAIL: (Test[^\s/]+)"), re.compile(r"(?:FAIL|ERROR): (test\w+) \("))
+
+
+def failing_tests(log):
+    """The Go and unittest tests a `gh run view --log-failed` log names as failed, in order."""
+    names = []
+    for line in log.splitlines():
+        text = LOG_LINE_RE.fullmatch(line)
+        for pattern in FAILED_TEST_RES:
+            found = pattern.match(text[1] if text else line)
+            if found and found[1] not in names:
+                names.append(found[1])
+    return names
+
+
+def rerun_line(repo, n):
+    """(whether a re-run started, the line to print after `#n `) for the failed checks of pull request `n`, as
+    docs/factory.md defines it. NotEvaluated when GitHub cannot be read."""
+    gh = lambda *args: gh_json(repo, *args)
+    git = lambda *args: repo.git("-c", "core.quotePath=false", *args)
+    no = lambda why: (False, f"no rerun: {why}")
+    listed = gh(list, "pr", "checks", n, "--json", "name,bucket,link")
+    if any(c.get("bucket") == "pending" for c in listed):
+        return no("checks are still running")
+    pr = gh(dict, "pr", "view", n, "--json", "state,headRefName,baseRefName")
+    if pr.get("state") != "OPEN":
+        return no("the pull request is not open")
+    runs = {}  # run id -> names of its failed checks
+    for c in listed:
+        if c.get("bucket") == "fail":
+            link = RUN_LINK_RE.search(str(c.get("link")))
+            if not link:
+                return no(f"{c.get('name')} is not an Actions run")
+            runs.setdefault(link[1], []).append(str(c.get("name")))
+    if not runs:
+        return no("no failed check")
+    tests = {}  # run id -> names of its failing tests
+    for run_id, names in runs.items():
+        rc, log, err = run(["gh", "run", "view", run_id, "--log-failed"], cwd=repo.root)
+        if rc != 0:
+            return no(f"gh run view failed: {err.strip() or rc}")
+        tests[run_id] = failing_tests(log)
+        if not tests[run_id]:
+            return no(f"no failing test could be named in {', '.join(names)}'s log")
+    base, head = pr["baseRefName"], f"{repo.remote}/{pr['headRefName']}"
+    if act_git(repo.root, "fetch", repo.remote)[0] != 0:
+        return no(f"git fetch {repo.remote} failed")
+    rc, fork, err = git("merge-base", f"{repo.remote}/{base}", head)
+    if rc != 0:
+        return no(f"git merge-base failed: {err.strip() or rc}")
+    rc, diff, err = git("diff", "--name-only", fork.strip(), head)
+    if rc != 0:
+        return no(f"git diff failed: {err.strip() or rc}")
+    changed = diff.splitlines()
+    where, own = {}, []
+    for name in sorted({t for names in tests.values() for t in names}):
+        rc, found, err = git("grep", "-l", "-E", rf"func {name}\(|def {name}\(", head)
+        files = [l.partition(":")[2] for l in found.splitlines()]
+        if rc > 1:
+            return no(f"git grep failed: {err.strip() or rc}")
+        if not files:
+            return no(f"{name} was not found in the branch")
+        touched = [f for f in files if any(os.path.dirname(c) == os.path.dirname(f) for c in changed)]
+        where[name] = f"{name} ({(touched or files)[0]})"
+        if touched:
+            own.append(where[name])
+    if own:
+        return no(f"{', '.join(own)} is in what the branch changes")
+    rc, tip, err = repo.git("rev-parse", f"{repo.remote}/{base}")
+    if rc != 0:
+        return no(f"git rev-parse failed: {err.strip() or rc}")
+    tip = tip.strip()
+    green = {c["name"] for c in gh(dict, "api", f"repos/{{owner}}/{{repo}}/commits/{tip}/check-runs?per_page=100").get("check_runs", [])
+             if c.get("conclusion") == "success"}
+    for check in (c for checks in runs.values() for c in checks):
+        if check not in green:
+            return no(f"{check} is not green on {base}")
+    for run_id, names in tests.items():
+        attempt = gh(dict, "run", "view", run_id, "--json", "attempt").get("attempt")
+        if not isinstance(attempt, int):
+            return no("gh run view failed: no attempt in its answer")
+        if attempt > 1:
+            return no(f"already re-run once; looks like a flake: {', '.join(where[t] for t in names)}")
+    started, refusal = [], None
+    for run_id, names in tests.items():
+        rc, out, err = run(["gh", "run", "rerun", run_id, "--failed"], cwd=repo.root)
+        if rc != 0:
+            refusal = (f"the App may not re-run checks; looks like a flake: {', '.join(where[t] for t in names)}. "
+                       f"From your own terminal: gh run rerun {run_id} --failed ({(err or out).strip() or rc})")
+            break
+        started.append(run_id)
+    if not started:
+        return no(refusal)
+    checks, flake = ", ".join(c for r in started for c in runs[r]), ", ".join(where[t] for r in started for t in tests[r])
+    with tempfile.NamedTemporaryFile("w", suffix=".md") as f:
+        f.write(f"Re-ran the failed jobs of {checks} once (by factory rerun): {flake} is outside what this branch changes, "
+                f"and {checks} is green on {base} at {tip[:7]}.")
+        f.flush()
+        stop = gh_step(repo, "pr", "comment", n, "--body-file", f.name)
+    return True, (f"rerun: {checks}: {flake} is outside what the branch changes and {checks} is green on {base}; attempt 2 started"
+                  + (f" ({stop[1]})" if stop else "") + (f"; {refusal}" if refusal else ""))
+
+
+def cmd_rerun(args):
+    try:
+        started, line = rerun_line(Repo(), str(args.pr))
+    except NotEvaluated as e:
+        started, line = False, f"no rerun: {e}"
+    print(f"#{args.pr} {line}")
+    return 0 if started else 1
+
+
 # ---- lander -----------------------------------------------------------------
 
 MERGE_TIMEOUT = 3600
 MERGE_BASH_MS = "2400000"
 MERGE_TOOLS = ("Read", "Grep", "Glob", "SendMessage", "ToolSearch", "Bash(factory merge --approved *)",
                "Bash(factory land *)", "Bash(factory status *)", "Bash(factory status)", "Bash(gh pr view *)", "Bash(gh pr checks *)",
-               "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(sleep *)")
+               "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(sleep *)", "Bash(factory rerun *)")
 MERGE_KINDS = ("unapproved", "stale", "behind", "ci", "pending", "conflict", "tests", "handover", "base", "other")
 MERGE_LINE_RE = re.compile(r"#(\d+) (?:merged (\S.*)|stopped (\w+): (\S.*))")
 
@@ -4530,6 +4733,12 @@ def parse_args(argv):
     land = sub.add_parser("land", help="bring a handed-over task up to its base (a model takes part only on a conflict)")
     land.add_argument("slug", nargs="?")
     land.add_argument("--all", action="store_true", help="every handed-over task whose pull request conflicts or whose base merged")
+    overlap = sub.add_parser("overlap", help="what a base and a task both changed, and whether anyone must look (run in the task worktree)")
+    overlap.add_argument("old_base")
+    overlap.add_argument("old_head")
+    overlap.add_argument("target")
+    rerun = sub.add_parser("rerun", help="re-run the failed jobs of a pull request's red check once, when the failure looks like a flake")
+    rerun.add_argument("pr", type=int)
     schedule = sub.add_parser("schedule", help="install, remove or show the job that runs watch every 2 minutes")
     schedule.add_argument("action", choices=("install", "remove", "status"))
     dispatcher = sub.add_parser("dispatcher", help="print the current session name of this repository's dispatcher (exit 1 when none)")
@@ -4556,7 +4765,7 @@ def main(argv=None):
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "land": cmd_land, "lander": cmd_lander, "schedule": cmd_schedule, "dispatcher": cmd_dispatcher,
+                "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander, "schedule": cmd_schedule, "dispatcher": cmd_dispatcher,
                 "wizard": cmd_wizard, "uninstall": cmd_uninstall, "env": cmd_env}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)
