@@ -51,7 +51,7 @@ class NoLeftTests(unittest.TestCase):
         if not os.path.exists(path):
             return 0
         with open(path) as f:
-            return int(f.read())
+            return int(f.read() or 0)  # created but not yet written
 
     def test_a_clean_command_passes_its_exit_code_through(self):
         for code in (0, 7):
