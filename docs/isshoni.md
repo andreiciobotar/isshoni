@@ -381,8 +381,9 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   `factory status --json` reports: the tasks holding a slot against the cap, and every
   task with its phase, elapsed time, pull request or deliverable, base, and `overtime`
   or `stale`. At the top, a band lists everything that waits on you across repositories,
-  oldest first: tasks in review (the pull request or deliverable to look at) and blocked
-  tasks (what they asked), each with how long it has waited; when nothing waits it says
+  oldest first: tasks in review (the pull request or deliverable to look at) and tasks
+  blocked on you (what they asked; a task blocked on the dispatcher or on another task
+  says so in its row, with its reason beneath, and is not in the band), each with how long it has waited; when nothing waits it says
   so. The `3 Factory` tab carries `▲N` for the number waiting on every view (in a narrow
   header the live count then shows as `● N`, without the word). It refreshes every 30
   seconds while shown, every 2 minutes otherwise, in two passes. The first, for every
