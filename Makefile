@@ -1,10 +1,20 @@
-.PHONY: install up build test test-factory wizard snapshot screenshot clean
+.PHONY: install up build test fmt-check test-factory wizard snapshot screenshot clean FORCE
 
 BIN := bin/isshoni-tui
 VIEW ?= dashboard
 SIZE ?= 140x40
 CHROME ?= $(shell for c in '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' google-chrome google-chrome-stable chromium chromium-browser; do if [ -x "$$c" ]; then echo "$$c"; break; elif p=$$(command -v "$$c"); then echo "$$p"; break; fi; done)
 SHOT := shots/$(VIEW)-$(SIZE)
+# FIXTURE=<name> renders tests/fixtures/<name> as the golden tests do: every file at 2026-01-01T10:30:00Z, times in UTC, all ranges, the fixture agents and prices.
+FIXDIR := $(if $(FIXTURE),shots/fixture-$(FIXTURE))
+FIXENV := $(if $(FIXTURE),TZ=UTC )
+FIXARGS := $(if $(FIXTURE),--projects-dir $(FIXDIR) --agents-dir tests/fixtures/agents --prices tests/fixtures/prices.toml --range all)
+
+shots/fixture-%: FORCE
+	rm -rf shots/fixture-$*
+	mkdir -p shots
+	cp -R tests/fixtures/$* shots/fixture-$*
+	find shots/fixture-$* -type f -exec env TZ=UTC touch -t 202601011030 {} +
 
 # Get a fresh clone ready: check the toolchain, fetch the Go modules, build. Installs nothing system-wide.
 install:
@@ -23,10 +33,13 @@ up: build
 build:
 	go build -o $(BIN) ./cmd/isshoni-tui
 
-test: test-factory
+test: fmt-check test-factory
 	python3 -m unittest discover -s tests
 	go vet ./...
 	go test ./...
+
+fmt-check:
+	@files=$$(gofmt -l $$(git ls-files -co --exclude-standard '*.go')); [ -z "$$files" ] || { echo "isshoni: gofmt would change these files:" >&2; echo "$$files" >&2; echo "Fix with: gofmt -w $$files" >&2; exit 1; }
 
 test-factory:
 	python3 -m unittest discover -s factory/tests
@@ -36,14 +49,14 @@ wizard:
 	factory/bin/factory wizard $(ARGS)
 
 # Render one frame to stdout without a TTY, e.g. make snapshot VIEW=session ARGS="--session 04ca0148 --no-color"
-snapshot: build
-	$(BIN) --snapshot $(VIEW) --size $(SIZE) $(ARGS)
+snapshot: build $(FIXDIR)
+	$(FIXENV)$(BIN) --snapshot $(VIEW) --size $(SIZE) $(FIXARGS) $(ARGS)
 
 # Render one colored frame to shots/<view>-<size>.png (needs Chrome or Chromium; set CHROME=... to pick one), e.g. make screenshot VIEW=session ARGS="--session 04ca0148"
-screenshot: build
+screenshot: build $(FIXDIR)
 	@[ -n "$(CHROME)" ] || { echo "isshoni: Chrome or Chromium is missing. Install one, or set CHROME=/path/to/chrome." >&2; exit 1; }
 	@mkdir -p shots
-	$(BIN) --snapshot $(VIEW) --size $(SIZE) $(ARGS) | python3 tools/ansi2html.py > $(SHOT).html
+	$(FIXENV)$(BIN) --snapshot $(VIEW) --size $(SIZE) $(FIXARGS) $(ARGS) | python3 tools/ansi2html.py > $(SHOT).html
 	"$(CHROME)" --headless --disable-gpu --hide-scrollbars \
 		--window-size=$$(( $(firstword $(subst x, ,$(SIZE))) * 9 + 16 )),$$(( $(lastword $(subst x, ,$(SIZE))) * 17 + 16 )) \
 		--screenshot="$(CURDIR)/$(SHOT).png" "file://$(CURDIR)/$(SHOT).html" >/dev/null 2>&1

@@ -307,6 +307,28 @@ class FilingTests(StoreCase):
         self.assertEqual([(d["id"], d["status"]) for d in data], [(b, "open")])
         self.assertEqual(json.loads(self.feedback("--json", "--status", "rejected")[1]), [])
 
+    def test_since_lists_entries_filed_strictly_after_it(self):
+        a, b = self.file("- alpha\n- beta")
+        with mock.patch.object(factory, "read_feedback", return_value=[
+                {"id": "e1", "ts": "2026-03-01T10:00:00Z"}, {"id": "e2", "ts": "2026-03-01T10:00:01Z"},
+                {"id": "e3", "ts": "2026-03-02T00:00:00Z"}]):
+            def ids(since):
+                return [e["id"] for e in json.loads(self.feedback("--json", "--since", since)[1])]
+            self.assertEqual(ids("2026-03-01T10:00:00Z"), ["e2", "e3"])
+            self.assertEqual(ids("2026-03-01"), ["e1", "e2", "e3"])
+            self.assertEqual(ids("2026-03-02"), ["e3"])
+            self.assertEqual(ids("2026-03-02T00:00:00Z"), [])
+        self.feedback("set", a, "done")
+        self.assertEqual(len(json.loads(self.feedback("--json", "--since", "2000-01-01")[1])), 2)
+        self.assertEqual(self.feedback("--json", "--since", "2999-01-01")[1].strip(), "[]")
+
+    def test_since_refuses_anything_else(self):
+        for bad in ("2026-03", "yesterday", "2026-03-01T10:00:00", "2026-03-01 10:00:00Z"):
+            with self.subTest(bad):
+                code, out, err = self.feedback("--since", bad)
+                self.assertEqual((code, out), (2, ""))
+                self.assertEqual(len(err.splitlines()), 1)
+
     def decide(self, text):
         return self.run_main(["feedback", "decide", text], env={"CLAUDE_PROJECT_DIR": TASK})
 
