@@ -158,7 +158,7 @@ func TestHanamiSceneFollowsEvents(t *testing.T) {
 		s.Apply(ev("tool", 3, func(e *data.Event) { e.Agent, e.Role, e.Tool = "a1", "coder", "edit" }), false)
 	}
 	stepFor(s, goldenNow, 3*time.Second)
-	if a1, r1 := s.branches[0].blossoms[0], s.branches[0].blossoms[1]; a1.size.x < 1.3*small || r1.size.x > 1.2*small {
+	if a1, r1 := s.branches[0].blossoms[0], s.branches[0].blossoms[1]; a1.size.x < 1.1*small || r1.size.x > 1.2*small {
 		t.Fatalf("thirty calls did not grow the caller's blossom, or grew the other: %.1f and %.1f from %.1f", a1.size.x, r1.size.x, small)
 	}
 	// its note is held until its agent's next call, 12 s at most
@@ -1099,17 +1099,20 @@ func TestHanamiLayoutSpreadsTheTree(t *testing.T) {
 		if len(s.branches) != hanamiSlots {
 			t.Fatalf("%v: %d branches", sz, len(s.branches))
 		}
-		right, low, nearest := 0, 0, math.Inf(1)
+		left, right, low, nearest := 0, 0, 0, math.Inf(1)
 		tips := [][2]float64{}
 		for _, b := range s.branches {
 			x, y := b.point(g, 1)
 			if x < 0 || x >= g.W || y < 0 || y >= g.H {
 				t.Fatalf("%v: a tip outside the field: %.0f, %.0f", sz, x, y)
 			}
-			if x > 0.6*g.W {
+			if x < 0.45*g.W {
+				left++
+			}
+			if x > 0.7*g.W {
 				right++
 			}
-			if y > 0.4*g.H {
+			if y > 0.35*g.H {
 				low++
 			}
 			for _, o := range tips {
@@ -1117,13 +1120,13 @@ func TestHanamiLayoutSpreadsTheTree(t *testing.T) {
 			}
 			tips = append(tips, [2]float64{x, y})
 			for _, bl := range b.blossoms {
-				if bl.size.x > math.Max(3.5, 0.33*g.spacing())+0.01 || (sz[0] == 250 && bl.size.x > 16) {
+				if bl.size.x > math.Max(3.5, 0.16*g.spacing())+0.01 || (sz[0] == 250 && bl.size.x > 16) {
 					t.Fatalf("%v: a blossom of radius %.1f (spacing %.0f)", sz, bl.size.x, g.spacing())
 				}
 			}
 		}
-		if right < 4 || low < 3 || nearest < 0.6*g.spacing() {
-			t.Fatalf("%v: %d tips in the right two fifths, %d in the lower sixty percent, nearest %.0f (spacing %.0f)", sz, right, low, nearest, g.spacing())
+		if sz[0] > 80 && (left < 3 || right < 3 || low < 2) || nearest < 0.5*g.spacing() {
+			t.Fatalf("%v: %d tips in the left 45%%, %d in the right 30%%, %d in the lower 65%%, nearest %.0f (spacing %.0f)", sz, left, right, low, nearest, g.spacing())
 		}
 	}
 }

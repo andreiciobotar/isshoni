@@ -342,19 +342,17 @@ func (s *hanamiScene) geo() hGeo {
 
 // The branches fan over the whole stage. A branch's tip is a point on the far boundary: the path along the top
 // edge from just right of the disc to the top-right corner, then down the right edge. Slot i takes the point at
-// fraction (slotOrder[i]+0.5)/12 of that path, so the first sessions are far apart. The right edge counts for
-// more than its length, so the lower right is used too.
+// fraction (slotOrder[i]+0.5)/12 of that path, so the first sessions are far apart.
 var slotOrder = [hanamiSlots]int{5, 1, 9, 3, 7, 11, 0, 6, 2, 10, 4, 8}
 
-const sideWeight = 2.5
+const sideWeight = 1.0
 
 // path is the lengths of the top edge and the right edge of the path the tips lie on, in dots.
 func (g hGeo) path() (top, side float64) {
-	return math.Max(1, g.W-6-(g.cx+0.6*g.R)), math.Max(1, g.cy-5)
+	return math.Max(1, g.W-6-(g.cx+0.6*g.R)), math.Max(1, g.cy-0.5*g.R-5)
 }
 
-// spacing is the room one branch has on that path, where it is tightest (the right edge): no blossom is wider
-// than a share of it.
+// spacing is the room one branch has on that path: no blossom is wider than a share of it.
 func (g hGeo) spacing() float64 {
 	top, side := g.path()
 	return (top + sideWeight*side) / hanamiSlots / sideWeight
@@ -376,7 +374,12 @@ func (b *hBranch) geom(g hGeo) (sx, sy, dx, dy, L float64) {
 	a := math.Atan2(ty-g.cy, tx-g.cx) + b.jitter
 	dx, dy = math.Cos(a), math.Sin(a)
 	sx, sy = g.cx+(g.R+1)*dx, g.cy+(g.R+1)*dy
-	return sx, sy, dx, dy, math.Max(6, math.Hypot(tx-sx, ty-sy)*(0.88+0.12*frac(b.slot, 0.3)))
+	// neighbours along the path alternate between long and short, so tips sit at different depths
+	k := 0.58 + 0.12*frac(b.slot, 0.3)
+	if slotOrder[b.slot]%2 == 0 {
+		k = 0.9 + 0.1*frac(b.slot, 0.3)
+	}
+	return sx, sy, dx, dy, math.Max(6, math.Hypot(tx-sx, ty-sy)*k)
 }
 
 // point is where a branch is at u in 0..1 of its grown length.
@@ -430,7 +433,7 @@ func blossomSize(g hGeo, work float64, live int) float64 {
 }
 
 func blossomCap(g hGeo, live int) float64 {
-	return math.Max(3.5, math.Min(g.R*0.48, 0.33*g.spacing())) / math.Sqrt(math.Max(1, float64(live)/5))
+	return math.Max(3.5, math.Min(g.R*0.48, 0.16*g.spacing())) / math.Sqrt(math.Max(1, float64(live)/5))
 }
 
 // layout gives every blossom of a branch its place. Open ones take places from the tip inward, in the order
