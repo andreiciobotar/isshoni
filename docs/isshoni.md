@@ -297,6 +297,17 @@ session when its transcript changes (checked every second). The only file it wri
 under `~/.claude` is the factory's settings, when you save the cap. It finds the
 Python package from `ISSHONI_ROOT`, else from the binary's own location. It needs a
 terminal of at least 60x16.
+
+The pictures here and in the README are recordings of this repository's own factory (`make pictures`, below); the checkout is in a directory named `ccmon`, which is why that name shows as the repository.
+
+<img src="../assets/tabs/dashboard.webp" alt="View 1, the dashboard: the cursor moves over the repository, its tasks and a session; the pane shows the selected row's agent and model mix, its dispatches and timeline; then the repository is folded">
+
+<img src="../assets/tabs/agents.webp" alt="View 2, Agents: per agent type the dispatches, tokens, cost and duration at the median and the 90th percentile, as the range goes from 24 hours to all time">
+
+<img src="../assets/tabs/factory.webp" alt="View 3, Factory: what waits for you, then each task's phase, elapsed time, pull request and base, against the worktree cap">
+
+<img src="../assets/tabs/kaizen.webp" alt="View 4, Kaizen, its four pages in turn: Pulse, Flow, Anatomy, Board">
+
 ```
 bin/isshoni-tui [--range 24h|7d|30d|all] [--follow] [--no-color]
                 [--projects-dir DIR] [--agents-dir DIR] [--prices PATH]
@@ -324,6 +335,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 | `f` | follow the most recently active session (off until pressed or `--follow`; any cursor key turns it off) |
 | `←` `→`, `h` `l` | kaizen view: previous and next page (Pulse, Flow, Anatomy, Board) |
 | `c` | factory view: edit the cap (digits or `↑` `↓`, `enter` saves, `esc` cancels) |
+| `d` | over SSH with a `write` key only: open the dispatcher's conversation on this connection ([Over SSH](#over-ssh)) |
 | `?`, `q` | help, quit |
 
 - **Dashboard:** one screen, from the top: the totals for the range, the sessions as a
@@ -378,16 +390,17 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 - **Agents:** per agent type: dispatches, models, tokens and cost, p50/p90 cost and
   durations, repeats, review loops, warnings.
 - **Factory:** for each repository seen in the range that has task worktrees, what
-  `factory status --json` reports: the tasks holding a slot against the cap, and every
-  task with its phase, elapsed time, pull request or deliverable, base, and `overtime`
-  or `stale`. At the top, a band lists everything that waits on you across repositories,
-  oldest first: tasks in review (the pull request or deliverable to look at) and tasks
-  blocked on you (what they asked; a task blocked on the dispatcher or on another task
-  says so in its row, with its reason beneath, and is not in the band), each with how
-  long it has waited; when nothing waits it says so. The `3 Factory` tab carries `▲N`
-  for the number waiting on every view (in a narrow header the live count then shows as
-  `● N`, without the word). It refreshes every 30 seconds while shown, every 2 minutes
-  otherwise, in two passes. The first, for every repository, is
+  `factory status --json` reports: the tasks holding a slot against the cap (the meter
+  shows the ordinary limit plus the slots held in reserve for critical work, `7/9+1`),
+  and every task with its phase, elapsed time, pull request or deliverable, base, and
+  `overtime` or `stale`. At the top, a band lists everything that waits on you across
+  repositories, oldest first: tasks in review (the pull request or deliverable to look
+  at) and tasks blocked on you (what they asked; a task blocked on the dispatcher or on
+  another task says so in its row, with its reason beneath, and is not in the band), each
+  with how long it has waited; when nothing waits it says so. The `3 Factory` tab carries
+  `▲N` for the number waiting on every view (in a narrow header the live count then
+  shows as `● N`, without the word). It refreshes every 30 seconds while shown, every 2
+  minutes otherwise, in two passes. The first, for every repository, is
   `factory status --json --cached` (10 s limit): it never contacts GitHub, so the rows
   show at once. The second, only while the view is shown, is
   `factory status --json --max-age 60` (25 s limit) for each repository with tasks
@@ -472,13 +485,13 @@ bin/isshoni-tui --serve ADDR [--authorized-keys FILE] [--host-key FILE]
 | `--authorized-keys` | `~/.claude/factory/dashboard/authorized_keys` | OpenSSH's format, one public key per line. Required: the server does not start without the file. Read again on every connection, so a key added or removed applies at once |
 | `--host-key` | `~/.claude/factory/dashboard/host_key` | the server's private key; an ed25519 key is created on the first start (directory 0700, file 0600). The start line, on stderr, prints its SHA256 fingerprint: check it against what `ssh` asks you to accept the first time |
 
-- **The key file is the only gate.** Public keys only: no password, no keyboard-interactive login, no banner. A key that is listed sees everything the dashboard shows (session titles, repositories, costs). Put `write` before a key (`write ssh-ed25519 AAAA... laptop`) and that key may also change the worktree cap with `c` on the Factory view, which writes `~/.claude/factory/settings.json` of the account the server runs as; every other key is read-only (`c` says so). Any other option on a line is ignored.
+- **The key file is the only gate.** Public keys only: no password, no keyboard-interactive login, no banner. A key that is listed sees everything the dashboard shows (session titles, repositories, costs). Put `write` before a key (`write ssh-ed25519 AAAA... laptop`) and that key may also change the worktree cap with `c` on the Factory view, which writes `~/.claude/factory/settings.json` of the account the server runs as, and open the dispatcher's conversation with `d` (next bullet); every other key is read-only (`c` and `d` say so). Any other option on a line is ignored. **A `write` key reaches the dispatcher's conversation, a session that runs commands as the server's account and acts on GitHub as the factory's bot: give `write` only to people you would give a shell.** Whether a key may write is decided when it connects: a key removed or demoted while connected keeps what it had until that connection ends.
+- **The dispatcher (`d`)**, in every view outside an open input, for a `write` key only (not on the local dashboard or `--snapshot`, where `d` does nothing and is not in the help). It gives the connection's terminal to `claude attach NAME`, the dispatcher's conversation, and brings the dashboard back when that exits, at the terminal's size by then. `claude` must be on the server's `PATH`; it runs as the server's account with the server's environment plus the client's `TERM` (and `COLORTERM`, when the client sent it). The names are the `"dispatchers"` list of `~/.claude/factory/settings.json` (`["dispatcher-<repository>", ...]`), read at every press: one name attaches at once; several open a picker (`1`-`9` or `↑↓` and `enter`; `esc` cancels; past nine only the arrows reach the rest). A name that is not letters, digits, `.`, `_` and `-`, or starts with `-`, is never offered. A missing or empty list, or a settings file that cannot be read, is a toast naming the file and the key. Coming back: `Ctrl+Z` in the attached conversation detaches it and returns to the dashboard; `←` on an empty prompt opens Claude Code's agent view (every session on the server), and `Ctrl+C` twice there returns to the dashboard. If `claude attach` fails (no such session, `claude` missing), the dashboard returns with a toast. The server only ever starts and ends the attach client, never the dispatcher's session, which a Claude Code supervisor owns: detaching, a dropped connection and a server shutdown leave it running. A dropped connection or a shutdown sends the attach client SIGHUP, and the server kills it 2 seconds later if it stays. The pty is resized with the window, and the kernel signals the client; where the server runs on macOS the client has no controlling terminal (the system revokes the terminal when its session leader exits) and does not see a resize. Each attach start and end is a line on stderr (remote address, key fingerprint, name).
 - **Shared calls.** Viewers who ask for the same thing at the same time share one `isshoni` or `factory status` process. A result is used for up to 10 seconds, and not once a transcript has changed since it was started (sessions) or the cap was saved (everything), so the periodic data (agents, kaizen, factory status) can be up to 10 seconds older than on a local dashboard. Viewers on different ranges, or on different sessions, each cost their own call. Two further limits: a transcript that is deleted does not invalidate a shared `sessions` result, so a deleted session can stay listed for a viewer until the next transcript change, or until the 10 seconds lapse and a viewer refetches; and freshness compares the time a run started with file modification times, so on a filesystem with coarse (one-second) times a shared result can miss a write made in the same second until the next change.
-- **Colour** follows what each client's `TERM` promises (`xterm-256color`: 256 colours; `dumb`: none). Most SSH clients do not forward `COLORTERM`, so truecolor needs it asked for: `ssh -o SetEnv=COLORTERM=truecolor -p 2222 HOST` (the server takes any variable the client sets; a test covers it). The server's own `NO_COLOR` is not consulted; `--no-color` makes every viewer plain.
+- **Colour** follows what each client's `TERM` promises (`xterm-256color`: 256 colours; `dumb`: none). Most SSH clients do not forward `COLORTERM`, so truecolor needs it asked for: `ssh -o SetEnv=COLORTERM=truecolor -p 2222 HOST` (the server takes any variable the client sets; a test covers it). The server's own `NO_COLOR` is not consulted; `--no-color` makes every viewer plain. A phone's SSH client usually sends `xterm-256color` and no `COLORTERM`, so it shows 256 colours, in which Hanami's glow is drawn in bands; set `COLORTERM=truecolor` in the client where it lets you set an environment variable.
 - `q` or a dropped connection ends that viewer only. SIGINT and SIGTERM close every connection and every `isshoni` process before the server exits; it waits at most 5 seconds for the viewers. A connection has 30 seconds to finish its handshake.
 - **Unauthenticated connections are bounded**: at most 32 at once, and at most 4 from one source IP address (the port is ignored). A connection counts from accept until its authentication succeeds, or until it closes; a failed attempt does not free it, a close (a client giving up after a failed authentication, the server disconnecting after too many failed tries) or the 30-second handshake timeout does, and authenticated connections are not counted. A connection over either limit is closed before the SSH banner is sent (`ssh` reports that the connection was closed or reset); nothing is queued and no connection is evicted. Refusals are logged to stderr as one line a minute at most, with the number refused since the last line and the limits; the line is written by the first refusal a minute or more after the previous line, so a burst logs "refused 1" at once and the rest of the count shows with the next refusal.
 - Limits of that bound: it caps what unauthenticated peers can cost the server, it is not a firewall. A source address is the one the server sees: clients behind one NAT, one SSH tunnel, or Docker's port publishing (where every client can arrive from the bridge gateway's address) share one per-address allowance, and a flood from that address can lock the others out until it stops. IPv6 addresses count separately, so only the total of 32 bounds a peer that has many addresses.
-- Known limit: a window too small for the Factory view to lay out (width 0, for one) panics that viewer's program in `internal/tui`; serve mode guards only the 0x0 size that wish sends at disconnect and that `ssh -tt` without a local terminal reports. The panic is recovered by Bubble Tea and ends that viewer only.
 - A client that reports no terminal size (`ssh -tt` without a local terminal) gets 80x24. A connection without a terminal (`ssh HOST command`) is refused.
 - One line per session start and end (remote address, key fingerprint, read-only or write) and one per refused key go to stderr. Nothing else about a client is logged.
 - Outside the container ([container.md](container.md)), run it under whatever keeps your processes alive (systemd, tmux); it does not detach. Bind it to a loopback or VPN address, or reach it through an SSH tunnel to the host.
@@ -502,31 +515,49 @@ bin/isshoni-tui --serve ADDR [--authorized-keys FILE] [--host-key FILE]
 
 The fifth view (`5`) draws the same work as motion, for a second screen: the mark come alive. Nothing in it is decoration posing as data: every moving thing is one event from `isshoni events`, and `l` shows the legend.
 
+<img src="../assets/tabs/hanami.webp" alt="View 5, Hanami: a stretch of the last day replayed at 60 times its speed, ending in a merge">
+
 | you see | it is |
 |---|---|
 | the disc, a solid body that swells, brightens and takes a returning agent's colour | all the work; the rate of events; a return |
-| a branch growing out of the disc, its tip glowing; dimmer | a session; a call; at rest (3 minutes of silence). The tree has twelve places: a new session takes the place of the one at rest longest, sessions at work beyond twelve share places, and a session that bore no blossom goes when it rests |
-| a blossom opening on a branch (`✿` coder, `❀` reviewer, `✾` explorer, `✽` other, in the role's colour), growing | a subagent dispatched; its work so far (tool calls, output tokens) |
-| petals flying to the disc, the blossom closing to an outline | a subagent returned; what it did stays on the tree for 2 hours. An outline without petals: its session went silent for 3 minutes before it returned. It opens again if the agent is resumed |
+| a branch growing out of the disc, its tip glowing; dimmer | a session; a call; at rest (3 minutes of silence). The tree has twelve places, their tips spread along the top and right edges of the stage so the first sessions are far apart: a new session takes the place of the one at rest longest, sessions at work beyond twelve share places, and a session that bore no blossom goes when it rests |
+| a blossom opening on a branch (`✿` coder, `❀` reviewer, `✾` explorer, `✽` other, in the role's colour), growing | a subagent dispatched; its work so far (tool calls, output tokens); open ones take places from the tip of the branch inward, and are the smaller the more are open and the less room the branch has |
+| petals flying to the disc, the blossom closing to an outline | a subagent returned; what it did stays on the tree as a small outline for up to 2 hours (at most 6 on a branch; the more outlines on the tree, the sooner they go: 48 last an hour). An outline without petals: its session went silent for 3 minutes before it returned. It opens again if the agent is resumed |
 | petals turned back at the disc in red, with a red ring | a reviewer asked for changes |
 | wind in two layers; bright streaks off an agent | cache reads; output tokens |
 | notes on the staff (`●` shell, `○` read, `◆` edit, `■` write, `▲` dispatch, `◇` message, `·` anything else), each with a tail | a tool call, in the caller's colour; the tail lasts until that agent's next call, 12 seconds at most (of event time, in a replay) |
 | the bars at the right of the staff | calls per second on that voice |
 | a lantern rising to the sky; flickering; green; red; going out | an open pull request; checks running; passed; failed; closed without a merge |
 | a firework that lights the whole stage, then a star `✶` near where the lantern was | a merge; the star stays 6 hours (the 64 latest) |
-| a ripple, then a still ringed star above the disc | a task asked you a question; the star stays until it is answered |
+| a pale light from the disc to a bell at the left edge of the sky, with the task's slug beside it; the light returns and the bell goes | a task asked you a question, and waits until it is answered. Bells that do not fit above the disc overlap at the top |
+| fainter merge stars by day | the hour of day: the time zone of the machine running the dashboard (over `--serve`, the server's); in a replay, the replay's clock, while the clock in the sub-header is UTC |
+| the disc, the staff's playhead and working blossoms pulsing on a beat; the wind gusts every fourth beat | tempo is the rate of tool calls, from about 50 to 140 beats a minute; none without tool calls |
+| a light running out along a branch, then the blossom opening | a subagent dispatched: the brief goes out, and the blossom is a bud until it arrives |
+| beads of light rising along a branch (dim for a call, bright for output) | work: a tool call or output tokens from that session, six beads in flight at most on a branch |
+| the disc's rim taking a colour for a moment | the last petal of a return reached the disc |
+| small words: a role beside a blossom (4 s), `#31` under a lantern (6 s) and `#31 merged` at the burst (3 s) | history is not announced; a question's slug stays beside its bell |
 | a ripple from the disc across the field | the site manager's tick |
 
 Ambient, and not data: the disc's slow breath, the sway of lanterns, the slowest breeze. With nothing running, that is all there is: quiet looks quiet, and the tree at four in the afternoon looks like the afternoon's work.
 
 Colour is always the agent's role, as everywhere in the dashboard. Keys: `l` legend, `z` hides the header and footer, `p` replays the last 24 hours (again: back to live). A replay runs at a minute a second and skips stretches where nothing happened, so a day takes as many seconds as it had busy minutes; its clock is in the sub-header, and its rates (the disc, the wind, the bars) are per event second, so they read as they would have live. Below 110 columns the tab is a blossom, `5 ✿`.
 
-It runs at 20 frames a second and only while it is shown: the view starts `isshoni events --follow` when you open it and stops it when you leave. Measured on a 140x40 terminal it takes 6% of one core idle and 10 to 12% in a busy hour (the glow is a background colour per cell, which the terminal layer pays for; the scene itself draws in a millisecond), plus about 1% for the event stream. What had happened before you opened it sets the scene without animation: the last 2 hours of sessions and agents, every open pull request and every unanswered question. An agent whose transcript was last written more than 2 hours earlier and that is still running has no blossom until it next writes. Pull requests come from `gh`, polled once a minute, so a lantern or a firework can be up to a minute late; check states are known live only, so a replay's lanterns do not flicker. Without colour (`--no-color`) there is no glow: shapes and motion carry it; a terminal without truecolor gets the nearest colours it has.
+It runs at 20 frames a second and only while it is shown: the view starts `isshoni events --follow` when you open it and stops it when you leave. Measured on a 140x40 terminal (a pty, 30 s after start, CPU time of the process) it takes 7.5% of one core idle and 9.5% replaying a busy stretch, the same as before the beat and the light along the branches were added (the glow is a background colour per cell, two where a half block is drawn, which the terminal layer pays for; the scene itself draws in a millisecond), plus about 1% for the event stream. What had happened before you opened it sets the scene without animation: the last 2 hours of sessions and agents, every open pull request and every unanswered question. An agent whose transcript was last written more than 2 hours earlier and that is still running has no blossom until it next writes. Pull requests come from `gh`, polled once a minute, so a lantern or a firework can be up to a minute late; check states are known live only, so a replay's lanterns do not flicker. Without colour (`--no-color`) there is no glow: shapes and motion carry it; a terminal without truecolor gets the nearest colours it has.
+
+Finer pixels: glow and the disc's body are drawn with two samples a cell, a top and a bottom, so their pixels are square. A cell that holds only light is the upper half block `▀` (U+2580, Block Elements, Unicode 1.1) with the top sample as its foreground and the bottom as its background; a cell that holds a glyph or braille dots has one foreground, which the glyph or dots need, so its background is the mean of the two. Without colour there are no half blocks. On macOS `▀` is in Menlo and SF Mono (checked in the font files, 2026-11-14) but not in Monaco, which a terminal falls back from to another font for that one glyph; Linux fonts were not checked (DejaVu Sans Mono and Liberation Mono are expected to have it). Sextants (U+1FB00, Unicode 13) and octants (U+1CD00, Unicode 16) would be finer, but no macOS system font has them, so they are not used; quadrants add nothing, as a cell still has two colours. `tools/ansi2html.py` draws `▀` itself, as a top half over a bottom half, so screenshots have no seams.
 
 ```sh
 bin/isshoni-tui --replay events.jsonl              # replay a recording (python3 -m isshoni events --since 24h > events.jsonl), looping
 bin/isshoni-tui --replay events.jsonl --replay-speed 300  # event seconds per second; the default is 60
-make strip REPLAY=internal/tui/testdata/hanami-replay.jsonl SCENE=merge AT=89s FRAMES=12 STEP=200ms ARGS="--replay-speed 3"
+TZ=UTC make strip REPLAY=internal/tui/testdata/hanami-replay.jsonl SCENE=merge AT=88s FRAMES=14 STEP=250ms ARGS="--replay-speed 3"
+TZ=UTC make strip REPLAY=internal/tui/testdata/hanami-lead.jsonl SCENE=lead AT=30s FRAMES=12 STEP=400ms ARGS="--replay-speed 1"   # one lead, no subagents
+TZ=UTC make strip REPLAY=internal/tui/testdata/hanami-day.jsonl SCENE=replay AT=5s FRAMES=14 STEP=15s ARGS="--replay-speed 300"    # a synthetic day, 05:00 to 22:41 UTC: merge stars dim by day
 ```
 
+Pin `TZ=UTC` on every strip: merge stars dim by day in the machine's time zone, and the fixtures are written in UTC.
+
 `make strip` renders consecutive frames (`--snapshot hanami --replay FILE --at D --frames N --frame-step D`, add `--legend` for the legend) to `shots/hanami-<scene>-<size>.png`, a contact strip, and `.gif`, an animation (the GIF needs Pillow; the PNG needs Chrome, as `make screenshot` does). `make snapshot VIEW=hanami` without a replay is the idle scene.
+
+`make pictures` records a looping animation of each tab, `dashboard`, `agents`, `factory`, `kaizen` and `hanami`, as a lossy animated `<scene>.webp` in `OUT` (default `assets/tabs`) from this repository's real data; `SCENES="hanami agents"` records a subset, `SIZE=WxH` sets the frame size (default 110x32), `HANAMI_AT=<duration>` the replay time of the first Hanami frame (default: 3 s before the last merge of the last 24 hours; when those hold no merge, Hanami starts at the tool's default and a note says so on stderr). The scenes (arguments, milliseconds per frame) are a table at the top of `tools/record.py`. It prints each file's size; a file over 1,200,000 bytes is still written, and the run then exits non-zero. It refuses to record when no project directory of this repository exists under `~/.claude/projects`. It needs Chrome and Pillow, like `make strip`.
+
+The recording is gated, because the dashboard has no repository filter and the screens show real names and money. It refuses to record when the factory store (`~/.claude/factory/*.jsonl`) holds a record of any other repository (the other repository is not named), and it writes nothing when a frame, checked as text before anything is rendered, shows the home directory, the home directory as a project directory name (`-Users-name`), `/Users/` or `/home/`, or, as a whole word, the name of another repository or of one of its tasks (the names come from `isshoni sessions --json` over all time). A name the screen cut short with `…` counts too: any prefix of at least 3 characters that starts a word and ends right before the `…`. Every hit is listed (scene, frame, word) before the run fails. `~/` is allowed on purpose: the Factory tab shows the generic `~/.claude/factory/settings.json`. The tabs read only a temporary projects directory of symlinks to this repository's checkout and worktrees. `make pictures ALLOW="word word"` waives a name that is also an ordinary word on screen (another repository named like a column label, say); use it knowingly, and do not write it down in the repository.

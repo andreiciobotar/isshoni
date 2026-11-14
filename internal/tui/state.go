@@ -3,9 +3,12 @@ package tui
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,7 +77,11 @@ type Options struct {
 	Static  bool // render settled (snapshots, tests): no animation phase, no clock
 	// ReadOnly refuses the one write the dashboard makes, the worktree cap.
 	ReadOnly bool
-	Now      func() time.Time
+	// Attach builds the command that gives this terminal to the dispatcher's conversation, run
+	// by key d until it returns; nil where nothing can be attached (the local dashboard, a
+	// snapshot, a read-only connection), and then d is not in the help.
+	Attach func(name string) tea.ExecCommand
+	Now    func() time.Time
 
 	Replay      []data.Event // start in the Hanami tab replaying these, not the live stream
 	ReplaySpeed float64      // event seconds per second; 0 is the default, a minute a second
@@ -155,6 +162,9 @@ type model struct {
 	rowTok  map[string]*Counter
 	flash   map[string]time.Time
 	toast   toast
+
+	pick    []string // the dispatchers on offer while the picker is open
+	pickCur int
 
 	tickOn   bool
 	tickGen  int           // a tick carrying an older generation was superseded
@@ -1199,6 +1209,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, m.refreshFactory(factoryEvery))
 
+	case attachMsg:
+		if msg.err != nil {
+			text := msg.name + ": " + firstLine(msg.err.Error())
+			if errors.As(msg.err, new(*exec.ExitError)) {
+				text = msg.name + ": not running?"
+			}
+			m.setToast(text, true)
+		}
+
 	case tea.KeyPressMsg:
 		cmds = append(cmds, m.handleKey(msg))
 	}
@@ -1273,6 +1292,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.filterKey(msg)
 	case m.fac.editing:
 		return m.capKey(msg)
+	case m.pick != nil:
+		return m.pickKey(msg)
 	case m.help:
 		if key.Matches(msg, keys.Help, keys.Back, keys.Open, keys.Quit) {
 			m.help = false
@@ -1289,6 +1310,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return tea.Quit
 	case key.Matches(msg, keys.Help):
 		m.help = true
+	case key.Matches(msg, keys.Dispatcher):
+		return m.dispatcher()
 	case key.Matches(msg, keys.Next):
 		return m.switchView(m.cycle(1))
 	case key.Matches(msg, keys.Prev):
@@ -1361,6 +1384,58 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		}
 	}
 	m.fixScroll()
+	return nil
+}
+
+// attachMsg is the end of an attach: err is nil when the conversation was left cleanly.
+type attachMsg struct {
+	name string
+	err  error
+}
+
+// dispatcher is key d: attach at once to the one dispatcher named in the factory settings, or
+// open the picker over several.
+func (m *model) dispatcher() tea.Cmd {
+	switch {
+	case m.opts.ReadOnly:
+		m.setToast("read-only key: no dispatcher", true)
+		return nil
+	case m.opts.Attach == nil:
+		return nil
+	}
+	names, err := data.ReadDispatchers(data.FactorySettingsPath())
+	if err != nil {
+		m.setToast(err.Error(), true)
+		return nil
+	}
+	if len(names) == 1 {
+		return m.attach(names[0])
+	}
+	m.pick, m.pickCur = names, 0
+	return nil
+}
+
+func (m *model) attach(name string) tea.Cmd {
+	m.pick = nil
+	return tea.Exec(m.opts.Attach(name), func(err error) tea.Msg { return attachMsg{name, err} })
+}
+
+// pickKey handles every key while the picker is open: 1-9 pick the first nine, the arrows reach all.
+func (m *model) pickKey(msg tea.KeyPressMsg) tea.Cmd {
+	switch {
+	case key.Matches(msg, keys.Back):
+		m.pick = nil
+	case key.Matches(msg, keys.Down):
+		m.pickCur = min(m.pickCur+1, len(m.pick)-1)
+	case key.Matches(msg, keys.Up):
+		m.pickCur = max(m.pickCur-1, 0)
+	case key.Matches(msg, keys.Open):
+		return m.attach(m.pick[m.pickCur])
+	default:
+		if n, err := strconv.Atoi(msg.Key().Text); err == nil && n >= 1 && n <= min(9, len(m.pick)) {
+			return m.attach(m.pick[n-1])
+		}
+	}
 	return nil
 }
 

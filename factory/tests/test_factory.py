@@ -344,7 +344,8 @@ class SettingsTests(unittest.TestCase):
 
     def test_defaults(self):
         want = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "lean_start": True}
+                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "reserve_percent": 10,
+                "lean_start": True}
         self.assertEqual(self.load(), want)
         self.assertEqual(self.load("{}"), want)
 
@@ -355,10 +356,13 @@ class SettingsTests(unittest.TestCase):
 
     def test_overrides(self):
         got = self.load('{"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan", '
-                        '"task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": false, "lean_start": false}')
+                        '"task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": false, '
+                        '"reserve_percent": 25, "lean_start": false}')
         self.assertEqual(got, {"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan",
                                "task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": False,
-                               "lean_start": False})
+                               "reserve_percent": 25, "lean_start": False})
+        for percent in (0, 100):
+            self.assertEqual(self.load('{"reserve_percent": %d}' % percent)["reserve_percent"], percent)
         self.assertEqual(self.load('{"worktree_cap": 9}')["lead_model"], "fable")
 
     def test_invalid_values_name_the_key(self):
@@ -371,10 +375,22 @@ class SettingsTests(unittest.TestCase):
                           ('{"task_time_limit_hours": "2"}', "task_time_limit_hours"),
                           ('{"task_time_limit_hours": true}', "task_time_limit_hours"),
                           ('{"lgtm_from_author": "no"}', "lgtm_from_author"), ('{"lgtm_from_author": 0}', "lgtm_from_author"),
+                          ('{"reserve_percent": true}', "reserve_percent"), ('{"reserve_percent": -1}', "reserve_percent"),
+                          ('{"reserve_percent": 101}', "reserve_percent"), ('{"reserve_percent": 2.5}', "reserve_percent"),
+                          ('{"reserve_percent": "10"}', "reserve_percent"),
                           ('{"lean_start": "yes"}', "lean_start"), ('{"lean_start": 1}', "lean_start"),
                           ('{"monitor": ""}', "monitor"), ('{"monitor": 3}', "monitor"), ('{"monitor": null}', "monitor")):
             with self.assertRaisesRegex(factory.Fail, key):
                 self.load(text)
+
+
+class ReserveTests(unittest.TestCase):
+    def test_reserve_is_a_rounded_up_percent_that_never_takes_the_last_slot(self):
+        for cap, want in ((1, 0), (2, 1), (5, 1), (10, 1), (11, 2), (15, 2), (20, 2), (21, 3)):
+            self.assertEqual(factory.reserve(cap, 10), want, cap)
+        for cap in (1, 2, 7, 40):
+            self.assertEqual(factory.reserve(cap, 0), 0)
+        self.assertEqual(factory.reserve(5, 100), 4)
 
 
 class NewTests(unittest.TestCase):
@@ -463,7 +479,7 @@ class NewTests(unittest.TestCase):
             "branch exists": (self.ARGS, self.answers([], (), self.OK, {("git", "rev-parse"): (0, "sha\n", "")}), "branch already exists"),
             "session exists": (self.ARGS, self.answers([], [{"name": "demo-task", "cwd": "/elsewhere"}], self.OK), "session named"),
             "session inside the worktree": (self.ARGS, self.answers([], [{"cwd": f"{WT}/demo-task/sub"}], self.OK), "session named"),
-            "cap": (self.ARGS, self.answers([task_entry(s) for s in "abcde"], (), self.OK), "cap of 5.*a, b, c, d, e"),
+            "limit": (self.ARGS, self.answers([task_entry(s) for s in "abcde"], (), self.OK), "at the cap of 5.*a, b, c, d, e"),
             "no repo": (self.ARGS, {("git",): (128, "", "not a repo")}, "not inside a git repository"),
             "agents unlistable": (self.ARGS, self.answers([], (), self.OK, {("claude", "agents"): (1, "", "boom")}), "cannot list sessions"),
             "wrong dispatcher name": (self.ARGS, self.answers([], (), self.OK, dispatcher="other"), "/rename d1"),
@@ -613,11 +629,44 @@ class NewTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("cap of 1", err)
 
+    def test_the_reserve_is_kept_for_critical_tasks(self):
+        settings = '{"worktree_cap": 10}'
+        busy = lambda n: self.answers([task_entry(s) for s in "abcdefghi"[:n]], (), self.OK)
+        code, _, err, fake = invoke(self.ARGS, busy(8), settings)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(fake.ran("claude", "--bg"))
+        code, _, err, fake = invoke(self.ARGS, busy(9), settings)
+        self.assertEqual(code, 2)
+        self.assertRegex(err, "^factory: at the limit of 9 ordinary tasks in motion \\(1 of the cap of 10 held in "
+                              "reserve for critical work; start one with --critical\\): a, b, c, d, e, f, g, h, i$")
+        self.assertFalse(fake.ran("claude", "--bg"))
+        code, _, err, fake = invoke(self.ARGS + ["--critical"], busy(9), settings)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(fake.ran("claude", "--bg"))
+        answers = self.answers([task_entry(s) for s in "abcdefghij"], (), self.OK)
+        code, _, err, fake = invoke(self.ARGS, answers, settings)
+        self.assertEqual(code, 2)
+        self.assertRegex(err, "^factory: at the cap of 10 tasks in motion: a, b, c, d, e, f, g, h, i, j$")
+        self.assertNotIn("--critical", err)
+        self.assertFalse(fake.ran("claude", "--bg"))
+        code, _, err, fake = invoke(self.ARGS + ["--critical"], answers, settings)
+        self.assertEqual(code, 2)
+        self.assertRegex(err, "at the cap of 10 tasks in motion: a, b, c, d, e, f, g, h, i, j$")
+        self.assertFalse(fake.ran("claude", "--bg"))
+
+    def test_without_a_reserve_the_cap_is_the_limit(self):
+        settings = '{"worktree_cap": 10, "reserve_percent": 0}'
+        code, _, err, _ = invoke(self.ARGS, self.answers([task_entry(s) for s in "abcdefghi"], (), self.OK), settings)
+        self.assertEqual(code, 0, err)
+        code, _, err, _ = invoke(self.ARGS, self.answers([task_entry(s) for s in "abcdefghij"], (), self.OK), settings)
+        self.assertEqual(code, 2)
+        self.assertRegex(err, "at the cap of 10 tasks in motion")
+
     def at_cap(self, pr, sessions=(), tasks=()):
         """`new` with a cap of 2 and tasks a and b; b has no pull request, a's pull requests are `pr`."""
         answers = self.answers([task_entry("a"), task_entry("b")], sessions, self.OK, {
             ("gh",): (0, "[]", ""), ("gh", "pr", "list", "--head", "worktree-a"): (0, json.dumps(pr), "")})
-        code, _, err, fake = invoke(self.ARGS, answers, '{"worktree_cap": 2}', tasks=tasks)
+        code, _, err, fake = invoke(self.ARGS, answers, '{"worktree_cap": 2, "reserve_percent": 0}', tasks=tasks)
         return code, err, fake
 
     def test_cap_counts_only_tasks_in_motion(self):
@@ -673,7 +722,7 @@ class NewTests(unittest.TestCase):
     def test_cap_lists_only_the_tasks_in_motion(self):
         answers = self.answers([task_entry(s) for s in "abc"], (), self.OK, {
             ("gh",): (0, "[]", ""), ("gh", "pr", "list", "--head", "worktree-a"): (0, '[{"state": "OPEN"}]', "")})
-        code, _, err, _ = invoke(self.ARGS, answers, '{"worktree_cap": 2}')
+        code, _, err, _ = invoke(self.ARGS, answers, '{"worktree_cap": 2, "reserve_percent": 0}')
         self.assertEqual(code, 2)
         self.assertRegex(err, "cap of 2 tasks in motion: b, c$")
 
@@ -768,7 +817,7 @@ class StatusTests(unittest.TestCase):
         lines = out.splitlines()
         self.assertEqual(lines[3].index("review", 6), lines[0].index("PHASE"))
         self.assertTrue(next(l for l in lines if l.startswith("in motion")).startswith(
-            "in motion 2/5 (0 blocked); waiting for review 1; merged, not cleaned 1; settled, not cleaned 0; "))
+            "in motion 2/4, reserve 1, cap 5 (0 blocked); waiting for review 1; merged, not cleaned 1; settled, not cleaned 0; "))
         self.assertEqual(lines[-1], "waiting on the human: review -")
 
     def test_declared_state_deliverable_phases_and_five_counts(self):
@@ -800,7 +849,7 @@ class StatusTests(unittest.TestCase):
         for line, state in zip(lines[1:5], ("-", "blocked", "handed-over", "handed-over")):
             self.assertTrue(line[lines[0].index("STATE"):].startswith(state), line)
         self.assertEqual(lines[5:], [
-            "in motion 2/5 (1 blocked); waiting for review 2; merged, not cleaned 0; settled, not cleaned 0; "
+            "in motion 2/4, reserve 1, cap 5 (1 blocked); waiting for review 2; merged, not cleaned 0; settled, not cleaned 0; "
             "leftover agent worktrees 0; worktrees outside .claude/worktrees 0", "acting on GitHub with your gh login (no App identity: factory wizard)",
             "waiting on the human: handed /out/video.mp4", "waiting on the human: pr-only http://pr/7"])
 
@@ -1039,13 +1088,26 @@ class StatusTests(unittest.TestCase):
         self.assertTrue(lines[1].startswith("alpha"))
         self.assertEqual(lines[1].index("worktree-alpha"), lines[0].index("BRANCH"))
         self.assertEqual(lines[1].index("origin/main"), lines[0].index("BASE"))
-        self.assertEqual(lines[-2:], ["in motion 1/5 (0 blocked); waiting for review 0; merged, not cleaned 0; "
+        self.assertEqual(lines[-2:], ["in motion 1/4, reserve 1, cap 5 (0 blocked); waiting for review 0; merged, not cleaned 0; "
                                       "settled, not cleaned 0; leftover agent worktrees 1; "
                                       "worktrees outside .claude/worktrees 1", "acting on GitHub with your gh login (no App identity: factory wizard)"])
 
+    def test_the_reserve_is_in_the_json_and_the_count_line_only_when_it_is_held(self):
+        answers = repo_answers([], (), git_task_answers("x", time.time()))
+        for settings, reserve, line in (
+                (None, 1, "in motion 0/4, reserve 1, cap 5 ("),
+                ('{"worktree_cap": 21}', 3, "in motion 0/18, reserve 3, cap 21 ("),
+                ('{"reserve_percent": 0}', 0, "in motion 0/5 (")):
+            with self.subTest(settings):
+                _, out, _, _ = invoke(["status", "--json"], answers, settings)
+                doc = json.loads(out)
+                self.assertEqual((doc["cap"], doc["reserve"]), (json.loads(settings or "{}").get("worktree_cap", 5), reserve))
+                _, out, _, _ = invoke(["status"], answers, settings)
+                self.assertTrue(out.startswith(line), out)
+
     def test_empty_table(self):
         out, _ = self.status([], as_json=False)
-        self.assertEqual(out.strip().splitlines(), ["in motion 0/5 (0 blocked); waiting for review 0; merged, not cleaned 0; "
+        self.assertEqual(out.strip().splitlines(), ["in motion 0/4, reserve 1, cap 5 (0 blocked); waiting for review 0; merged, not cleaned 0; "
                                                     "settled, not cleaned 0; leftover agent worktrees 0; "
                                                     "worktrees outside .claude/worktrees 0", "acting on GitHub with your gh login (no App identity: factory wizard)"])
 
