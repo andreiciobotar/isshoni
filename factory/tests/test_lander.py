@@ -7,7 +7,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import ROOT, factory
-from test_health import NOW, SchedHarness, iso, register
+from test_factory import DISPATCHER
+from test_health import NOW, SchedHarness, iso, lead, register
 from test_merge import SESSION, SHA, World, pr
 
 LIST = ("gh", "pr", "list", "--state", "open")
@@ -116,6 +117,8 @@ class StarterTests(World):
         for never in ("Edit", "Write", "Bash(git", "pr merge", "pr review", "pr comment", "pr edit", "pr ready", "push"):
             self.assertNotIn(never, tools)
         self.assertFalse(any(re.fullmatch(r"Bash\(factory merge \d+\)", t) for t in factory.MERGE_TOOLS))
+        self.assertIn("Bash(factory rerun *)", factory.MERGE_TOOLS)
+        self.assertNotIn("gh run rerun", tools)
 
     def test_without_numbers_it_takes_what_is_approved_and_the_word_permission_is_absent(self):
         code, out, _ = self.lander(prs=[reviewed(1), said(2), plain(3), reviewed(4, state="CHANGES_REQUESTED"),
@@ -157,7 +160,7 @@ class StarterTests(World):
         self.assertIn("gh pr list failed: boom", err)
 
     def test_a_run_that_is_going_blocks_a_second(self):
-        with factory.lander_lock(SimpleNamespace(root=ROOT)) as free:
+        with factory.repo_lock(SimpleNamespace(root=ROOT), "lander") as free:
             self.assertTrue(free)
             code, out, _ = self.lander("1", prs=[plain(1)])
         self.assertEqual((code, out), (1, "a lander run is already going; run it again when it ends\n"))
@@ -260,7 +263,7 @@ class StarterTests(World):
         state = lander_state()
         self.assertEqual(sorted(state["stopped"]), ["1"])
         self.assertEqual(state["stopped"]["1"]["head"], SHA)
-        self.assertEqual(state["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}"})
+        self.assertEqual(state["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:free"})
 
     def test_the_file_is_written_whole_and_leaves_no_temporary(self):
         self.lander("1", prs=[plain(1)], answer=reply("#1 merged u"))
@@ -324,6 +327,89 @@ class TickTests(SchedHarness, World):
         self.tick([reviewed(1)], at=NOW + 120)
         self.assertEqual(self.landers(), [])
 
+    def busy_lead(self):
+        return [DISPATCHER | {"name": SESSION}, lead("t1", status="busy")]
+
+    def test_a_pull_request_noticed_while_its_lead_was_busy_is_run_once_more_when_it_is_free(self):
+        self.tick([reviewed(1)], answer=reply("#1 stopped handover: the lead session is busy"), sessions=self.busy_lead())
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:busy"})
+        self.assertEqual(len(self.landers()), 1)
+        self.tick([reviewed(1)], at=NOW + 120, sessions=self.busy_lead())
+        self.assertEqual(self.landers(), [])  # still busy
+        self.tick([reviewed(1)], at=NOW + 240, answer=reply("#1 stopped ci: red"))  # free now (the world's finished lead)
+        self.assertEqual(len(self.landers()), 1)
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:free"})
+        self.tick([reviewed(1)], at=NOW + 360)
+        self.assertEqual(self.landers(), [])
+
+    def test_a_failed_session_listing_keeps_the_key_busy_and_starts_no_run(self):
+        failing = {("claude", "agents"): (1, "", "boom")}
+        self.tick([reviewed(1)], answer=reply("#1 stopped handover: busy"), sessions=self.busy_lead())
+        self.tick([reviewed(1)], at=NOW + 120, extra=failing)
+        self.assertEqual(self.landers(), [])
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:busy"})
+        self.tick([reviewed(1)], at=NOW + 240, answer=reply("#1 stopped ci: red"))  # free now
+        self.assertEqual(len(self.landers()), 1)
+
+    def test_a_lead_that_frees_during_the_run_keeps_its_retry(self):
+        busy, free = (0, json.dumps(self.busy_lead()), ""), (0, json.dumps(self.busy_lead()[:1]), "")
+        # listings: the draft sync's, the run's before and after it
+        self.tick([reviewed(1)], answer=reply("#1 stopped handover: busy"), extra={("claude", "agents"): [busy, busy, free]})
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:busy"})
+
+    def test_a_retry_that_ends_with_the_lead_busy_writes_free_and_starts_no_run_after(self):
+        self.tick([reviewed(1)], answer=reply("#1 stopped handover: busy"), sessions=self.busy_lead())
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:busy"})
+        # the retry: the lead is free before it, and the stop it sends wakes the lead
+        busy, free = (0, json.dumps(self.busy_lead()), ""), (0, json.dumps(self.busy_lead()[:1]), "")
+        self.tick([reviewed(1)], at=NOW + 120, answer=reply("#1 stopped ci: red"),
+                  extra={("claude", "agents"): [free, free, free, busy]})
+        self.assertEqual(len(self.landers()), 1)
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:free"})
+        self.tick([reviewed(1)], at=NOW + 240)
+        self.assertEqual(self.landers(), [])
+
+    def test_a_run_by_hand_while_the_lead_is_busy_does_not_use_up_the_retry(self):
+        key = {"1": f"{SHA}:{iso(NOW - 60)}:busy"}
+        self.tick([reviewed(1)], answer=reply("#1 stopped handover: busy"), sessions=self.busy_lead())
+        self.assertEqual(lander_state()["noticed"], key)
+        answers, _, slugs = self.world([reviewed(1)])
+        answers[LIST] = (0, json.dumps([reviewed(1)]), "")
+        answers[("claude", "-p")] = reply("#1 stopped handover: busy")
+        self.cli("lander", "1", answers=answers, sessions=self.busy_lead(), entries=slugs, at=NOW + 60)
+        self.assertEqual(len(self.landers()), 1)
+        self.assertEqual(lander_state()["noticed"], key)
+        self.tick([reviewed(1)], at=NOW + 120, answer=reply("#1 stopped ci: red"))  # the lead is free now
+        self.assertEqual(len(self.landers()), 1)
+        self.tick([reviewed(1)], at=NOW + 240)
+        self.assertEqual(self.landers(), [])
+
+    def test_a_stop_that_wakes_the_lead_gives_two_runs_in_four_ticks_not_four(self):
+        busy, free = (0, json.dumps(self.busy_lead()), ""), (0, json.dumps(self.busy_lead()[:1]), "")
+        runs = 0
+        for later in (0, 120, 240, 360):  # free before the run, busy after it; the retry's notice lists once more
+            listings = [free, free, busy] if later == 0 else [free, free, free, busy]
+            self.tick([reviewed(1)], at=NOW + later, answer=reply("#1 stopped ci: red"),
+                      extra={("claude", "agents"): listings})
+            runs += len(self.landers())
+        self.assertEqual(runs, 2)
+
+    def test_a_free_pull_request_with_an_unchanged_key_starts_no_run(self):
+        self.tick([reviewed(1)], answer=reply("#1 stopped ci: red"))
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:free"})
+        self.tick([reviewed(1)], at=NOW + 120)
+        self.tick([reviewed(1)], at=NOW + 240)
+        self.assertEqual(self.landers(), [])
+
+    def test_a_stored_two_part_key_starts_no_run_whatever_the_lead_does(self):
+        repo = SimpleNamespace(root=ROOT)
+        state = factory.read_lander(repo)
+        state["noticed"] = {"1": f"{SHA}:{iso(NOW - 60)}"}
+        factory.write_lander(repo, state)
+        self.tick([reviewed(1)], sessions=self.busy_lead())
+        self.tick([reviewed(1)], at=NOW + 120)
+        self.assertEqual(self.landers(), [])
+
     def test_a_changed_head_or_a_newer_approval_does_start_one(self):
         self.tick([reviewed(1)], answer=reply("#1 stopped ci: red"))
         self.tick([reviewed(1, sha="moved")], at=NOW + 120, answer=reply("#1 stopped ci: red"))
@@ -337,7 +423,7 @@ class TickTests(SchedHarness, World):
         answers[LIST] = [(0, json.dumps(before), ""), (0, json.dumps(after), "")]
         answers[("claude", "-p")] = reply("#1 stopped ci: red")
         self.cli("watch", answers=answers, sessions=listed, entries=slugs)
-        self.assertEqual(lander_state()["noticed"], {"1": f"pushed-by-the-lander:{iso(NOW - 60)}"})
+        self.assertEqual(lander_state()["noticed"], {"1": f"pushed-by-the-lander:{iso(NOW - 60)}:free"})
         self.assertEqual(lander_state()["stopped"]["1"]["head"], "pushed-by-the-lander")
         self.tick(after, at=NOW + 120)
         self.assertEqual(self.landers(), [])
@@ -349,7 +435,7 @@ class TickTests(SchedHarness, World):
         answers[LIST] = [(0, json.dumps(before), ""), (0, json.dumps(after), "")]
         answers[("claude", "-p")] = reply("#1 stopped ci: red")
         self.cli("watch", answers=answers, sessions=listed, entries=slugs)
-        self.assertEqual(lander_state()["noticed"], {"1": f"pushed-by-the-lander:{iso(NOW - 60)}"})
+        self.assertEqual(lander_state()["noticed"], {"1": f"pushed-by-the-lander:{iso(NOW - 60)}:free"})
         self.tick(after, at=NOW + 120, answer=reply("#2 stopped ci: red"))
         [argv] = self.landers()
         self.assertIn("- #2:", argv[-1])
@@ -393,7 +479,7 @@ class TickTests(SchedHarness, World):
         self.assertNotIn("- #3:", argv[-1])
 
     def test_a_held_lock_skips_the_tick_silently_and_records_nothing(self):
-        with factory.lander_lock(SimpleNamespace(root=ROOT)):
+        with factory.repo_lock(SimpleNamespace(root=ROOT), "lander"):
             code, out, _ = self.tick([reviewed(1)], answer=reply("#1 merged u"))
         self.assertEqual(code, 0)
         self.assertEqual(self.landers(), [])

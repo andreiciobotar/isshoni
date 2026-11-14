@@ -21,6 +21,8 @@ You decide nothing about behavior. When a step needs a decision, you stop and re
 - A denied permission is a stop, not something to work around. "Could not resolve host" is the network, not a denial: retry up to three times before you stop (`other`).
 - Read every command's exit code; blank output is not success (`git merge-base --is-ancestor` answers only by its code).
 - One plain command per Bash call: worktree isolation refuses loops, `$(...)`, heredocs and compound commands whose text mentions git. A `cd` does not carry to the next call.
+- Wait for a background command through its completion notice, never with a loop that asks whether it still runs (a pattern such as "until ! pgrep -f name" matches its own command line and never ends).
+- Before you report, stop every background command you started; say how many you stopped.
 
 ## Steps
 1. `factory state working`. Then `git status --porcelain`: anything uncommitted is a stop (`dirty`); you do not decide what belongs in a commit. `git rev-parse HEAD` must be the reviewed head, and the branch must not be the default branch; else stop (`other`).
@@ -29,7 +31,7 @@ You decide nothing about behavior. When a step needs a decision, you stop and re
    - The pull request. `gh pr view --json url,state,isDraft,baseRefName` tells whether the branch has one. A closed or merged one is a stop (`other`). So is none at all when the brief gives no title and body file.
 
    If the target is already an ancestor of the head (`git merge-base --is-ancestor <target> HEAD`), the base has not moved: go to step 5.
-3. List what the base did, `git diff --name-only <old base> <target>`, and what the task changes, `git diff --name-only <old base> HEAD`. The files in both are the overlap. Then `git merge --no-edit <target>`. A branch that already holds merges of its base is the normal case.
+3. List what the base did, `git diff --name-only <old base> <target>`, and what the task changes, `git diff --name-only <old base> HEAD`. Then `factory overlap <old base> HEAD <target>` before the merge (HEAD is still the old head): its `overlap:` line goes into Facts as is; when it says `verdict: look`, the lines after it go into "Needs the lead" as they are. If `factory overlap` fails, stop (`other`) with its output. You do not judge the overlap yourself. Then `git merge --no-edit <target>`. A branch that already holds merges of its base is the normal case.
 4. Conflicts. Resolve one only when it is mechanical:
    - both sides added separate lines next to each other (imports, entries of a list or table, lines of documentation): keep both, in the file's own order;
    - a generated file (a golden snapshot, a lock file) that the brief's golden command or the repository's documented command regenerates: take either side now and regenerate it in step 6; never merge it by hand.
@@ -44,8 +46,8 @@ You decide nothing about behavior. When a step needs a decision, you stop and re
 A stop pushes nothing and declares nothing beyond the `working` of step 1, except `denied` at step 9, which comes after the push: say so. After a `conflict` stop the worktree is at the old head. After a `denied` push it stays on the head you tried to push (the merge commit when the base had moved), tests passed: give that head, since it is what the human pushes and the reviewed head of the next brief. After a `golden` or `tests` stop it stays on the merge commit, unpushed, with any regenerated goldens uncommitted, so that the lead can work on what failed: give the new head and say so. If a step fails in a way these rules do not cover, stop (`other`) with the command and its output.
 
 ## The result
-- `LANDED`: all of these hold: the base did not move, or moved with an empty overlap; no conflict; the old head is an ancestor of the head; step 6 changed no golden; tests pass; pushed; the pull request is open against the target branch. Step 10 is done.
-- `LANDED, LOOK`: tests pass, pushed and the pull request open against the target branch, but at least one of: you resolved a conflict, the overlap is not empty, you committed regenerated goldens. Step 10 is held: the lead looks first.
+- `LANDED`: all of these hold: the base did not move, or `factory overlap` said `verdict: safe`; no conflict; the old head is an ancestor of the head; step 6 changed no golden; tests pass; pushed; the pull request is open against the target branch. Step 10 is done.
+- `LANDED, LOOK`: tests pass, pushed and the pull request open against the target branch, but at least one of: you resolved a conflict, `factory overlap` said `verdict: look`, you committed regenerated goldens. Step 10 is held: the lead looks first.
 - `STOPPED`: one of `dirty`, `conflict`, `golden`, `tests`, `denied`, `other`.
 
 Return exactly this format, with one line per fact and nothing you did not run:
@@ -54,7 +56,7 @@ Return exactly this format, with one line per fact and nothing you did not run:
 `LANDED <url>` or `LANDED, LOOK <url>` or `STOPPED <reason>`
 
 ## Facts
-- base: `<target>` at `<sha>`, `<n>` commits since the old base; overlap: the files, or "none". The files the base changed, when 20 or fewer; else a count per top-level directory.
+- base: `<target>` at `<sha>`, `<n>` commits since the old base; overlap: the `overlap:` line of `factory overlap`, or "none" when the base did not move. The files the base changed, when 20 or fewer; else a count per top-level directory.
 - head: `<old sha>` -> `<new sha>` (a merge of the target, or "unchanged"), pushed or not; reviewed commits: "unchanged" (step 5).
 - conflicts: "none", or `path` - how you resolved it (one line each).
 - goldens: "not run", "no change", or `path` +a -b - what changed (one line each), committed or left uncommitted.
@@ -82,13 +84,15 @@ Per pull request, a loop that starts with the merge command, because the command
    - `checks are still running`: `gh pr checks <n> --watch --interval 20`, then this step again.
    - Mergeability not computed yet: `sleep 30` and this step again, at most 10 times, then stop `pending`.
    - `its base ... is not ... nor the head of a pull request merged into it`: stop `base`.
-   - Failed or cancelled checks: stop `ci` with the checks' names and the link `gh pr checks <n>` gives.
+   - Failed or cancelled checks: `factory rerun <n>`, alone in its Bash call, every time (see below).
    - `no task worktree has its head branch` (the brief says `no task`): stop `handover` at once.
    - Another handover reason (the task is not handed over, or has local commits): wait 60 s and try again, at most 5 times (a lead's turn may not have ended), then stop `handover`.
    - Not approved or stale: stop `unapproved` or `stale`; the human must approve again, never ask for an `lgtm`.
    - Anything else: stop `other` with the line.
 2. `factory land <slug>`. It brings the branch up to date by merging its base in, runs the tests and pushes; it can run for half an hour. `LANDED`: step 3. `STOPPED tests`: the lead's; stop `tests`. `LANDED, LOOK` or `STOPPED conflict|golden`: the lead's; stop `conflict`. In both, message the lead with the report's "Needs the lead". `STOPPED busy` whose Facts say `state: working, declared by factory land`: stop `handover` and message the lead the report (its worktree holds an unpushed merge). Any other `STOPPED busy`: wait 60 s and try again, at most 5 times, then stop `handover`. Any other `STOPPED`, or an error with no report: stop `other` with its line.
-3. `gh pr checks <n> --watch --interval 20` on the new head. "No checks reported" right after a push: `sleep 30`, at most 6 times. A failed or cancelled check is a stop `ci` with its name and link. Never report a check as passed from an earlier read. Then step 1 again. Steps 2 and 3 run at most 5 times for one pull request; after that stop `behind`.
+3. `gh pr checks <n> --watch --interval 20` on the new head. "No checks reported" right after a push: `sleep 30`, at most 6 times. A failed or cancelled check: `factory rerun <n>` (see below). Never report a check as passed from an earlier read. Then step 1 again. Steps 2 and 3 run at most 5 times for one pull request; after that stop `behind`.
+
+`factory rerun <n>` prints one line; the script decides, so call it every time. A `rerun` line: watch the checks again (step 3), and put the line in the result's evidence if the pull request later stops. `no rerun: checks are still running`: `gh pr checks <n> --watch --interval 20`, then `factory rerun <n>` again. Any other `no rerun` line: stop `ci` with that line as the evidence. Never run `gh run rerun` yourself.
 
 After a merge `factory merge` has cleaned and pulled. For each open pull request stacked on the merged branch that is not in the brief, message its lead: "your base #N merged; hand your task to your lander with 'the base has merged'".
 

@@ -145,9 +145,15 @@ def ssh_env():
     return {k: v for k, v in os.environ.items() if k != TOKEN_VAR}
 
 
+LOCAL_TIMEOUT = 30  # seconds for a local helper (git, ssh -G); the remote ssh call has none: clones are long
+
+# A dead connection ends in about 45 s: three missed 15 s probes (ConnectTimeout does not add to it).
+SSH_OPTS = ["-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"]
+
+
 def ssh(target, command, stdin=b""):
     try:
-        p = subprocess.run(["ssh", target, command], input=stdin, capture_output=True, env=ssh_env())
+        p = subprocess.run(["ssh", *SSH_OPTS, target, command], input=stdin, capture_output=True, env=ssh_env())
     except FileNotFoundError:
         raise Stop("ssh is not installed on this machine; install an OpenSSH client.") from None
     return p.returncode, p.stdout.decode(errors="replace"), p.stderr.decode(errors="replace")
@@ -176,7 +182,10 @@ def env_prefix(**values):
 # ---- laptop ---------------------------------------------------------------------
 
 def git(*args):
-    return subprocess.run(["git", "-C", str(ROOT), *args], check=True, capture_output=True).stdout
+    try:
+        return subprocess.run(["git", "-C", str(ROOT), *args], check=True, capture_output=True, timeout=LOCAL_TIMEOUT).stdout
+    except subprocess.TimeoutExpired:
+        raise Stop("git %s did not finish in %d s; check %s and run this again." % (args[0], LOCAL_TIMEOUT, ROOT)) from None
 
 
 def store():
@@ -245,7 +254,10 @@ def public_key(target, given):
     if given:
         paths = [Path(given).expanduser()]
     else:
-        out = subprocess.run(["ssh", "-G", target], capture_output=True, text=True, env=ssh_env()).stdout
+        try:
+            out = subprocess.run(["ssh", "-G", target], capture_output=True, text=True, env=ssh_env(), timeout=LOCAL_TIMEOUT).stdout
+        except subprocess.TimeoutExpired:
+            raise Stop("ssh -G %s did not finish in %d s; pass --key <file.pub>." % (target, LOCAL_TIMEOUT)) from None
         paths = [Path(l.split(None, 1)[1] + ".pub").expanduser() for l in out.splitlines() if l.lower().startswith("identityfile ")]
     for p in paths:
         if p.is_file():

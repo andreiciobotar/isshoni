@@ -37,22 +37,25 @@ up: build
 build:
 	go build -o $(BIN) ./cmd/isshoni-tui
 
+# Each suite runs through tools/noleft.py: it prints "left behind: N" and fails when a test left a process running.
+NOLEFT := python3 tools/noleft.py
+
 # The parts are independent, so CI runs them side by side: make -j3 test GOTESTFLAGS=-race
 GOTESTFLAGS ?=
 test: fmt-check test-factory test-python test-go
 
 test-python:
-	python3 -m unittest discover -s tests
+	$(NOLEFT) python3 -m unittest discover -s tests
 
 test-go:
 	go vet ./...
-	go test $(GOTESTFLAGS) ./...
+	$(NOLEFT) go test $(GOTESTFLAGS) ./...
 
 fmt-check:
 	@files=$$(gofmt -l $$(git ls-files -co --exclude-standard '*.go')); [ -z "$$files" ] || { echo "isshoni: gofmt would change these files:" >&2; echo "$$files" >&2; echo "Fix with: gofmt -w $$files" >&2; exit 1; }
 
 test-factory:
-	python3 -m unittest discover -s factory/tests
+	$(NOLEFT) python3 -m unittest discover -s factory/tests
 
 # Set everything up (dependencies, dashboard, plugin, settings, cost alerts, GitHub App) and rerun to repair, e.g. make wizard ARGS="--yes --owner my-org"
 wizard:
