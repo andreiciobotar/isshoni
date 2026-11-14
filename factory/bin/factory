@@ -1253,6 +1253,17 @@ FACTORY = Path(__file__).resolve()
 CRITERIA_PATH = PLUGIN_ROOT / "criteria.json"
 ROLE_PATH = PLUGIN_ROOT / "roles" / "site-manager.md"
 SITE_MANAGER_MODEL = "sonnet"
+SITE_MANAGER_TOOLS = (
+    "Read", "Grep", "Glob", "SendMessage", "ToolSearch",
+    "Bash(factory status)", "Bash(factory status *)", "Bash(factory health)", "Bash(factory health *)",
+    "Bash(factory log *)", "Bash(factory firings)", "Bash(factory firings *)",
+    "Bash(factory feedback)", "Bash(factory feedback --json)",
+    "Bash(ps *)", "Bash(pgrep *)",
+    "Bash(gh pr view *)", "Bash(gh pr checks *)", "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(gh run list *)",
+    "Bash(claude agents --json --all)")
+SITE_MANAGER_TURNS = 30
+SITE_MANAGER_BUDGET = "1.50"
+SETTINGS_ISOLATION = ("--setting-sources", "")
 RESURFACE_MINUTES = 120
 WATCH_INTERVAL = 120
 HEALTH_SECONDS = 1800 - 60
@@ -1265,9 +1276,10 @@ JOBS = ("watch", "digest")
 CLASSES = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")
 RUN_SCHEMA = {"type": "object", "required": ["sent", "decisions"], "properties": {
     "sent": {"type": "boolean"},
-    "decisions": {"type": "array", "items": {"type": "object", "required": ["id", "decision", "reason"], "properties": {
+    "decisions": {"type": "array", "items": {"type": "object", "required": ["id", "decision", "reason", "looked"], "properties": {
         "id": {"type": "string"}, "decision": {"type": "string", "enum": ["escalated", "suppressed"]},
-        "reason": {"type": "string"}}}}}}
+        "to": {"type": "string", "enum": ["dispatcher", "lead"]}, "reason": {"type": "string"},
+        "looked": {"type": "array", "items": {"type": "string"}}}}}}}
 FIRED_KEYS = ("criterion", "escalate", "slug", "subject", "detail")
 
 
@@ -1886,7 +1898,8 @@ def fold(records):
             firings[fid] = {**r, "decision": None, "reason": None, "decided": None, "outcome": None,
                                 "cleared": False}
         elif f and "decision" in r and f["decision"] is None:
-            f.update(decision=r["decision"], reason=r.get("reason"), by=r.get("by"), decided=r.get("ts"))
+            f.update(decision=r["decision"], reason=r.get("reason"), by=r.get("by"), decided=r.get("ts"),
+                     to=r.get("to"), looked=r.get("looked"), run=r.get("run"))
         elif f and "outcome" in r:
             f["outcome"] = r["outcome"]
         elif f and r.get("cleared"):
@@ -1955,20 +1968,29 @@ def transcript_tail(path, count=15):
     return entries[-count:]
 
 
+def task_lead(p, slug):
+    """(status row, session, lead) of a task: the lead is the name SendMessage addresses, None without a live session."""
+    row = next((r for r in p["rows"] or [] if r["slug"] == slug), None)
+    session = row and task_session(p, row["path"])
+    return row, session, session and not finished(session) and session.get("name") or None
+
+
 def firing_for_run(p, f):
     """A firing as the site manager is given it: its fields, and for a task its status row and transcript tail."""
     out = {k: f[k] for k in ("id", *FIRED_KEYS, "what")}
-    row = next((r for r in p["rows"] or [] if r["slug"] == f["slug"]), None)
+    row, session, lead = task_lead(p, f["slug"])
     if row:
         n = p["now"]
         out["task"] = {"phase": row["phase"], "state": row["state"], "session": row["session"],
                        "elapsed": None if row["elapsed"] is None else age(n - row["elapsed"], n),
                        "last_commit": age(row["last_commit"], n), "dirty": row["dirty"], "ahead": row["ahead"],
                        "behind": row["behind"], "pr_state": row["pr_state"], "pr_url": row["pr_url"],
-                       "overtime": row["overtime"]}
-        session = task_session(p, row["path"])
+                       "overtime": row["overtime"], "worktree": row["path"], "lead": lead,
+                       "pid": session.get("pid") if session else None}
+        paths = transcripts(session)
+        out["transcripts"] = [str(t) for t in paths]
         sid = session.get("sessionId") if session else None
-        main = next((t for t in transcripts(session) if t.name == f"{sid}.jsonl"), None)
+        main = next((t for t in paths if t.name == f"{sid}.jsonl"), None)
         tail = transcript_tail(main) if main else None
         if tail is not None:
             out["transcript_tail"] = tail
@@ -1984,14 +2006,18 @@ def site_manager_argv(p, firings, job="watch"):
                            "since": last and last["ts"]}, "findings": body}
     prompt = (f"Job: {job}. Repo: {p['repo'].root}. The dispatcher's session name is {p['dispatcher']}.\n\n"
               f"{json.dumps(body, indent=2)}")
-    lean = [*lean_flags(), "--disable-slash-commands", "--tools=SendMessage,ToolSearch"] if p["lean_start"] else []
+    lean = [*lean_flags(), "--disable-slash-commands"] if p["lean_start"] else []
+    monitor = [f"Bash({p['monitor']} sessions *)"] if p["monitor"] else []
     return ["claude", "-p", "--model", SITE_MANAGER_MODEL, "--permission-mode", "dontAsk", *lean,
-            "--allowedTools", "SendMessage", "ToolSearch", "--output-format", "json",
-            "--json-schema", json.dumps(RUN_SCHEMA), "--append-system-prompt", ROLE_PATH.read_text(), prompt]
+            "--tools=Read,Grep,Glob,Bash,SendMessage,ToolSearch", "--allowedTools", *SITE_MANAGER_TOOLS, *monitor,
+            "--disallowedTools", "Edit", "Write", "NotebookEdit", *SETTINGS_ISOLATION,
+            "--max-turns", str(SITE_MANAGER_TURNS), "--max-budget-usd", SITE_MANAGER_BUDGET,
+            "--output-format", "json", "--json-schema", json.dumps(RUN_SCHEMA),
+            "--append-system-prompt", ROLE_PATH.read_text(), prompt]
 
 
-def record_decisions(repo, sent, result):
-    """Log the run's decisions for the firings sent; `watch`, not the model, enforces the always bypass."""
+def record_decisions(p, sent, result, run=None):
+    """Log the run's decisions for the firings sent; `watch`, not the model, enforces the rules of who is told what."""
     by_id, seen = {f["id"]: f for f in sent}, set()
     for d in result["decisions"]:
         d = d if isinstance(d, dict) else {}
@@ -2000,11 +2026,17 @@ def record_decisions(repo, sent, result):
             continue
         if decision not in ("escalated", "suppressed") or not isinstance(reason, str) or not reason.strip():
             continue
-        if (decision == "suppressed" and by_id[fid]["escalate"] == "always") or \
-                (decision == "escalated" and result.get("sent") is not True):
+        f, to = by_id[fid], (d.get("to") or "dispatcher") if decision == "escalated" else None
+        if decision == "escalated" and (to not in ("dispatcher", "lead") or result.get("sent") is not True):
+            continue
+        if (decision == "suppressed" and f["escalate"] == "always") or \
+                (to == "lead" and (f["escalate"] == "always" or not task_lead(p, f["slug"])[2])):
             continue
         seen.add(fid)
-        log_firing(repo, id=fid, decision=decision, reason=reason.strip(), by="site-manager")
+        looked = d.get("looked")
+        log_firing(p["repo"], id=fid, decision=decision, reason=reason.strip(), by="site-manager", run=run,
+                   looked=[x for x in looked if isinstance(x, str)] if isinstance(looked, list) else [],
+                   **({"to": to} if to else {}))
 
 
 def dispatcher_name(args, repo):
@@ -2149,12 +2181,15 @@ def run_site_manager(p, send, job="watch"):
     result, cost = doc.get("structured_output"), doc.get("total_cost_usd")
     usable = rc == 0 and isinstance(result, dict) and isinstance(result.get("decisions"), list)
     if usable:
-        record_decisions(repo, send, result)
+        record_decisions(p, send, result, doc.get("session_id"))
     report(repo, send)
     if isinstance(cost, (int, float)) and not isinstance(cost, bool):
         print(f"site manager run cost ${cost:.2f}")
     if not usable:
-        raise Fail(f"the site manager run failed ({rc}): {err.strip() or 'no usable output'}", code=1)
+        why, subtype = err.strip() or "no usable output", doc.get("subtype")
+        if isinstance(subtype, str) and subtype != "success":
+            why = f"{subtype}: {why}"
+        raise Fail(f"the site manager run failed ({rc}): {why}", code=1)
 
 
 def cmd_firing(args):
@@ -2203,7 +2238,8 @@ def cmd_firings(args):
         print(json.dumps({"firings": firings, "misses": misses, "summary": s}, indent=2))
         return 0
     for f in firings:
-        print("  ".join([f["id"], f["ts"], f["criterion"], f["subject"], f["decision"] or "undecided",
+        decision = f"{f['decision']} to lead" if f.get("to") == "lead" else f["decision"] or "undecided"
+        print("  ".join([f["id"], f["ts"], f["criterion"], f["subject"], decision,
                          f["outcome"] or "-", "cleared" if f["cleared"] else "open", f["reason"] or "-"]))
     for m in misses:
         print("  ".join(["miss", m["ts"], m.get("slug") or "-", m.get("firing") or "-", m["miss"]]))

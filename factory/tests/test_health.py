@@ -664,13 +664,36 @@ class WatchTests(Harness):
         self.assertEqual(len(self.claude_runs()), 1)
         self.assertIn(f"{record['id']}  past-limit  x  undecided", out)
 
-    def test_lean_start_off_keeps_the_old_site_manager_argv(self):
-        p = {"repo": mock.Mock(root=ROOT), "dispatcher": "d", "lean_start": False}
-        with mock.patch.object(factory, "run", side_effect=AssertionError("no plugin list")):
-            argv = factory.site_manager_argv(p, [])
-        self.assertEqual(argv[:6], ["claude", "-p", "--model", "sonnet", "--permission-mode", "dontAsk"])
-        self.assertEqual(argv[6:9], ["--allowedTools", "SendMessage", "ToolSearch"])
-        self.assertFalse(any(a.startswith(("--tools", "--strict", "--settings", "--disable")) for a in argv))
+    def test_the_site_manager_can_read_and_cannot_write_with_or_without_lean_start(self):
+        read_only = {"factory status", "factory health", "factory log", "factory firings", "factory feedback",
+                     "factory feedback --json", "ps", "pgrep", "gh pr view", "gh pr checks", "gh pr list",
+                     "gh run view", "gh run list", "claude agents --json --all", "/m/isshoni sessions"}
+        for lean in (True, False):
+            with self.subTest(lean_start=lean):
+                p = {"repo": mock.Mock(root=ROOT), "dispatcher": "d", "lean_start": lean, "monitor": "/m/isshoni"}
+                with mock.patch.object(factory, "lean_flags", return_value=["--strict-mcp-config"]):
+                    argv = factory.site_manager_argv(p, [])
+                [tools] = [a for a in argv if a.startswith("--tools=")]
+                self.assertEqual(tools, "--tools=Read,Grep,Glob,Bash,SendMessage,ToolSearch")
+                allowed = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
+                self.assertEqual(allowed, [*factory.SITE_MANAGER_TOOLS, "Bash(/m/isshoni sessions *)"])
+                for rule in allowed:
+                    if rule.startswith("Bash("):
+                        self.assertIn(rule[5:-1].removesuffix(" *"), read_only, rule)
+                    else:
+                        self.assertIn(rule, ("Read", "Grep", "Glob", "SendMessage", "ToolSearch"))
+                denied = argv[argv.index("--disallowedTools") + 1:argv.index("--disallowedTools") + 4]
+                self.assertEqual(denied, ["Edit", "Write", "NotebookEdit"])
+                self.assertEqual(argv[argv.index("--max-turns") + 1], "30")
+                self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "1.50")
+                self.assertEqual(argv[argv.index("--setting-sources"):][:2], list(factory.SETTINGS_ISOLATION))
+                self.assertEqual("--strict-mcp-config" in argv, lean)
+
+    def test_without_a_monitor_there_is_no_monitor_rule(self):
+        p = {"repo": mock.Mock(root=ROOT), "dispatcher": "d", "lean_start": False, "monitor": None}
+        argv = factory.site_manager_argv(p, [])
+        allowed = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
+        self.assertEqual(allowed, list(factory.SITE_MANAGER_TOOLS))
 
     def test_the_launch_argv(self):
         path = self.transcript("{sid}.jsonl", NOW - 60)
@@ -685,13 +708,16 @@ class WatchTests(Harness):
         [argv] = self.claude_runs()
         self.assertEqual(argv[:-1], [
             "claude", "-p", "--model", "sonnet", "--permission-mode", "dontAsk", "--strict-mcp-config", "--settings",
-            json.dumps(LEAN_SETTINGS), "--disable-slash-commands", "--tools=SendMessage,ToolSearch",
-            "--allowedTools", "SendMessage",
-            "ToolSearch", "--output-format", "json", "--json-schema", json.dumps(factory.RUN_SCHEMA),
+            json.dumps(LEAN_SETTINGS), "--disable-slash-commands", "--tools=Read,Grep,Glob,Bash,SendMessage,ToolSearch",
+            "--allowedTools", *factory.SITE_MANAGER_TOOLS, "--disallowedTools", "Edit", "Write", "NotebookEdit",
+            *factory.SETTINGS_ISOLATION, "--max-turns", "30", "--max-budget-usd", "1.50",
+            "--output-format", "json", "--json-schema", json.dumps(factory.RUN_SCHEMA),
             "--append-system-prompt", "SITE MANAGER RULES"])
         schema = factory.RUN_SCHEMA
         self.assertEqual(schema["required"], ["sent", "decisions"])
-        self.assertEqual(schema["properties"]["decisions"]["items"]["required"], ["id", "decision", "reason"])
+        self.assertEqual(schema["properties"]["decisions"]["items"]["required"], ["id", "decision", "reason", "looked"])
+        self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["to"]["enum"],
+                         ["dispatcher", "lead"])
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["decision"]["enum"],
                          ["escalated", "suppressed"])
         head, _, body = argv[-1].partition("\n\n")
@@ -705,7 +731,9 @@ class WatchTests(Harness):
         self.assertNotIn("transcript", sent)
         self.assertEqual(sent["task"], {"phase": "motion", "state": None, "session": "working", "elapsed": "3h",
                                         "last_commit": "?", "dirty": None, "ahead": None, "behind": None,
-                                        "pr_state": "none", "pr_url": "", "overtime": True})
+                                        "pr_state": "none", "pr_url": "", "overtime": True,
+                                        "worktree": f"{WT}/x", "lead": "x", "pid": None})
+        self.assertEqual(sent["transcripts"], [str(path)])
         tail = sent["transcript_tail"]
         self.assertEqual(len(tail), 15)
         self.assertEqual(tail[0][:20], "T3 assistant: " + "x" * 6)
@@ -783,6 +811,12 @@ class WatchTests(Harness):
                 self.assertEqual(self.decisions(), [])
                 for _, path in factory.log_files("firings"):
                     path.unlink()
+
+    def test_a_run_stopped_by_a_bound_names_it(self):
+        stopped = (1, json.dumps({"subtype": "error_max_turns", "is_error": True}), "")
+        code, _, err = self.tick(answers={("claude", "-p"): stopped})
+        self.assertEqual(code, 1)
+        self.assertIn("the site manager run failed (1): error_max_turns: no usable output", err)
 
     def test_a_site_manager_run_is_usable_with_anthropic_log_in_the_parent(self):
         def claude(argv, **kw):
@@ -1016,6 +1050,68 @@ class MissTests(Harness):
         self.assertEqual([r for r in self.records() if "miss" in r], [])
 
 
+class RoutingTests(Home):
+    """Who the site manager's escalation goes to, as `watch` enforces it."""
+
+    def logged(self, sent, *decisions, session=None, result_sent=True, run="r1", slug="x"):
+        p = pic(rows=[row("x")], sessions=[DISPATCHER | {"name": "dispatcher-repo"}, *([session] if session else [])])
+        firings = [{"id": "aaa", "escalate": "judgment", "slug": slug, **sent}]
+        with mock.patch.object(factory, "log_firing") as log:
+            factory.record_decisions(p, firings, {"sent": result_sent, "decisions": list(decisions)}, run)
+        return [c.kwargs for c in log.call_args_list]
+
+    def told_lead(self, **kw):
+        return {**choice("aaa"), "to": "lead", "looked": ["ps -ax", 7], **kw}
+
+    def test_to_looked_and_run_land_in_the_log(self):
+        [rec] = self.logged({}, self.told_lead(), session=lead("x", pid=4242))
+        self.assertEqual(rec, {"id": "aaa", "decision": "escalated", "reason": "because", "by": "site-manager",
+                               "run": "r1", "looked": ["ps -ax"], "to": "lead"})
+
+    def test_an_escalation_without_to_goes_to_the_dispatcher_and_looked_may_be_missing(self):
+        [rec] = self.logged({}, choice("aaa"))
+        self.assertEqual((rec["to"], rec["looked"]), ("dispatcher", []))
+
+    def test_a_suppression_logs_looked_and_no_to(self):
+        [rec] = self.logged({}, choice("aaa", "suppressed") | {"to": "lead", "looked": ["a"]})
+        self.assertEqual((rec["decision"], rec["looked"], "to" in rec), ("suppressed", ["a"], False))
+
+    def test_a_lead_message_is_not_recorded_when_it_cannot_be_one(self):
+        live = lead("x")
+        for label, sent, session, slug in (
+                ("an always firing", {"escalate": "always"}, live, "x"),
+                ("no task slug", {}, live, None),
+                ("a slug that is no task", {}, live, "y"),
+                ("no session", {}, None, "x"),
+                ("a finished session", {}, lead("x", **FINISHED), "x")):
+            with self.subTest(label):
+                self.assertEqual(self.logged(sent, self.told_lead(), session=session, slug=slug), [])
+
+    def test_an_unknown_destination_and_a_run_that_sent_nothing_are_not_recorded(self):
+        self.assertEqual(self.logged({}, self.told_lead(to="human"), session=lead("x")), [])
+        self.assertEqual(self.logged({}, self.told_lead(), session=lead("x"), result_sent=False), [])
+
+    def test_the_earlier_rules_stand(self):
+        self.assertEqual(self.logged({"escalate": "always"}, choice("aaa", "suppressed")), [])
+        self.assertEqual(len(self.logged({"escalate": "always"}, choice("aaa"))), 1)
+
+    def test_base_merged_is_a_judgment_so_a_suppression_is_recorded(self):
+        [rec] = self.logged({"criterion": "base-merged"}, choice("aaa", "suppressed", "lead was told"))
+        self.assertEqual((rec["decision"], rec["reason"]), ("suppressed", "lead was told"))
+
+    def test_the_firing_carries_the_lead_worktree_pid_and_transcripts(self):
+        main = self.transcript("{sid}.jsonl", NOW)
+        sub = self.transcript("{sid}/subagents/a.jsonl", NOW)
+        p = pic(rows=[row("x", session="working", dirty=None, ahead=None, behind=None)], sessions=[lead("x", pid=4242)])
+        f = {"id": "aaa", "criterion": "c", "escalate": "judgment", "slug": "x", "subject": "x", "detail": "d",
+             "what": "w"}
+        task = factory.firing_for_run(p, f)["task"]
+        self.assertEqual((task["lead"], task["worktree"], task["pid"]), ("x", f"{WT}/x", 4242))
+        self.assertEqual(factory.firing_for_run(p, f)["transcripts"], [str(main), str(sub)])
+        gone = factory.firing_for_run(pic(rows=[row("x", session="working", dirty=None, ahead=None, behind=None)], sessions=[lead("x", **FINISHED)]), f)
+        self.assertEqual((gone["task"]["lead"], gone["task"]["pid"]), (None, None))
+
+
 class FiringsTests(Harness):
     def seed_log(self):
         self.seed("firings", [
@@ -1051,6 +1147,14 @@ class FiringsTests(Harness):
         self.assertEqual(doc["summary"], {"escalated": 3, "acted": 1, "ignored": 1, "no_outcome": 1, "suppressed": 1,
                                           "missed": 3, "missed_suppressed": 1, "missed_never_fired": 2,
                                           "precision": 0.5, "recall": 0.25})
+
+    def test_a_lead_message_shows_in_the_table_and_everything_in_the_json(self):
+        self.seed("firings", [fired("l1", escalate="judgment"), decided("l1", "escalated") | {
+            "to": "lead", "looked": ["ps -ax"], "run": "r1"}])
+        _, out, _ = self.cli("firings")
+        self.assertIn("  escalated to lead  -  open  why\n", out)
+        [f] = json.loads(self.cli("firings", "--json")[1])["firings"]
+        self.assertEqual((f["to"], f["looked"], f["run"]), ("lead", ["ps -ax"], "r1"))
 
     def test_zero_denominators(self):
         code, out, _ = self.cli("firings")
