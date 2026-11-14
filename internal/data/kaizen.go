@@ -20,6 +20,7 @@ type Kaizen struct {
 	Rewards     []KaizenAward `json:"rewards"`
 	Outbox      KaizenOutbox  `json:"outbox"`
 	SiteManager SiteManager   `json:"site_manager"`
+	TechLead    TechLead      `json:"tech_lead"`
 }
 
 // SiteManager is the site manager's record as `factory firings` counts it, over every
@@ -36,6 +37,20 @@ type SiteManager struct {
 	MissedNeverFired int      `json:"missed_never_fired"`
 	Precision        *float64 `json:"precision"`
 	Recall           *float64 `json:"recall"`
+}
+
+// TechLead is what came back from the merge queue and who resolved it. Cost is the sum of
+// the priced records and nil when none is priced: unpriced, never zero.
+type TechLead struct {
+	CameBack     int      `json:"came_back"`
+	Resolved     int      `json:"resolved"`
+	Escalated    int      `json:"escalated"`
+	Stopped      int      `json:"stopped"`
+	Unstarted    int      `json:"unstarted"` // went to the lead without a tech lead run
+	Cost         *float64 `json:"cost"`
+	CostResolved *float64 `json:"cost_resolved"`
+	Landed       int      `json:"landed"`       // landed tasks in the window
+	LeadWakeups  int      `json:"lead_wakeups"` // over those tasks, after the first hand-over
 }
 
 // KaizenRepo says whether the pull requests of one repository could be read, and how old
