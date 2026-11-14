@@ -118,7 +118,7 @@ def validate_slug(slug):
 
 
 SETTINGS_DEFAULTS = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                     "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True}
+                     "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "lean_start": True}
 
 
 def load_settings():
@@ -150,9 +150,30 @@ def load_settings():
     from_author = data.get("lgtm_from_author", settings["lgtm_from_author"])
     if not isinstance(from_author, bool):
         raise Fail("settings: lgtm_from_author must be true or false")
+    lean = data.get("lean_start", settings["lean_start"])
+    if not isinstance(lean, bool):
+        raise Fail("settings: lean_start must be true or false")
     return {"worktree_cap": cap, "lead_model": model, "lead_permission_mode": mode,
             "task_time_limit_hours": hours, "monitor": monitor and os.path.expanduser(monitor),
-            "lgtm_from_author": from_author}
+            "lgtm_from_author": from_author, "lean_start": lean}
+
+
+LEAD_TOOLS = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch,SendMessage,WebFetch,WebSearch,TaskStop,Monitor"
+
+
+def lean_flags():
+    """The flags of a lean start: no MCP servers, no bundled skills, and every installed plugin but the factory off."""
+    rc, out, _ = run(["claude", "plugin", "list", "--json"], timeout=20)
+    try:
+        ids = sorted({e["id"] for e in json.loads(out) if e["id"].partition("@")[0] != "factory"}) if rc == 0 else None
+    except (ValueError, TypeError, KeyError, AttributeError):
+        ids = None
+    settings = {"disableBundledSkills": True}
+    if ids is None:
+        print("factory: claude plugin list gave no plugin list; other plugins stay on", file=sys.stderr)
+    else:
+        settings["enabledPlugins"] = {i: False for i in ids}
+    return ["--strict-mcp-config", "--settings", json.dumps(settings)]
 
 
 def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now):
@@ -164,11 +185,13 @@ def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now):
         f"Your time limit is {settings['task_time_limit_hours']} hours. "
         f"Your brief follows.\n\n{brief}"
     )
+    lean = [*lean_flags(), f"--tools={LEAD_TOOLS}"] if settings["lean_start"] else []
     return [
         "claude", "--bg", "--worktree", slug, "-n", slug,
         "--model", settings["lead_model"],
         "--permission-mode", settings["lead_permission_mode"],
         "--plugin-dir", str(PLUGIN_ROOT),
+        *lean,
         "--append-system-prompt", lead_rules,
         prompt,
     ]
@@ -1268,6 +1291,7 @@ def gather(repo, dispatcher):
     settings = load_settings()
     return {"now": time.time(), "repo": repo, "dispatcher": dispatcher, "sessions": sessions,
             "monitor": settings["monitor"], "lgtm_from_author": settings["lgtm_from_author"],
+            "lean_start": settings["lean_start"],
             "rows": None if sessions is None else collect(repo, sessions, settings["task_time_limit_hours"]),
             "declared": read_tasks(repo.root), "events": repo_log("events", repo.root), "models": pinned_models(),
             "gh": lambda *args: gh_json(repo, *args)}
@@ -1927,7 +1951,8 @@ def site_manager_argv(p, firings, job="watch"):
                            "since": last and last["ts"]}, "findings": body}
     prompt = (f"Job: {job}. Repo: {p['repo'].root}. The dispatcher's session name is {p['dispatcher']}.\n\n"
               f"{json.dumps(body, indent=2)}")
-    return ["claude", "-p", "--model", SITE_MANAGER_MODEL, "--permission-mode", "dontAsk",
+    lean = [*lean_flags(), "--disable-slash-commands", "--tools=SendMessage,ToolSearch"] if p["lean_start"] else []
+    return ["claude", "-p", "--model", SITE_MANAGER_MODEL, "--permission-mode", "dontAsk", *lean,
             "--allowedTools", "SendMessage", "ToolSearch", "--output-format", "json",
             "--json-schema", json.dumps(RUN_SCHEMA), "--append-system-prompt", ROLE_PATH.read_text(), prompt]
 
@@ -3538,9 +3563,10 @@ class Landing:
     """One handed-over task brought up to its base, as factory/agents/lander.md defines it. `run` gives
     (result, facts, needs): the result is LANDED, LANDED, LOOK or STOPPED <reason>."""
 
-    def __init__(self, repo, task):
+    def __init__(self, repo, task, lean):
         self.repo, self.path, self.branch, self.remote = repo, task["path"], task["branch"], repo.remote
         self.slug = os.path.basename(self.path)
+        self.lean = lean
         self.declared = False
 
     def mark_working(self):
@@ -3695,8 +3721,9 @@ class Landing:
             "Edit files with the Edit tool; shell commands that write files, and `gh` other than `pr view` and `pr edit`, are denied.",
             f"The golden files this task means to change: {', '.join(task_files) or 'none'}. A generated file on this "
             "list may be regenerated with the repository's documented command; any other golden that changes is a stop."])
+        lean = lean_flags() if self.lean else []
         argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", "sonnet",
-                "--permission-mode", "dontAsk", "--allowedTools", *LAND_TOOLS, "--output-format", "json", brief]
+                "--permission-mode", "dontAsk", *lean, "--allowedTools", *LAND_TOOLS, "--output-format", "json", brief]
         rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT)
         try:
             text = json.loads(out).get("result")
@@ -3733,14 +3760,14 @@ class Landing:
                 f"{'some' if self.out('status', '--porcelain') else 'none'}, merge in progress: {'yes' if merging else 'no'}")
 
 
-def land_one(repo, slug):
+def land_one(repo, slug, lean):
     """Land one task and print its report; True when the result is LANDED."""
     task = next((t for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
     if task is None:
         raise Fail(f"land: {slug} is not a task worktree")
     if read_tasks(repo.root).get(slug, {}).get("state") != "handed-over":
         raise Fail(f"land: {slug} is not handed over")
-    landing = Landing(repo, task)
+    landing = Landing(repo, task, lean)
     result, facts, needs = landing.run()
     if result not in ("LANDED", "STOPPED busy"):
         landing.mark_working()
@@ -3774,6 +3801,7 @@ def land_candidates(repo):
 def cmd_land(args):
     if bool(args.slug) == args.all:
         raise Fail("land: name a task or give --all, not both")
+    lean = load_settings()["lean_start"]
     repo = Repo()
     slugs = [args.slug] if args.slug else land_candidates(repo)
     if not slugs:
@@ -3782,7 +3810,7 @@ def cmd_land(args):
     for slug in slugs:
         if args.all:
             print(f"# {slug}")
-        landed.append(land_one(repo, slug))
+        landed.append(land_one(repo, slug, lean))
     return 0 if all(landed) else 1
 
 
