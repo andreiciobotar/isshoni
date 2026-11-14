@@ -293,6 +293,24 @@ class LandTests(unittest.TestCase):
         self.assertIn("the task changed:\ndiff --git a/a.txt b/a.txt", p.stdout)
         self.assertNotIn("README.md:", p.stdout)
 
+    def test_overlap_with_a_bad_ref_fails_and_is_never_safe(self):
+        wt = self.task("t1")
+        p = self.factory("overlap", "nosuchref", self.git("rev-parse", "HEAD", cwd=wt), "origin/main", cwd=wt)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("nosuchref", p.stderr)
+        self.assertNotIn("verdict", p.stdout)
+
+    def test_a_prose_path_with_non_ascii_letters_is_judged_as_prose(self):
+        (self.repo / "docs/café.md").write_text("\n".join(lines()) + "\n")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "add café")
+        self.git("push", "-q", "origin", "main")
+        self.task("t1", line=20, name="docs/café.md")
+        self.advance_main(2, "main line", "docs/café.md")
+        p = self.land("t1")
+        self.assertEqual((p.returncode, self.result(p)), (0, "`LANDED https://x/pull/t1`"))
+        self.assertIn("overlap: docs/café.md (prose, 17 lines apart, not looked at)", p.stdout)
+
     def test_a_long_diff_is_cut_with_the_count_of_the_rest(self):
         wt = self.task("t1", line=20)
         self.advance_main(2, "main line")
@@ -738,10 +756,6 @@ class LandTests(unittest.TestCase):
         self.assertEqual(self.gh_calls(), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class OverlapRuleTests(unittest.TestCase):
     def verdict(self, base_hunk, task_hunk, path="README.md"):
         diffs = iter([f"@@ {base_hunk} @@", f"@@ {task_hunk} @@"])
@@ -771,3 +785,12 @@ class OverlapRuleTests(unittest.TestCase):
         for path in ("a.md", "docs/a.py", "factory/agents/lander.md", "factory/roles/lead.md", "x/SKILL.md", "CLAUDE.md",
                      "docs.md", "readme.md"):
             self.assertFalse(FACTORY.is_prose(path), path)
+
+    def test_a_failing_git_is_a_fail_with_its_error(self):
+        out = FACTORY.checked_out(lambda *a: (128, "", "fatal: bad revision\n"))
+        with self.assertRaisesRegex(FACTORY.Fail, "fatal: bad revision"):
+            FACTORY.Overlap(out, "nosuchref", "h", "t")
+
+
+if __name__ == "__main__":
+    unittest.main()

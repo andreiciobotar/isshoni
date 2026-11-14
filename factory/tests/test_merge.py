@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import ROOT, WT, FakeRun, factory, invoke, repo_answers, task_entry
-from test_health import DISPATCHER, NOW, Harness, check, iso, pic, row
+from test_health import DISPATCHER, NOW, Harness, check, iso, pic, reply, row
 
 SHA = "sha-1"
 GREEN = [{"name": "test", "bucket": "pass"}]
@@ -907,6 +907,17 @@ class SyncDraftTests(World):
         self.seed("tasks", [{"repo": ROOT, "slug": "t1", "state": "handed-over", "ts": iso(NOW + 300)}])
         self.assertEqual(started(NOW + 360), 1)
         self.assertEqual(started(NOW + 480), 0)
+
+    def test_a_hand_over_during_the_run_starts_the_next_ticks_run(self):
+        approved = {**pr(1), "latestReviews": [{"state": "APPROVED", "submittedAt": iso(NOW - 60)}], "comments": []}
+
+        def lander():  # the lead declares again while the lander runs
+            self.seed("tasks", [{"repo": ROOT, "slug": "t1", "state": "handed-over", "ts": iso(NOW + 130)}])
+            return reply()
+        self.tick([approved], at=NOW + 120, extra={("claude", "-p", "--agent"): lander})
+        self.assertEqual(len([c for c in self.claude_runs() if "--agent" in c]), 1)
+        self.tick([approved], at=NOW + 240)
+        self.assertEqual(len([c for c in self.claude_runs() if "--agent" in c]), 1)
 
     def test_an_orphaned_tick_still_syncs_the_drafts(self):
         code, out, _ = self.tick([pr(1, draft=True)], orphaned=True)

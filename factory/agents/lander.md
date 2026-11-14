@@ -29,7 +29,7 @@ You decide nothing about behavior. When a step needs a decision, you stop and re
    - The pull request. `gh pr view --json url,state,isDraft,baseRefName` tells whether the branch has one. A closed or merged one is a stop (`other`). So is none at all when the brief gives no title and body file.
 
    If the target is already an ancestor of the head (`git merge-base --is-ancestor <target> HEAD`), the base has not moved: go to step 5.
-3. List what the base did, `git diff --name-only <old base> <target>`, and what the task changes, `git diff --name-only <old base> HEAD`. Then `factory overlap <old base> HEAD <target>` before the merge (HEAD is still the old head): its `overlap:` line goes into Facts as is; when it says `verdict: look`, the lines after it go into "Needs the lead" as they are. You do not judge the overlap yourself. Then `git merge --no-edit <target>`. A branch that already holds merges of its base is the normal case.
+3. List what the base did, `git diff --name-only <old base> <target>`, and what the task changes, `git diff --name-only <old base> HEAD`. Then `factory overlap <old base> HEAD <target>` before the merge (HEAD is still the old head): its `overlap:` line goes into Facts as is; when it says `verdict: look`, the lines after it go into "Needs the lead" as they are. If `factory overlap` fails, stop (`other`) with its output. You do not judge the overlap yourself. Then `git merge --no-edit <target>`. A branch that already holds merges of its base is the normal case.
 4. Conflicts. Resolve one only when it is mechanical:
    - both sides added separate lines next to each other (imports, entries of a list or table, lines of documentation): keep both, in the file's own order;
    - a generated file (a golden snapshot, a lock file) that the brief's golden command or the repository's documented command regenerates: take either side now and regenerate it in step 6; never merge it by hand.
@@ -54,7 +54,7 @@ Return exactly this format, with one line per fact and nothing you did not run:
 `LANDED <url>` or `LANDED, LOOK <url>` or `STOPPED <reason>`
 
 ## Facts
-- base: `<target>` at `<sha>`, `<n>` commits since the old base; overlap: the `overlap:` line of `factory overlap`.
+- base: `<target>` at `<sha>`, `<n>` commits since the old base; overlap: the `overlap:` line of `factory overlap`. The files the base changed, when 20 or fewer; else a count per top-level directory.
 - head: `<old sha>` -> `<new sha>` (a merge of the target, or "unchanged"), pushed or not; reviewed commits: "unchanged" (step 5).
 - conflicts: "none", or `path` - how you resolved it (one line each).
 - goldens: "not run", "no change", or `path` +a -b - what changed (one line each), committed or left uncommitted.

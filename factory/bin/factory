@@ -3869,10 +3869,21 @@ def hunk_gap(one, two):
     return max(two[0] - one[1] - 1, one[0] - two[1] - 1)
 
 
+def checked_out(git):
+    """`out(*git_args)` for the overlap rule from `git(*args)` -> (rc, stdout, stderr): stdout with paths unquoted,
+    and a git that fails is a Fail, never an empty (safe) answer."""
+    def out(*args):
+        rc, stdout, err = git("-c", "core.quotePath=false", *args)
+        if rc != 0:
+            raise Fail(f"git {' '.join(args)} failed: {err.strip()}", 1)
+        return stdout.strip()
+    return out
+
+
 class Overlap:
     """What the base and a task both changed, and whether anyone must look: the one owner of the rule in
-    factory/agents/lander.md. `out(*git_args)` gives a git command's stdout. `summary` is the Facts fragment, `look`
-    the verdict, `quoted` the lines for the files that need a look."""
+    factory/agents/lander.md. `out(*git_args)` (see `checked_out`) gives a git command's stdout. `summary` is the
+    Facts fragment, `look` the verdict, `quoted` the lines for the files that need a look."""
 
     def __init__(self, out, old_base, old_head, target):
         sides = {side: {path: status for status, path in (l.split("\t", 1) for l in
@@ -3909,7 +3920,7 @@ class Overlap:
 
 
 def cmd_overlap(args):
-    print(Overlap(lambda *a: run(["git", *a])[1].strip(), args.old_base, args.old_head, args.target).text())
+    print(Overlap(checked_out(lambda *a: run(["git", *a])), args.old_base, args.old_head, args.target).text())
     return 0
 
 
@@ -3972,7 +3983,10 @@ class Landing:
                      self.pull_request_fact(error)]
             return ("LANDED", facts, "none") if error is None else self.stop("other", error, facts)
         task_files = self.out("diff", "--name-only", old_base, "HEAD").splitlines()
-        overlap = Overlap(self.out, old_base, self.old_head, self.target)
+        try:
+            overlap = Overlap(checked_out(self.git), old_base, self.old_head, self.target)
+        except Fail as e:
+            return self.stop("other", str(e))
         rc, out, err = act_git(self.path, "merge", "--no-edit", self.target)
         if rc != 0:
             return self.conflict(task_files, out + err)
