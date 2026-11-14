@@ -5,7 +5,7 @@ import os
 import re
 from datetime import datetime, timezone
 
-from . import metrics, transcript
+from . import authoring, metrics, transcript
 from .kaizen import read_log
 from .prices import RATES, write_tiers
 
@@ -24,6 +24,7 @@ class _Role:
         self.cost = dict.fromkeys(RATES, 0.0)
         self.unpriced = 0
         self.tools = {}
+        self.written = {k: [0, 0] for k in authoring.KINDS}
         self.dispatches = 0
         self.fill = {"base": 0, "own_output": 0, "inbound": 0, "compactions": 0}
         self.estimate = {}
@@ -33,6 +34,10 @@ class _Role:
         self.dispatches += run.dispatches
         for kind, n in run.tools.items():
             self.tools[kind] = self.tools.get(kind, 0) + n
+        for path, (n, lines) in run.writes.items():
+            w = self.written[authoring.kind(path)]
+            w[0] += n
+            w[1] += lines
         prev = None
         for c in run.calls:
             self.models.add(c.model)
@@ -86,6 +91,7 @@ class _Role:
             "tokens": dict(self.tokens),
             "cost": cost,
             "tools": dict(sorted(self.tools.items(), key=lambda kv: (-kv[1], kv[0]))),
+            "written": {k: {"calls": n, "lines": lines} for k, (n, lines) in self.written.items()},
             "dispatches": self.dispatches,
             "fill": {**self.fill, "inbound_estimate": dict(sorted(self.estimate.items(), key=lambda kv: (-kv[1], kv[0])))},
         }
@@ -97,6 +103,18 @@ def by_role(runs, prices):
     for name, run in runs:
         out.setdefault(name, _Role()).add(run, prices)
     return out
+
+
+def _unmatched(runs):
+    """The paths counted as `other` over some runs, most calls first then path."""
+    found = {}
+    for _, run in runs:
+        for path, (n, lines) in run.writes.items():
+            if authoring.kind(path) == "other":
+                w = found.setdefault(path, [0, 0])
+                w[0] += n
+                w[1] += lines
+    return [{"path": p, "calls": n, "lines": lines} for p, (n, lines) in sorted(found.items(), key=lambda kv: (-kv[1][0], kv[0]))]
 
 
 def _versions(factory_dir):
@@ -137,6 +155,7 @@ def build(sessions, prices, factory_dir, now=None):
         t = metrics.totals(ss)
         tasks.append({"repo": ss[0].repo, "repo_path": repo_path, "task": task, "version": versions.get((repo_path, task)),
                       "start": t["start"], "end": t["end"], **_summary(by_role(runs, prices)), "_runs": runs})
+    unmatched = _unmatched([r for t in tasks for r in t["_runs"]])
     tasks.sort(key=lambda t: (t["start"] is not None, t["start"] or "", t["task"], t["repo_path"] or ""))
     by_version = {}
     for t in tasks:
@@ -149,4 +168,4 @@ def build(sessions, prices, factory_dir, now=None):
         del t["_runs"]
     now = now or datetime.now(timezone.utc)
     return {"generated": now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "factory_dir": factory_dir,
-            "prices": prices.to_dict(), "tasks": tasks, "versions": rolled}
+            "prices": prices.to_dict(), "tasks": tasks, "versions": rolled, "unmatched": unmatched}

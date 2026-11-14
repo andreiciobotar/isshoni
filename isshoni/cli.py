@@ -312,12 +312,14 @@ def cmd_anatomy(args):
     for t in doc["tasks"]:
         for name, r in t["roles"].items():
             c, x = r["cost"], r["context"]
+            written = " ".join("%s %d/%d" % (k, w["calls"], w["lines"]) for k, w in r["written"].items() if w["calls"])
             rows.append([t["task"], t["version"] or "-", name, r["runs"], r["calls"], human(x["first"]), human(x["median"]),
                          human(x["max"]), money(c["total"], prices.currency), share(c, "input"), share(c, "output"),
                          share(c, "cache_write_5m", "cache_write_1h"), share(c, "cache_read"), sum(r["tools"].values()),
-                         r["dispatches"]])
+                         r["dispatches"], written or "-"])
     print(table(["task", "version", "role", "runs", "calls", "ctx first", "ctx median", "ctx max", "cost", "in%", "out%",
-                 "cw%", "cr%", "tools", "disp"], rows, left=("task", "version", "role")))
+                 "cw%", "cr%", "tools", "disp", "written (calls/lines)"], rows, left=("task", "version", "role", "written (calls/lines)")))
+    print("%d written calls matched no kind (--json lists them as unmatched)" % sum(u["calls"] for u in doc["unmatched"]))
     unpriced = sum(t["unpriced_tokens"] for t in doc["tasks"])
     models = {m for t in doc["tasks"] for r in t["roles"].values() for m in r["models"] if prices.parts(m, {}) is None}
     footer(prices, sorted(models) if unpriced else [], unpriced)

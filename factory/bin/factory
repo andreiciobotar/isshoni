@@ -1616,6 +1616,28 @@ def c_version_shift(p, threshold):
     return found
 
 
+def code_written(block, field):
+    """What one role block wrote of product code and tests: its `calls` or `lines`."""
+    try:
+        return sum(block["written"][kind][field] for kind in ("product", "tests"))
+    except KeyError:
+        raise NotEvaluated("the monitor reports no authoring: update isshoni")
+
+
+def c_lead_authoring(p, threshold):
+    current, baseline = compared(p)
+    def by_lead(ts):
+        return [t for t in ts if any(code_written(b, "calls") for b in blocks([t], "lead"))]
+    wrote, before = by_lead(current), by_lead(baseline)
+    if 100 * len(wrote) / len(current) < threshold:
+        return []
+    mine = sum(code_written(b, "lines") for b in blocks(current, "lead"))
+    everyone = sum(code_written(r, "lines") for t in current for r in t["roles"].values())
+    return [(None, "lead", f"the lead wrote product code or tests in {len(wrote)} of the last {len(current)} landed "
+             f"tasks ({named(wrote)}), {len(before)} of the {len(baseline)} before ({100 * len(wrote) / len(current):.0f}% "
+             f"against {100 * len(before) / len(baseline):.0f}%); {mine} lines of {everyone} written by all roles")]
+
+
 CRITERIA = {  # name -> (function, whether it needs a threshold)
     "past-limit": (c_past_limit, False), "ci-red-default": (c_ci_red_default, False),
     "dispatcher-missing": (c_dispatcher_missing, False), "quiet": (c_quiet, True),
@@ -1627,6 +1649,7 @@ CRITERIA = {  # name -> (function, whether it needs a threshold)
     "cost-outlier": (c_cost_outlier, True), "lead-heavy": (c_lead_heavy, True),
     "mix-shift": (c_mix_shift, True), "dearest-task": (c_dearest_task, True),
     "role-growing": (c_role_growing, True), "version-shift": (c_version_shift, True),
+    "lead-authoring": (c_lead_authoring, True),
 }
 
 
