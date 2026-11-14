@@ -6,7 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -308,4 +310,49 @@ func TestSessionsGroupingFields(t *testing.T) {
 	if l := got["a1000001"].Label(); l != "alpha" {
 		t.Errorf("label %q", l)
 	}
+}
+
+// requireChildGone waits for the stub's child (its pid is in $STUBDIR/child) to end; a survivor is killed.
+func requireChildGone(t *testing.T, dir string) {
+	t.Helper()
+	var pid int
+	for i := 0; i < 100 && pid == 0; i++ {
+		b, _ := os.ReadFile(filepath.Join(dir, "child"))
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pid == 0 {
+		t.Fatal("the stub did not start a child")
+	}
+	for i := 0; syscall.Kill(pid, 0) == nil; i++ {
+		if i == 100 {
+			syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("child %d survived", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestMonitorTimeoutKillsTheChildren(t *testing.T) {
+	r := stubRunner(t)
+	dir := os.Getenv("STUBDIR")
+	os.WriteFile(filepath.Join(dir, "hang"), nil, 0o644)
+	if _, err := r.Agents(context.Background(), ""); err == nil {
+		t.Fatal("a hung call must time out")
+	}
+	requireChildGone(t, dir)
+}
+
+func TestMonitorCancelKillsTheChildren(t *testing.T) {
+	r := stubRunner(t)
+	r.Timeout = time.Minute
+	dir := os.Getenv("STUBDIR")
+	os.WriteFile(filepath.Join(dir, "hang"), nil, 0o644)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := r.Agents(ctx, ""); done <- err }()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+	requireChildGone(t, dir)
 }

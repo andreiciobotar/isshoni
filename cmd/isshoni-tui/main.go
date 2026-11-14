@@ -65,7 +65,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "isshoni-tui: --serve and --snapshot cannot be combined")
 			os.Exit(2)
 		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 		defer stop()
 		ln, err := net.Listen("tcp", *serveAt)
 		if err == nil {

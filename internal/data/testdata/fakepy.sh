@@ -8,9 +8,8 @@
 factory=; [ "$2" = status ] && factory=1
 fetch=1
 for a; do [ "$a" = --cached ] && fetch=; done
-hang() { # the factory runs in its own process group, so its child is killed with it
-	if [ -n "$factory" ]; then sleep 30 & echo $! > "$STUBDIR/child"; wait; exit 1; fi
-	exec sleep 30
+hang() { # a child that records its pid in $STUBDIR/child, so a test can check the whole group was killed
+	sleep 30 & echo $! > "$STUBDIR/child"; wait; exit 1
 }
 stop() { # $1 is the failure message, $2 its exit code
 	[ -e "$STUBDIR/fail" ] && { echo "$1" >&2; exit "${2:-1}"; }

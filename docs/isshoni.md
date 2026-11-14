@@ -541,3 +541,47 @@ make strip REPLAY=internal/tui/testdata/hanami-replay.jsonl SCENE=merge AT=89s F
 `make pictures` records a looping animation of each tab, `dashboard`, `agents`, `factory`, `kaizen` and `hanami`, as a lossy animated `<scene>.webp` in `OUT` (default `assets/tabs`) from this repository's real data; `SCENES="hanami agents"` records a subset, `SIZE=WxH` sets the frame size (default 110x32), `HANAMI_AT=<duration>` the replay time of the first Hanami frame (default: 3 s before the last merge of the last 24 hours; when those hold no merge, Hanami starts at the tool's default and a note says so on stderr). The scenes (arguments, milliseconds per frame) are a table at the top of `tools/record.py`. It prints each file's size; a file over 1,200,000 bytes is still written, and the run then exits non-zero. It refuses to record when no project directory of this repository exists under `~/.claude/projects`. It needs Chrome and Pillow, like `make strip`.
 
 The recording is gated, because the dashboard has no repository filter and the screens show real names and money. It refuses to record when the factory store (`~/.claude/factory/*.jsonl`) holds a record of any other repository (the other repository is not named), and it writes nothing when a frame, checked as text before anything is rendered, shows the home directory, the home directory as a project directory name (`-Users-name`), `/Users/` or `/home/`, or, as a whole word, the name of another repository or of one of its tasks (the names come from `isshoni sessions --json` over all time). A name the screen cut short with `…` counts too: any prefix of at least 3 characters that starts a word and ends right before the `…`. Every hit is listed (scene, frame, word) before the run fails. `~/` is allowed on purpose: the Factory tab shows the generic `~/.claude/factory/settings.json`. The tabs read only a temporary projects directory of symlinks to this repository's checkout and worktrees. `make pictures ALLOW="word word"` waives a name that is also an ordinary word on screen (another repository named like a column label, say); use it knowingly, and do not write it down in the repository.
+
+## Shutdown
+
+The dashboard starts three kinds of child process, each in its own process group (`groupCmd` in `internal/data/runner.go`): the monitor calls (`python3 -m isshoni sessions|session|agents|kaizen`, 2 minutes), `factory status --json` (10 s cached, 25 s with a fetch) and the event stream `isshoni events --follow` (while the Hanami tab or follow mode needs it). A cancel or timeout kills the whole group with SIGKILL, so what the child started (`gh`, `git`) goes with it, and waits at most 1 s for its pipes. Nothing else is started and nothing is written to disk except the caches below.
+
+What ends the children, by how the dashboard stops:
+
+| Stop | TUI | `--serve` |
+| --- | --- | --- |
+| `q` | the program returns, the deferred cancel kills every group, `Runner.Wait` reaps them | the client's session ends; the session's children end with it, the server stays |
+| SIGINT, SIGTERM | bubbletea quits the program; same path as `q` | the server closes, ends sessions (at most 5 s grace), cancels, waits |
+| SIGHUP (closed terminal) | the program's context is cancelled; same path as `q`, exit 0 | same path as SIGTERM |
+| SIGKILL | nothing runs: see below | nothing runs: see below |
+
+After SIGKILL a one-shot call (monitor 2 min, `factory status` 25 s) ends at its own end, because it writes to a pipe nobody reads or finishes; the event stream ends the next time it writes an event to its closed pipe, and with the monitor's parent check (Part C of the same change) within a few ticks.
+
+Measured on this machine with `bin/isshoni-tui` against the real data (TUI in a pty, `--serve` on a free port on 127.0.0.1 with an ssh client in a pty), each stop in a fresh run. Descriptors from `lsof -p`, children from `ps -axo pid,ppid,pgid,command` just before the stop, survivors counted among those children 3 s after (for `--serve`: after the server had ended). Calls are short, so most runs catch only the few children that were in flight; "Hanami" is the run with the Hanami tab open.
+
+| Mode | Tab | Stop | Descriptors | Children before | Process ended | Survivors after 3 s |
+| --- | --- | --- | --- | --- | --- | --- |
+| TUI | dashboard | `q` | 16 | 6 | yes | 0 |
+| TUI | dashboard | SIGINT | 13 | 0 | yes | 0 |
+| TUI | dashboard | SIGTERM | 14 | 0 | yes | 0 |
+| TUI | dashboard | SIGHUP | 15 | 0 | yes | 0 |
+| TUI | dashboard | SIGKILL | 16 | 0 | yes | 0 |
+| TUI | Hanami | `q` | 26 | 2 | yes | 0 |
+| TUI | Hanami | SIGINT | 25 | 1 | yes | 0 |
+| TUI | Hanami | SIGTERM | 26 | 2 | yes | 0 |
+| TUI | Hanami | SIGHUP | 27 | 1 | yes | 0 |
+| TUI | Hanami | SIGKILL | 28 | 1 | yes | 0 (1 in an earlier run) |
+| serve | dashboard | client `q` | 11 | 0 | server stays | 0 |
+| serve | dashboard | SIGINT | 11 | 0 | yes, 0.3 s | 0 |
+| serve | dashboard | SIGTERM | 11 | 0 | yes, 0.3 s | 0 |
+| serve | dashboard | SIGHUP | 11 | 0 | yes, 0.3 s | 0 |
+| serve | dashboard | SIGKILL | 11 | 0 | yes | 0 |
+| serve | Hanami | client `q` | 17 | 1 | server stays | 0 |
+| serve | Hanami | SIGINT | 13 | 1 | yes, 0.3 s | 0 |
+| serve | Hanami | SIGTERM | 13 | 1 | yes, 0.3 s | 0 |
+| serve | Hanami | SIGHUP | 13 | 2 | yes, 0.3 s | 0 |
+| serve | Hanami | SIGKILL | 15 | 1 | yes | 0 (1 in an earlier run) |
+
+The two SIGKILL rows with one survivor in an earlier run were `isshoni events --follow --since 2h`: SIGKILL gives the dashboard no chance to kill it, and it ends when it next writes an event. The descriptor count is the dashboard's own (terminal, the SSH listener and keys, pipes); the run-to-run drift is the pty and the pipes of calls in flight. Before the SIGHUP handler a closed terminal killed the process without running the cleanup, and left the event stream and the factory fetch (both in their own groups) to their own end; the SIGKILL path remains by nature.
+
+What stays on disk: nothing the dashboard writes, apart from its host key and authorized keys under `~/.claude/factory/dashboard/` (`--serve`), the factory settings file when the cap is changed (replaced atomically, its temporary file removed), and the caches the monitor keeps by design: the session cache `~/.cache/isshoni/sessions/<digest>/`, `~/.claude/factory/cache/kaizen-prs-*.json`, `~/.claude/factory/gh-YYYY-MM.jsonl` and `~/.claude/factory/comments/<slug>-<ts>.md`.

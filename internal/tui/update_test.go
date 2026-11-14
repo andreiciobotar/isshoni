@@ -5,7 +5,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -329,6 +331,50 @@ func TestRunQuitCancelsCallsAndWaits(t *testing.T) {
 	}
 	if _, err := r.Session(context.Background(), "x"); err == nil {
 		t.Fatal("Run must leave the runner closed: no call may start after quit")
+	}
+}
+
+// TestRunHangupEndsAndKillsTheChildren: a closed terminal (SIGHUP) ends Run like a quit, so the
+// call in flight, and what it started, is gone.
+func TestRunHangupEndsAndKillsTheChildren(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("STUBDIR", dir)
+	os.WriteFile(filepath.Join(dir, "hang"), nil, 0o644)
+	py, _ := filepath.Abs("../data/testdata/fakepy.sh")
+	r := &data.Runner{Root: "../..", Python: py, ProjectsDir: dir, Timeout: time.Minute}
+	if r.Check() != nil {
+		t.Skip("stub runner unusable")
+	}
+	in, w := io.Pipe()
+	defer w.Close()
+	done := make(chan error, 1)
+	go func() {
+		done <- runProgram(Options{Runner: r, NoColor: true}, tea.WithInput(in), tea.WithOutput(io.Discard), tea.WithWindowSize(100, 30))
+	}()
+	var child int
+	for i := 0; i < 500 && child == 0; i++ {
+		b, _ := os.ReadFile(filepath.Join(dir, "child"))
+		child, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		time.Sleep(10 * time.Millisecond)
+	}
+	if child == 0 {
+		t.Fatal("the load never started")
+	}
+	syscall.Kill(os.Getpid(), syscall.SIGHUP) // Run installed its handler before the stub could start
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run after SIGHUP: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after SIGHUP")
+	}
+	for i := 0; syscall.Kill(child, 0) == nil; i++ {
+		if i == 100 {
+			syscall.Kill(child, syscall.SIGKILL)
+			t.Fatalf("child %d survived", child)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
