@@ -297,6 +297,17 @@ session when its transcript changes (checked every second). The only file it wri
 under `~/.claude` is the factory's settings, when you save the cap. It finds the
 Python package from `ISSHONI_ROOT`, else from the binary's own location. It needs a
 terminal of at least 60x16.
+
+The pictures here and in the README are recordings of this repository's own factory (`make pictures`, below); the checkout is in a directory named `ccmon`, which is why that name shows as the repository.
+
+<img src="../assets/tabs/dashboard.webp" alt="View 1, the dashboard: the cursor moves over the repository, its tasks and a session; the pane shows the selected row's agent and model mix, its dispatches and timeline; then the repository is folded">
+
+<img src="../assets/tabs/agents.webp" alt="View 2, Agents: per agent type the dispatches, tokens, cost and duration at the median and the 90th percentile, as the range goes from 24 hours to all time">
+
+<img src="../assets/tabs/factory.webp" alt="View 3, Factory: what waits for you, then each task's phase, elapsed time, pull request and base, against the worktree cap">
+
+<img src="../assets/tabs/kaizen.webp" alt="View 4, Kaizen, its four pages in turn: Pulse, Flow, Anatomy, Board">
+
 ```
 bin/isshoni-tui [--range 24h|7d|30d|all] [--follow] [--no-color]
                 [--projects-dir DIR] [--agents-dir DIR] [--prices PATH]
@@ -496,6 +507,8 @@ bin/isshoni-tui --serve ADDR [--authorized-keys FILE] [--host-key FILE]
 
 The fifth view (`5`) draws the same work as motion, for a second screen: the mark come alive. Nothing in it is decoration posing as data: every moving thing is one event from `isshoni events`, and `l` shows the legend.
 
+<img src="../assets/tabs/hanami.webp" alt="View 5, Hanami: a stretch of the last day replayed at 60 times its speed, ending in a merge">
+
 | you see | it is |
 |---|---|
 | the disc, a solid body that swells, brightens and takes a returning agent's colour | all the work; the rate of events; a return |
@@ -524,3 +537,7 @@ make strip REPLAY=internal/tui/testdata/hanami-replay.jsonl SCENE=merge AT=89s F
 ```
 
 `make strip` renders consecutive frames (`--snapshot hanami --replay FILE --at D --frames N --frame-step D`, add `--legend` for the legend) to `shots/hanami-<scene>-<size>.png`, a contact strip, and `.gif`, an animation (the GIF needs Pillow; the PNG needs Chrome, as `make screenshot` does). `make snapshot VIEW=hanami` without a replay is the idle scene.
+
+`make pictures` records a looping animation of each tab, `dashboard`, `agents`, `factory`, `kaizen` and `hanami`, as a lossy animated `<scene>.webp` in `OUT` (default `assets/tabs`) from this repository's real data; `SCENES="hanami agents"` records a subset, `SIZE=WxH` sets the frame size (default 110x32), `HANAMI_AT=<duration>` the replay time of the first Hanami frame (default: 3 s before the last merge of the last 24 hours; when those hold no merge, Hanami starts at the tool's default and a note says so on stderr). The scenes (arguments, milliseconds per frame) are a table at the top of `tools/record.py`. It prints each file's size; a file over 1,200,000 bytes is still written, and the run then exits non-zero. It refuses to record when no project directory of this repository exists under `~/.claude/projects`. It needs Chrome and Pillow, like `make strip`.
+
+The recording is gated, because the dashboard has no repository filter and the screens show real names and money. It refuses to record when the factory store (`~/.claude/factory/*.jsonl`) holds a record of any other repository (the other repository is not named), and it writes nothing when a frame, checked as text before anything is rendered, shows the home directory, the home directory as a project directory name (`-Users-name`), `/Users/` or `/home/`, or, as a whole word, the name of another repository or of one of its tasks (the names come from `isshoni sessions --json` over all time). A name the screen cut short with `…` counts too: any prefix of at least 3 characters that starts a word and ends right before the `…`. Every hit is listed (scene, frame, word) before the run fails. `~/` is allowed on purpose: the Factory tab shows the generic `~/.claude/factory/settings.json`. The tabs read only a temporary projects directory of symlinks to this repository's checkout and worktrees. `make pictures ALLOW="word word"` waives a name that is also an ordinary word on screen (another repository named like a column label, say); use it knowingly, and do not write it down in the repository.
