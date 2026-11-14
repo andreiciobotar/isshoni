@@ -113,11 +113,13 @@ def footer(prices, models, tokens):
         print("* no price for: %s (%s tokens); cost excludes them" % (", ".join(models), human(tokens)))
 
 
-def load_all(args, prices):
+def load_all(args, prices, cutoff=None):
+    """The sessions of the projects directory; `cutoff` (default: `--since`) drops those that ended before it."""
     paths = transcript.discover_sessions(args.projects_dir)
     cache = sessioncache.SessionCache(args.projects_dir, prices)
     cache.prune(paths)
-    cutoff = parse_since(args.since) if getattr(args, "since", None) else None
+    if cutoff is None and getattr(args, "since", None):
+        cutoff = parse_since(args.since)
     sessions = []
     for p in paths:
         if cutoff is not None:
@@ -285,7 +287,9 @@ def cmd_kaizen(args):
 
     prices = price_file.load(args.prices)
     cutoff = parse_since(args.since) if args.since else None
-    doc = kaizen.build(args.factory_dir, lambda: load_all(args, prices), prices, cutoff, cached=args.cached)
+    from . import pulse  # the pulse's yesterday is always loaded, whatever --since says
+    loaded_from = min(cutoff, pulse.yesterday_start()) if cutoff else None
+    doc = kaizen.build(args.factory_dir, lambda: load_all(args, prices, loaded_from), prices, cutoff, cached=args.cached)
     if args.json:
         emit_json(doc)
         return 0

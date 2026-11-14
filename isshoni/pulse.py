@@ -60,7 +60,7 @@ def _write(factory_dir, kind, repo_path, cache):
 def _git(repo_path, *args, ok=(0,)):
     """(exit code, stdout) of `git -C repo_path args`; GitError when git cannot run or exits with a code not in `ok`."""
     try:
-        p = subprocess.run(["git", "-C", repo_path, *args], capture_output=True, text=True, timeout=GIT_TIMEOUT)
+        p = subprocess.run(["git", "-c", "color.ui=never", "-C", repo_path, *args], capture_output=True, text=True, timeout=GIT_TIMEOUT)
     except (OSError, subprocess.SubprocessError) as e:
         raise GitError("git unavailable: %s" % (str(e).splitlines() or ["failed"])[0]) from e
     if p.returncode not in ok:
@@ -181,12 +181,30 @@ def _p90(seconds):
     return {"p90_s": None if v is None else int(round(v)), "n": len(seconds)}
 
 
+def _zone(now):
+    """(today, tz) of `now`: its own zone when it has one, else None, the machine's zone at each moment (so a clock change is honoured)."""
+    if now is not None and now.tzinfo:
+        return now.date(), now.tzinfo
+    return datetime.now().date(), None
+
+
+def _midnight(d, tz):
+    """The start of day `d` in `tz` (None: the machine's zone at that date), in UTC."""
+    local = datetime.combine(d, time.min, tz) if tz else datetime.combine(d, time.min).astimezone()
+    return local.astimezone(timezone.utc)
+
+
+def yesterday_start(now=None):
+    """When the pulse's yesterday starts (UTC): transcripts from then on are what its cost needs."""
+    today, tz = _zone(now)
+    return _midnight(today - timedelta(days=1), tz)
+
+
 def _spent_by_day(sessions, tasks, prices, dates, tz):
     """{date: spend} of every model call of the task sessions and of the dispatcher and site manager sessions, on `dates`."""
     keys, repos = {(t["repo_path"], t["slug"]) for t in tasks}, {t["repo_path"] for t in tasks}
     out = {d: {"tasks": 0.0, "dispatcher": 0.0, "site_manager": 0.0, "unpriced_tokens": 0} for d in dates}
-    utc = lambda d: datetime.combine(d, time.min, tz).astimezone(timezone.utc)  # noqa: E731
-    days = [(out[d], utc(d), utc(d + timedelta(days=1))) for d in dates]  # UTC bounds: call times are UTC
+    days = [(out[d], _midnight(d, tz), _midnight(d + timedelta(days=1), tz)) for d in dates]  # UTC bounds: call times are UTC
     since = min(lo for _, lo, _ in days)
     for s in sessions:
         who = "tasks" if (s.repo_path, s.task) in keys else kaizen._spender(s, repos)
@@ -216,9 +234,9 @@ def _sent_back(queue, since, d, day):
 def build(factory_dir, tasks, by_task, sessions, prices, now=None, cached=False):
     """The `pulse` of the document. `tasks`: every task, with its pull request; `by_task`: its records by store.
     `cached`: the caches only, no git and no gh."""
-    now = now if now is not None and now.tzinfo else datetime.now().astimezone()
-    day = lambda ts: ts.astimezone(now.tzinfo).date()  # noqa: E731
-    dates = (now.date(), now.date() - timedelta(days=1))
+    today, tz = _zone(now)
+    day = lambda ts: ts.astimezone(tz).date()  # noqa: E731
+    dates = (today, today - timedelta(days=1))
     merged = {d: [] for d in dates}
     for t in tasks:
         at = transcript.parse_ts(t["pr"]["merged"]) if t["pr"] else None
@@ -241,7 +259,7 @@ def build(factory_dir, tasks, by_task, sessions, prices, now=None, cached=False)
         for t, _ in rows:
             pull_requests.setdefault(t["repo_path"], []).append(t["pr"]["number"])
     merges, git_errors = _merges(factory_dir, pull_requests, cached)
-    spend = _spent_by_day(sessions, tasks, prices, dates, now.tzinfo)
+    spend = _spent_by_day(sessions, tasks, prices, dates, tz)
 
     def approval(t):
         """(time, from GitHub) of a task's approval, or None."""

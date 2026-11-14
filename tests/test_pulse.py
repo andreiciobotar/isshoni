@@ -8,7 +8,8 @@ from unittest import mock
 
 from isshoni import cli, kaizen, pulse
 from tests import test_kaizen
-from tests.test_kaizen import ALPHA, Store, ev, fresh, loose, pr, reply, session
+from tests.support import AGENTS
+from tests.test_kaizen import ALPHA, Store, ev, fresh, loose, pr, reply, run_cli, session
 
 LOCAL = timezone(timedelta(hours=2))
 NOW = datetime(2026, 11, 15, 23, 0, tzinfo=LOCAL)  # today: 2026-11-15 local = 2026-11-14T22:00Z up to 2026-11-15T22:00Z
@@ -78,6 +79,25 @@ class DayTests(PulseStore):
         self.pulse()
         d = self.build(lambda path: self.prs[path], now=NOW)
         self.assertEqual({t["slug"]: t["size"] for t in d["tasks"]}, {"p1": "small", "p2": None})
+
+
+class SinceTests(PulseStore):
+    def test_transcripts_of_yesterday_are_loaded_whatever_since_says(self):
+        start = pulse.yesterday_start()  # real clock: the command takes no `now`
+        at = lambda hours: (start + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+        self.task("p1", 1, at(13), at(12))
+        with mock.patch.object(test_kaizen, "DAY", at(12)[:10]):
+            session(self.projects, ALPHA, "p1", at(12)[:-1] + ".000Z", 1000000,
+                    [("reviewer", "claude-opus-5-5", 1, "10:20", "10:25")])
+        self.log("events-2026-11.jsonl", self.events)
+        self.log("tasks-2026-11.jsonl", self.states)
+        args = ("--factory-dir", self.factory, "--projects-dir", self.projects, "--prices", os.path.join(os.path.dirname(self.factory), "prices.toml"),
+                "--agents-dir", AGENTS, "--json")
+        with mock.patch.object(kaizen, "gh_prs", side_effect=fresh(lambda path: self.prs[path])):
+            _, out, _ = run_cli("kaizen", "--since", "1h", *args)
+        yesterday = json.loads(out)["pulse"]["yesterday"]
+        self.assertGreaterEqual(yesterday["cost"]["tasks"], 10.0)
+        self.assertEqual(yesterday["first_pass"]["unstated"], {"yes": 1, "of": 1})
 
 
 class CostTests(PulseStore):
@@ -334,6 +354,10 @@ class GitTests(PulseStore):
         self.run.side_effect = self.run_real
         self.assertEqual(self.pulse()["today"]["conflicts"]["prs"], 1)
         self.assertEqual({c.kwargs["timeout"] for c in self.run.call_args_list}, {pulse.GIT_TIMEOUT})
+
+    def test_a_color_setting_does_not_hide_the_conflict(self):
+        self.git("config", "color.ui", "always")
+        self.assertEqual(self.pulse()["today"]["conflicts"]["conflicted"], 1)
 
     def test_a_pull_request_merged_another_way_is_not_in_prs(self):
         self.task("t8", 8, "2026-11-15T09:00:00Z", repo=self.repo)  # no `Merge pull request #8` commit
