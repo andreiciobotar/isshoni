@@ -54,7 +54,7 @@ Return exactly this format, with one line per fact and nothing you did not run:
 `LANDED <url>` or `LANDED, LOOK <url>` or `STOPPED <reason>`
 
 ## Facts
-- base: `<target>` at `<sha>`, `<n>` commits since the old base; overlap: the `overlap:` line of `factory overlap`. The files the base changed, when 20 or fewer; else a count per top-level directory.
+- base: `<target>` at `<sha>`, `<n>` commits since the old base; overlap: the `overlap:` line of `factory overlap`, or "none" when the base did not move. The files the base changed, when 20 or fewer; else a count per top-level directory.
 - head: `<old sha>` -> `<new sha>` (a merge of the target, or "unchanged"), pushed or not; reviewed commits: "unchanged" (step 5).
 - conflicts: "none", or `path` - how you resolved it (one line each).
 - goldens: "not run", "no change", or `path` +a -b - what changed (one line each), committed or left uncommitted.
