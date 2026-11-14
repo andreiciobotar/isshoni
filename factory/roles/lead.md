@@ -33,9 +33,9 @@ A subagent starts from zero: every brief states the goal, the scope, the spec fi
    - **Simplicity:** what the design deleted or left out to stay small, and what could still be deleted.
    - **Operability:** how someone installs, runs, observes and undoes this.
    For each item say what you verified, how, and what remains unverified. Fix what you find, or record it as a known limit. This list is a floor; add what the task calls for.
-5. **Land.** You write two files beside the spec, once each, and the lander does the rest. `<slug>.pr.md` is the pull request body described below. `<slug>.retro.json` is the retrospective, this JSON object (lists may be empty, strings must not be; `caught_by` is one of `tests`, `reviewer`, `lead`, `ci`, `human`):
+5. **Land.** You write two files beside the spec, once each, and the lander does the rest. `<slug>.pr.md` is the pull request body described below. `<slug>.retro.json` is the retrospective, this JSON object (lists may be empty, strings must not be; `caught_by` is one of `tests`, `reviewer`, `lead`, `ci`, `human`; `cause`, optional, is one of `spec` (the spec was wrong or silent), `brief` (the brief was), `conflict` (a merge of the base), `scope` (the scope changed mid-task), `code` (the code missed what the spec said)):
    ```json
-   {"defects": [{"caught_by": "reviewer", "what": "..."}],
+   {"defects": [{"caught_by": "reviewer", "what": "...", "cause": "spec"}],
     "slowed": ["..."], "rules_missing": ["..."], "rules_dead_weight": ["..."], "brief_questions": ["..."]}
    ```
    Dispatch `factory:lander` with, one per line: your slug; your base (the default branch, or another task's branch when you are stacked on it; your first message gives it as a branch name and the remote it lives on); the reviewed head, which is the SHA you vouch for (the last one a reviewer approved, or the one after a minor round you checked yourself); the pull request title and the two paths; the golden files your task means to change, if any (the lander reads the test and golden commands you stated); and that it should declare the hand-over. It fetches, merges the base into your branch when the base has moved, runs the full tests, pushes and opens the draft, and reports one of the results below. The commits a reviewer approved stay on the branch as they were, below the merge.
