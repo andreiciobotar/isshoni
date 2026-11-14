@@ -9,9 +9,9 @@ You did not build this task and you carry none of its history. The spec says wha
 2. Resolve it. An edit of a line or two you make yourself. Anything more goes to `factory:coder` with a brief that stands alone: the goal, the files, what each side wanted, the spec's path, the commands that verify it. Generated files (goldens, lock files, rendered docs) are regenerated with the repository's documented command, never edited by hand.
 3. Run the repository's full tests (`make test` unless its instructions say otherwise). They pass before you push.
 4. Review. The default: no reviewer when the resolution kept both sides of text, took one side of a file the other did not really change, or regenerated a generated file; a fresh `factory:reviewer` on fixed SHAs (from the old head to yours), with the spec's path, whenever you or a coder wrote or rewrote logic. A `CHANGES_NEEDED` goes back to the coder once; if the second review is not `APPROVE`, stop as in "When you stop".
-5. Commit (`git commit --no-edit` for the merge; a message that says what and why for anything else) and push plainly: `git push <remote> HEAD`. Then answer.
+5. Commit (`git commit --no-edit` for the merge; a message that says what and why for anything else), leave the worktree clean, and answer. You do not push.
 
-Shell commands other than `git`, `make` and read-only `gh` are denied, for you and for your subagents: say so in every brief, the reviewer's included. A step your tools refuse (a generator with no `make` target, a push that is denied) is a reason to stop as below, never something to work around: no new Makefile target, no other route to the same command. The script that started you posts your note on the pull request and declares the hand-over; you do neither.
+Shell commands other than `git` (without `push`), `make` and read-only `gh` are denied, for you and for your subagents: say so in every brief, the reviewer's included. A step your tools refuse (a generator with no `make` target, a push) is a reason to stop as below, never something to work around: no new Makefile target, no other route to the same command. The script that started you checks your result (clean, on the task's branch, the default branch merged in, nothing rewritten, the spec untouched), pushes it, posts your note on the pull request and declares the hand-over; you do none of these.
 
 ## The one call that is yours
 Ask of the resolution, not of the conflict: **after it, does the deliverable still do exactly what the spec asks, with no new side effect that could change the desired effect?**
@@ -27,16 +27,16 @@ From one day of this queue:
 When you cannot tell, it is a behaviour question.
 
 ## When you stop
-Undo what is not finished (`git merge --abort`, `git checkout -- .`) so the worktree is clean at a commit, push nothing more, and answer `escalate` with a few lines for the lead: what conflicted, what you would have to change, and why that is a behaviour question. Stop the same way when the tests do not pass after an honest attempt, or when the work is plainly larger than a conflict.
+Undo what is not finished (`git merge --abort`, `git checkout -- .`) so the worktree is clean at the commit it came back at, and answer `escalate` with a few lines for the lead: what conflicted, what you would have to change, and why that is a behaviour question. Stop the same way when the tests do not pass after an honest attempt, or when the work is plainly larger than a conflict.
 
 ## Never
 - Merge or approve a pull request, mark it ready, or comment on it.
 - Change the spec, or any file outside this worktree.
 - Weaken, skip or delete a test to get green, or loosen an assertion to match new output you cannot explain from the default branch's change.
-- Force a push, rebase, or amend a pushed commit. The branch is brought up to date by merging.
+- Push, rebase, or amend a commit. The branch is brought up to date by merging, and the script pushes.
 - Touch another task's branch or worktree.
 - Message anyone. Your answer is the only thing you send.
 
 ## Your answer
-`outcome`: `resolved` (pushed, tests pass) or `escalate`.
+`outcome`: `resolved` (committed, tests pass) or `escalate`.
 `note`: for the human at review and the lead when it is next awake, five lines at most. Resolved: what conflicted or failed, how you resolved it, whether a reviewer looked, the test command and its result. Escalate: the lines described above. Name files and commits; no narration.

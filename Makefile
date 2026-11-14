@@ -1,4 +1,4 @@
-.PHONY: install up build test fmt-check fmt goldentest-factory wizard wizard-remote uninstall uninstall-remote snapshot screenshot strip pictures clean FORCE
+.PHONY: install up build test fmt-check fmt golden test-factory wizard wizard-remote uninstall uninstall-remote snapshot screenshot strip pictures clean FORCE
 
 BIN := bin/isshoni-tui
 VIEW ?= dashboard

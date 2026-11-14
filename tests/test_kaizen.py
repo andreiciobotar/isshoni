@@ -600,6 +600,15 @@ class TechLeadTests(Store):
         by_role = roles()
         self.assertEqual((by_role["lead"], by_role["tech-lead"], by_role["coder"]), (0.0, 10.0, 1.0))
 
+    def test_the_role_facts_of_a_tech_lead_session_are_filed_under_tech_lead_not_lead(self):
+        self.log("events-2026-11.jsonl", [ev("%sT10:00:00Z" % DAY, "TaskStarted")])
+        session(self.projects, ALPHA, "a1", "%sT10:00:05.000Z" % DAY, 1000000, [("coder", "claude-haiku-5-5", 1000000, "10:05", "10:10")])
+        self.log("techlead.jsonl", [came_back("%sT12:00:00Z" % DAY, "resolved", 1.0, session="s-a1")])
+        with mock.patch.object(kaizen, "_authoring", wraps=kaizen._authoring) as authoring:
+            self.build(lambda p: [])
+        roles = authoring.call_args.args[0]
+        self.assertEqual(sorted(roles), ["coder", "tech-lead"])
+
 
 class SmallTests(Store):
     def test_missing_directory_and_empty_directory(self):

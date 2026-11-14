@@ -4427,9 +4427,7 @@ TECH_LEAD_ROLE = PLUGIN_ROOT / "roles" / "tech-lead.md"
 TECH_LEAD_KIT = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch"
 TECH_LEAD_TOOLS = ("Read", "Edit", "Write", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "Bash(git *)", "Bash(make *)",
                    "Bash(gh pr view *)", "Bash(gh pr diff *)", "Bash(gh pr checks *)", "Bash(gh run view *)")
-TECH_LEAD_DENIED = ("Bash(git push --force*)", "Bash(git push -f*)", "Bash(git push *--force*)", "Bash(git push * +*)",
-                    "Bash(git push *:*)", "Bash(git push * -f*)", "Bash(git push *--delete*)", "Bash(git push *--mirror*)",
-                    "Bash(git push *--all*)", "Bash(git rebase*)", "Bash(git commit --amend*)", "Bash(git worktree*)")
+TECH_LEAD_DENIED = ("Bash(git push*)", "Bash(git rebase*)", "Bash(git commit --amend*)", "Bash(git worktree*)")
 TECH_LEAD_SCHEMA = {"type": "object", "properties": {"outcome": {"enum": ["resolved", "escalate"]},
                                                       "note": {"type": "string"}}, "required": ["outcome", "note"]}
 
@@ -4447,11 +4445,11 @@ def tech_lead_missing(repo, slug):
     return None if spec.is_file() else f"the spec {spec} is missing"
 
 
-def log_tech_lead(repo, slug, n, evidence, outcome, **fields):
+def log_tech_lead(repo, settings, slug, n, evidence, outcome, **fields):
     """One `techlead` record; what `fields` leaves out is null, and `noted` false."""
     f = {**dict.fromkeys(("session", "reason", "note", "head_before", "head_after", "cost_usd", "seconds")),
          "noted": False, **fields}
-    log("techlead", {**record(repo.root, slug, "tech-lead", load_settings()["tech_lead_model"], f.pop("session")),
+    log("techlead", {**record(repo.root, slug, "tech-lead", settings["tech_lead_model"], f.pop("session")),
                      "pr": n, "evidence": evidence, "outcome": outcome, **f})
 
 
@@ -4479,7 +4477,7 @@ def tech_lead_start(repo, fallback, pr, slug, evidence):
             return True
         except OSError as e:
             reason = f"the process could not be started: {e}"
-    log_tech_lead(repo, slug, pr["number"], evidence, "unstarted", reason=reason)
+    log_tech_lead(repo, load_settings(), slug, pr["number"], evidence, "unstarted", reason=reason)
     return False
 
 
@@ -4511,22 +4509,18 @@ def spec_hash(spec):
 
 
 def tech_lead_state(repo, worktree, pr, old_head, spec, before):
-    """The worktree after the run: (head, clean, pushed, the first script check that fails, or None). `before` is the
-    spec's hash when the run began."""
+    """The worktree after the run: (head, clean, the first script check that fails, or None). Nothing is fetched:
+    `<remote>/<default>` is the ref as the session left it. `before` is the spec's hash when the run began."""
     git, remote, branch = (lambda *a: repo.git(*a, path=worktree)), repo.remote, pr["headRefName"]
     head, clean = git("rev-parse", "HEAD")[1].strip(), not git("status", "--porcelain")[1].strip()
-    pushed = act_git(worktree, "fetch", remote, branch)[0] == 0 and git("rev-parse", f"{remote}/{branch}")[1].strip() == head
-    act_git(worktree, "fetch", remote, repo.default)
-    on_default = git("merge-base", "--is-ancestor", "HEAD", f"{remote}/{repo.default}")[0] == 0
-    checks = [(not on_default, f"HEAD is in {remote}/{repo.default}: the run pushed the task onto the default branch, "
-                               "which this script cannot undo"),
-              (clean, "the worktree is not clean"),
+    checks = [(clean, "the worktree is not clean"),
               (git("rev-parse", "--abbrev-ref", "HEAD")[1].strip() == branch, f"the worktree is not on {branch}"),
               (git("merge-base", "--is-ancestor", old_head, "HEAD")[0] == 0, "the head it came back at is not an ancestor of HEAD"),
               (git("merge-base", "--is-ancestor", f"{remote}/{repo.default}", "HEAD")[0] == 0,
                f"{remote}/{repo.default} is not merged in"),
-              (pushed, f"HEAD is not {remote}/{branch}"), (spec_hash(spec) == before, "the spec changed")]
-    return head, clean, pushed, next((why for ok, why in checks if not ok), None)
+              (head != old_head, "the head did not move: a resolution commits something"),
+              (spec_hash(spec) == before, "the spec changed")]
+    return head, clean, next((why for ok, why in checks if not ok), None)
 
 
 def tell_tech_lead(repo, args, slug, n, evidence, said, where):
@@ -4539,7 +4533,8 @@ def tell_tech_lead(repo, args, slug, n, evidence, said, where):
 def cmd_tech_lead(args):
     """Resolve what came back from the merge queue as a tech lead session in the task's worktree, and act on what the
     scripted checks accept of its answer: see docs/factory.md. Once the run holds the lock, a failure of any step is a
-    `stopped` record and a line to the lead: the task is never left `working` with nobody told."""
+    `stopped` record (with what the run had already learned) and a line to the lead: the task is never left `working`
+    with nobody told."""
     slug, n, evidence = args.slug, args.pr, args.evidence
     validate_slug(slug)
     repo, settings = Repo(), load_settings()
@@ -4548,32 +4543,37 @@ def cmd_tech_lead(args):
             raise Fail(f"a tech lead run is already going for {slug}")
         if missing := tech_lead_missing(repo, slug):
             raise Fail(missing)
+        learned = {}
         try:
-            return tech_lead_run(repo, settings, args)
+            return tech_lead_run(repo, settings, args, learned)
         except Exception as e:
             reason = f"the run failed: {why(e)}"
-            log_tech_lead(repo, slug, n, evidence, "stopped", reason=reason)
+            log_tech_lead(repo, settings, slug, n, evidence, "stopped", reason=reason, **learned)
             tell_tech_lead(repo, args, slug, n, evidence, reason, "")
             print(f"#{n} tech lead stopped: {reason.splitlines()[0]}")
             return 1
 
 
-def tech_lead_run(repo, settings, args):
-    """One run, under its lock: the exit code."""
+def tech_lead_run(repo, settings, args, learned):
+    """One run, under its lock: the exit code. `learned` gets the session, cost, seconds and old head as soon as the
+    model has run, for the record of a later failure. Order after the answer: checks, push, comment, record, then the
+    hand-over (or the line to the lead): the last step is the one that can leave the task `working`."""
     slug, n, evidence = args.slug, args.pr, args.evidence
     pr = gh_json(repo, dict, "pr", "view", str(n), "--json", "number,url,headRefName,headRefOid")
-    worktree, spec = tech_lead_paths(repo, slug)
+    worktree, spec, branch = *tech_lead_paths(repo, slug), pr["headRefName"]
     declare(repo, slug, "tech-lead", "working")
-    to_draft(repo, pr["headRefName"])
+    to_draft(repo, branch)
     old_head, before, started = repo.git("rev-parse", "HEAD", path=worktree)[1].strip(), spec_hash(spec), time.monotonic()
     argv = tech_lead_argv(repo, slug, pr, evidence, spec, settings)
     rc, out, _ = run(argv, cwd=worktree, timeout=TECH_LEAD_TIMEOUT, env={**os.environ, "FACTORY_ROLE": "tech-lead"}, group=True)
-    seconds = round(time.monotonic() - started)
     try:
         doc = json.loads(out)
     except ValueError:
         doc = None
     doc = doc if isinstance(doc, dict) else {}
+    cost = doc.get("total_cost_usd")
+    learned.update(session=doc.get("session_id"), head_before=old_head, seconds=round(time.monotonic() - started),
+                   cost_usd=cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None)
     answer = doc.get("structured_output")
     answered = isinstance(answer, dict) and answer.get("outcome") in ("resolved", "escalate") \
         and isinstance(answer.get("note"), str)
@@ -4581,21 +4581,22 @@ def tech_lead_run(repo, settings, args):
     reason = (f"reached {TECH_LEAD_TIMEOUT // 60} minutes" if rc == 124
               else f"reached {float(TECH_LEAD_BUDGET):g} USD" if doc.get("subtype") == "error_max_budget_usd"
               else None if rc == 0 and answered else "ended without an answer")
-    head, clean, pushed, flaw = tech_lead_state(repo, worktree, pr, old_head, spec, before)
+    head, clean, flaw = tech_lead_state(repo, worktree, pr, old_head, spec, before)
     reason = reason or (flaw if verdict == "resolved" else None)
+    if verdict == "resolved" and not reason:
+        rc, out, err = act_git(worktree, "push", repo.remote, f"HEAD:refs/heads/{branch}", timeout=GH_TIMEOUT)
+        reason = None if rc == 0 else f"git push failed: {' '.join((err or out).split())}"
     outcome = "stopped" if reason else "resolved" if verdict == "resolved" else "escalated"
     said = ". ".join(filter(None, (reason, note))) if outcome == "stopped" else note
     body = f"Tech lead: {note}" if outcome == "resolved" else f"Tech lead: stopped, the lead decides. {said}"
     noted = gh_step(repo, "pr", "comment", str(n), "--body", body) is None
+    log_tech_lead(repo, settings, slug, n, evidence, outcome, reason=reason, note=note, noted=noted, head_after=head, **learned)
     if outcome == "resolved":
         declare(repo, slug, "tech-lead", "handed-over", deliverable=pr["url"])
     else:
+        pushed = repo.git("rev-parse", f"{repo.remote}/{branch}", path=worktree)[1].strip() == head
         where = f"; the worktree is at {head[:7]}, {'clean' if clean else 'not clean'}, {'pushed' if pushed else 'not pushed'}"
         tell_tech_lead(repo, args, slug, n, evidence, said, where)
-    cost = doc.get("total_cost_usd")
-    log_tech_lead(repo, slug, n, evidence, outcome, session=doc.get("session_id"), reason=reason, note=note, noted=noted,
-                  head_before=old_head, head_after=head, seconds=seconds,
-                  cost_usd=cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None)
     print(f"#{n} tech lead {outcome}: {(said.splitlines() or [''])[0]}")
     return 0 if outcome == "resolved" else 1
 

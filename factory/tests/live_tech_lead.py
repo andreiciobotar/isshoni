@@ -417,7 +417,11 @@ def live(ctx, s):
     made = sh("make", "test", cwd=tree, env=env, ok=(0, 2))
     say(f"make test in the worktree: {'pass' if made.returncode == 0 else 'FAIL'}")
     say(f"gh calls the shim did not know: {[u['argv'] for u in unknown] or 'none'}")
-    outcome = rec.get("outcome")
+    outcome, head = rec.get("outcome"), sh("git", "rev-parse", "HEAD", cwd=tree, env=env).stdout.strip()
+    on_origin = sh("git", "rev-parse", f"refs/heads/{s['branch']}", cwd=ctx["origin"], env=env).stdout.strip()
+    say(f"origin's {s['branch']}: {'the worktree head (the script pushed it)' if on_origin == head else 'not the worktree head'}")
+    if outcome == "resolved":
+        check(on_origin == head, "the script pushed the resolved head to origin")
     check(outcome == s["expect"], f"outcome {outcome!r}, expected {s['expect']!r}")
     say()
     reset(ctx["state"])

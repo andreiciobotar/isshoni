@@ -2,6 +2,8 @@ import io
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -18,6 +20,7 @@ URL = f"https://x/pull/{N}"
 CONFLICT = "it conflicts with main in a.txt"
 RED = "red checks: test https://x/run/2"
 COURIER_LINE = re.compile(r"nothing else: (.*)\. Then reply", re.S)
+SETTINGS = {"tech_lead_model": "opus"}
 ANSWER = {"outcome": "resolved", "note": "Kept both paragraphs in docs/factory.md; make test passes; no reviewer."}
 
 
@@ -29,11 +32,11 @@ def said(outcome="resolved", note=ANSWER["note"], **extra):
 class Machine(FakeRun):
     """git, gh and claude for one task: `state` is the worktree, `after` what the tech lead's run changes in it."""
 
-    def __init__(self, root, claude=None, after=None, comment=(0, "", ""), lead=True):
+    def __init__(self, root, claude=None, after=None, comment=(0, "", ""), lead=True, push=(0, "", "")):
         super().__init__({})
-        self.root, self.claude, self.after, self.comment = root, claude or said(), after or {}, comment
-        self.state = {"head": OLD, "remote": OLD, "dirty": False, "branch": f"worktree-{SLUG}", "ancestor": True, "merged": True, "on_default": False}
-        self.cwds, self.groups, self.comments, self.lines, self.prompts, self.lead = [], [], [], [], [], lead
+        self.root, self.claude, self.after, self.comment, self.push = root, claude or said(), after or {}, comment, push
+        self.state = {"head": OLD, "remote": OLD, "dirty": False, "branch": f"worktree-{SLUG}", "ancestor": True, "merged": True}
+        self.cwds, self.groups, self.comments, self.lines, self.prompts, self.lead, self.pushes = [], [], [], [], [], lead, []
 
     def __call__(self, argv, cwd=None, input=None, timeout=None, env=None, group=False):
         self.cwds.append(cwd)
@@ -75,12 +78,13 @@ class Machine(FakeRun):
             return 0, s["remote"] + "\n", ""
         if a[:3] == ["git", "status", "--porcelain"]:
             return 0, " M a.txt\n" if s["dirty"] else "", ""
-        if a[:3] == ["git", "merge-base", "--is-ancestor"] and a[3] == "HEAD":
-            return (0 if s["on_default"] else 1), "", ""
         if a[:3] == ["git", "merge-base", "--is-ancestor"]:
             return (0 if s["merged" if a[3] == "origin/main" else "ancestor"] else 1), "", ""
-        if a[:2] == ["git", "fetch"]:
-            return 0, "", ""
+        if a[:2] == ["git", "push"]:
+            self.pushes.append(a)
+            if self.push[0] == 0:
+                s["remote"] = s["head"]
+            return self.push
         return 1, "", "unexpected call"
 
 
@@ -182,7 +186,7 @@ class SendBackTests(Case):
         self.assertIn("already going", self.records("techlead")[0]["reason"])
 
     def test_red_checks_at_the_head_the_tech_lead_pushed_go_to_the_lead_but_a_conflict_there_does_not(self):
-        factory.log_tech_lead(mock.Mock(root=self.root), SLUG, N, CONFLICT, "resolved", head_after=OLD)
+        factory.log_tech_lead(mock.Mock(root=self.root), SETTINGS, SLUG, N, CONFLICT, "resolved", head_after=OLD)
         with mock.patch.object(factory, "spawn") as spawn:
             to, _ = self.send_back(RED)
             self.assertEqual(to, "lead")
@@ -193,7 +197,7 @@ class SendBackTests(Case):
             spawn.assert_called_once()
 
     def test_red_checks_at_another_head_start_a_tech_lead(self):
-        factory.log_tech_lead(mock.Mock(root=self.root), SLUG, N, CONFLICT, "resolved", head_after=NEW)
+        factory.log_tech_lead(mock.Mock(root=self.root), SETTINGS, SLUG, N, CONFLICT, "resolved", head_after=NEW)
         with mock.patch.object(factory, "spawn") as spawn:
             to, _ = self.send_back(RED)
         self.assertEqual(to, "tech lead")
@@ -211,9 +215,7 @@ class RunTests(Case):
             "--tools=Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch",
             "--allowedTools", "Read", "Edit", "Write", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "Bash(git *)",
             "Bash(make *)", "Bash(gh pr view *)", "Bash(gh pr diff *)", "Bash(gh pr checks *)", "Bash(gh run view *)",
-            "--disallowedTools", "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git push *--force*)",
-            "Bash(git push * +*)", "Bash(git push *:*)", "Bash(git push * -f*)", "Bash(git push *--delete*)",
-            "Bash(git push *--mirror*)", "Bash(git push *--all*)", "Bash(git rebase*)", "Bash(git commit --amend*)", "Bash(git worktree*)",
+            "--disallowedTools", "Bash(git push*)", "Bash(git rebase*)", "Bash(git commit --amend*)", "Bash(git worktree*)",
             "--max-budget-usd", "5.00", "--output-format", "json", "--json-schema", json.dumps(factory.TECH_LEAD_SCHEMA),
             "--append-system-prompt", role])
         self.assertEqual(argv[-1], (
@@ -238,8 +240,9 @@ class RunTests(Case):
         self.assertEqual(m.tech_lead_calls(), [])
 
     def test_resolved_comments_hands_over_and_tells_nobody(self):
-        code, out, _, m = self.go(after={"head": NEW, "remote": NEW})
+        code, out, _, m = self.go(after={"head": NEW})
         self.assertEqual(code, 0)
+        self.assertEqual(m.pushes, [["git", "push", "origin", f"HEAD:refs/heads/worktree-{SLUG}"]])
         self.assertEqual(m.comments, [f"Tech lead: {ANSWER['note']}"])
         self.assertEqual(m.lines, [])
         self.assertEqual(self.declared(), [("working", "tech-lead", None), ("handed-over", "tech-lead", URL)])
@@ -253,35 +256,34 @@ class RunTests(Case):
         self.assertEqual(out, f"#{N} tech lead resolved: {ANSWER['note']}\n")
 
     def test_a_failed_comment_is_recorded_and_does_not_stop_the_hand_over(self):
-        code, *_ = self.go(after={"head": NEW, "remote": NEW}, comment=(1, "", "boom"))
+        code, *_ = self.go(after={"head": NEW}, comment=(1, "", "boom"))
         self.assertEqual((code, self.declared()[-1][0], self.records("techlead")[0]["noted"]), (0, "handed-over", False))
 
     def test_a_cost_that_is_missing_stays_null(self):
         rc, out, err = said()
         doc = json.loads(out)
         del doc["total_cost_usd"]
-        self.go(claude=(rc, json.dumps(doc), err), after={"head": NEW, "remote": NEW})
+        self.go(claude=(rc, json.dumps(doc), err), after={"head": NEW})
         self.assertIsNone(self.records("techlead")[0]["cost_usd"])
 
     def edit_spec(self):
         self.spec.write_text("another spec")
-        return {"head": NEW, "remote": NEW}
+        return {"head": NEW}
 
     def test_each_failed_check_stops_the_run_and_names_itself(self):
         cases = {
-            "the worktree is not clean": {"head": NEW, "remote": NEW, "dirty": True},
-            "the worktree is not on": {"head": NEW, "remote": NEW, "branch": "elsewhere"},
-            "not an ancestor of HEAD": {"head": NEW, "remote": NEW, "ancestor": False},
-            "origin/main is not merged in": {"head": NEW, "remote": NEW, "merged": False},
-            "HEAD is not origin/worktree-task1": {"head": NEW},
-            "the run pushed the task onto the default branch": {"head": NEW, "remote": NEW, "on_default": True},
+            "the worktree is not clean": {"head": NEW, "dirty": True},
+            "the worktree is not on": {"head": NEW, "branch": "elsewhere"},
+            "not an ancestor of HEAD": {"head": NEW, "ancestor": False},
+            "origin/main is not merged in": {"head": NEW, "merged": False},
+            "the head did not move": {},
             "the spec changed": self.edit_spec,
         }
         for reason, after in cases.items():
             with self.subTest(reason=reason):
                 self.spec.write_text("the spec")
                 code, out, _, m = self.go(after=after)
-                self.assertEqual(code, 1)
+                self.assertEqual((code, m.pushes), (1, []))
                 r = self.records("techlead")[-1]
                 self.assertEqual(r["outcome"], "stopped")
                 self.assertIn(reason, r["reason"])
@@ -294,8 +296,32 @@ class RunTests(Case):
                 self.assertTrue(out.startswith(f"#{N} tech lead stopped: "))
 
     def test_a_failed_check_tells_the_lead_the_reason_and_the_note(self):
-        *_, m = self.go(after={"head": NEW, "remote": NEW, "dirty": True})
+        *_, m = self.go(after={"head": NEW, "dirty": True})
         self.assertIn(f"is yours: the worktree is not clean. {ANSWER['note'].rstrip('.')}. The task is working", m.lines[0])
+
+    def test_a_rejected_push_stops_the_run_with_gits_message_and_hands_nothing_over(self):
+        rejected = "! [rejected] HEAD -> worktree-task1 (fetch first)"
+        code, _, _, m = self.go(after={"head": NEW}, push=(1, "", f"{rejected}\n"))
+        self.assertEqual((code, self.declared()), (1, [("working", "tech-lead", None)]))
+        [r] = self.records("techlead")
+        self.assertEqual((r["outcome"], r["reason"]), ("stopped", f"git push failed: {rejected}"))
+        self.assertIn(f"is yours: git push failed: {rejected}. {ANSWER['note'].rstrip('.')}.", m.lines[0])
+        self.assertIn("not pushed", m.lines[0])
+
+    def test_a_failure_after_the_model_ran_keeps_its_session_and_cost_and_leaves_the_task_working(self):
+        real = factory.declare
+
+        def declare(repo, slug, role, state, **kw):
+            if state == "handed-over":
+                raise OSError("disk full")
+            return real(repo, slug, role, state, **kw)
+        with mock.patch.object(factory, "declare", declare):
+            code, _, _, m = self.go(after={"head": NEW})
+        self.assertEqual((code, self.declared(), len(m.lines)), (1, [("working", "tech-lead", None)], 1))
+        first, last = self.records("techlead")
+        self.assertEqual((first["outcome"], last["outcome"]), ("resolved", "stopped"))
+        self.assertIn("disk full", last["reason"])
+        self.assertEqual((last["session"], last["cost_usd"], last["head_before"]), ("sid-tl", 1.42, OLD))
 
     def test_a_failing_pull_request_read_is_a_stopped_record_and_a_line_to_the_lead(self):
         class Unreadable(Machine):
@@ -345,10 +371,10 @@ class RunTests(Case):
 
     def test_earlier_notes_on_this_pull_request_are_in_the_prompt(self):
         repo = mock.Mock(root=self.root)
-        factory.log_tech_lead(repo, SLUG, N, CONFLICT, "resolved", note="Kept both\nparagraphs.", head_after=NEW)
-        factory.log_tech_lead(repo, SLUG, N, CONFLICT, "unstarted", reason="no spec")
-        factory.log_tech_lead(repo, SLUG, N + 1, CONFLICT, "resolved", note="another pull request")
-        factory.log_tech_lead(repo, "other-task", N, CONFLICT, "resolved", note="another task")
+        factory.log_tech_lead(repo, SETTINGS, SLUG, N, CONFLICT, "resolved", note="Kept both\nparagraphs.", head_after=NEW)
+        factory.log_tech_lead(repo, SETTINGS, SLUG, N, CONFLICT, "unstarted", reason="no spec")
+        factory.log_tech_lead(repo, SETTINGS, SLUG, N + 1, CONFLICT, "resolved", note="another pull request")
+        factory.log_tech_lead(repo, SETTINGS, "other-task", N, CONFLICT, "resolved", note="another task")
         *_, m = self.go()
         prompt = m.tech_lead_calls()[0][-1]
         [line] = prompt.split("pull request:\n")[1].splitlines()
@@ -370,12 +396,142 @@ class RunTests(Case):
         self.assertEqual((m.tech_lead_calls(), self.declared()), ([], []))
 
 
+class RealRepositoryTests(Case):
+    """The script's checks and push against a real bare origin: `claude` is the only fake besides `gh`."""
+
+    def setUp(self):
+        super().setUp()
+        tmp = os.path.dirname(self.root)
+        config = Path(tmp, "gitconfig")
+        config.write_text("[user]\n\tname = T\n\temail = t@example.test\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n")
+        patcher = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        shutil.rmtree(self.root)
+        self.origin, self.other = f"{tmp}/origin.git", f"{tmp}/other"
+        self.tree, self.branch = f"{self.root}/.claude/worktrees/{SLUG}", f"worktree-{SLUG}"
+        self.git(tmp, "init", "-q", "--bare", self.origin)
+        self.git(tmp, "clone", "-q", self.origin, self.root)
+        self.commit(self.root, "base.txt")
+        self.git(self.root, "push", "-q", "-u", "origin", "main")
+        self.git(self.root, "remote", "set-head", "origin", "main")
+        self.git(self.root, "worktree", "add", "-q", "-b", self.branch, self.tree, "main")
+        self.commit(self.tree, "task.txt")
+        self.git(self.tree, "push", "-q", "-u", "origin", self.branch)
+        self.commit(self.root, "main2.txt")
+        self.git(self.root, "push", "-q", "origin", "main")
+        self.git(tmp, "clone", "-q", self.origin, self.other)
+        self.old = self.git(self.tree, "rev-parse", "HEAD")
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.root)
+
+    def git(self, cwd, *args):
+        return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+    def commit(self, cwd, name, text="x"):
+        Path(cwd, name).write_text(text)
+        self.git(cwd, "add", name)
+        self.git(cwd, "commit", "-q", "-m", name)
+
+    def merge_main(self):
+        self.git(self.tree, "merge", "--no-edit", "origin/main")
+
+    def move_remote(self, branch):
+        """Another clone pushes a commit to `branch` of origin, behind the run's back."""
+        self.git(self.other, "fetch", "-q", "origin")
+        self.git(self.other, "checkout", "-q", "-B", branch, f"origin/{branch}")
+        self.commit(self.other, f"{branch}-moved.txt")
+        self.git(self.other, "push", "-q", "origin", branch)
+
+    def state(self, old=None, before=None):
+        repo = factory.Repo(self.root)
+        return factory.tech_lead_state(repo, self.tree, self.pr(), old or self.old, self.spec,
+                                       before or factory.spec_hash(self.spec))
+
+    def test_a_correct_resolution_passes_while_the_default_branch_moves_on_the_remote(self):
+        self.merge_main()
+        self.move_remote("main")
+        head, clean, flaw = self.state()
+        self.assertEqual((head, clean, flaw), (self.git(self.tree, "rev-parse", "HEAD"), True, None))
+
+    def test_each_check_fails_for_its_reason(self):
+        def dirty():
+            Path(self.tree, "stray.txt").write_text("x")
+
+        def elsewhere():
+            self.merge_main()
+            self.git(self.tree, "checkout", "-q", "-b", "elsewhere")
+
+        def rewritten():
+            self.git(self.tree, "reset", "-q", "--hard", "origin/main")
+
+        def unmerged():
+            self.commit(self.tree, "more.txt")
+
+        def spec():
+            self.merge_main()
+            self.spec.write_text("another")
+        cases = [("the worktree is not clean", dirty, False), ("the worktree is not on", elsewhere, False),
+                 ("not an ancestor of HEAD", rewritten, False), ("origin/main is not merged in", unmerged, False),
+                 ("the spec changed", spec, False), ("the head did not move", self.merge_main, True)]
+        for reason, act, came_back_here in cases:
+            with self.subTest(reason=reason):
+                self.git(self.tree, "checkout", "-q", "-B", self.branch, self.old)
+                self.git(self.tree, "clean", "-fdq")
+                self.spec.write_text("the spec")
+                before = factory.spec_hash(self.spec)
+                act()
+                head = self.git(self.tree, "rev-parse", "HEAD")
+                flaw = self.state(old=head if came_back_here else None, before=before)[2]
+                self.assertIn(reason, flaw)
+
+    def resolve_with(self, session):
+        """The whole `factory tech-lead` run, `session` standing in for the model; `claude agents` lists a live lead."""
+        real, m = factory.run, Machine(self.root)
+        m.state["branch"] = self.branch
+
+        def run(argv, **kw):
+            if argv[:2] == ["claude", "-p"] and "--append-system-prompt" in argv:
+                session()
+                return said()
+            if argv[0] in ("gh", "claude"):
+                return m(argv, cwd=kw.get("cwd"), input=kw.get("input"), timeout=kw.get("timeout"), env=kw.get("env"))
+            return real(argv, **kw)
+        patcher = mock.patch.object(factory, "run", run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            code = factory.main(["tech-lead", SLUG, str(N), CONFLICT, "--dispatcher", "dispatcher-repo"])
+        return code, m
+
+    def remote_branch(self):
+        return self.git(self.origin, "rev-parse", f"refs/heads/{self.branch}")
+
+    def test_the_script_pushes_the_resolution_to_the_remote_branch_and_hands_over(self):
+        code, m = self.resolve_with(lambda: (self.merge_main(), self.move_remote("main")))
+        self.assertEqual((code, self.remote_branch()), (0, self.git(self.tree, "rev-parse", "HEAD")))
+        self.assertEqual(self.declared()[-1], ("handed-over", "tech-lead", URL))
+        self.assertEqual((self.records("techlead")[0]["outcome"], m.lines), ("resolved", []))
+
+    def test_a_push_the_remote_rejects_is_stopped_and_hands_nothing_over(self):
+        code, m = self.resolve_with(lambda: (self.merge_main(), self.move_remote(self.branch)))
+        self.assertNotEqual(self.remote_branch(), self.git(self.tree, "rev-parse", "HEAD"))
+        self.assertEqual((code, self.declared()), (1, [("working", "tech-lead", None)]))
+        [r] = self.records("techlead")
+        self.assertEqual(r["outcome"], "stopped")
+        self.assertTrue(r["reason"].startswith("git push failed: "), r["reason"])
+        self.assertIn("rejected", r["reason"])
+        self.assertEqual(len(m.lines), 1)
+
+
 class RunGroupTests(unittest.TestCase):
     def test_a_timeout_kills_what_the_child_started(self):
         with tempfile.TemporaryDirectory() as tmp:
             pidfile = Path(tmp, "pid")
+            started = time.monotonic()
             rc, *_ = factory.run(["sh", "-c", f"sleep 30 & echo $! > {pidfile}; wait"], timeout=1, group=True)
             self.assertEqual(rc, 124)
+            self.assertLess(time.monotonic() - started, 10)  # run waits for the pipes: a survivor would hold them 30 s
             pid = int(pidfile.read_text())
         with self.assertRaises(ProcessLookupError):
             for _ in range(50):
