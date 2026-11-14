@@ -1,4 +1,4 @@
-.PHONY: install up build test fmt-check test-factory wizard snapshot screenshot strip clean FORCE
+.PHONY: install up build test fmt-check test-factory wizard snapshot screenshot strip pictures clean FORCE
 
 BIN := bin/isshoni-tui
 VIEW ?= dashboard
@@ -71,6 +71,13 @@ strip: build
 	@[ -n "$(REPLAY)" ] || { echo "isshoni: set REPLAY=<events file>." >&2; exit 1; }
 	@[ -n "$(CHROME)" ] || { echo "isshoni: Chrome or Chromium is missing. Install one, or set CHROME=/path/to/chrome." >&2; exit 1; }
 	$(BIN) --snapshot hanami --replay $(REPLAY) --at $(AT) --frames $(FRAMES) --frame-step $(STEP) --size $(SIZE) $(ARGS) | python3 tools/strip.py --out shots/hanami-$(SCENE)-$(SIZE) --size $(SIZE) --chrome "$(CHROME)"
+
+# Record a looping GIF and WebP of every tab from this repository's own data into $(OUT), e.g. make pictures SCENES="hanami" OUT=/tmp/tabs SIZE=100x30 (see docs/isshoni.md)
+OUT ?= assets/tabs
+SCENES ?=
+pictures: build
+	@[ -n "$(CHROME)" ] || { echo "isshoni: Chrome or Chromium is missing. Install one, or set CHROME=/path/to/chrome." >&2; exit 1; }
+	python3 tools/record.py --out "$(OUT)" --scenes "$(SCENES)" --chrome "$(CHROME)"
 
 clean:
 	rm -rf $(BIN) shots
