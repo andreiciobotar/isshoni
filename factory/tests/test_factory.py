@@ -1158,7 +1158,7 @@ class NewTests(unittest.TestCase):
         self.assertEqual((rec["repo"], rec["slug"], rec["state"], rec["role"]), (ROOT, "demo-task", "working", "dispatcher"))
 
     def test_a_fractional_setting_is_told_in_whole_minutes(self):
-        _, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK), '{"task_time_limit_hours": 1.5}')
+        _, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK), "[limits]\ntask_time_limit_hours = 1.5\n")
         self.assertIn("Your time limit is 90 minutes.", next(c for c in fake.calls if c[:2] == ["claude", "--bg"])[-1], err)
 
     def test_a_sized_brief_sets_the_limit_and_is_recorded(self):
@@ -1714,7 +1714,7 @@ class StatusTests(unittest.TestCase):
             if criteria is not None:
                 path.write_text(criteria)
             with mock.patch.object(factory, "CRITERIA_PATH", path):
-                _, out, _, _ = invoke(["status", "--json"], answers, hours and json.dumps({"task_time_limit_hours": hours}),
+                _, out, _, _ = invoke(["status", "--json"], answers, hours and f"[limits]\ntask_time_limit_hours = {hours}\n",
                                       tasks=[task_rec("alpha", state)] if state else ())
         return json.loads(out)["rows"][0]
 
