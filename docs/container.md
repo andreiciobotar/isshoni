@@ -54,7 +54,8 @@ The container can serve `isshoni-tui` to any SSH client, for a phone or a laptop
 - **The key file is the only gate**: the container has no firewall and no other login. By default the port is open on the host's loopback only, so you reach it with an SSH tunnel to the host (`ssh -L 2222:127.0.0.1:2222 HOST`, then `ssh -p 2222 127.0.0.1`) or by putting the address of a LAN or VPN interface in `DASHBOARD_BIND`. `0.0.0.0` there publishes it to everyone who can reach the host. Keys can be added and removed while it runs.
 - **The port is published whether or not the dashboard is on**; with no key file nothing listens behind it. If host port 2222 is taken, set `DASHBOARD_PORT`: the container's own port stays 2222.
 - **Off**: empty or remove the key file and restart the container.
-- The server is not supervised: if it crashes it stays down until the container restarts. On `docker compose stop` it is killed with the container, not signalled, and holds no state to lose.
+- The start script supervises the server: when it ends, a line `dashboard server ended (status N), restarting in 2 s` goes to `docker logs isshoni-factory` and it starts again after 2 s, with no limit on restarts. On `docker compose stop` the script sends SIGTERM to the server and to supercronic and waits for both; the server closes its connections and ends within about 5 s. Whether the server runs is still decided once, at container start (the key file, as in step 2).
+- At most 4 connections per source address and 32 in all can be unauthenticated at once ([isshoni.md](isshoni.md#over-ssh)); with Docker's port publishing every client may arrive from the bridge gateway's address, so they share one per-address allowance.
 - It runs where the factory runs, as the container's user, so the Factory view's `factory status` sees the same tmux and processes; a `write` key changes `~/.claude/factory/settings.json` of that user.
 
 ## State
