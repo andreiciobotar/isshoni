@@ -3,6 +3,7 @@
 import argparse
 import base64
 import calendar
+import collections
 import hashlib
 import html
 import http.server
@@ -98,9 +99,12 @@ def validate_slug(slug):
         raise Fail(f"invalid slug {slug!r}: must not start with 'agent-'")
 
 
+SETTINGS_DEFAULTS = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
+                     "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True}
+
+
 def load_settings():
-    settings = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True}
+    settings = dict(SETTINGS_DEFAULTS)
     path = SETTINGS_PATH.expanduser()
     try:
         data = json.loads(path.read_text())
@@ -2013,10 +2017,18 @@ def other_home():
     return STORE.expanduser() != DEFAULT_STORE.expanduser()
 
 
+WATCH_PREFIX = "com.claude.factory.watch."
+
+
 def job_label(root):
     """Under another `FACTORY_HOME` the home is hashed in too: that job is never the real one."""
     key = f"{root}\0{STORE.expanduser()}" if other_home() else root
-    return f"com.claude.factory.watch.{os.path.basename(root)}-{hashlib.sha256(key.encode()).hexdigest()[:8]}"
+    return f"{WATCH_PREFIX}{os.path.basename(root)}-{hashlib.sha256(key.encode()).hexdigest()[:8]}"
+
+
+def ours(recorded):
+    """Whether a job that records `recorded` as its FACTORY_HOME (None: none) belongs to this home."""
+    return recorded == str(STORE.expanduser()) if other_home() else recorded is None
 
 
 def job_path():
@@ -2074,6 +2086,17 @@ class Launchd:
         legacy = self.drop_legacy(label, root)
         return self.drop(label) or legacy
 
+    def owned(self):
+        found = []
+        for plist in sorted(self.plist(WATCH_PREFIX).parent.glob(f"{WATCH_PREFIX}*.plist")):
+            try:
+                env = plistlib.loads(plist.read_bytes()).get("EnvironmentVariables") or {}
+            except Exception:
+                continue
+            if ours(env.get("FACTORY_HOME")):
+                found.append(plist.stem)
+        return found
+
     def status(self, label):
         return self.plist(label).exists(), run(["launchctl", "print", f"gui/{os.getuid()}/{label}"])[0] == 0
 
@@ -2107,6 +2130,18 @@ class Systemd:
         run(["systemctl", "--user", "daemon-reload"])
         return was
 
+    def owned(self):
+        found, prefix = [], 'Environment="FACTORY_HOME='
+        for timer in sorted(self.unit(WATCH_PREFIX, "timer").parent.glob(f"{WATCH_PREFIX}*.timer")):
+            try:
+                lines = timer.with_suffix(".service").read_text().splitlines()
+            except OSError:
+                continue
+            recorded = next((line[len(prefix):-1].replace("%%", "%") for line in lines if line.startswith(prefix)), None)
+            if ours(recorded):
+                found.append(timer.stem)
+        return found
+
     def status(self, label):
         return self.unit(label, "timer").exists(), run(["systemctl", "--user", "is-active", f"{label}.timer"])[0] == 0
 
@@ -2135,6 +2170,19 @@ class Cron:
         if len(kept) != len(lines):
             self.write(kept)
         return len(kept) != len(lines)
+
+    def owned(self):
+        found = []
+        for line in self.lines("")[0]:
+            marker = re.search(rf" # ({re.escape(WATCH_PREFIX)}\S+)$", line)
+            try:
+                tokens = shlex.split(line.replace("\\%", "%"))
+            except ValueError:
+                continue
+            recorded = next((t[len("FACTORY_HOME="):] for t in tokens if t.startswith("FACTORY_HOME=")), None)
+            if marker and ours(recorded):
+                found.append(marker.group(1))
+        return found
 
     def status(self, label):
         lines, kept = self.lines(label)
@@ -2725,9 +2773,6 @@ APP_NAME_MAX = 34
 
 
 def create_app(owner, name):
-    owner = owner or (remote_repo() or (None,))[0]
-    if not owner:
-        raise Fail("no owner: run inside a clone whose origin is on GitHub, or pass --owner NAME", 1)
     org = api("GET", f"/users/{urllib.parse.quote(owner)}", 200).get("type") == "Organization"
     name = name or f"isshoni-lander-{owner}"[:APP_NAME_MAX]
     print(f"This creates a GitHub App named {name} under {'the organization' if org else 'the account'} {owner}, "
@@ -2748,12 +2793,15 @@ def create_app(owner, name):
     return identity
 
 
+def delete_url(identity):
+    where = f"organizations/{identity['owner']}/settings/apps" if identity["owner_type"] == "Organization" else "settings/apps"
+    return f"https://github.com/{where}/{identity['slug']}/advanced"
+
+
 def undo_lines(identity):
-    slug, owner = identity["slug"], identity["owner"]
-    where = f"organizations/{owner}/settings/apps" if identity["owner_type"] == "Organization" else "settings/apps"
     uninstall = identity.get("installation_url")
     return [*([f"  uninstall: {uninstall}"] if uninstall else []),
-            f"  delete the App: https://github.com/{where}/{slug}/advanced",
+            f"  delete the App: {delete_url(identity)}",
             f"  forget it here: rm -r {IDENTITY}"]
 
 
@@ -2762,10 +2810,14 @@ def stopped(identity, why):
 
 
 def repair_modes(directory):
+    """True when a mode was loosened and is now set right."""
+    repaired = False
     for path, mode in ((directory, 0o700), (directory / "key.pem", 0o600)):
         if path.stat().st_mode & 0o777 & ~mode:
             path.chmod(mode)
             print(f"{path} had looser permissions: set to {oct(mode)[2:]}")
+            repaired = True
+    return repaired
 
 
 def find_installation(identity):
@@ -2803,11 +2855,12 @@ def installed_repositories(token):
 
 
 def verify_app(identity):
+    """Check the App online and repair what drifted; True when something was changed."""
     directory = IDENTITY.expanduser()
     if not (directory / "key.pem").exists():
         raise stopped(identity, f"{directory / 'key.pem'} is missing: copy the identity directory back from the machine "
                                 f"that ran the wizard, or remove the App and run again.")
-    repair_modes(directory)
+    repaired = repair_modes(directory)
     status, body = github_api("GET", "/app", bearer=app_jwt(identity))
     if status in (401, 404):
         raise stopped(identity, "The stored App no longer exists on GitHub or its key was revoked"
@@ -2816,7 +2869,7 @@ def verify_app(identity):
         raise Fail(f"GitHub GET /app failed: {reason(status, body)}", 1)
     if not (isinstance(body, dict) and body.get("slug") and body.get("html_url")):
         raise Fail("GitHub's answer to GET /app lacks the App's slug or html_url; nothing was written", 1)
-    old_slug = identity["slug"]
+    stored, old_slug = identity, identity["slug"]
     identity = {**identity, "slug": body["slug"], "html_url": body["html_url"]}
     installation = installation_for(identity)
     token, _ = installation_token({**identity, "installation_id": installation["id"]})
@@ -2827,7 +2880,8 @@ def verify_app(identity):
     bot_id = api("GET", f"/users/{urllib.parse.quote(bot, safe='')}", 200)["id"]
     identity = {**identity, "installation_id": installation["id"], "installation_url": installation["html_url"],
                 "repository_selection": installation.get("repository_selection"), "bot_login": bot, "bot_id": bot_id, "bot_email": f"{bot_id}+{bot}@users.noreply.github.com"}
-    write_identity(identity)
+    if identity != stored:
+        write_identity(identity)
     if identity["slug"] != old_slug:
         print(f"renamed: {old_slug} -> {identity['slug']}")
     print(f"App {identity['slug']}: {identity['html_url']}")
@@ -2840,13 +2894,185 @@ def verify_app(identity):
         print(f"Acts as {bot}; reads and writes {len(repos)} repositories:")
         for name in repos:
             print(f"  {name}")
-    print(f"Its private key is in {IDENTITY}. To undo:")
-    print("\n".join(undo_lines(identity)))
+    print(f"Its private key is in {IDENTITY}. To remove it: `factory uninstall` (`make uninstall` in the clone)")
+    return repaired or identity != stored
 
 
-def cmd_wizard(args):
-    if args.name and len(args.name) > APP_NAME_MAX:
-        raise Fail(f"--name is {len(args.name)} characters: an App name is {APP_NAME_MAX} at most", 2)
+# ---- setup ------------------------------------------------------------------
+
+PLUGIN = "factory@factory"
+SOURCE = "andreiciobotar/isshoni"
+# The names the factory writes at the top of its home; uninstall removes these and nothing else there.
+HOME_FILE_RE = re.compile(r"settings\.json|watch\.log|identity|specs|deliverables|dashboard|\.settings-.*\.tmp"
+                          r"|(events|tasks|feedback|firings|retros)(-\d{4}-\d\d)?\.jsonl")
+Step = collections.namedtuple("Step", "name purpose optional state act recheck", defaults=(False,))
+
+
+class Skip(Exception):
+    """An optional step that was declined or cannot run: one line, and the run goes on."""
+
+
+def ask(question, yes):
+    """--yes is yes; otherwise one line from stdin, and anything but y or yes (an empty line, end of input) is no."""
+    if yes:
+        return True
+    print(f"{question} [y/N] ", end="", flush=True)
+    return sys.stdin.readline().strip().lower() in ("y", "yes")
+
+
+def clone():
+    """The clone this script runs from, else None: the installed plugin holds only factory/."""
+    root = FACTORY.parents[2]
+    return root if (root / "bin" / "isshoni").is_file() and (root / "go.mod").is_file() else None
+
+
+def claude_json(*args):
+    """The list `claude <args> --json` prints, or None."""
+    rc, out, _ = run(["claude", *args, "--json"])
+    try:
+        data = json.loads(out) if rc == 0 else None
+    except ValueError:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def missing_dependencies():
+    todo = []
+    for tool, fix in (("git", "install git"), ("gh", "https://cli.github.com, then `gh auth login`"),
+                      ("claude", "https://claude.com/claude-code, then run `claude` and log in"),
+                      ("openssl", "install openssl")):
+        if not shutil.which(tool):
+            todo.append(f"{tool} is missing: {fix}")
+    if sys.version_info < (3, 11):
+        todo.append("Python 3.11 or newer is required: https://www.python.org/downloads/")
+    # "/" is no repository, so no App identity replaces the human's login
+    if shutil.which("gh") and run(["gh", "auth", "status"], cwd="/")[0] != 0:
+        todo.append("gh is not logged in: run `gh auth login`")
+    if shutil.which("claude"):
+        rc, out, _ = run(["claude", "auth", "status"])
+        try:
+            logged_in = rc == 0 and json.loads(out).get("loggedIn") is True
+        except (ValueError, AttributeError):
+            logged_in = False
+        if not logged_in:
+            todo.append("claude is not logged in: run `claude` and log in")
+    return todo
+
+
+def dependencies_state():
+    todo = missing_dependencies()
+    return not todo, "\n    ".join(todo) or "git, gh, claude, openssl, Python 3.11+, both logins"
+
+
+def dependencies_act(args, detail):
+    raise Fail(detail)
+
+
+def dashboard_state():
+    root = clone()
+    if not root:
+        return None, "the dashboard needs a clone of the repository"
+    return (root / "bin" / "isshoni-tui").exists(), str(root / "bin" / "isshoni-tui")
+
+
+def dashboard_act(args, detail):
+    if not shutil.which("go"):
+        raise Skip("Go 1.27+ is missing: https://go.dev/dl, then run the wizard again")
+    if not ask("Build the dashboard (make build)?", args.yes):
+        raise Skip("declined")
+    rc, out, err = run(["make", "build"], cwd=clone())
+    if rc != 0:
+        raise Fail(f"make build failed: {((err or out).strip().splitlines() or ['no output'])[-1]}")
+    return "built the dashboard (make build)"
+
+
+def user_plugin(plugins):
+    return next((p for p in plugins if isinstance(p, dict) and p.get("id") == PLUGIN and p.get("scope") == "user"), None)
+
+
+def plugin_state():
+    plugins = claude_json("plugin", "list")
+    if plugins is None:
+        return False, "cannot read `claude plugin list --json`"
+    found = user_plugin(plugins)
+    if found and found.get("enabled") is False:
+        return False, f"{PLUGIN} is installed but disabled: run `claude plugin enable {PLUGIN}`"
+    return bool(found), PLUGIN
+
+
+def plugin_act(args, detail):
+    if "disabled" in detail:
+        raise Fail(detail)
+    markets = claude_json("plugin", "marketplace", "list")
+    if markets is None:
+        raise Fail("cannot read `claude plugin marketplace list --json`: nothing was added")
+    market = next((m for m in markets if isinstance(m, dict) and m.get("name") == "factory"), None)
+    if market and market.get("repo") != SOURCE:
+        raise Fail(f"a marketplace named factory exists from {market.get('repo') or market.get('path') or market.get('source')}, "
+                   f"not {SOURCE}: remove it (`claude plugin marketplace remove factory`) if it is not yours to keep, "
+                   f"then run the wizard again")
+    commands = [*([] if market else [["claude", "plugin", "marketplace", "add", SOURCE]]), ["claude", "plugin", "install", PLUGIN]]
+    for argv in commands:
+        rc, out, err = run(argv)
+        if rc != 0:
+            raise Fail(f"`{shlex.join(argv)}` failed: {(err or out).strip()}\n    By hand: "
+                       + "; ".join(shlex.join(c) for c in commands))
+    return f"installed {PLUGIN}"
+
+
+def write_settings(data):
+    """Atomically: a reader never sees half a file."""
+    directory = SETTINGS_PATH.expanduser().parent
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".settings-", suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, SETTINGS_PATH.expanduser())
+
+
+def settings_state():
+    path = SETTINGS_PATH.expanduser()
+    if not path.exists():
+        return False, f"{path} is missing"
+    try:
+        load_settings()
+    except Fail as e:
+        return False, f"{e} ({path})"
+    return True, str(path)
+
+
+def settings_act(args, detail):
+    if SETTINGS_PATH.expanduser().exists():
+        raise Fail(detail)
+    write_settings({k: v for k, v in SETTINGS_DEFAULTS.items() if k != "monitor"})
+    return f"wrote the defaults to {SETTINGS_PATH.expanduser()}"
+
+
+def cost_state():
+    root = clone()
+    if not root:
+        return None, "cost alerts and the daily digest need a clone of the repository"
+    if "/.claude/worktrees/" in str(root):
+        return None, "this clone is a task worktree and its path disappears with it: run the wizard from the main checkout"
+    try:
+        monitor = load_settings()["monitor"]
+    except Fail as e:
+        return False, str(e)
+    return bool(monitor and Path(monitor).is_file()), monitor or "monitor is not set"
+
+
+def cost_act(args, detail):
+    if not ask("Turn on cost alerts and the daily digest?", args.yes):
+        raise Skip("declined")
+    data = json.loads(SETTINGS_PATH.expanduser().read_text())
+    old, target = data.get("monitor"), str(clone() / "bin" / "isshoni")
+    write_settings({**data, "monitor": target})
+    return f"set monitor to {target}" + (f" (it pointed at {old}, which is missing)" if old else "")
+
+
+def setup_app(args, detail):
+    """The GitHub App: create it when there is none, then verify and repair it online. None when nothing changed."""
     identity = load_identity()
     if identity and args.name:
         raise Fail(f"this machine already has the App {identity['slug']}: the wizard does not rename it; rename it on "
@@ -2856,12 +3082,222 @@ def cmd_wizard(args):
             raise Fail(f"{IDENTITY.expanduser() / 'key.pem'} exists without app.json: remove the directory with "
                        f"`rm -r {IDENTITY}`, delete the App it belongs to on your GitHub apps settings page "
                        f"(it holds the name), and run again", 1)
-        identity = create_app(args.owner, args.name)
+        if not ask("Give the factory its own GitHub identity, so its pull requests come from a bot you can approve? "
+                   "Two confirmations in your browser.", args.yes):
+            raise Skip("declined")
+        owner = args.owner
+        if not owner:
+            rc, out, _ = run(["gh", "api", "user", "--jq", ".login"])
+            owner = out.strip()
+            if rc != 0 or not owner:
+                raise Fail("cannot read your GitHub login (`gh api user`): pass --owner ACCOUNT", 1)
+        identity = create_app(owner, args.name)
     elif args.owner and args.owner.lower() != identity["owner"].lower():
         raise Fail(f"this machine's identity is the App {identity['slug']} of {identity['owner']}, not {args.owner}: "
-                   f"one identity per machine (to replace it, undo it first)", 1)
-    verify_app(identity)
-    return 0
+                   f"one identity per machine (to replace it, remove it first with `factory uninstall`)", 1)
+    return f"the GitHub App {identity['slug']}" if verify_app(identity) else None
+
+
+def app_state():
+    try:
+        identity = load_identity()
+    except Fail as e:
+        return False, str(e)
+    if not identity:
+        return False, "no identity"
+    ready = identity.get("installation_id") and (IDENTITY.expanduser() / "key.pem").exists()
+    return bool(ready), f"{identity.get('slug')} ({'installed' if ready else 'not installed or key missing'})"
+
+
+WIZARD_STEPS = (
+    Step("dependencies", "git, gh, claude, openssl, Python 3.11+, and both logins", False, dependencies_state, dependencies_act),
+    Step("dashboard", "build the terminal dashboard", True, dashboard_state, dashboard_act),
+    Step("plugin", "install the factory plugin into Claude Code", False, plugin_state, plugin_act),
+    Step("settings", "write the factory's settings file", False, settings_state, settings_act),
+    Step("cost criteria", "cost alerts and the daily digest", True, cost_state, cost_act),
+    Step("GitHub App", "the factory's own GitHub identity", True, app_state, setup_app, recheck=True),
+)
+
+
+def cmd_wizard(args):
+    if args.name and len(args.name) > APP_NAME_MAX:
+        raise Fail(f"--name is {len(args.name)} characters: an App name is {APP_NAME_MAX} at most", 2)
+    did = failed = False
+    for step in () if args.list else WIZARD_STEPS:
+        done, detail = step.state()
+        print(f"{step.name}: {step.purpose}")
+        if done is None:
+            print(f"  skipped: {detail}")
+        elif done and not step.recheck:
+            print(f"  done: {detail}")
+        else:
+            try:
+                text = step.act(args, detail)
+            except Skip as e:
+                print(f"  skipped: {e}")
+            except Fail as e:
+                print(f"  needs you: {e}")
+                if not step.optional:
+                    print("Then run the wizard again.")
+                    return 1
+                failed = True
+            else:
+                print(f"  did: {text}" if text else f"  done: {detail}")
+                did = did or bool(text)
+    states = [(step, *step.state()) for step in WIZARD_STEPS]
+    print("Summary:")
+    for step, done, detail in states:
+        print(f"  {step.name}: {'n/a' if done is None else 'done' if done else 'not done'} ({detail})")
+    print("site manager: starts with the dispatcher session and stops with it; nothing to install")
+    required = all(done for step, done, _ in states if not step.optional)
+    if required:
+        print("To start working, in the repository you want work done in, run `claude`, then:\n"
+              "  /rename dispatcher-<repository directory name>\n  /factory:dispatch")
+    if not args.list and not did and not failed and all(done is not False for _, done, _ in states):
+        print("Nothing to do: everything is set up.")
+    return 0 if required and not failed else 1
+
+
+def uninstall_step(args, left, found, lost, kept):
+    """Say what was found and what is lost, then ask; True when the caller should act. --list only says."""
+    print(f"  found: {found}\n  lost: {lost}")
+    if args.list:
+        return False
+    if ask("  Remove it?", args.yes):
+        return True
+    left.append(f"{kept}: you declined")
+    return False
+
+
+def uninstall_schedules(args, left):
+    try:
+        backend = scheduler()
+    except Fail as e:
+        return print(f"  {e}: nothing to remove")
+    labels = backend.owned()
+    if not labels:
+        return print("  nothing to remove")
+    if uninstall_step(args, left, f"{len(labels)} watch job(s) of this home: {', '.join(labels)}",
+                      "the half-hourly watch of those repositories", "the watch jobs"):
+        for label in labels:
+            backend.remove(label, None)
+        print(f"  removed {len(labels)} job(s)")
+
+
+def uninstall_app(args, left):
+    identity = load_identity()
+    if not identity:
+        return print("  nothing to remove")
+    problem = None
+    if identity.get("installation_id") and uninstall_step(
+            args, left, f"the App {identity['slug']}, installed", "its access to your repositories",
+            f"the App {identity['slug']}'s installation"):
+        try:
+            status, body = github_api("DELETE", f"/app/installations/{identity['installation_id']}", app_jwt(identity))
+            if status in (204, 404):
+                print("  uninstalled" if status == 204 else "  already uninstalled")
+            else:
+                problem = f"GitHub DELETE the installation failed: {reason(status, body)}"
+        except Fail as e:
+            problem = str(e)
+    url = delete_url(identity)
+    print(f"  Delete the App there (Advanced, Delete GitHub App): only you can: {url}")
+    left.append(f"the App {identity['slug']} on GitHub, until you delete it at {url}")
+    if not args.list:
+        open_browser(url)
+    if problem:
+        raise Fail(problem)
+
+
+def uninstall_plugin(args, left):
+    if not shutil.which("claude"):
+        return print("  claude is not on PATH: nothing to remove")
+    plugins, markets = claude_json("plugin", "list"), claude_json("plugin", "marketplace", "list")
+    if plugins is None or markets is None:
+        raise Fail("cannot read `claude plugin list --json` or `claude plugin marketplace list --json`: nothing removed")
+    installed = user_plugin(plugins)
+    market = next((m for m in markets if isinstance(m, dict) and m.get("name") == "factory"), None)
+    if market and market.get("repo") != SOURCE:
+        print(f"  a marketplace named factory from {market.get('repo') or market.get('path') or market.get('source')}, "
+              f"not {SOURCE}: kept, with the plugin")
+        return left.append("the marketplace named factory and the plugin: not from " + SOURCE)
+    if not market:
+        if installed:
+            print(f"  {PLUGIN} is installed but its marketplace is not {SOURCE}: kept")
+            left.append(f"the plugin {PLUGIN}: not positively the factory's")
+        else:
+            print("  nothing to remove")
+        return
+    if uninstall_step(args, left, f"the marketplace {SOURCE}" + (f" and {PLUGIN}" if installed else ""),
+                      "the factory's commands and hooks in Claude Code", "the plugin and its marketplace"):
+        for argv in ([*([["claude", "plugin", "uninstall", PLUGIN]] if installed else []),
+                      ["claude", "plugin", "marketplace", "remove", "factory"]]):
+            rc, out, err = run(argv)
+            if rc != 0:
+                raise Fail(f"`{shlex.join(argv)}` failed: {(err or out).strip()}")
+        print("  removed")
+
+
+def count_files(path):
+    return sum(1 for f in path.rglob("*") if f.is_file()) if path.is_dir() else 0
+
+
+def uninstall_home(args, left):
+    home = STORE.expanduser()
+    entries = sorted(home.iterdir()) if home.is_dir() else []
+    mine = [p for p in entries if HOME_FILE_RE.fullmatch(p.name)]
+    strangers = [p for p in entries if p not in mine]
+    if strangers and other_home():
+        print(f"  {home} does not look like a factory home: {', '.join(p.name for p in strangers)}; nothing removed")
+        return left.append(f"{home}: does not look like a factory home")
+    for p in strangers:
+        print(f"  not the factory's, kept: {p}")
+        left.append(f"{p}: not the factory's")
+    if not mine:
+        return print("  nothing to remove")
+    found = "\n    ".join(f"{p} ({count_files(p)} files)" if p.is_dir() else str(p) for p in mine)
+    if uninstall_step(args, left, "in " + str(home) + "\n    " + found, "all of it, for good, the identity's private key included"
+                      if (home / "identity").exists() else "all of it, for good", f"the home {home}"):
+        for p in mine:
+            shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()
+        try:
+            home.rmdir()
+        except OSError:
+            return print("  removed what is the factory's; the directory stays")
+        print(f"  removed {home}")
+
+
+def uninstall_dashboard(args, left):
+    binary = clone() and clone() / "bin" / "isshoni-tui"
+    if not (binary and binary.exists()):
+        return print("  nothing to remove")
+    if uninstall_step(args, left, str(binary), "the built dashboard (make build makes it again)", "the dashboard binary"):
+        binary.unlink()
+        print("  removed")
+
+
+UNINSTALL_STEPS = (("schedules", uninstall_schedules), ("GitHub App", uninstall_app), ("plugin", uninstall_plugin),
+                   ("home", uninstall_home), ("dashboard binary", uninstall_dashboard))
+
+
+def cmd_uninstall(args):
+    left, failed = [], False
+    for name, step in UNINSTALL_STEPS:
+        print(f"{name}:")
+        try:
+            step(args, left)
+        except (Fail, OSError) as e:
+            print(f"  failed: {e}")
+            failed = True
+    print("left behind:")
+    for line in ("Claude Code's own transcripts and settings (~/.claude/projects)",
+                 "your repositories, their task worktrees (.claude/worktrees/) and worktree-* branches: "
+                 "`factory clean` or `git worktree remove` removes them, before the plugin is uninstalled",
+                 *([f"this clone ({clone()})"] if clone() else []), "git, gh, Go, Claude Code", *left):
+        print(f"  {line}")
+    return 1 if failed else 0
+
+
 # ---- land -------------------------------------------------------------------
 
 LAND_TEST_TIMEOUT = 1800
@@ -3234,9 +3670,14 @@ def parse_args(argv):
     schedule = sub.add_parser("schedule", help="install, remove or show the job that runs watch every 30 minutes")
     schedule.add_argument("action", choices=("install", "remove", "status"))
     schedule.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
-    wizard = sub.add_parser("wizard", help="create, install and check the factory's own GitHub App (rerun to repair)")
-    wizard.add_argument("--owner", help="the account or organization to create the App under (default: owner of origin)")
+    wizard = sub.add_parser("wizard", help="set everything up, step by step; rerun to repair or finish")
+    wizard.add_argument("--yes", action="store_true", help="accept every offer without asking")
+    wizard.add_argument("--list", action="store_true", help="show each step and its state; change nothing")
+    wizard.add_argument("--owner", help="the account or organization to create the App under (default: your own GitHub account)")
     wizard.add_argument("--name", help="the new App's name, 34 characters at most (default: isshoni-lander-<owner>)")
+    uninstall = sub.add_parser("uninstall", help="remove what the wizard and the factory put on this machine")
+    uninstall.add_argument("--yes", action="store_true", help="confirm every removal without asking")
+    uninstall.add_argument("--list", action="store_true", help="show what each step would remove; change nothing")
     return parser.parse_args(argv)
 
 
@@ -3250,7 +3691,7 @@ def main(argv=None):
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "land": cmd_land, "schedule": cmd_schedule, "wizard": cmd_wizard, "env": cmd_env}[args.cmd](args)
+                "land": cmd_land, "schedule": cmd_schedule, "wizard": cmd_wizard, "uninstall": cmd_uninstall, "env": cmd_env}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)
         return e.code

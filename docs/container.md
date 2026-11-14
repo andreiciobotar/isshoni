@@ -30,9 +30,8 @@ Only you can do these. In order:
 2. Log Claude Code in: run `claude`. With no browser it shows a login URL (`c` copies it); open it on any device and paste the code it gives back. `claude auth login` does the same from the shell. Use your subscription login, not `claude setup-token`: that token only makes model requests, so Remote Control would not work.
 3. Give `gh` a token and let git use it: `gh auth login` (HTTPS, paste a token), then `gh auth setup-git`, then `git config --global user.name` and `user.email`. See GitHub identity below for which token.
 4. Clone what the factory works on: `git clone https://github.com/<owner>/<repository> ~/code/<repository>`.
-5. Install the plugin: `claude plugin marketplace add andreiciobotar/isshoni`, then `claude plugin install factory@factory`.
-6. Optional, for the cost criteria and the daily digest: clone this repository to `~/code/isshoni`, run `make install` there, and set `"monitor": "/state/home/code/isshoni/bin/isshoni"` in `~/.claude/factory/settings.json`.
-7. Start the dispatcher in the tmux shell: `cd ~/code/<repository> && claude`, then `/rename dispatcher-<repository>` and `/factory:dispatch`. Detach.
+5. Clone this repository to `~/code/isshoni` and run `make wizard` there: it checks the logins of steps 2 and 3, offers to build the dashboard, installs the plugin, writes the settings with `"monitor"` (the cost criteria and the daily digest) and offers the GitHub App.
+6. Start the dispatcher in the tmux shell: `cd ~/code/<repository> && claude`, then `/rename dispatcher-<repository>` and `/factory:dispatch`. Detach.
 
 ## Talking to the dispatcher
 - **Recommended: SSH to the host, then `docker exec -it isshoni-factory tmux attach`.** It needs nothing beyond the SSH access you already have, and works from any SSH client, a phone's included. A lead is `claude attach <slug>` from that shell.
@@ -40,7 +39,7 @@ Only you can do these. In order:
 - **The dashboard over SSH**, read-only by default: see the next section. It is the dashboard only, not a shell.
 
 ## The dashboard over SSH
-The container can serve `isshoni-tui` to any SSH client, for a phone or a laptop that has no `docker exec` ([isshoni.md](isshoni.md#over-ssh) has what it does). It needs the dashboard built (step 6) and a key:
+The container can serve `isshoni-tui` to any SSH client, for a phone or a laptop that has no `docker exec` ([isshoni.md](isshoni.md#over-ssh) has what it does). It needs the dashboard built (step 5) and a key:
 
 1. Put a public key in `<FACTORY_STATE>/home/.claude/factory/dashboard/authorized_keys`, one per line (`mkdir -p` the directory first). A line that starts with `write ` (`write ssh-ed25519 AAAA... laptop`) may also change the worktree cap; every other key is read-only.
 2. Restart the container: `docker compose restart`. (A container built before the dashboard existed has neither the start script nor the published port: run `docker compose up -d --build` once instead.) The start script runs `isshoni-tui --serve 0.0.0.0:2222` when the file is not empty and `~/code/isshoni/bin/isshoni-tui` exists.
