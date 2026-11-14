@@ -198,12 +198,13 @@ func dial(addr string, s gossh.Signer, hostKey func(gossh.PublicKey)) (*gossh.Cl
 
 // viewer is one client session on a terminal.
 type viewer struct {
-	t      *testing.T
-	client *gossh.Client
-	sess   *gossh.Session
-	in     io.WriteCloser
-	out    *syncBuf
-	exited chan error // the session's end
+	t       *testing.T
+	client  *gossh.Client
+	sess    *gossh.Session
+	in      io.WriteCloser
+	out     *syncBuf
+	drained chan struct{} // closed when out holds all the session wrote
+	exited  chan error    // the session's end
 }
 
 type viewOpts struct {
@@ -245,7 +246,7 @@ func (e *testEnv) view(addr string, o viewOpts) *viewer {
 			e.t.Fatal(err)
 		}
 	}
-	v := &viewer{t: e.t, client: c, sess: sess, out: &syncBuf{}, exited: make(chan error, 1)}
+	v := &viewer{t: e.t, client: c, sess: sess, out: &syncBuf{}, drained: make(chan struct{}), exited: make(chan error, 1)}
 	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		e.t.Fatal(err)
@@ -253,7 +254,10 @@ func (e *testEnv) view(addr string, o viewOpts) *viewer {
 	if v.in, err = sess.StdinPipe(); err != nil {
 		e.t.Fatal(err)
 	}
-	go io.Copy(v.out, stdout)
+	go func() {
+		io.Copy(v.out, stdout)
+		close(v.drained)
+	}()
 	if err := sess.Shell(); err != nil {
 		e.t.Fatal(err)
 	}
@@ -274,12 +278,20 @@ func (v *viewer) waitFor(text string) {
 	waitFor(v.t, "the screen to show "+text, func() bool { return strings.Contains(squash(v.out.String()), want) })
 }
 
+// waitExit returns the session's exit once all of its output is in v.out: Wait does not wait
+// for a StdoutPipe to be read, so the exit status can arrive before the last bytes are copied.
 func (v *viewer) waitExit() error {
 	v.t.Helper()
+	timeout := time.After(10 * time.Second)
 	select {
 	case err := <-v.exited:
+		select {
+		case <-v.drained:
+		case <-timeout:
+			v.t.Fatal("the session ended but its output did not")
+		}
 		return err
-	case <-time.After(10 * time.Second):
+	case <-timeout:
 		v.t.Fatal("the session did not end")
 		return nil
 	}
@@ -439,15 +451,17 @@ func TestServeEachViewerRendersAtItsOwnSize(t *testing.T) {
 	for _, v := range []*viewer{a, b, c} {
 		v.waitFor("zebrafish")
 	}
-	ra, rb, rc := rule(a.out.String()), rule(b.out.String()), rule(c.out.String())
-	if ra >= rc || rc >= rb {
-		t.Fatalf("panes laid out for 80, 120 and 140 columns drew rules of %d, %d and %d", ra, rc, rb)
-	}
+	// the word can arrive before the rest of its frame: wait for the widths, do not sample them
+	var ra, rb, rc int
+	waitFor(t, "panes laid out for 80, 120 and 140 columns to draw rules of growing width", func() bool {
+		ra, rb, rc = rule(a.out.String()), rule(b.out.String()), rule(c.out.String())
+		return ra > 0 && ra < rc && rc < rb
+	})
 	before := a.out.Len()
 	if err := a.sess.WindowChange(30, 120); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "A to redraw at the new width", func() bool { return rule(a.out.String()[before:]) == rc })
+	waitFor(t, "A to redraw at the new width", func() bool { return rule(a.out.String()[before:]) == rule(c.out.String()) })
 }
 
 func TestServeATerminalWithoutASizeGetsTheDefault(t *testing.T) {
@@ -525,9 +539,13 @@ func TestServeColourFollowsTheClientTerminal(t *testing.T) {
 			tc.o.signer = s
 			v := e.view(addr, tc.o)
 			v.waitFor("zebrafish")
-			out := v.out.String()
-			if !tc.want(out) {
-				t.Fatalf("SGR sequences: %q", sgr.FindAllString(out, 20))
+			// the word can arrive before the rest of its frame: give the colours time to follow
+			deadline := time.Now().Add(10 * time.Second)
+			for !tc.want(v.out.String()) {
+				if time.Now().After(deadline) {
+					t.Fatalf("SGR sequences: %q", sgr.FindAllString(v.out.String(), 20))
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
 		})
 	}
