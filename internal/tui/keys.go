@@ -14,6 +14,7 @@ type keyMap struct {
 	Range, Follow, Sort, Filter               key.Binding
 	FilterKeep, FilterClear, Erase, Wipe      key.Binding
 	CapEdit, CapSave, CapCancel               key.Binding
+	Hanami, Legend, Zen, Replay               key.Binding
 }
 
 var keys = keyMap{
@@ -23,10 +24,11 @@ var keys = keyMap{
 
 	Next:    key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next view")),
 	Prev:    key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "previous view")),
-	Dash:    key.NewBinding(key.WithKeys("1"), key.WithHelp("1 2 3 4", "dashboard · agents · factory · kaizen")),
+	Dash:    key.NewBinding(key.WithKeys("1"), key.WithHelp("1 2 3 4 5", "dashboard · agents · factory · kaizen · hanami")),
 	Agents:  key.NewBinding(key.WithKeys("2")),
 	Factory: key.NewBinding(key.WithKeys("3")),
 	Kaizen:  key.NewBinding(key.WithKeys("4")),
+	Hanami:  key.NewBinding(key.WithKeys("5")),
 
 	PageLeft:  key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("←→/hl", "kaizen page")),
 	PageRight: key.NewBinding(key.WithKeys("l", "right")),
@@ -57,6 +59,11 @@ var keys = keyMap{
 	CapEdit:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "edit cap")),
 	CapSave:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "save")),
 	CapCancel: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+
+	// the Hanami tab's own keys: its footer shows them; the help overlay has no row left for them at 24 rows
+	Legend: key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "legend")),
+	Zen:    key.NewBinding(key.WithKeys("z"), key.WithHelp("z", "full screen")),
+	Replay: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "replay 24h · live")),
 }
 
 // footerKeys is what the footer advertises, most useful first; the footer drops from
@@ -69,6 +76,8 @@ func (m *model) footerKeys() []key.Binding {
 		return []key.Binding{keys.CapSave, keys.CapCancel}
 	case m.view == viewFactory:
 		return []key.Binding{keys.Down, keys.CapEdit, keys.Range, keys.Next, keys.Help, keys.Quit}
+	case m.view == viewHanami:
+		return []key.Binding{keys.Legend, keys.Zen, keys.Replay, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewKaizen:
 		return []key.Binding{keys.PageLeft, keys.Down, keys.Range, keys.Next, keys.Help, keys.Quit}
 	case m.zoomed():

@@ -84,12 +84,12 @@ def _seconds(later, earlier):
 
 # ---- gh -----------------------------------------------------------------------------
 
-def gh_prs(repo_path):
-    """Every pull request of the repository, as gh lists them; GhError when gh cannot."""
+def gh_prs(repo_path, fields=GH_FIELDS):
+    """Every pull request of the repository with the given gh fields; GhError when gh cannot."""
     if not os.path.isdir(repo_path):
         raise GhError("no such repository path")
     try:
-        p = subprocess.run(["gh", "pr", "list", "--state", "all", "--limit", "1000", "--json", GH_FIELDS],
+        p = subprocess.run(["gh", "pr", "list", "--state", "all", "--limit", "1000", "--json", fields],
                            cwd=repo_path, capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.SubprocessError) as e:
         raise GhError("gh unavailable: %s" % str(e).splitlines()[0] if str(e) else "gh unavailable")
