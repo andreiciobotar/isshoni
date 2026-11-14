@@ -70,6 +70,9 @@ A `Host factory` of your own is never touched: that is an error and nothing is w
 
 The dispatcher and the leads are background sessions in the container: `ssh -t nas docker exec -it isshoni-factory claude agents` lists them and attaches.
 
+- The start script supervises the dashboard server it started: when it ends, a line `dashboard server ended (status N), restarting in 2 s` goes to `docker logs isshoni-factory` and it starts again after 2 s. A server that `host add` started in place (step 10) is not supervised until the container next restarts.
+- At most 4 connections per source address and 32 in all can be unauthenticated at once ([isshoni.md](isshoni.md#over-ssh)).
+
 ## Status, remove, update
 - `host list`: the recorded hosts, without network.
 - `host status [NAME]`: over SSH, the container, the shipped revision against your `HEAD`, whether the dashboard serves, and which recorded dispatchers are in `claude agents --json`. Exit 1 when one is not running.
