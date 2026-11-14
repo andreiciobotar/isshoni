@@ -90,7 +90,7 @@ class Schedule(unittest.TestCase):
                 installed.append(args)
         with mock.patch.object(factory, "STORE", store), mock.patch.object(factory, "job_path", return_value="/bin"), \
                 mock.patch.object(factory.Path, "mkdir"):
-            label = factory.schedule_install(mock.Mock(root=ROOT), "d", Backend())
+            label = factory.schedule_install(mock.Mock(root=ROOT), Backend())
         return label, installed[0][3]
 
     def test_without_the_variable_the_job_is_what_it_was(self):
