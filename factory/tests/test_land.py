@@ -1,3 +1,6 @@
+import importlib.machinery
+import importlib.util
+import io
 import json
 import os
 import stat
@@ -5,7 +8,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 BIN = Path(__file__).resolve().parent.parent / "bin" / "factory"
 
@@ -36,6 +41,11 @@ if a[:1] == ["agents"]:
 elif a[:1] == ["-p"]:
     open(f"{d}/claude.jsonl", "a").write(json.dumps({"argv": a, "cwd": os.path.realpath(os.getcwd())}) + "\\n")
     mode = os.environ["FAKE_LANDER"]
+    if mode == "fail":
+        sys.exit(1)
+    if mode == "sleep":
+        import time
+        time.sleep(30)
     if mode in ("push", "lie"):
         subprocess.run(["git", "commit", "--allow-empty", "-q", "-m", "resolved"], check=True)
         subprocess.run(["git", "push", "-q", "--force", "origin", "HEAD"], check=True)
@@ -348,17 +358,19 @@ class LandTests(unittest.TestCase):
         self.task("t1", line=1)
         self.task("t2", line=10)
         self.task("t3", line=20, state="working")
-        self.task("t4", line=25)
+        self.task("t4", line=25, base="worktree-gone")
+        self.task("t5", line=26)
         self.advance_main(30, "main line")
         self.mergeable = {"https://x/pull/t1": "CONFLICTING", "https://x/pull/t3": "CONFLICTING"}
         self.write_state()
         self.git("branch", "worktree-gone", "main")  # a recorded base that merged: t4's
         self.git("config", "branch.worktree-t4.factoryBase", "worktree-gone")
+        self.git("config", "branch.worktree-t5.factoryBase", "worktree-gone")  # its pull request is already on main
         self.prs["worktree-gone"] = [{"state": "MERGED", "url": "https://x/pull/gone", "baseRefName": "main",
                                       "headRefOid": "z"}]
         self.write_state()
         p = self.land("--all")
-        self.assertEqual(p.stderr, "")
+        self.assertEqual((p.returncode, p.stderr), (1, ""))
         self.assertEqual([l for l in p.stdout.splitlines() if l.startswith("# ")], ["# t1", "# t4"])
 
     def test_all_with_nothing_to_land(self):
@@ -375,6 +387,116 @@ class LandTests(unittest.TestCase):
         self.assertEqual(self.gh_calls(), [])
         self.assertEqual(self.last_state(), "working")
         self.assertNotEqual(self.remote_head(), self.git("rev-parse", "HEAD", cwd=wt))
+
+    def test_no_test_target_is_a_stop_even_when_a_test_directory_exists(self):
+        (self.repo / "Makefile").write_text("all:\n\t@true\n")
+        (self.repo / "test").mkdir()
+        (self.repo / "test" / "x.txt").write_text("x")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "no target")
+        self.git("push", "-q", "origin", "main")
+        wt = self.task("t1")
+        self.advance_main(1, "main line", "b.txt")
+        old = self.git("rev-parse", "HEAD", cwd=wt)
+        p = self.land("t1")
+        self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED tests`"))
+        self.assertIn("no test command", p.stdout)
+        self.assertEqual((self.remote_head(), self.last_state()), (old, "working"))
+
+    def test_a_range_diff_that_differs_is_a_look(self):
+        self.task("t1", line=20)
+        self.advance_main(17, "main line")
+        p = self.land("t1")
+        self.assertEqual(self.result(p), "`LANDED, LOOK https://x/pull/t1`")
+        self.assertIn("range-diff differs", p.stdout)
+        self.assertIn("Range-diff: differs.", self.gh_calls()[0]["body"])
+
+    def test_working_is_declared_before_a_look_is_pushed(self):
+        self.task("t1", line=20)
+        self.advance_main(2, "main line")
+        p = self.land("t1", TEST_CMD="true")
+        self.assertEqual(self.result(p), "`LANDED, LOOK https://x/pull/t1`")
+        self.assertEqual([r["state"] for r in self.declared() if r["slug"] == "t1"], ["handed-over", "working"])
+
+    def test_a_lander_that_exits_non_zero_is_a_stop_with_what_git_shows(self):
+        wt, old = self.conflict()
+        p = self.land("t1", FAKE_LANDER="fail")
+        self.assertEqual(self.result(p), "`STOPPED other`")
+        self.assertIn("the lander run exited 1", p.stdout)
+        self.assertIn(f"`{old}`, uncommitted changes: none, rebase in progress: no", p.stdout)
+        self.assertEqual(self.last_state(), "working")
+
+    def test_a_lander_that_times_out_is_a_stop(self):
+        wt, old = self.conflict()
+        loader = importlib.machinery.SourceFileLoader("factory_land", str(BIN))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_land", loader))
+        loader.exec_module(module)
+        out, cwd = io.StringIO(), os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(self.repo)
+        with mock.patch.dict(os.environ, {**self.env, "FAKE_LANDER": "sleep"}), mock.patch.object(module, "LAND_TIMEOUT", 1), \
+                redirect_stdout(out):
+            code = module.main(["land", "t1"])
+        self.assertEqual(code, 1)
+        self.assertIn("`STOPPED other`", out.getvalue())
+        self.assertIn("the lander run timed out", out.getvalue())
+
+    def test_a_rebase_that_fails_without_a_conflict_is_a_stop_with_no_model(self):
+        wt = self.task("t1")
+        self.advance_main(1, "main line", "b.txt")
+        hook = self.repo / ".git" / "hooks" / "pre-rebase"
+        hook.write_text("#!/bin/sh\necho refused by hook >&2\nexit 1\n")
+        hook.chmod(0o755)
+        p = self.land("t1")
+        self.assertEqual(self.result(p), "`STOPPED other`")
+        self.assertIn("refused by hook", p.stdout)
+        self.assertEqual(self.claude_calls(), [])
+
+    def test_a_merged_base_is_named_in_the_lander_brief(self):
+        self.task("base", line=3, text="base line", state="working")
+        self.task("t1", line=1, text="task line", base="worktree-base", start="worktree-base")
+        self.git("pull", "-q", "--ff-only", cwd=self.other)
+        self.git("fetch", "-q", "origin", "worktree-base", cwd=self.other)
+        self.git("merge", "-q", "--no-ff", "-m", "merge base", "origin/worktree-base", cwd=self.other)
+        self.git("push", "-q", "origin", "main", cwd=self.other)
+        self.advance_main(1, "main line")
+        self.git("config", "branch.worktree-t1.factoryBase", "worktree-base")
+        self.prs["worktree-base"] = [{"state": "MERGED", "url": "u", "baseRefName": "main", "headRefOid": "z"}]
+        self.write_state()
+        self.land("t1", FAKE_LANDER="stop")
+        (call,) = self.claude_calls()
+        self.assertIn("The base is worktree-base (remote origin). The base has merged.", call["argv"][-1])
+
+    def test_a_base_that_still_counts_is_the_target(self):
+        base = self.task("base", line=3, text="base line", state="working")
+        wt = self.task("t1", line=25, text="task line", base="worktree-base", start="worktree-base")
+        self.git("config", "branch.worktree-t1.factoryBase", "worktree-base")
+        self.edit(base, 5, "base again")
+        self.git("push", "-q", "origin", "worktree-base", cwd=base)
+        p = self.land("t1")
+        self.assertEqual(self.result(p), "`LANDED, LOOK https://x/pull/t1`")
+        self.assertIn("base: `origin/worktree-base`", p.stdout)
+        self.assertEqual(self.git("rev-parse", "origin/worktree-base", cwd=wt), self.git("merge-base", "HEAD", "origin/worktree-base", cwd=wt))
+        self.assertNotIn("--base", [a for c in self.gh_calls() for a in c["argv"]])
+        self.assertIn("`origin/worktree-base`", self.gh_calls()[0]["body"])
+
+    def test_a_merged_base_already_in_the_head_only_retargets(self):
+        base = self.task("base", line=3, text="base line", state="working")
+        wt = self.task("t1", line=25, text="task line", base="worktree-base", start="worktree-base")
+        self.git("pull", "-q", "--ff-only", cwd=self.other)
+        self.git("fetch", "-q", "origin", "worktree-base", cwd=self.other)
+        self.git("merge", "-q", "--ff-only", "origin/worktree-base", cwd=self.other)
+        self.git("push", "-q", "origin", "main", cwd=self.other)
+        self.git("config", "branch.worktree-t1.factoryBase", "worktree-base")
+        self.prs["worktree-base"] = [{"state": "MERGED", "url": "u", "baseRefName": "main", "headRefOid": "z"}]
+        self.write_state()
+        old = self.git("rev-parse", "HEAD", cwd=wt)
+        p = self.land("t1")
+        self.assertEqual((p.returncode, self.result(p)), (0, "`LANDED https://x/pull/t1`"))
+        self.assertIn("nothing pushed", p.stdout)
+        (edit,) = self.gh_calls()
+        self.assertEqual(edit["argv"], ["pr", "edit", "https://x/pull/t1", "--base", "main"])
+        self.assertEqual((self.remote_head(), self.last_state()), (old, "handed-over"))
 
 
 if __name__ == "__main__":
