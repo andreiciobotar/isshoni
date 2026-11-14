@@ -572,15 +572,15 @@ func TestFactoryAnimatesOnlyWhileSomethingMoves(t *testing.T) {
 
 func TestFactoryViewKeys(t *testing.T) {
 	m := fakeModel(true, 120, 40)
-	for _, want := range []viewID{viewAgents, viewFactory, viewKaizen, viewDashboard} {
+	for _, want := range []viewID{viewAgents, viewFactory, viewKaizen, viewHanami, viewDashboard} {
 		send(m, "tab")
 		if m.view != want {
 			t.Fatalf("tab -> %v, want %v", m.view, want)
 		}
 	}
-	send(m, "shift+tab")
+	send(m, "shift+tab", "shift+tab")
 	if m.view != viewKaizen {
-		t.Fatalf("shift+tab from the dashboard -> %v", m.view)
+		t.Fatalf("shift+tab twice from the dashboard, past hanami -> %v", m.view)
 	}
 	send(m, "1", "3")
 	if m.view != viewFactory {
@@ -596,15 +596,15 @@ func TestFactoryViewKeys(t *testing.T) {
 
 	bare := New(Options{Static: true})
 	bare.loading = false
-	for _, want := range []viewID{viewAgents, viewFactory, viewKaizen, viewDashboard} {
+	for _, want := range []viewID{viewAgents, viewFactory, viewKaizen, viewHanami, viewDashboard} {
 		send(bare, "tab")
 		if bare.view != want || bare.toast.text != "" {
 			t.Fatalf("tab without sessions: got %v, want %v, toast %q", bare.view, want, bare.toast.text)
 		}
 	}
-	send(bare, "shift+tab", "shift+tab", "shift+tab", "shift+tab")
+	send(bare, "shift+tab", "shift+tab", "shift+tab", "shift+tab", "shift+tab")
 	if bare.view != viewDashboard {
-		t.Fatalf("shift+tab four times: %v", bare.view)
+		t.Fatalf("shift+tab five times: %v", bare.view)
 	}
 }
 

@@ -275,11 +275,11 @@ func TestViewSwitching(t *testing.T) {
 	if m.view != viewKaizen {
 		t.Fatalf("tab -> %v", m.view)
 	}
-	send(m, "tab")
+	send(m, "tab", "tab")
 	if m.view != viewDashboard {
-		t.Fatalf("tab wraps -> %v", m.view)
+		t.Fatalf("tab wraps, past hanami -> %v", m.view)
 	}
-	send(m, "shift+tab", "shift+tab")
+	send(m, "shift+tab", "shift+tab", "shift+tab")
 	if m.view != viewFactory {
 		t.Fatalf("shift+tab -> %v", m.view)
 	}
@@ -287,15 +287,15 @@ func TestViewSwitching(t *testing.T) {
 	if m.view != viewDashboard {
 		t.Fatal("1")
 	}
-	for i, want := range []viewID{viewDashboard, viewAgents, viewFactory, viewKaizen} {
+	for i, want := range []viewID{viewDashboard, viewAgents, viewFactory, viewKaizen, viewHanami} {
 		send(m, fmt.Sprint(i+1))
 		if m.view != want {
 			t.Fatalf("%d -> %v, want %v", i+1, m.view, want)
 		}
 	}
-	send(m, "1", "5")
+	send(m, "1", "6")
 	if m.view != viewDashboard {
-		t.Fatal("5 is unbound")
+		t.Fatal("6 is unbound")
 	}
 	send(m, "2", "esc")
 	if m.view != viewDashboard {

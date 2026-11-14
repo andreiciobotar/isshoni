@@ -243,8 +243,14 @@ class DocumentTests(FixtureStore):
         self.assertEqual(d["repos"], [{"repo": "alpha", "repo_path": ALPHA, "prs": "ok"},
                                       {"repo": "beta", "repo_path": BETA, "prs": "not a GitHub repository"}])
 
+    def test_the_document_carries_no_private_key(self):
+        self.assertNotIn("_roles", json.dumps(self.doc))
+        self.assertEqual([k for t in self.doc["tasks"] for k in t if k.startswith("_")], [])
+        self.assertEqual([(v["version"], v["tasks"], v["roles"]["lead"] and v["roles"]["lead"]["n"])
+                          for v in self.doc["summary"]["anatomy"]["versions"]], [("0.1.0", 0, None), ("0.2.0", 1, 1), ("0.3.0", 0, None)])
+
     def test_summary(self):
-        self.assertEqual(self.doc["summary"], {
+        self.assertEqual({k: v for k, v in self.doc["summary"].items() if k != "anatomy"}, {
             "tasks": 4, "landed": 1, "in_flight": 2,  # b1 is acknowledged
             "cost": {"median": 22.0, "n": 1}, "brief_to_pr_s": {"median": 3000.0, "n": 1},
             "pr_to_merge_s": {"median": 600.0, "n": 1}, "review_rounds": {"median": 1.0, "n": 1},
@@ -309,6 +315,12 @@ def shapes(d):
     add("pr", [t["pr"] for t in tasks]), add("cost", [t["cost"] for t in tasks])
     add("by_role", [t["cost"]["by_role"] for t in tasks if t["cost"]] + [s["by_role"]] + [p["share"] for p in s["mix"]["points"]])
     add("mix", [s["mix"]]), add("point", s["mix"]["points"])
+    a = s["anatomy"]
+    add("anatomy", [a]), add("anatomy_point", a["points"]), add("anatomy_version", a["versions"])
+    add("anatomy_roles", [p["roles"] for p in a["points"]] + [v["roles"] for v in a["versions"]])
+    add("anatomy_point_role", [r for p in a["points"] for r in p["roles"].values()])
+    add("anatomy_version_role", [r for v in a["versions"] for r in v["roles"].values()])
+    add("anatomy_classes", [r["classes"] for v in a["versions"] for r in v["roles"].values() if r and r["classes"]])
     add("defects", [t["defects"] for t in tasks] + [s["defects"]])
     add("summary", [s]), add("time", [s["time"]]), add("first_pass", [s["first_pass"]]), add("trend", [s["trend"]])
     add("median", [s[m] for m in ("cost", "brief_to_pr_s", "pr_to_merge_s", "review_rounds")])
@@ -560,6 +572,81 @@ class MixTests(unittest.TestCase):
             ("m8", "0.2.0", 0.4), ("m9", "0.2.0", 0.4), ("m10", "0.2.0", 0.4)])
 
 
+def facts(calls, peak, tools, dispatches, **cost):
+    return {"calls": calls, "peak": peak, "tools": tools, "dispatches": dispatches,
+            "cost": {"input": 0.0, "output": 0.0, "cache_write_5m": 0.0, "cache_write_1h": 0.0, "cache_read": 0.0, **cost}}
+
+
+def at(slug, version, lead, other=None, total=10.0, **roles):
+    """A landed task costing `total`; the lead has the share and the facts given. `roles`: name -> facts."""
+    by_role = {**dict.fromkeys(kaizen.ROLES, 0.0), "lead": total * lead[0], **{r: total * x[0] for r, x in (other or {}).items()}}
+    return {"slug": slug, "version": version, "landed": True, "cost": {"total": total, "by_role": by_role},
+            "_roles": {"lead": lead[1], **{r: x[1] for r, x in (other or {}).items()}}}
+
+
+class AnatomyTests(unittest.TestCase):
+    def tasks(self):
+        """0.1.0: six tasks, the lead's calls 10..60 and a coder in the first three only; 0.2.0: two tasks."""
+        old = [at("o%d" % i, "0.1.0", (0.8, facts(10 * (i + 1), 100000 + i, 4 * i, 2 * (i % 2),
+                                                  input=1.0, output=1.0, cache_write_5m=1.0, cache_write_1h=1.0)),
+                 {"coder": (0.2, facts(3 * i, 5000, 7, 0))} if i < 3 else None) for i in range(6)]
+        new = [at("n%d" % i, "0.2.0", (0.4, facts(5, 50000, 1, 3, cache_read=2.0))) for i in range(2)]
+        return old + new
+
+    def test_a_point_needs_the_role_in_the_majority_of_the_window(self):
+        out = kaizen._anatomy(self.tasks(), ["0.1.0", "0.2.0", "0.3.0"])
+        self.assertEqual((out["window"], out["min"]), (5, 5))
+        self.assertEqual([p["slug"] for p in out["points"]], ["o4", "o5", "n0", "n1"])
+        first, second = out["points"][0]["roles"], out["points"][1]["roles"]
+        self.assertEqual(first["lead"], {"calls": 30.0, "peak": 100002.0, "tools": 8.0})  # medians of the five
+        self.assertEqual(first["coder"], {"calls": 3.0, "peak": 5000.0, "tools": 7.0})  # in 3 of 5: counts, of those 3
+        self.assertIsNone(second["coder"])  # in 2 of 5: not enough
+        self.assertEqual(list(out["points"][0]), ["slug", "version", "roles"])
+        self.assertEqual(list(first), list(kaizen.ROLES))
+        self.assertIsNone(first["lander"])
+
+    def test_a_version_is_the_median_over_its_landed_tasks(self):
+        v = kaizen._anatomy(self.tasks(), ["0.1.0", "0.2.0", "0.3.0"])["versions"]
+        self.assertEqual([(x["version"], x["tasks"]) for x in v], [("0.1.0", 6), ("0.2.0", 2), ("0.3.0", 0)])
+        lead = v[0]["roles"]["lead"]
+        self.assertEqual((lead["n"], lead["share"], lead["cost"], lead["calls"], lead["tools"], lead["dispatches"]),
+                         (6, 0.8, 8.0, 35.0, 10.0, 1.0))
+        self.assertEqual(lead["tools_per_dispatch"], 6.0)  # tasks with dispatches only: 4/2, 12/2, 20/2 -> median of 2, 6, 10
+        self.assertEqual(v[0]["roles"]["coder"]["n"], 3)
+        self.assertEqual(v[0]["roles"]["coder"]["share"], 0.2)
+
+    def test_a_role_that_did_not_run_and_a_version_without_tasks_are_null(self):
+        v = kaizen._anatomy(self.tasks(), ["0.1.0", "0.2.0", "0.3.0"])["versions"]
+        self.assertIsNone(v[1]["roles"]["coder"])
+        self.assertEqual(v[2]["roles"], dict.fromkeys(kaizen.ROLES))
+        self.assertEqual(list(v[0]["roles"]), list(kaizen.ROLES))
+
+    def test_tools_per_dispatch_is_null_without_dispatches_and_classes_sum_to_one(self):
+        v = kaizen._anatomy([at("a", "0.1.0", (1.0, facts(1, 1, 3, 0, input=1.0, output=1.0, cache_write_5m=1.0, cache_write_1h=2.0)))],
+                            ["0.1.0"])["versions"][0]["roles"]["lead"]
+        self.assertIsNone(v["tools_per_dispatch"])
+        self.assertEqual(v["classes"], {"input": 0.2, "output": 0.2, "cache_write": 0.6, "cache_read": 0.0})
+        free = kaizen._anatomy([at("a", "0.1.0", (1.0, facts(1, 1, 3, 0)))], ["0.1.0"])["versions"][0]["roles"]["lead"]
+        self.assertIsNone(free["classes"])  # nothing was spent
+        for x in kaizen._anatomy(self.tasks(), ["0.1.0", "0.2.0"])["versions"]:
+            for r in x["roles"].values():
+                if r and r["classes"]:
+                    self.assertAlmostEqual(sum(r["classes"].values()), 1.0, places=5)
+
+    def test_tasks_without_a_cost_or_landing_take_no_part(self):
+        def whole(t, landed=True):
+            cost = t["cost"] and {**t["cost"], "rework": 0.0}
+            return {**t, "cost": cost, "landed": landed, "state": "done", "stopped_s": 0, "defects": None, "first_pass": True,
+                    "review_rounds": 1, "brief_to_pr_s": 60, "pr_to_merge_s": 60, "pr": {"merged": "2026-11-01T00:00:00Z"}}
+        no_cost = whole({**at("none", "0.1.0", (1.0, facts(1, 1, 1, 1))), "cost": None})
+        free = whole(at("free", "0.1.0", (1.0, facts(1, 1, 1, 1)), total=0.0))
+        running = whole(at("running", "0.1.0", (0.5, facts(1, 1, 1, 1))), landed=False)
+        old = [whole(t) for t in self.tasks()]
+        out = kaizen._summary([no_cost, free, running, *old], ["0.1.0", "0.2.0"])["anatomy"]
+        self.assertEqual([p["slug"] for p in out["points"]], ["o4", "o5", "n0", "n1"])
+        self.assertEqual([v["tasks"] for v in out["versions"]], [6, 2])
+
+
 class RewardTests(unittest.TestCase):
     def kinds(self, landed):
         return [(r["kind"], r["slug"], r["text"]) for r in kaizen._rewards(landed)]
@@ -703,7 +790,7 @@ class CliTests(Store):
                                                "brief_to_pr_s", "pr_to_merge_s", "cost", "review_rounds", "first_pass", "stops",
                                                "stopped_s", "defects"])
         self.assertEqual(list(d["summary"]), ["tasks", "landed", "in_flight", "cost", "brief_to_pr_s", "pr_to_merge_s",
-                                              "review_rounds", "first_pass", "rework_share", "by_role", "mix", "time",
+                                              "review_rounds", "first_pass", "rework_share", "by_role", "mix", "anatomy", "time",
                                               "defects",
                                               "trend_min", "trend"])
         self.assertEqual(list(d["outbox"]), ["issues", "decisions", "topics", "entries"])

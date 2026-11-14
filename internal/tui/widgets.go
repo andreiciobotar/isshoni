@@ -379,7 +379,8 @@ const lineRows = 8 // rows tall; each holds four dots
 
 var dotBits = [2][4]rune{{0x01, 0x02, 0x04, 0x40}, {0x08, 0x10, 0x20, 0x80}}
 
-// lineSeries is one line: values 0..1, oldest first, as many as every other series has.
+// lineSeries is one line: values oldest first, as many as every other series has. A NaN
+// value is a gap: nothing is drawn for it and no line crosses it.
 type lineSeries struct {
 	name  string
 	color color.Color
@@ -428,7 +429,9 @@ func (p paint) lineChart(o lineOpts, w int) chartOut {
 		hi := 0.0
 		for _, s := range o.series {
 			for _, v := range s.vals[from:] {
-				hi = math.Max(hi, v)
+				if !math.IsNaN(v) {
+					hi = math.Max(hi, v)
+				}
 			}
 		}
 		return math.Max(0.1, math.Ceil(hi*10-1e-9)/10)
@@ -437,7 +440,7 @@ func (p paint) lineChart(o lineOpts, w int) chartOut {
 	ends := make([]string, len(o.series))
 	endW := 0
 	for i, s := range o.series {
-		if positive(s.vals) {
+		if positive(s.vals) && !math.IsNaN(s.vals[n-1]) {
 			ends[i] = s.name + " " + o.label(s.vals[n-1])
 			endW = max(endW, width(ends[i])+1)
 		}
@@ -473,13 +476,18 @@ func (p paint) lineChart(o lineOpts, w int) chartOut {
 			c.col, c.k = s.color, key24(s.color)
 		}
 		var px, py int
+		joined := false
 		for j, v := range vals {
+			if math.IsNaN(v) {
+				joined = false
+				continue
+			}
 			x, y := j*step, lineRows*4-1-int(math.Round(v/top*(lineRows*4-1)))
-			if j == 0 {
+			if !joined {
 				px, py = x, y
 			}
 			dotsBetween(px, py, x, y, set)
-			px, py = x, y
+			px, py, joined = x, y, true
 		}
 		endRow[si] = py / 4
 	}

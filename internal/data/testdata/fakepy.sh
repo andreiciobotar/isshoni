@@ -2,6 +2,7 @@
 # Stand-in for `python3 -m isshoni <cmd> [id] --json ...` and for `python3 <root>/factory/bin/factory status --json`.
 # Logs each call to $STUBDIR/calls; a file named fail or hang in $STUBDIR makes every call fail or never return.
 # $STUBDIR/sessions.json and $STUBDIR/status.json, when present, are what the sessions and factory calls print.
+echo $$ >> "$STUBDIR/pids" # one line per call, so a test can check no call outlived it
 if [ "$2" = status ]; then
 	echo "factory $PWD" >> "$STUBDIR/calls"
 	[ -e "$STUBDIR/fail" ] && { echo "factory: not inside a git repository" >&2; exit 2; }

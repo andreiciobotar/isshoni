@@ -210,6 +210,15 @@ class MergeCommandTests(World):
         self.assertIn("#2 not attempted", out)
         self.assertNotIn("kept", out)
 
+    def test_finished_probes_in_the_worktree_do_not_skip_a_task_for_its_phase(self):
+        answers, sessions, slugs = self.world([pr(1)])
+        probes = [{"id": f"p{i}", "name": f"probe{i}-t1", "kind": "background", "state": state, "cwd": f"{WT}/t1"}
+                  for i, state in enumerate(("done", "stopped"))]
+        code, out, _ = self.cli("merge", "1", answers=answers, sessions=[*sessions, *probes], entries=slugs)
+        self.assertEqual(code, 0)
+        self.assertNotIn("skipped", out)
+        self.assertIn("#1 merged", out)
+
     def test_all_skips_tasks_not_handed_over(self):
         code, out, _ = self.merge("--all", prs=[pr(1), pr(2), pr(3)], state={"t1": "handed-over", "t2": "working",
                                                                              "t3": "handed-over"}, tasks=["t1", "t2", "t3"])
