@@ -819,3 +819,53 @@ func TestServeAFailedAuthenticationFreesItsSlot(t *testing.T) {
 		return true
 	})
 }
+
+// blockingSigner, when the client asks for its public key, says so and waits to be released.
+type blockingSigner struct {
+	gossh.Signer
+	asked   chan<- struct{}
+	release <-chan struct{}
+}
+
+func (b blockingSigner) PublicKey() gossh.PublicKey {
+	b.asked <- struct{}{}
+	<-b.release
+	return b.Signer.PublicKey()
+}
+
+func TestServeAFailedAuthenticationKeepsItsSlot(t *testing.T) {
+	e := newTestEnv(t)
+	e.maxUnauthenticated, e.maxUnauthenticatedPerAddress = 1, 10
+	e.allow(keyLine(newSigner(t), ""))
+	addr, _ := e.start()
+
+	asked, release := make(chan struct{}, 1), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	done := make(chan error, 1)
+	go func() {
+		// The first key is refused; the second is only asked for after that refusal.
+		_, err := gossh.Dial("tcp", addr, &gossh.ClientConfig{
+			User: "viewer",
+			Auth: []gossh.AuthMethod{gossh.PublicKeysCallback(func() ([]gossh.Signer, error) {
+				return []gossh.Signer{newSigner(t), blockingSigner{newSigner(t), asked, release}}, nil
+			})},
+			HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+			Timeout:         10 * time.Second,
+		})
+		done <- err
+	}()
+	select {
+	case <-asked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the client never made a second attempt")
+	}
+	if _, ok := rawConn(t, "", addr); ok {
+		t.Fatal("a failed authentication attempt freed the slot of its connection")
+	}
+	unblock()
+	if err := <-done; err == nil {
+		t.Fatal("an unlisted key got in")
+	}
+}

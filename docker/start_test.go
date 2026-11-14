@@ -65,12 +65,14 @@ func start(t *testing.T, keys bool, env ...string) *run {
 	r.cmd = exec.Command("/bin/sh", "start")
 	r.cmd.Env = append([]string{"HOME=" + home, "TMPDIR=" + filepath.Join(dir, "tmp"), "STUBS=" + stubs, "PATH=" + bin + ":/usr/bin:/bin"}, env...)
 	r.cmd.Stderr = errFile
+	r.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := r.cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	go func() { r.done <- r.cmd.Wait() }()
 	t.Cleanup(func() {
-		r.cmd.Process.Kill()
+		// The whole group: the restart loop's subshell outlives the script when it is killed.
+		syscall.Kill(-r.cmd.Process.Pid, syscall.SIGKILL)
 		for _, f := range []string{"server.pids", "cron.pids"} {
 			for _, pid := range r.pids(f) {
 				syscall.Kill(pid, syscall.SIGKILL)
@@ -151,6 +153,11 @@ func TestServerIsRestartedWhenItDies(t *testing.T) {
 	if !strings.Contains(string(b), "dashboard server ended (status 137), restarting in 2 s") {
 		t.Fatalf("stderr: %q", b)
 	}
+	r.cmd.Process.Signal(syscall.SIGTERM)
+	if status := r.exit(); status != 0 {
+		t.Fatalf("exit status %d, want 0", status)
+	}
+	r.noStubLeft()
 }
 
 func TestSIGTERMStopsBothWithoutARestart(t *testing.T) {

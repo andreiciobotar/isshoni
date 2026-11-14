@@ -41,15 +41,17 @@ serve_loop() {
 
 stop() {
 	stopping=1
-	kill -TERM "$loop" "$cron" 2>/dev/null || :
+	[ -z "$loop" ] || kill -TERM "$loop" 2>/dev/null || :
+	[ -z "$cron" ] || kill -TERM "$cron" 2>/dev/null || :
 }
 
-stopping=
+stopping= cron= loop=
 trap stop TERM INT
 supercronic "$HOME/.crontab" &
 cron=$!
 serve_loop &
 loop=$!
+[ -z "$stopping" ] || stop
 
 status=0
 wait "$cron" || status=$?
