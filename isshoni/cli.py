@@ -307,7 +307,7 @@ def _friction_lines(f, cur, subagents_only):
         "queue send-backs and pauses: " + ("send-backs %d, pauses %d, paused %d min, in %s" % (
             *(sum(h[k] for h in held) for k in ("sent_back", "paused", "paused_minutes")), plural(len(held), "task")) if held else "none recorded"),
         "late conflicts: %s, %d of %d PRs in git history" % (
-            "no queue log yet" if q is None else "%s in the queue log" % plural(late["log_tasks"], "task"), late["git_tasks"], late["git_prs"])]
+            "no queue log yet" if late["log_tasks"] is None else "%s in the queue log" % plural(late["log_tasks"], "task"), late["git_tasks"], late["git_prs"])]
 
 
 def print_modes(rows, cur):

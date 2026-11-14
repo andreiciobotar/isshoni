@@ -217,11 +217,11 @@ class LateConflictTests(FrictionStore):
     def test_the_log_is_null_without_a_queue_log(self):
         lc = self.friction()["late_conflicts"]
         self.assertEqual(lc["tasks"][0], {"repo": "alpha", "slug": "p1", "log": None, "git": 2})
-        self.assertEqual((lc["log_tasks"], lc["git_tasks"]), (0, 2))
+        self.assertEqual((lc["log_tasks"], lc["git_tasks"]), (None, 2))
 
     def test_an_unreadable_cache_is_no_conflict(self):
         kaizen._write_cache(kaizen.cache_path(self.factory, "merges", ALPHA), {"m": "x", "n": {"pr": 1, "base_merges": "y"}})
-        self.assertEqual(self.friction()["late_conflicts"], {"tasks": [], "files": [], "log_tasks": 0, "git_tasks": 0, "git_prs": 0})
+        self.assertEqual(self.friction()["late_conflicts"], {"tasks": [], "files": [], "log_tasks": None, "git_tasks": 0, "git_prs": 0})
 
 
 class HeldTests(FrictionStore):
@@ -302,7 +302,7 @@ class TextTests(unittest.TestCase):
 
     def test_unknown_is_a_dash_and_none_is_none_recorded(self):
         doc = {**self.DOC, "dispatcher": {**self.DOC["dispatcher"], "per_call": None, "context_median": None}, "queue": None, "held": [],
-               "refusals": {"after_calls": 3, "roles": []}, "rework": {**self.DOC["rework"], "share": None, "per_task_median": None}}
+               "late_conflicts": {**self.DOC["late_conflicts"], "log_tasks": None}, "refusals": {"after_calls": 3, "roles": []}, "rework": {**self.DOC["rework"], "share": None, "per_task_median": None}}
         lines = cli._friction_lines(doc, "USD", None)
         self.assertEqual(lines[0], "dispatcher: - per call (n=400 calls), median context -")
         self.assertIn("- of task cost", lines[1])

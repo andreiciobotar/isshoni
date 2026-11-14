@@ -116,7 +116,7 @@ type FrictionHeld struct {
 type FrictionLate struct {
 	Tasks    []FrictionLateTask `json:"tasks"`
 	Files    []FrictionLateFile `json:"files"`
-	LogTasks int                `json:"log_tasks"`
+	LogTasks *int               `json:"log_tasks"` // nil without a queue log
 	GitTasks int                `json:"git_tasks"`
 	GitPRs   int                `json:"git_prs"`
 }

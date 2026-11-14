@@ -195,7 +195,7 @@ counts of `refusals` cover whole runs, because the parser keeps counts, not time
   records are written by another task (`pause-churning-tasks`) and may be absent; a missing or mistyped field is ignored.
 - `late_conflicts` (`tasks`, `files`, `log_tasks`, `git_tasks`, `git_prs`): conflicts that reached the pull request late, from two
   sources shown side by side, never added: `log` counts the queue records at or after the cutoff that are a `sent-back` of kind
-  `conflict` or a `land-conflict` (null without a log); `git` is the backfill, the conflicted base merges of the kept tasks' pull
+  `conflict` or a `land-conflict` (null without a log, like `log_tasks`); `git` is the backfill, the conflicted base merges of the kept tasks' pull
   requests that the pulse already looked up (the `kaizen-merges` cache; nothing here runs git, `git_prs` counts the pull requests
   found in it). The columns overlap in time (a conflict the log records later is a conflicted base merge in git) and the log misses
   merges made by hand, so a number is not the sum of its two columns. Rows are sorted by their larger count.
@@ -414,7 +414,7 @@ The pictures here and in the README are recordings of this repository's own fact
 ```
 bin/isshoni-tui [--range 24h|7d|30d|all] [--follow] [--no-color]
                 [--projects-dir DIR] [--agents-dir DIR] [--prices PATH]
-bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-flow|kaizen-anatomy|kaizen-board|hanami|help [--size 140x40] [--session ID] [--row N] [--fold] [--frames N]
+bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-friction|kaizen-flow|kaizen-anatomy|kaizen-board|hanami|help [--size 140x40] [--session ID] [--row N] [--fold] [--frames N]
 ```
 `--range` defaults to `7d`. `NO_COLOR` gives the plain rendering too. `--snapshot`
 prints one settled frame and exits, non-zero when the load fails; `--row N` puts the

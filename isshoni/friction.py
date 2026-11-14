@@ -167,7 +167,7 @@ def _late_conflicts(factory_dir, tasks, queue, cutoff):
         return sorted(out, key=lambda r: (-max(r["log"] or 0, r["git"]), r["repo"], r[name]))
 
     return {"tasks": rows(log_task, git_task, "slug"), "files": rows(log_file, git_file, "file"),
-            "log_tasks": len(log_task), "git_tasks": len(git_task), "git_prs": len(found)}
+            "log_tasks": len(log_task) if queue else None, "git_tasks": len(git_task), "git_prs": len(found)}
 
 
 def build(factory_dir, tasks, by_task, sessions, prices, cutoff, queue, tech_sessions):

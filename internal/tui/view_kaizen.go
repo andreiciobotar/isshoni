@@ -67,7 +67,7 @@ func (m *model) kaizenSubheader(p paint) string {
 			out += p.on(mix(th.Bg, th.Purple, 0.3)).b(" "+name+" ", th.Purple)
 		}
 	}
-	out += p.t("  ←→", th.Faint)
+	hint := p.t("  ←→", th.Faint)
 	var tail string
 	switch {
 	case k.busy:
@@ -75,10 +75,14 @@ func (m *model) kaizenSubheader(p paint) string {
 	case !k.doneAt.IsZero():
 		tail = p.t("  · as of "+k.doneAt.Local().Format("15:04:05"), th.Faint)
 	}
+	var landed string
 	if d := k.doc; d != nil && m.w >= 100 {
-		landed := p.t(fmt.Sprintf("  · %d landed of %d tasks in %s", d.Summary.Landed, d.Summary.Tasks, ranges[k.doneRange].label), th.Muted)
-		if width(out)+width(landed)+width(tail) <= m.w-3 { // the page names do not push the time off the line (the header keeps 3 cells)
-			out += landed
+		landed = p.t(fmt.Sprintf("  · %d landed of %d tasks in %s", d.Summary.Landed, d.Summary.Tasks, ranges[k.doneRange].label), th.Muted)
+	}
+	// The page names keep the line: the arrows (the footer has them) go first, then the landed count. The header keeps 3 cells.
+	for _, rest := range []string{hint + landed + tail, landed + tail} {
+		if width(out)+width(rest) <= m.w-3 {
+			return out + rest
 		}
 	}
 	return out + tail

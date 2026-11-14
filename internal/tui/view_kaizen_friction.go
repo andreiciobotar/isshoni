@@ -45,6 +45,9 @@ func (m *model) frictionLines(p paint, w int) block {
 		line := p.sp(1) + p.b(cell(label, lw-1, false), th.Text)
 		for i, s := range segs {
 			if i > 0 {
+				if width(line)+2+width(s.s) > w { // the trailing detail goes, it does not get cut in half
+					break
+				}
 				line += p.sp(2)
 			}
 			line += p.t(s.s, s.col)
@@ -107,7 +110,7 @@ func (m *model) frictionLines(p paint, w int) block {
 
 	d := f.Dispatcher
 	perCall := opt(d.PerCall, func(x float64) string { return money(x, d.UnpricedTokens > 0) }) + " / call"
-	lines = append(lines, row(label("DISPATCHER", "DISPATCHER"),
+	lines = append(lines, row("DISPATCHER",
 		fseg{perCall, hue(d.PerCall != nil && *d.PerCall > frictionDearCall)},
 		dim(fmt.Sprintf("n=%d calls", d.Calls)),
 		fseg{"median context " + opt(d.ContextMedian, kzTokens), hue(d.ContextMedian != nil && *d.ContextMedian > frictionLongContext)}))
@@ -149,8 +152,12 @@ func (m *model) frictionLines(p paint, w int) block {
 			share := opt(x.Share, func(s float64) string { return fmt.Sprintf("%.1f%%", s*100) })
 			rows = append(rows, []string{x.Role, share + fmt.Sprintf(" %d/%d", x.Guard+x.Classifier, x.Bash), strconv.Itoa(x.Guard), strconv.Itoa(x.Classifier), m.kzMoney(x.AfterCost)})
 		}
-		lines = append(lines, table(label("REFUSED BASH CALLS", "REFUSED BASH"), []int{12, 16, 5, 10, 14},
-			[]string{"role", "refused", "guard", "classifier", fmt.Sprintf("next %d calls", rf.AfterCalls)}, rows,
+		cols, next := []int{12, 13, 5, 10, 6}, fmt.Sprintf("next %d", rf.AfterCalls)
+		if wide {
+			cols, next = []int{12, 16, 5, 10, 14}, next+" calls"
+		}
+		lines = append(lines, table(label("REFUSED BASH CALLS", "REFUSED BASH"), cols,
+			[]string{"role", "refused", "guard", "classifier", next}, rows,
 			func(r, c int) bool { s := rf.Roles[r].Share; return c == 1 && s != nil && *s > frictionManyRefusals }, 0)...)
 	}
 
@@ -190,7 +197,7 @@ func (m *model) frictionLines(p paint, w int) block {
 			}
 			rows = append(rows, []string{prefix(h.Repo) + h.Slug, strconv.Itoa(h.SentBack), strconv.Itoa(h.Paused), paused})
 		}
-		lines = append(lines, table(label("QUEUE SEND-BACKS AND PAUSES", "SEND-BACKS, PAUSES"), []int{max(8, min(34, w-lw-30)), 10, 7, 7},
+		lines = append(lines, table(label("QUEUE SEND-BACKS AND PAUSES", "SEND-BACKS, PAUSES"), []int{max(8, min(34, w-lw-32)), 10, 7, 7},
 			[]string{"task", "send-backs", "pauses", "paused"}, rows, nil, more)...)
 	}
 	lines = append(lines, "")
@@ -235,12 +242,12 @@ func (m *model) frictionLines(p paint, w int) block {
 	for _, r := range rows {
 		nw = max(nw, width(r[1]))
 	}
-	nw = min(nw, max(8, w-lw-8-33))
+	nw = min(nw, max(8, w-lw-47))
 	logs := "no queue log yet"
-	if f.Queue != nil {
-		logs = plural(lc.LogTasks, "task") + " in the log"
+	if lc.LogTasks != nil {
+		logs = plural(*lc.LogTasks, "task") + " in the log"
 	}
-	lines = append(lines, table(label("LATE CONFLICTS", "LATE CONFLICTS"), []int{8, nw, 9, 22},
+	lines = append(lines, table("LATE CONFLICTS", []int{8, nw, 9, 22},
 		[]string{"", "task / file", "queue log", "git history (backfill)"}, rows, nil, 0)...)
 	lines = append(lines, p.sp(lw)+p.t(fmt.Sprintf("%s · %d of %d PRs in git history (backfill)", logs, lc.GitTasks, lc.GitPRs), th.Faint))
 	lines = append(lines, "")
