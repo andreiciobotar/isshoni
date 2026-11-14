@@ -217,14 +217,17 @@ class LandTests(unittest.TestCase):
         self.assertEqual(call["cwd"], str(wt))
         self.assertEqual(argv[:5], ["-p", "--agent", "factory:lander", "--plugin-dir", str(BIN.parent.parent)])
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
-        self.assertEqual(argv[argv.index("--permission-mode") + 1], "auto")
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
+        tools = argv[argv.index("--allowedTools") + 1:-3]
+        self.assertEqual(tools, ["Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
+                                 "Bash(gh pr edit *)", "Bash(factory state working)"])
         self.assertEqual(argv[argv.index("--output-format") + 1], "json")
         brief = argv[-1]
         for text in ("Your task slug is t1.", "The base is main (remote origin).", f"The reviewed head is {old}.",
-                     f"The head last pushed is {old}.", "Do not declare the hand-over", "a.txt",
-                     "The forced push of this task's branch is authorised: `git push --force-with-lease -u origin HEAD`."):
+                     f"The head last pushed is {old}.", "Do not declare the hand-over", "a.txt"):
             self.assertIn(text, brief)
         self.assertNotIn("has merged", brief)
+        self.assertNotIn("authorised", brief)
         self.assertNotEqual(self.remote_head(), old)
         self.assertIn("- conflicts: a.txt - merged by hand", p.stdout)
         self.assertNotIn("Factory feedback", p.stdout)

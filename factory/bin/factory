@@ -2825,6 +2825,8 @@ def cmd_wizard(args):
 
 LAND_TEST_TIMEOUT = 1800
 LAND_TIMEOUT = 1800
+LAND_TOOLS = ("Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
+              "Bash(gh pr edit *)", "Bash(factory state working)")
 LAND_REASONS = ("dirty", "conflict", "golden", "tests", "denied", "other")
 LAND_RESULT_RE = re.compile(r"(LANDED, LOOK|LANDED|STOPPED)(?: (\S+))?")
 RANGE_PAIR_RE = re.compile(r"\s*(?:-|\d+):\s+\S+ ([=!<>]) (?:-|\d+):")
@@ -2981,11 +2983,11 @@ class Landing:
             f"Your task slug is {self.slug}.", base, f"The reviewed head is {self.old_head}.",
             f"The head last pushed is {self.old_head}.",
             "There is no pull request title, body file or retrospective file. Do not declare the hand-over.",
-            f"The forced push of this task's branch is authorised: `git push --force-with-lease -u {self.remote} HEAD`.",
+            "Edit files with the Edit tool; shell commands that write files, and `gh` other than `pr view` and `pr edit`, are denied.",
             f"The golden files this task means to change: {', '.join(task_files) or 'none'}. A generated file on this "
             "list may be regenerated with the repository's documented command; any other golden that changes is a stop."])
         argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", "sonnet",
-                "--permission-mode", load_settings()["lead_permission_mode"], "--output-format", "json", brief]
+                "--permission-mode", "dontAsk", "--allowedTools", *LAND_TOOLS, "--output-format", "json", brief]
         rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT)
         try:
             text = json.loads(out).get("result")
