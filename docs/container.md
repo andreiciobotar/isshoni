@@ -70,7 +70,7 @@ Everything that must survive is under `FACTORY_STATE`, mounted at `/state`. The 
     .gitconfig
     .crontab                 the site manager's job
     code/<repository>/       the repositories; task worktrees under .claude/worktrees/
-    go/  .cache/             Go modules and build caches
+    go/  .cache/             Go modules and build caches; isshoni's session cache
   tmp/                       temporary files (TMPDIR); safe to empty while nothing runs
 ```
 
