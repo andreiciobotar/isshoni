@@ -741,7 +741,7 @@ func TestLineChartKeepsTheNewestPointsWhenOneDotEachDoesNotFit(t *testing.T) {
 		t.Fatalf("step %d first %d plot %d", out.step, out.first, out.plot)
 	}
 	top := []rune(ansi.Strip(out.lines[0]))
-	if last := top[out.gutter+out.plot-1]; last != '⢸' ||strings.ContainsFunc(string(top[out.gutter:out.gutter+out.plot-1]), func(r rune) bool { return r != ' ' }) {
+	if last := top[out.gutter+out.plot-1]; last != '⢸' || strings.ContainsFunc(string(top[out.gutter:out.gutter+out.plot-1]), func(r rune) bool { return r != ' ' }) {
 		t.Fatalf("the rise to the newest point is the right dot column of the plot's last cell: %q", string(top))
 	}
 }
