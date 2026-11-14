@@ -46,7 +46,7 @@ A subagent starts from zero: every brief states the goal, the scope, the spec fi
 
    The one case where a pushed branch's history must be rewritten is not yours to carry out: a pushed commit holds something that must not stay published (a secret, personal data). Send `BLOCKED:` naming the commit and the file; the human rewrites and force-pushes, and rotates the secret.
 
-When the task needs the pull request to exist earlier (for example to see CI run on it), have the lander open the draft early with a one-line body file, and write the real body here. The lander's report gives `mergeable`: a pull request that conflicts with its base runs no checks. An early draft frees no slot.
+When the task needs the pull request to exist earlier (for example to see CI run on it), have the lander open the draft early with a one-line body file, and write the real body here. The lander's report gives `mergeable`: a pull request that conflicts with its base runs no checks. An early draft frees no slot. A draft means the work is not handed over: the factory flips the flag from your declared state (ready once you have handed over and CI is green, at the next watch tick; draft again at `factory state working|blocked`), so never run `gh pr ready` yourself.
 
 **Small tasks.** When the brief sizes the task small, or the change is documentation only (rule and prompt files are not documentation), the spec may be a few lines (what done means, the facts), the assessment one line per item, and a blocker fix may go back to the same reviewer, resumed with the commit range and the issues. The review, the tests and the retrospective are never skipped. Say in the pull request that you took the short path; a change that outgrows it returns to the full one.
 

@@ -252,22 +252,22 @@ def sessions_in(sessions, root, path):
 
 
 def pull_request(repo, branch):
-    """(state, url, head sha, base branch); state is 'unknown' when gh cannot answer."""
+    """(state, url, head sha, base branch, is a draft); state is 'unknown' when gh cannot answer."""
     rc, out, _ = run(
         ["gh", "pr", "list", "--head", branch, "--state", "all", "--limit", "1",
-         "--json", "state,url,headRefOid,baseRefName"], cwd=repo.root)
+         "--json", "state,url,headRefOid,baseRefName,isDraft"], cwd=repo.root)
     try:
         prs = json.loads(out)
     except ValueError:
         prs = None
     if rc != 0 or not isinstance(prs, list):
-        return "unknown", "", "", ""
+        return "unknown", "", "", "", False
     if not prs:
-        return "none", "", "", ""
+        return "none", "", "", "", False
     pr = prs[0]
     if not isinstance(pr, dict) or not isinstance(pr.get("state"), str):
-        return "unknown", "", "", ""
-    return pr["state"].lower(), pr.get("url", ""), pr.get("headRefOid", ""), pr.get("baseRefName", "")
+        return "unknown", "", "", "", False
+    return pr["state"].lower(), pr.get("url", ""), pr.get("headRefOid", ""), pr.get("baseRefName", ""), pr.get("isDraft") is True
 
 
 def session_block(mine):
@@ -344,7 +344,8 @@ def collect(repo, sessions, limit_hours):
         rc, out, _ = repo.git("log", "-1", "--format=%ct %H", path=path)
         ts, _, row["head"] = out.strip().partition(" ")
         row["last_commit"] = int(ts) if rc == 0 and ts.isdigit() else None
-        row["pr_state"], row["pr_url"], row["pr_head"], row["pr_base"] = prs.get(branch, ("unknown", "", "", ""))
+        row["pr_state"], row["pr_url"], row["pr_head"], row["pr_base"], row["pr_draft"] = prs.get(
+            branch, ("unknown", "", "", "", False))
         row["state"] = declared.get(slug, {}).get("state")
         row["deliverable"] = declared.get(slug, {}).get("deliverable")
         since = epoch(declared.get(slug, {}).get("ts"))
@@ -790,7 +791,7 @@ def cmd_status(args):
             "the App is stored but not installed: factory wizard" if stored else "no App identity: factory wizard") + ")")
     for r in rows:
         if r["phase"] == "review":
-            print(f"waiting on the human: {r['slug']} {r['deliverable'] or r['pr_url'] or '-'}")
+            print(f"waiting on {'checks' if r['pr_draft'] else 'the human'}: {r['slug']} {r['deliverable'] or r['pr_url'] or '-'}")
     return 0
 
 
@@ -910,6 +911,8 @@ def cmd_state(args):
             raise Fail(f"state: deliverable {deliverable} is inside the worktree, which clean removes")
     slug = os.path.basename(task["path"])
     declare(repo, slug, "lead", args.state, deliverable)
+    if args.state in ("working", "blocked") and task["branch"]:
+        to_draft(repo, task["branch"])
     print(f"{slug}: {args.state}")
     return 0
 
@@ -1445,7 +1448,7 @@ def c_base_merged(p, _):
         base = r.get("stacked_on")
         landing = r["pr_state"] == "merged" or (r["pr_state"] == "open" and r["pr_base"] == repo.default)
         if r["phase"] in ("motion", "blocked") and base and not landing:
-            state, url, _, into = pull_request(repo, base)
+            state, url, _, into, _ = pull_request(repo, base)
             if state == "unknown":
                 raise NotEvaluated(f"the pull request state of {base} is unknown")
             if (state, into) == ("merged", repo.default) and not has_merge_of(p, url, r["path"]):
@@ -1850,6 +1853,7 @@ def cmd_watch(args):
     p = gather(repo, dispatcher_name(args, repo))
     orphaned = p["sessions"] is not None and not live_dispatchers(p["sessions"], repo.root, p["dispatcher"])
     if not orphaned:
+        sync_drafts(p)
         p = watch_lgtm(p)
     current, skipped = evaluate(p, criteria)
     for s in skipped:
@@ -2265,6 +2269,50 @@ def mergeability(p, n):
     return None
 
 
+def checks_stop(p, n):
+    """(kind, reason) of what the checks of pull request `n` stop, or None when they pass; NotEvaluated when unreadable."""
+    checks = p["gh"](list, "pr", "checks", n, "--json", "name,bucket")
+    buckets = [c.get("bucket") for c in checks]
+    bad = [c.get("name") for c in checks if c.get("bucket") in ("fail", "cancel")]
+    if bad:
+        return "ci", f"failed or cancelled checks: {', '.join(map(str, bad))}"
+    if "pending" in buckets:
+        return "pending", "checks are still running"
+    if "pass" not in buckets:
+        return "ci", "no check passed"
+    return None
+
+
+def sync_drafts(p):
+    """Make the draft flag of each open task pull request follow its task: ready exactly when handed over (as
+    handover_reason says) with passing checks, else a draft. Changes no flag for what it cannot read."""
+    try:
+        phased(p)
+        prs = open_prs(p)
+    except NotEvaluated as e:
+        return print(f"drafts not synced: {e}")
+    for pr in prs:
+        row, n = task_of(p, pr), str(pr["number"])
+        if pr["isCrossRepository"] or row is None or row["phase"] in ("settled", "merged"):
+            continue
+        why = handover_reason(p, pr)
+        try:
+            stop = None if why else checks_stop(p, n)
+        except NotEvaluated as e:
+            print(f"#{n} draft flag not changed: {e}")
+            continue
+        why = why or stop and stop[1]
+        if (not why) != pr["isDraft"]:
+            continue
+        error = gh_step(p["repo"], "pr", "ready", n, *(["--undo"] if why else []))
+        print(f"#{n} draft flag not changed: {error[1]}" if error else f"#{n} back to draft: {why}" if why else f"#{n} ready for review")
+
+
+def to_draft(repo, branch):
+    """Back to draft at once; the result is ignored (a task often has no pull request yet), the tick reports failures."""
+    run(["gh", "pr", "ready", "--undo", branch], cwd=repo.root)
+
+
 def merge_one(p, pr, merged, dry):
     """Merge `pr` (with `dry`, only check it as if `merged`, the head branches merged so far, were). None, or the
     (kind, reason) of the first blocker."""
@@ -2275,23 +2323,17 @@ def merge_one(p, pr, merged, dry):
     if reason:
         return "handover", reason
     if base != repo.default and base not in merged:
-        state, _, _, into = pull_request(repo, base)
+        state, _, _, into, _ = pull_request(repo, base)
         if state == "unknown":
             return "pending", f"cannot read the pull request of its base {base}"
         if (state, into) != ("merged", repo.default):
             return "base", f"its base {base} is not {repo.default} nor the head of a pull request merged into it"
     try:
-        checks = p["gh"](list, "pr", "checks", n, "--json", "name,bucket")
+        stop = checks_stop(p, n)
     except NotEvaluated as e:
         return "ci", str(e)
-    buckets = [c.get("bucket") for c in checks]
-    bad = [c.get("name") for c in checks if c.get("bucket") in ("fail", "cancel")]
-    if bad:
-        return "ci", f"failed or cancelled checks: {', '.join(map(str, bad))}"
-    if "pending" in buckets:
-        return "pending", "checks are still running"
-    if "pass" not in buckets:
-        return "ci", "no check passed"
+    if stop:
+        return stop
     retarget = base != repo.default
     if retarget and not dry:
         stop = gh_step(repo, "pr", "edit", n, "--base", repo.default)
@@ -2926,6 +2968,7 @@ class Landing:
         if not self.declared:
             declare(self.repo, self.slug, "lander", "working")
             self.declared = True
+            to_draft(self.repo, self.branch)
 
     def git(self, *args):
         return self.repo.git(*args, path=self.path)
@@ -2959,7 +3002,7 @@ class Landing:
             return self.stop("other", f"git fetch {remote} failed: {err.strip()}")
         if branch != f"worktree-{self.slug}" or branch == repo.default:
             return self.stop("other", f"the branch is {branch}, not worktree-{self.slug}")
-        state, self.url, pr_head, self.pr_base = pull_request(repo, branch)
+        state, self.url, pr_head, self.pr_base, _ = pull_request(repo, branch)
         self.old_head = self.out("rev-parse", "HEAD")
         pushed = self.out("rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/{branch}")
         if state != "open":
@@ -3135,7 +3178,7 @@ def land_candidates(repo):
         slug, branch = os.path.basename(task["path"]), task["branch"]
         if not branch or declared.get(slug, {}).get("state") != "handed-over":
             continue
-        state, url, _, pr_base = pull_request(repo, branch)
+        state, url, _, pr_base, _ = pull_request(repo, branch)
         if state != "open":
             continue
         rc, out, _ = run(["gh", "pr", "view", url, "--json", "mergeable"], cwd=repo.root)

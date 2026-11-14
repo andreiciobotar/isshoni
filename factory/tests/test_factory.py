@@ -216,6 +216,18 @@ class StateTests(unittest.TestCase):
                 self.assertEqual(rec["session"], "sid-d")
                 self.assertNotIn("deliverable", rec)
 
+    def test_working_and_blocked_put_the_pull_request_back_to_draft_even_when_gh_fails(self):
+        for state in ("working", "blocked"):
+            with self.subTest(state):
+                code, out, err, fake = invoke(["state", state], repo_answers(
+                    [task_entry("x")], (), {("gh", "pr", "ready"): (1, "", "no pull request")}), cwd=self.CWD)
+                self.assertEqual((code, out, err), (0, f"x: {state}\n", ""))
+                self.assertIn(["gh", "pr", "ready", "--undo", "worktree-x"], fake.calls)
+
+    def test_handed_over_does_not_touch_the_draft_flag(self):
+        *_, fake = self.state("handed-over", "https://github.com/o/r/pull/9")
+        self.assertFalse(fake.ran("gh", "pr", "ready"))
+
     def test_handed_over_stores_a_link_as_given(self):
         code, out, _, fake = self.state("handed-over", "https://github.com/o/r/pull/9")
         self.assertEqual((code, out), (0, "x: handed-over\n"))
@@ -702,6 +714,21 @@ class StatusTests(unittest.TestCase):
             "in motion 2/5 (1 blocked); waiting for review 2; merged, not cleaned 0; settled, not cleaned 0; "
             "leftover agent worktrees 0; worktrees outside .claude/worktrees 0", "acting on GitHub with your gh login (no App identity: factory wizard)",
             "waiting on the human: handed /out/video.mp4", "waiting on the human: pr-only http://pr/7"])
+
+    def test_a_draft_pull_request_in_review_waits_on_checks_and_is_flagged(self):
+        for draft, line in ((True, "waiting on checks: handed http://pr/7"), (False, "waiting on the human: handed http://pr/7")):
+            with self.subTest(draft=draft):
+                pr = [{"state": "OPEN", "url": "http://pr/7", "headRefOid": "sha-x", "isDraft": draft}]
+                answers = repo_answers([task_entry("handed")], (), git_task_answers("x", time.time(), pr=pr))
+                tasks = [task_rec("handed", "handed-over")]
+                _, out, _, _ = invoke(["status"], answers, tasks=tasks)
+                self.assertEqual(out.splitlines()[-1], line)
+                _, out, _, _ = invoke(["status", "--json"], answers, tasks=tasks)
+                self.assertEqual(json.loads(out)["rows"][0]["pr_draft"], draft)
+
+    def test_no_pull_request_is_not_a_draft(self):
+        doc, _ = self.status([task_entry("alpha")])
+        self.assertIs(doc["rows"][0]["pr_draft"], False)
 
     def test_a_review_task_without_deliverable_or_pull_request_waits_with_a_dash(self):
         answers = repo_answers([task_entry("handed")], (), git_task_answers("x", time.time()))

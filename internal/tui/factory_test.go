@@ -312,6 +312,19 @@ func TestFactoryWaitingOrder(t *testing.T) {
 	}
 }
 
+func TestFactoryWaitingLeavesOutADraftInReview(t *testing.T) {
+	ready, draft, blocked := ftask("ready", "review"), ftask("draft", "review"), ftask("held", "blocked")
+	draft.PRDraft, blocked.PRDraft = true, true
+	m := factoryModel(true, 140, 40, factoryRepo{name: "m", st: fstatus(5, ready, draft, blocked)})
+	var got []string
+	for _, it := range m.waiting() {
+		got = append(got, it.task.Slug)
+	}
+	if want := "held ready"; strings.Join(got, " ") != want {
+		t.Fatalf("a review task whose pull request is a draft waits on checks, not the human: %q, want %q", strings.Join(got, " "), want)
+	}
+}
+
 func TestFactoryWaitingWhatAndDo(t *testing.T) {
 	rows := map[string]data.FactoryTask{}
 	for _, r := range append(delta().st.Rows, alpha().st.Rows...) {

@@ -89,7 +89,7 @@ func (m *model) factoryLines(p paint, w, h int) block {
 
 // ---- what waits on the human ------------------------------------------------------
 
-// waitItem is a task that waits on the human: in review, or blocked.
+// waitItem is a task that waits on the human: in review (its pull request ready, not a draft), or blocked.
 type waitItem struct {
 	repo string
 	task data.FactoryTask
@@ -104,7 +104,7 @@ func (m *model) waiting() []waitItem {
 			continue
 		}
 		for _, t := range r.st.Rows {
-			if t.Phase == "review" || t.Phase == "blocked" {
+			if (t.Phase == "review" && !t.PRDraft) || t.Phase == "blocked" {
 				items = append(items, waitItem{r.name, t})
 			}
 		}
