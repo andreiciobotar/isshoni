@@ -451,7 +451,7 @@ Undo: `factory uninstall` uninstalls the App and removes `identity/`; you delete
 |---|---|---|
 | `RUN_TIMEOUT` | 120 | every call that names no timeout (the other `claude plugin` calls, `git`, `claude agents`, `claude rm`, `launchctl`, `systemctl`, `crontab`, `openssl`, `ps`, the launch of a lead) |
 | `NETWORK_TIMEOUT` | 300 | `git` through the App (`pull`, `fetch`, `merge`, `push`) and `claude plugin marketplace add` and `install` |
-| `GH_TIMEOUT` | 30 | `gh`, unless the caller names one (`PR_TIMEOUT` 10, `NOTICE_TIMEOUT` 20, the head-branch lookups 10) |
+| `GH_TIMEOUT` | 30 | `gh`, and `factory new`'s `git ls-remote` (`act_git`), unless the caller names one (`PR_TIMEOUT` 10, `NOTICE_TIMEOUT` 20, the head-branch lookups 10) |
 | `MONITOR_TIMEOUT` | 120 | the monitor's `isshoni` |
 | `COMMENT_TIMEOUT` | 120 | the courier run (`claude -p`) |
 | `WATCH_TIMEOUT` | 600 | the site manager run (`claude -p`) |

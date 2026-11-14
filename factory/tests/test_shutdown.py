@@ -15,7 +15,7 @@ from unittest import mock
 
 from test_factory import BIN, ROOT, WT, FakeRun, factory, porcelain
 from test_factory import DISPATCHER
-from test_health import HOUR, NOW, SID, Harness, check, choice, fired, iso, lead, pic, reply
+from test_health import HOUR, NOW, SID, Harness, check, choice, fired, iso, lead, pic, register, reply
 
 FAKE_CLAUDE = """#!/bin/sh
 case "$1" in
@@ -316,6 +316,13 @@ class BusyEveryTickTests(Harness):
         self.tick(at=NOW + 1920)
         self.assertEqual(self.claude_runs(), [])
         self.assertEqual(len([r for r in self.records() if r.get("criterion") == "busy-after-handover"]), 1)
+
+    def test_the_site_manager_is_given_the_name_the_dispatcher_has_now_between_health_passes(self):
+        register("sid-d")
+        self.hand_over(7)
+        self.tick(sessions=[DISPATCHER | {"name": "renamed", "pid": 7}, lead("x", pid=100)])
+        [argv] = self.claude_runs()
+        self.assertIn("The dispatcher's session name is renamed.", argv[-1])
 
     def test_a_failing_site_manager_run_is_not_repeated_on_every_tick(self):
         self.hand_over(7)
