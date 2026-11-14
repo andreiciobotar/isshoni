@@ -5,7 +5,7 @@ For a machine that is always on: the dispatcher, its leads and the site manager 
 The image ([docker/Dockerfile](../docker/Dockerfile)) holds tools only, each at a pinned version: Claude Code, `gh`, git, Python 3.13, Go, make, openssl, tmux and [supercronic](https://github.com/aptible/supercronic) on Debian 13 slim. It is 886 MB on x86-64 (Claude Code 365 MB, Go 240 MB) and builds in about 35 seconds on a GitHub runner; CI prints both on every run. It has no Chromium, so `make screenshot` does not work there.
 
 ## The command
-Once, on the laptop, in a clone of this repository: `make wizard` creates the factory's GitHub App ([factory.md](factory.md#identity)). Then:
+Once, on the laptop, in a clone of this repository: `make wizard` creates the factory's GitHub App ([factory.md](factory.md#identity)). Then `make wizard-remote` asks for the ssh target, the state directory, the repositories and an ssh alias, prints the command it will run and asks before running it; `make wizard-remote ARGS="..."` is the command below. Directly:
 
 ```sh
 bin/isshoni host add nas --state /srv/factory --repo owner/name
@@ -78,6 +78,7 @@ The dispatcher and the leads are background sessions in the container: `ssh -t n
 - `host status [NAME]`: over SSH, the container, the shipped revision against your `HEAD`, whether the dashboard serves, and which recorded dispatchers are in `claude agents --json`. Exit 1 when one is not running.
 - `host remove NAME`: removes the container, the image, the alias block and the record. **The state directory is kept** and its path printed; `--purge-state` deletes it too. A server that does not answer is an error, and nothing local is removed.
 - **Update** is `host add <target>` again.
+- `make uninstall-remote` is `host remove` with no name: it lists the hosts, asks which, whether to delete the state directory too, and what it will run (default no). The laptop's `make uninstall` keeps the GitHub App (its installation, `identity/` and `hosts.json`) while a host is recorded; after the last `host remove`, run it again to remove them. The server's copy of the identity is marked `"copy": true` and never removes the App.
 
 ## Known limits
 - One factory container per server.

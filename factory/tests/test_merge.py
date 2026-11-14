@@ -687,6 +687,30 @@ class SyncDraftTests(World):
                 self.assertEqual([l for l in out.splitlines() if l.startswith("waiting on")],
                                  [] if line is None else [f"{line}t1 https://x/pull/1"])
 
+    def test_each_actor_leaves_the_pull_request_of_another_machines_task_alone(self):
+        """Head `worktree-other` has no worktree here, though the store holds a handed-over record for `other`."""
+        theirs = lambda **kw: dict(pr(1, **kw), headRefName="worktree-other")
+        record = [{"repo": ROOT, "slug": "other", "state": "handed-over", "ts": iso(NOW - 3600)}]
+        with self.subTest("sync_drafts"):
+            self.seed("tasks", record)
+            self.tick([theirs(draft=True)], tasks=[])
+            self.assertEqual(self.flips(), [])
+            self.setUp()
+            self.seed("tasks", record)
+            self.tick([theirs()], tasks=[], checks=FAILED)
+            self.assertEqual(self.flips(), [])
+        with self.subTest("the lgtm step"):
+            self.setUp()
+            self.seed("tasks", record)
+            self.tick([theirs()], {1: [comment()]}, tasks=[])
+            self.assertEqual(self.gh_mutations(), [])
+        with self.subTest("merge --all"):
+            self.setUp()
+            self.seed("tasks", record)
+            code, out, _ = self.merge("--all", prs=[theirs()], tasks=[])
+            self.assertEqual(self.gh_mutations(), [])
+            self.assertIn("#1 skipped: no task worktree has its head branch", out)
+
     def test_unlistable_sessions_change_nothing(self):
         code, out, _ = self.tick([pr(1)], extra={("claude", "agents"): (1, "", "no claude")})
         self.assertEqual(code, 0)

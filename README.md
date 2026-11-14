@@ -52,9 +52,9 @@ Describe a task; ask for progress whenever you like. By default leads run unatte
 
 Optional:
 
-- [Always on](docs/container.md): `bin/isshoni host add <ssh target> --state <dir> --repo <owner/name>` runs the factory in a container on a Linux host that has Docker.
+- [Always on](docs/container.md): `make wizard-remote` asks for what it needs and runs the factory in a container on a Linux host that has Docker.
 
-`make uninstall` removes what the wizard put on the machine.
+`make uninstall` removes what the wizard put on this machine, `make uninstall-remote` a server's install.
 
 ## Factory
 
