@@ -95,6 +95,8 @@ func (th *Theme) AgentColor(agent string) color.Color {
 		return th.Yellow
 	case "explorer":
 		return th.Teal
+	case "tech-lead":
+		return th.Purple
 	case "coder":
 		return th.Blue
 	case "lander":

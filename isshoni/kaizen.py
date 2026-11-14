@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from . import authoring, metrics, transcript
 from .cli import fmt_duration
 
-ROLES = ("lead", "coder", "reviewer", "explorer", "lander", "other")
+ROLES = ("lead", "tech-lead", "coder", "reviewer", "explorer", "lander", "other")
 DEFECT_KINDS = ("tests", "reviewer", "lead", "ci", "human", "other")
 STOP_KINDS = ("QUESTION", "BLOCKED", "OVERTIME")
 STATUSES = ("open", "accepted", "rejected", "done")
@@ -216,13 +216,14 @@ def _dispatch_role(d):
     return "explorer" if r in metrics.EXPLORER_TYPES else r if r in ROLES else "other"
 
 
-def _cost(sessions):
+def _cost(sessions, tech_sessions):
+    """`tech_sessions`: ids of the sessions that were tech lead runs; their main thread is the tech lead's."""
     by_role = dict.fromkeys(ROLES, 0.0)
     unpriced = 0
     dispatches = []
     for s in sessions:
         main = transcript.sum_usage(s.main_usage_by_model)
-        by_role["lead"] += main.cost
+        by_role["tech-lead" if s.id in tech_sessions else "lead"] += main.cost
         unpriced += main.unpriced
         for d in s.dispatches:
             u = d.usage
@@ -282,10 +283,10 @@ def _first_ts(records):
     return min(stamped, key=lambda x: x[0]) if stamped else None
 
 
-def _role_facts(sessions, prices):
+def _role_facts(sessions, prices, tech_sessions):
     """What each role that ran in the task did, from the anatomy's blocks over kaizen's own role buckets."""
     from . import anatomy  # anatomy reads this module's logs: import it where it is used
-    runs = [("lead", s.run) for s in sessions if s.run] + [
+    runs = [("tech-lead" if s.id in tech_sessions else "lead", s.run) for s in sessions if s.run] + [
         (_dispatch_role(d), d.run) for s in sessions for d in s.dispatches if d.run]
     out = {}
     for role, r in anatomy.by_role(runs, prices).items():
@@ -311,7 +312,7 @@ def _pooled(tasks):
             "share": {r: round(n / sum(lines.values()), 6) for r, n in lines.items()} if wrote else None}
 
 
-def _task(key, recs, sessions, prices):
+def _task(key, recs, sessions, prices, tech_sessions):
     """recs: this task's records by store."""
     repo, slug = key
     started_rec = next((r for r in recs["events"] if r.get("event") == "TaskStarted" and _ts(r)), None)
@@ -326,10 +327,10 @@ def _task(key, recs, sessions, prices):
     t = {"repo": _name(repo), "repo_path": repo, "slug": slug, "version": version, "started": started,
          "state": states[-1] if states else None, "pr": None, "landed": False,
          "brief_to_pr_s": None, "pr_to_merge_s": None, "cost": None, "review_rounds": None, "first_pass": None,
-         "_roles": _role_facts(sessions, prices)}
+         "_roles": _role_facts(sessions, prices, tech_sessions)}
     t["authoring"] = _authoring(t["_roles"])
     if sessions:
-        t["cost"], t["review_rounds"] = _cost(sessions)
+        t["cost"], t["review_rounds"] = _cost(sessions, tech_sessions)
         t["first_pass"] = t["review_rounds"] == 1
     t["stops"] = len(recs["stops"])
     t["stopped_s"] = sum(s["waited_s"] for s in recs["stops"] if s["waited_s"] is not None)
@@ -582,6 +583,31 @@ def _site_manager(records, cutoff):
             "precision": ratio(acted, acted + ignored), "recall": ratio(acted, acted + misses)}
 
 
+# ---- the tech lead ------------------------------------------------------------------
+
+def _tech_lead(records, cutoff, tasks, by_task):
+    """What came back from the merge queue in the window, how it ended, and how often a landed task's lead was woken
+    after the hand-over. A cost is the sum of the priced records, null when none is: never zero."""
+    mine = [r for r in records if cutoff is None or (_ts(r) and _ts(r) >= cutoff)]
+
+    def spent(rs):
+        costs = [r["cost_usd"] for r in rs if isinstance(r.get("cost_usd"), (int, float)) and not isinstance(r["cost_usd"], bool)]
+        return round(sum(costs), 6) if costs else None
+
+    landed = [t for t in tasks if t["landed"]]
+    wakeups = 0
+    for t in landed:
+        recs = by_task[(t["repo_path"], t["slug"])]
+        handed = [ts for r in recs["tasks"] if r.get("state") == "handed-over" for ts in [_ts(r)] if ts]
+        wakeups += sum(1 for e in recs["events"] for ts in [_ts(e)] if handed and ts and ts > min(handed)
+                       and e.get("event") == "UserPromptSubmit" and e.get("role") == "lead" and e.get("from") in ("session", "human"))
+    outcome = lambda o: sum(r.get("outcome") == o for r in mine)  # noqa: E731
+    return {"came_back": len(mine), "resolved": outcome("resolved"), "escalated": outcome("escalated"),
+            "stopped": outcome("stopped"), "unstarted": outcome("unstarted"), "cost": spent(mine),
+            "cost_resolved": spent([r for r in mine if r.get("outcome") == "resolved"]),
+            "landed": len(landed), "lead_wakeups": wakeups}
+
+
 # ---- the document -------------------------------------------------------------------
 
 def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=False):
@@ -610,7 +636,9 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     mine = {}
     for s in sessions:
         mine.setdefault((s.repo_path, s.task), []).append(s)
-    tasks = [_task(k, recs, mine.get(k, []), prices) for k, recs in by_task.items()]
+    tech = read_log(factory_dir, "techlead")
+    tech_sessions = {r["session"] for r in tech if _str(r, "session")}
+    tasks = [_task(k, recs, mine.get(k, []), prices, tech_sessions) for k, recs in by_task.items()]
     if cutoff is not None:
         tasks = [t for t in tasks if t["started"] and t["started"] >= cutoff]
     tasks.sort(key=lambda t: (t["started"] is not None, t["started"] or transcript.EPOCH, t["slug"], t["repo_path"]))
@@ -652,4 +680,5 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
         "slowed": slowed, "rewards": _rewards([t for t in tasks if t["landed"]]),
         "outbox": _outbox(logs["feedback"], cutoff),
         "site_manager": _site_manager(read_log(factory_dir, "firings"), cutoff),
+        "tech_lead": _tech_lead(tech, cutoff, tasks, by_task),
     }

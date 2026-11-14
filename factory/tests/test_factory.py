@@ -14,6 +14,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+os.environ.pop("FACTORY_ROLE", None)  # a tech lead session runs `make test`: the tests must not see its role
 BIN = Path(__file__).resolve().parent.parent / "bin" / "factory"
 _loader = importlib.machinery.SourceFileLoader("factory_bin", str(BIN))
 factory = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_bin", _loader))
@@ -381,7 +382,7 @@ class SettingsTests(unittest.TestCase):
     def test_defaults(self):
         want = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
                 "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "reserve_percent": 10,
-                "lean_start": True}
+                "lean_start": True, "tech_lead_model": "opus"}
         self.assertEqual(self.load(), want)
         self.assertEqual(self.load("{}"), want)
 
@@ -396,7 +397,8 @@ class SettingsTests(unittest.TestCase):
                         '"reserve_percent": 25, "lean_start": false}')
         self.assertEqual(got, {"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan",
                                "task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": False,
-                               "reserve_percent": 25, "lean_start": False})
+                               "reserve_percent": 25, "lean_start": False,
+                               "tech_lead_model": "opus"})
         for percent in (0, 100):
             self.assertEqual(self.load('{"reserve_percent": %d}' % percent)["reserve_percent"], percent)
         self.assertEqual(self.load('{"worktree_cap": 9}')["lead_model"], "fable")

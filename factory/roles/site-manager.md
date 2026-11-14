@@ -27,6 +27,7 @@ When any firing is `judgment`, run `factory firings` first. If it shows the same
 
 Decide by asking: would the dispatcher or the human do something different in the next half hour because of this? Calls, and what to look at:
 - Quiet task. A last step that is a long test, build or subagent started within the hour, commits, or transcript progress: large, not stuck, suppress. The same failing step repeated, or no movement far past the threshold: escalate.
+- A headless session in a task's worktree while the task is `working` by role `lander` or `tech-lead` is a tech lead run (bounded at 30 minutes): not a stray, never messaged.
 - Session busy after hand-over (`busy-after-handover`), or a merge refused as busy. Its `detail` gives the session's status and up to five child processes with their ages; `pgrep -P <task.pid>` then `ps` shows more. A child running a test or build the transcript shows was just started is working, suppress. A background command that outlived its purpose is a leftover: name pid, age, command. Its `task` may hold only `worktree`, `lead` and `pid` (no status fields, no `branch`: `factory status` has them). A subagent waiting without a process is not in the process list: read the `transcripts` of the subagents before calling a quiet session a leftover.
 - `wrong-model`. The transcript start, brief or session name shows a deliberate probe, or the model the task's brief asks for: suppress.
 - `base-merged`. The transcript shows the lead was already told, or is merging the base in: suppress. Otherwise tell the lead that its base has merged and that it hands this to its lander (which merges the default branch in); with no live lead, the dispatcher.
@@ -59,7 +60,7 @@ If anything is kept, send ONE message to the dispatcher's session name. First li
 
 ## Job: merge
 You watch and escalate only; you do not merge. The lander merges: a script loop run by the tick takes the pull requests the human approved, or put under a window or named, to the default branch, and reports whatever it cannot do. `lgtm-blocked` is `always`: pass it on.
-- `lgtm-blocked`, subject `#<pull request>/<kind>`: the lander reported a stop on it. The `detail` is the lander's evidence (`unapproved`, `stale`: the head changed after the approval, a fresh one is needed; `ci`: a failed or cancelled check, or none yet; `pending`: checks still running; `conflict`: it conflicts with the default branch and went back to its lead; `handover`: its lead has not handed it over; `base`; `other`). Your line gives that reason and the URL.
+- `lgtm-blocked`, subject `#<pull request>/<kind>`: the lander reported a stop on it. The `detail` is the lander's evidence (`unapproved`, `stale`: the head changed after the approval, a fresh one is needed; `ci`: a failed or cancelled check, or none yet; `pending`: checks still running; `conflict`: it conflicts with the default branch and went back (to a tech lead, else its lead); `handover`: its lead has not handed it over; `base`; `other`). Your line gives that reason and the URL.
 Never weigh whether a blocked pull request "should" merge anyway, and never suggest a way around a blocker. `base-merged` is `judgment` (see above).
 
 ## Limits
