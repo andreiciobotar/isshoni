@@ -717,10 +717,10 @@ func TestHanamiSkyEndsAtTheWaterline(t *testing.T) {
 		if st := s.stars[0]; st.v*g.waterY >= g.waterY {
 			t.Fatalf("%v: a star in the water", sz)
 		}
-		// the row under the waterline holds the waterline's dots only
-		for _, c := range []rune(ansi.Strip(s.draw(false)[g.waterRow])) {
-			if c != ' ' && c != '⠁' {
-				t.Fatalf("%v: something is drawn through the waterline: %q", sz, c)
+		// the disc stands on the water: its solid dots stop at the waterline
+		for _, c := range ansi.Strip(s.draw(false)[g.waterRow]) {
+			if c == '⣿' {
+				t.Fatalf("%v: the disc is drawn through the waterline", sz)
 			}
 		}
 	}
@@ -788,7 +788,7 @@ func TestHanamiWaterMirrorsTheSky(t *testing.T) {
 		cv.cells[(g.waterRow-1)*s.w+x].light = hrgb{100, 60, 20}
 		cv.cells[(g.waterRow-3)*s.w+x].light = hrgb{100, 60, 20}
 	}
-	s.reflect(cv, g)
+	s.reflect(cv, g, hHour{})
 	if cv.cells[g.waterRow*s.w+40].light.r == 0 || cv.cells[(g.waterRow+1)*s.w+40].light.r == 0 {
 		t.Fatal("a lit cell above the waterline has no lit mirror cell")
 	}
@@ -1038,5 +1038,42 @@ func TestHanamiSmallWords(t *testing.T) {
 	stepFor(s, goldenNow, time.Second)
 	if row := ansi.Strip(s.draw(false)[int(g.cy/4)]); !strings.Contains(row, brandKanji) || !strings.Contains(row, "www") {
 		t.Fatalf("the word is missing, or it ate the disc's mark: %q", row)
+	}
+}
+
+// The water's glitter is a fixed pattern: the same every time, kept in the water, and plain without colour.
+func TestHanamiGlitterStaysOnTheWater(t *testing.T) {
+	for _, noColor := range []bool{false, true} {
+		for _, sz := range [][2]int{{80, 24}, {140, 40}} {
+			s := newHanamiScene(NewTheme(noColor))
+			s.w, s.h = sz[0], sz[1]
+			g := s.geo()
+			stepFor(s, goldenNow, 3*time.Second)
+			rnd := s.rnd
+			lines := s.draw(false)
+			if s.rnd != rnd || strings.Join(lines, "\n") != strings.Join(s.draw(false), "\n") {
+				t.Fatalf("%v: the glitter is not a fixed pattern", sz)
+			}
+			dashes := 0
+			for y, l := range lines {
+				for _, c := range ansi.Strip(l) {
+					if c < 0x2800 || c > 0x28ff {
+						continue
+					}
+					if y >= g.staffTop {
+						t.Fatalf("%v: braille below the field, row %d", sz, y)
+					}
+					if y > g.waterRow {
+						dashes++
+					}
+				}
+				if noColor && strings.Contains(l, "\x1b") {
+					t.Fatalf("%v: an escape sequence without colour", sz)
+				}
+			}
+			if dashes == 0 {
+				t.Fatalf("%v noColor %v: no glitter on the water", sz, noColor)
+			}
+		}
 	}
 }
