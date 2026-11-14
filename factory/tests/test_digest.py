@@ -382,6 +382,11 @@ class DigestCase(Harness):
         self.assertEqual(doc["findings"][0]["subject"], "cache_write_1h")
         self.assertEqual(self.fake.timeouts[-1], factory.WATCH_TIMEOUT)
 
+    def test_a_digest_with_no_dispatcher_to_address_is_skipped(self):
+        code, out, _ = self.cli("digest", answers=self.world(), sessions=[])
+        self.assertEqual((code, out), (0, "digest skipped: no dispatcher session for /repo: run /factory:dispatch in a session there\n"))
+        self.assertEqual((self.claude_runs(), self.records()), ([], []))
+
     def test_the_next_window_starts_at_the_marker(self):
         self.cli("digest", answers={**self.world(), ("claude", "-p"): self.judge()})
         self.clock = NOW + HOUR

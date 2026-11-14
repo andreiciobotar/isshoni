@@ -3003,9 +3003,9 @@ def forward(repo, fallback, slug, pr, k, path):
     said = f"{k} new from the human on #{pr['number']}: read {path}"
     lead = [s for s in sessions_in(sessions, repo.root, repo.worktree_path(slug)) if s.get("name") == slug]
     asked = [("lead", slug, f"PR COMMENTS: {slug}: {said}")] if lead else []
-    dispatcher = dispatcher_now(repo, fallback)
+    dispatcher = find_dispatcher(sessions, repo.root, fallback)[0]
     if dispatcher:
-        asked.append(("dispatcher", dispatcher, f"PR COMMENTS: {slug} (not delivered to its lead): {said}"))
+        asked.append(("dispatcher", dispatcher["name"],f"PR COMMENTS: {slug} (not delivered to its lead): {said}"))
     for to, name, line in asked:
         if courier(repo, name, line):
             return to
@@ -4270,7 +4270,9 @@ def run_lander(repo, snap, given, word, fallback):
     """One merge run of a model lander over the pull requests `given` of the snapshot `snap` (those in `word` on
     the human's word, the rest on GitHub's approval). Prints its result lines, records the stops and what has been
     noticed in lander.json, and tells the human of each stop when no dispatcher is alive. True when all merged."""
-    name = dispatcher_now(repo, fallback)
+    sessions = list_sessions()
+    found = find_dispatcher(sessions, repo.root, fallback)[0] if sessions is not None else None
+    name = found and found["name"]
     tools = [*MERGE_TOOLS, *(f"Bash(factory merge {n})" for n in sorted(word))]
     argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", "sonnet",
             "--permission-mode", "dontAsk", "--allowedTools", *tools, "--output-format", "json",
@@ -4333,13 +4335,6 @@ def draft_picture(repo, snap):
                 for pr in snap})
     return {"repo": repo, "sessions": sessions, "gh": lambda *args: gh_json(repo, *args),
             "rows": None if sessions is None else collect(repo, sessions, load_settings()["task_time_limit_hours"], prs)}
-
-
-def dispatcher_now(repo, fallback):
-    """The dispatcher's current session name, resolved now; None when there is none to address."""
-    sessions = list_sessions()
-    found = find_dispatcher(sessions, repo.root, fallback)[0] if sessions is not None else None
-    return found and found["name"]
 
 
 def cheap_tick(repo, fallback):
@@ -4472,7 +4467,7 @@ def parse_args(argv):
                        help="merge only what GitHub's own records show approved (a review or an lgtm), read now")
     lander = sub.add_parser("lander", help="start a lander run that merges pull requests (the human's word, or what GitHub shows approved)")
     lander.add_argument("prs", nargs="*", type=int, metavar="pr", help="merge these on the human's word; none: those approved on GitHub")
-    lander.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
+    lander.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
     land = sub.add_parser("land", help="bring a handed-over task up to its base (a model takes part only on a conflict)")
     land.add_argument("slug", nargs="?")
     land.add_argument("--all", action="store_true", help="every handed-over task whose pull request conflicts or whose base merged")
