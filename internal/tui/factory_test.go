@@ -646,7 +646,7 @@ func TestFactoryHelpAndFooter(t *testing.T) {
 	}
 	m.fac.editing, m.help = false, true
 	out := plain(m)
-	for _, want := range []string{"1 2 3 4", "dashboard · agents · factory · kaizen", "←→/hl", "kaizen page", "c", "edit cap", "refreshes every 30 s while shown, every 2 min otherwise"} {
+	for _, want := range []string{"1 2 3 4", "dashboard · agents · factory · kaizen", "←→/hl", "kaizen page", "c", "edit cap", "every 30 s while shown, asking GitHub; every 2 min off it, not"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help lacks %q:\n%s", want, out)
 		}
@@ -668,6 +668,13 @@ func TestGoldenFactory(t *testing.T) {
 		{"factory-80x24", 80, 24, func(m *model) { setFactory(m, waitingRepos()...) }, true},
 		{"factory-quiet-80x24", 80, 24, func(m *model) {
 			setFactory(m, factoryRepo{name: "calm", path: "/r/calm", st: fstatus(5, manyTasks(2)...)})
+		}, true},
+		{"factory-prs-stale-100x30", 100, 30, func(m *model) {
+			repos := fakeFactoryRepos()
+			repos[0].st.PRs.AsOf = ptr(float64(m.now().Add(-12 * time.Minute).Unix()))
+			repos[0].fetchErr = "factory status timed out after 25s"
+			repos[1].st.PRs.AsOf = ptr(float64(m.now().Add(-3 * time.Minute).Unix()))
+			setFactory(m, repos...)
 		}, true},
 		{"factory-empty-80x24", 80, 24, func(m *model) { setFactory(m) }, true},
 		{"factory-edit-100x30", 100, 30, func(m *model) { setFactory(m, fakeFactoryRepos()...); m.fac.editing, m.fac.field = true, "12" }, false},
@@ -1103,6 +1110,9 @@ func TestSnapshotFactory(t *testing.T) {
 	out, err := Snapshot(SnapshotOptions{Options: Options{Runner: r, NoColor: true, Range: "all", Now: func() time.Time { return goldenNow }}, View: "factory", W: 100, H: 30})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if n := fetchCount(t, dir); n != 1 {
+		t.Fatalf("the snapshot runs the fetch pass once, after the cached one: %d", n)
 	}
 	for _, want := range []string{"proj", "stacked", "cost-in-money", "in motion ▲●○○○○○ 2/7", "write-up.md", "needs-an-answer", "worktree cap  7", "[3 Factory ▲2]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"} {
 		if !strings.Contains(out, want) {

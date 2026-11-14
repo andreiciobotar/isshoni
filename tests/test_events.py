@@ -213,6 +213,38 @@ class TestGh(Env):
                          [None, None, "running", "green", "red", "running", "green"])
 
 
+class TestGhFetch(unittest.TestCase):
+    def run_gh(self, **kw):
+        with mock.patch.object(events.subprocess, "run", **kw) as run:
+            return events.gh_prs(ROOT), run
+
+    def test_lists_pull_requests_with_the_check_rollup(self):
+        prs, run = self.run_gh(return_value=subprocess.CompletedProcess([], 0, '[{"number": 1}]', ""))
+        self.assertEqual(prs, [{"number": 1}])
+        argv, kw = run.call_args
+        self.assertEqual(argv[0], ["gh", "pr", "list", "--state", "all", "--limit", "1000", "--json", events.GH_FIELDS])
+        self.assertEqual((kw["cwd"], kw["timeout"]), (ROOT, 20))
+
+    def test_a_missing_repository_path_is_not_asked(self):
+        with mock.patch.object(events.subprocess, "run") as run, self.assertRaises(kaizen.GhError) as cm:
+            events.gh_prs(os.path.join(ROOT, "no-such-dir"))
+        self.assertEqual((str(cm.exception), run.called), ("no such repository path", False))
+
+    def test_failures_become_one_line_reasons(self):
+        cases = (({"side_effect": FileNotFoundError(2, "No such file or directory: 'gh'")}, "gh unavailable: [Errno 2]"),
+                 ({"side_effect": subprocess.TimeoutExpired("gh", 20)}, "gh unavailable: Command 'gh' timed out after 20 seconds"),
+                 ({"return_value": subprocess.CompletedProcess([], 1, "", "none of the git remotes\nsecond line")},
+                  "none of the git remotes"),
+                 ({"return_value": subprocess.CompletedProcess([], 4, "", "")}, "gh exited 4"),
+                 ({"return_value": subprocess.CompletedProcess([], 0, "not json", "")}, "gh printed no JSON"),
+                 ({"return_value": subprocess.CompletedProcess([], 0, "{}", "")}, "gh printed an unexpected document"))
+        for kw, reason in cases:
+            with self.assertRaises(kaizen.GhError) as cm:
+                self.run_gh(**kw)
+            self.assertTrue(str(cm.exception).startswith(reason), (str(cm.exception), reason))
+            self.assertNotIn("\n", str(cm.exception))
+
+
 class TestFollow(Env):
     def start(self, gh=None, gh_every=60.0):
         self.got, self.lock, self.stop = [], threading.Lock(), threading.Event()

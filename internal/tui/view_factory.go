@@ -78,6 +78,9 @@ func (m *model) factoryLines(p paint, w, h int) block {
 		case len(r.st.Rows) == 0:
 			lines = append(lines, p.sp(2)+p.t("no tasks", th.Faint))
 		default:
+			if l := m.prLine(r); l != "" {
+				lines = append(lines, p.sp(2)+p.t(trunc(l, w-3), th.Faint))
+			}
 			lines = append(lines, cols.header(p))
 			for _, t := range sortedTasks(r.st.Rows) {
 				lines = append(lines, m.taskRow(p, cols, t))
@@ -85,6 +88,27 @@ func (m *model) factoryLines(p paint, w, h int) block {
 		}
 	}
 	return lines
+}
+
+// prLine dates a repository's pull request data when it is older than prStale or the
+// fetch pass failed; it is empty otherwise.
+func (m *model) prLine(r factoryRepo) string {
+	asOf := r.st.PRs.AsOf
+	if asOf == nil && r.fetchErr == "" {
+		return ""
+	}
+	line := "pull requests not fetched yet"
+	if asOf != nil {
+		age := m.now().Sub(time.Unix(0, int64(*asOf*1e9)))
+		if age <= prStale && r.fetchErr == "" {
+			return ""
+		}
+		line = "pull requests as of " + ago(age) + " ago"
+	}
+	if r.fetchErr != "" {
+		line += " · GitHub slow: " + r.fetchErr
+	}
+	return line
 }
 
 // ---- what waits on the human ------------------------------------------------------

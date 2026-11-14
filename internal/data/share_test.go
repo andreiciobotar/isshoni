@@ -49,7 +49,7 @@ func TestShareConcurrentIdenticalCallsRunOneProcess(t *testing.T) {
 			if _, err := r.Agents(context.Background(), "7d"); err != nil {
 				t.Error(err)
 			}
-			if _, err := r.FactoryStatus(context.Background(), repo); err != nil {
+			if _, err := r.FactoryStatus(context.Background(), repo, false); err != nil {
 				t.Error(err)
 			}
 		})
@@ -121,12 +121,32 @@ func TestShareTranscriptTouchRerunsSessionsNotAgents(t *testing.T) {
 	}
 }
 
+func TestShareKeepsTheCachedAndFetchPassesApart(t *testing.T) {
+	r, dir := sharedStub(t)
+	repo := t.TempDir()
+	for _, fetch := range []bool{false, true} {
+		if _, err := r.FactoryStatus(context.Background(), repo, fetch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := calls(t, dir, "factory"); n != 2 {
+		t.Fatalf("%d factory processes, want 2", n)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "fetches"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(b), "\n"); n != 1 {
+		t.Fatalf("%d lines in fetches, want 1", n)
+	}
+}
+
 func TestShareForgetForcesARerun(t *testing.T) {
 	r, dir := sharedStub(t)
 	ctx := context.Background()
 	repo := t.TempDir()
 	for range 2 {
-		if _, err := r.FactoryStatus(ctx, repo); err != nil {
+		if _, err := r.FactoryStatus(ctx, repo, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -134,7 +154,7 @@ func TestShareForgetForcesARerun(t *testing.T) {
 		t.Fatalf("%d runs before Forget, want 1", n)
 	}
 	r.Forget()
-	if _, err := r.FactoryStatus(ctx, repo); err != nil {
+	if _, err := r.FactoryStatus(ctx, repo, false); err != nil {
 		t.Fatal(err)
 	}
 	if n := calls(t, dir, "factory"); n != 2 {

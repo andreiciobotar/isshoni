@@ -22,6 +22,7 @@ const (
 	factoryFresh = 5 * time.Second  // entering the view within this of a result starts no refresh
 	// factoryIdleEvery is the refresh interval while another view is shown: the tab badge needs the count.
 	factoryIdleEvery = 2 * time.Minute
+	prStale          = 2 * time.Minute // pull request data older than this is dated under the repository heading
 	capDigits        = 3
 	capMax           = 999
 )
@@ -31,7 +32,10 @@ const (
 type factoryRepo struct {
 	name, path string
 	st         *data.FactoryStatus
-	err        string // the status call failed
+	err        string // the cached pass failed
+
+	fetching bool   // a fetch pass for this repository is in flight
+	fetchErr string // the last fetch pass failed, or reported why GitHub could not be asked; a successful one clears it
 }
 
 type factoryState struct {
@@ -49,10 +53,18 @@ type factoryState struct {
 	fieldErr string
 }
 
+// factoryMsg is the cached pass over every repository.
 type factoryMsg struct {
 	repos  []factoryRepo
 	cap    int
 	capErr error
+}
+
+// factoryFetchMsg is the fetch pass over one repository.
+type factoryFetchMsg struct {
+	path string
+	st   *data.FactoryStatus
+	err  error
 }
 
 // factoryPaths lists the repositories of the sessions in this range, by name then path.
@@ -72,8 +84,9 @@ func (m *model) factoryPaths() []string {
 	return paths
 }
 
-// factoryJob is one refresh: it keeps the repositories that have a worktrees directory,
-// asks the factory about each of them concurrently, and reads the settings file.
+// factoryJob is the cached pass of a refresh: it keeps the repositories that have a
+// worktrees directory, reads each of them from the factory's disk cache concurrently, and
+// reads the settings file. It never waits on GitHub.
 func (m *model) factoryJob() func() factoryMsg {
 	r, ctx, paths := m.runner, m.ctx, m.factoryPaths()
 	return func() factoryMsg {
@@ -86,7 +99,7 @@ func (m *model) factoryJob() func() factoryMsg {
 		var wg sync.WaitGroup
 		for i := range repos {
 			wg.Go(func() {
-				st, err := r.FactoryStatus(ctx, repos[i].path)
+				st, err := r.FactoryStatus(ctx, repos[i].path, false)
 				if err != nil {
 					repos[i].err = firstLine(err.Error())
 					return
@@ -126,10 +139,64 @@ func (m *model) refreshFactory(minAge time.Duration) tea.Cmd {
 	return func() tea.Msg { return job() }
 }
 
-// applyFactory takes a refresh's result whole.
+// dueFetches marks and returns the fetch passes to start: one per repository with rows
+// whose pull request data is missing or older than data.PRFloor and that has none in
+// flight. Only the factory view asks GitHub.
+func (m *model) dueFetches() []func() factoryFetchMsg {
+	if m.view != viewFactory || m.runner == nil {
+		return nil
+	}
+	r, ctx, now := m.runner, m.ctx, float64(m.now().UnixNano())/1e9
+	var jobs []func() factoryFetchMsg
+	for i := range m.fac.repos {
+		repo := &m.fac.repos[i]
+		if repo.st == nil || len(repo.st.Rows) == 0 || repo.fetching {
+			continue
+		}
+		if asOf := repo.st.PRs.AsOf; asOf != nil && now-*asOf <= data.PRFloor.Seconds() {
+			continue
+		}
+		repo.fetching = true
+		path := repo.path
+		jobs = append(jobs, func() factoryFetchMsg {
+			st, err := r.FactoryStatus(ctx, path, true)
+			return factoryFetchMsg{path: path, st: st, err: err}
+		})
+	}
+	return jobs
+}
+
+// applyFetch replaces one repository's rows with the fetch pass's. A failure keeps the
+// rows and records why; a success clears the error unless the factory reports one itself.
+func (m *model) applyFetch(msg factoryFetchMsg) {
+	i := slices.IndexFunc(m.fac.repos, func(r factoryRepo) bool { return r.path == msg.path })
+	if i < 0 {
+		return
+	}
+	r := &m.fac.repos[i]
+	r.fetching = false
+	switch {
+	case msg.err != nil:
+		r.fetchErr = firstLine(msg.err.Error())
+	case msg.st.PRs.Error != nil:
+		r.st, r.fetchErr = msg.st, firstLine(*msg.st.PRs.Error)
+	default:
+		r.st, r.fetchErr = msg.st, ""
+	}
+	m.fixScroll()
+}
+
+// applyFactory takes the cached pass's result whole, except that a repository keeps the
+// state of its fetch pass.
 func (m *model) applyFactory(msg factoryMsg) tea.Cmd {
 	f := &m.fac
+	old := f.repos
 	f.busy, f.doneAt, f.repos = false, m.now(), msg.repos
+	for i := range f.repos {
+		if j := slices.IndexFunc(old, func(o factoryRepo) bool { return o.path == f.repos[i].path }); j >= 0 {
+			f.repos[i].fetching, f.repos[i].fetchErr = old[j].fetching, old[j].fetchErr
+		}
+	}
 	f.cap, f.capErr = msg.cap, ""
 	for _, r := range msg.repos {
 		if r.st != nil {
@@ -146,6 +213,15 @@ func (m *model) applyFactory(msg factoryMsg) tea.Cmd {
 		return m.refreshFactory(0)
 	}
 	return nil
+}
+
+// startFetches starts the fetch passes that are due.
+func (m *model) startFetches() tea.Cmd {
+	var cmds []tea.Cmd
+	for _, job := range m.dueFetches() {
+		cmds = append(cmds, func() tea.Msg { return job() })
+	}
+	return tea.Batch(cmds...)
 }
 
 // factoryWorking is true while a task's session is working: its spinner turns.
