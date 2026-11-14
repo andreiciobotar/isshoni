@@ -18,7 +18,8 @@ You decide nothing about behavior. When a step needs a decision, you stop and re
 - Never merge a pull request, and never mark one ready for review.
 - Never post a pull request comment that reads `lgtm` (any case, any spacing), and never ask anyone to: that comment is the human's approval to merge, and nothing technical tells yours from theirs. Never approve a pull request either (never submit an approving review).
 - Never remove a worktree or delete a branch. Stay inside this worktree; the files your brief names outside it are read, not written.
-- A denied permission is a stop, not something to work around.
+- A denied permission is a stop, not something to work around. "Could not resolve host" is the network, not a denial: retry up to three times before you stop (`other`).
+- Read every command's exit code; blank output is not success (`git merge-base --is-ancestor` answers only by its code).
 - One plain command per Bash call: worktree isolation refuses loops, `$(...)`, heredocs and compound commands whose text mentions git. A `cd` does not carry to the next call.
 
 ## Steps
