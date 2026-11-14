@@ -786,14 +786,35 @@ func TestHanamiWaterMirrorsTheSky(t *testing.T) {
 	cv := &hCanvas{w: s.w, h: s.h, hi: int(g.waterY), sky: g.waterRow, cells: make([]hCell, s.w*s.h)}
 	for x := 0; x < s.w; x++ { // whole rows: the shimmer moves a cell sideways
 		cv.cells[(g.waterRow-1)*s.w+x].light = hrgb{100, 60, 20}
-		cv.cells[(g.waterRow-3)*s.w+x].light = hrgb{100, 60, 20}
 	}
 	s.reflect(cv, g, hHour{})
-	if cv.cells[g.waterRow*s.w+40].light.r == 0 || cv.cells[(g.waterRow+1)*s.w+40].light.r == 0 {
+	if cv.cells[g.waterRow*s.w+40].light.r == 0 {
 		t.Fatal("a lit cell above the waterline has no lit mirror cell")
 	}
 	if deep, near := cv.cells[(g.staffTop-1)*s.w+40].light.r, cv.cells[g.waterRow*s.w+40].light.r; deep >= near {
 		t.Fatalf("the water is not dimmer with depth: %.1f against %.1f", deep, near)
+	}
+
+	// the whole sky is mirrored: a blossom's glow high up has light in the water under it
+	cv = &hCanvas{w: s.w, h: s.h, hi: int(g.waterY), sky: g.waterRow, cells: make([]hCell, s.w*s.h)}
+	cv.cells[2*s.w+40] = hCell{light: hrgb{120, 90, 160}}
+	s.reflect(cv, g, hHour{})
+	lit := false
+	for r := g.waterRow; r < g.staffTop; r++ {
+		for x := 38; x <= 42; x++ {
+			lit = lit || cv.cells[r*s.w+x].light.r > 0
+		}
+	}
+	if !lit {
+		t.Fatal("a cell at the top of the sky has no light in the water")
+	}
+	// a thin line is not a pillar: one dot of a branch lights the water far less than a lit cell
+	cv = &hCanvas{w: s.w, h: s.h, hi: int(g.waterY), sky: g.waterRow, cells: make([]hCell, s.w*s.h)}
+	cv.cells[(g.waterRow-1)*s.w+40] = hCell{mask: 1, a: 1, c: hrgb{200, 200, 200}}
+	cv.cells[(g.waterRow-1)*s.w+60] = hCell{light: hrgb{200, 200, 200}}
+	s.reflect(cv, g, hHour{})
+	if thin, lit := cv.cells[g.waterRow*s.w+40].light.r, cv.cells[g.waterRow*s.w+60].light.r; thin*4 > lit {
+		t.Fatalf("a one-dot line stands in the water: %.1f against %.1f", thin, lit)
 	}
 }
 
@@ -925,8 +946,11 @@ func TestHanamiCirculation(t *testing.T) {
 	if n := len(s.branches[0].beads); n != maxBeads {
 		t.Fatalf("%d beads in flight, want %d", n, maxBeads)
 	}
-	if b := s.branches[0].beads[0]; b.k >= 0.5 && b.bl != nil {
-		t.Fatalf("a bead of a bare call is as bright as one of output: %+v", b)
+	bare, loud := newHanamiScene(NewTheme(true)), newHanamiScene(NewTheme(true))
+	bare.Apply(ev("tool", 0, func(e *data.Event) { e.Tool = "edit" }), false)
+	loud.Apply(ev("tokens", 0, func(e *data.Event) { e.Out = 2000 }), false)
+	if bk, lk := bare.branches[0].beads[0].k, loud.branches[0].beads[0].k; bk >= lk {
+		t.Fatalf("a bead of a bare call (%.2f) is as bright as one of output (%.2f)", bk, lk)
 	}
 	stepFor(s, goldenNow, 2*time.Second)
 	if len(s.branches[0].beads) != 0 {
@@ -1075,5 +1099,45 @@ func TestHanamiGlitterStaysOnTheWater(t *testing.T) {
 				t.Fatalf("%v noColor %v: no glitter on the water", sz, noColor)
 			}
 		}
+	}
+}
+
+// A question asked again while its old bell's light is still going home is not lost.
+func TestHanamiQuestionAskedAgain(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	q := func(e *data.Event) { e.Slug = "again" }
+	s.Apply(ev("question", 0, q), false)
+	stepFor(s, goldenNow, 2*time.Second)
+	s.Apply(ev("answer", 1, q), false)
+	stepFor(s, goldenNow, 200*time.Millisecond)
+	s.Apply(ev("question", 1.2, q), false)
+	stepFor(s, goldenNow, 5*time.Second)
+	if len(s.bells) != 1 || s.bells[0].state != bellWaiting {
+		t.Fatalf("the question asked again is gone: %d bells", len(s.bells))
+	}
+}
+
+// Without colour the waterline is still there, and a word that cannot sit on free cells moves a row or is skipped.
+func TestHanamiNoColourWaterlineAndWords(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	s.w, s.h = 100, 30
+	g := s.geo()
+	if !strings.Contains(s.draw(false)[g.waterRow], "⠁") {
+		t.Fatal("no waterline without colour")
+	}
+	cv := &hCanvas{w: 20, h: 6, sky: 4, cells: make([]hCell, 120)}
+	cv.cells[2*20+5].ch = 'x' // the word's row is blocked: it goes one row up
+	cv.word(4, 2, "abc", hrgb{})
+	if cv.cells[1*20+4].ch != 'a' || cv.cells[2*20+4].ch != 0 {
+		t.Fatal("a blocked word did not move up a row")
+	}
+	for x := 3; x < 8; x++ {
+		cv.cells[0*20+x].ch, cv.cells[2*20+x].ch = 'y', 'y'
+	}
+	cv.cells[1*20+4].ch = 0
+	cv.cells[3*20+5].ch = 'z'
+	cv.word(4, 1, "abc", hrgb{})
+	if cv.cells[1*20+4].ch != 0 || cv.cells[3*20+4].ch != 0 {
+		t.Fatal("a word with no free row was drawn anyway")
 	}
 }

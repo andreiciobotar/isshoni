@@ -257,6 +257,7 @@ type hBell struct {
 }
 
 type hRipple struct {
+	flat                        float64 // when set, an ellipse at most this tall (half height, dots): a swell on the water
 	x, y, r, speed, maxR, alpha float64
 	col                         hrgb
 	fromDisc                    bool
@@ -629,7 +630,9 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 		case settled:
 			s.lanterns = slices.Delete(s.lanterns, s.lit(e), s.lit(e)+1)
 		default: // closed without a merge: it goes out
-			s.lanterns[s.lit(e)].gone = hanamiSecond
+			l := s.lanterns[s.lit(e)]
+			l.gone = hanamiSecond
+			s.words = slices.DeleteFunc(s.words, func(w hWord) bool { return w.l == l })
 		}
 	case "ci":
 		s.lantern(g, e, settled).ci = e.State
@@ -650,7 +653,10 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 			s.lantern(g, e, false).burst = true // rises first, then bursts
 		}
 	case "question":
-		if slices.ContainsFunc(s.bells, func(b *hBell) bool { return b.slug == e.Slug }) {
+		if i := slices.IndexFunc(s.bells, func(b *hBell) bool { return b.slug == e.Slug }); i >= 0 {
+			if b := s.bells[i]; b.state == bellReturning { // asked again before its light got home: it goes out again
+				b.state = bellGoing
+			}
 			return
 		}
 		slot := 0
@@ -829,7 +835,7 @@ func (s *hanamiScene) Step(now time.Time) {
 	}
 	s.rate += (s.acc/dt/s.scale - s.rate) * dt / 0.9
 	s.cacheRate += (s.cacheAcc/dt/s.scale - s.cacheRate) * dt / 1.5
-	s.toolRate += (s.toolAcc/dt/s.scale - s.toolRate) * math.Min(1, dt*s.scale/12) // 12 event seconds, so a replay keeps the day's tempo
+	s.toolRate += (s.toolAcc/dt/s.scale - s.toolRate) * math.Min(0.1, dt*s.scale/12) // 12 event seconds, a tenth of the gap a frame at most: a fast replay does not jitter
 	s.acc, s.cacheAcc, s.toolAcc = 0, 0, 0
 	s.keepTime(g, dt)
 	s.swell.to(springSwell, 1-math.Exp(-s.rate/2.5))
@@ -1076,8 +1082,8 @@ func (s *hanamiScene) keepTime(g hGeo, dt float64) {
 		s.pulse = a
 		if s.beats++; s.beats%4 == 0 {
 			s.bar = a
-			if len(s.rings) < maxRings { // the downbeat crosses the water from the disc's foot: wide and faint
-				s.rings = append(s.rings, hRipple{x: g.cx, y: g.waterY + 2, r: g.R * 0.6, speed: 45, maxR: 0.85 * g.W, alpha: 0.45 * a, col: toRGB(s.th.gradientAt(0.5))})
+			if len(s.rings) < maxRings && !s.th.NoColor && g.H > g.waterY { // the downbeat crosses the water from the disc's foot
+				s.rings = append(s.rings, hRipple{x: g.cx, y: g.waterY, r: g.R * 0.5, speed: g.W / 7.5, maxR: g.W / 3, alpha: 0.5 * a, col: toRGB(s.th.gradientAt(0.5)), flat: (g.H - g.waterY) / 2})
 			}
 		}
 	}
@@ -1237,15 +1243,25 @@ func (cv *hCanvas) text(cx, cy int, s string, c hrgb, bold bool) int {
 	return cx
 }
 
-// word writes ASCII s from (cx, cy) in the sky: it leaves every cell that already holds a glyph or the disc.
+// word writes ASCII s from (cx, cy) in the sky where all its cells are free of glyphs and the disc; else one row
+// up, then one row down; else not this frame.
 func (cv *hCanvas) word(cx, cy int, s string, c hrgb) {
-	for i, r := range s {
-		x := cx + i
-		if x < 0 || x >= cv.w || cy < 0 || cy >= cv.sky || r < ' ' || r > '~' {
-			continue
+	for _, row := range [3]int{cy, cy - 1, cy + 1} {
+		free := row >= 0 && row < cv.sky
+		for i := 0; free && i < len(s); i++ {
+			x := cx + i
+			free = x >= 0 && x < cv.w && s[i] >= ' ' && s[i] <= '~'
+			if free {
+				cell := &cv.cells[row*cv.w+x]
+				free = cell.ch == 0 && !cell.filled && !cell.skip
+			}
 		}
-		if cell := &cv.cells[cy*cv.w+x]; cell.ch == 0 && !cell.filled && !cell.skip {
-			cell.ch, cell.c, cell.bold = r, c, false
+		if free {
+			for i := 0; i < len(s); i++ {
+				cell := &cv.cells[row*cv.w+cx+i]
+				cell.ch, cell.c, cell.bold = rune(s[i]), c, false
+			}
+			return
 		}
 	}
 }
@@ -1493,7 +1509,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 	// sap rises along the branches; a brief runs out to a blossom that is to open
 	for _, b := range s.branches {
 		for _, d := range b.beads {
-			col, a := d.col, 0.5+0.5*d.k
+			col, a := d.col.mix(toRGB(s.th.Text), 0.25), 0.8+0.2*d.k
 			for k := 0; k < 6; k++ { // a head of 2x2 dots with a glow, and a tail of six
 				x, y := b.run(g, d.bl, math.Max(0, d.t/beadTrip-0.014*float64(k)))
 				cv.plot(x, y, col, a*(1-float64(k)/7))
@@ -1501,7 +1517,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 					cv.plot(x+1, y, col, a)
 					cv.plot(x, y+1, col, a)
 					cv.plot(x+1, y+1, col, a)
-					cv.glow(x, y, 5, col, 0.5*d.k)
+					cv.glow(x, y, 6, col, 0.2+0.3*d.k)
 				}
 			}
 		}
@@ -1710,10 +1726,13 @@ func (s *hanamiScene) draw(legend bool) []string {
 		}
 		cv.layer = 2
 		for _, r := range s.rings {
-			fade := r.alpha * (1 - r.r/r.maxR)
+			fade, ry := r.alpha*(1-r.r/r.maxR), r.r/3
+			if r.flat > 0 {
+				ry = math.Min(ry, r.flat)
+			}
 			for k, n := 0, max(10, int(2*math.Pi*r.r/1.2)); k < n; k++ {
 				a := 2 * math.Pi * float64(k) / float64(n)
-				cv.plot(r.x+r.r*math.Cos(a), r.y+r.r/3*math.Sin(a), r.col, fade)
+				cv.plot(r.x+r.r*math.Cos(a), r.y+ry*math.Sin(a), r.col, fade)
 			}
 		}
 		s.reflect(cv, g, hour)
@@ -1768,7 +1787,8 @@ func (s *hanamiScene) draw(legend bool) []string {
 // horizon puts a band of light over the waterline in the colour of the hour, the same along a row.
 func (s *hanamiScene) horizon(cv *hCanvas, g hGeo, hour hHour) {
 	for i := 0; i < horizonRows && i < g.waterRow; i++ {
-		band := hour.c.times(0.67 * (1 - float64(i)/horizonRows))
+		fall := 1 - float64(i)/horizonRows
+		band := hour.c.times(0.75 * fall * fall)
 		for x := 0; x < cv.w; x++ {
 			c := &cv.cells[(g.waterRow-1-i)*cv.w+x]
 			c.light = c.light.lit(band)
@@ -1776,9 +1796,11 @@ func (s *hanamiScene) horizon(cv *hCanvas, g hGeo, hour hHour) {
 	}
 }
 
-// reflect gives the water its surface: the sky mirrored, compressed and shimmering, as light behind (colour only)
-// and as short dashes of braille in front, bright where the sky above is, so the disc leaves a path of light
-// on it. Without colour only a sparse glitter under the disc. Nothing in it comes from the generator.
+// reflect gives the water its surface: the whole sky mirrored and compressed (water row i of n shows the band of
+// sky rows [i*sky/n, (i+1)*sky/n) counted up from the waterline, the brightest cell of the band per column),
+// shimmering, as light behind (colour only) and as dashes of braille in front, bright where the sky above is, so
+// the disc leaves a path of light on it. Without colour only a sparse glitter under the disc. Nothing in it
+// comes from the generator.
 func (s *hanamiScene) reflect(cv *hCanvas, g hGeo, hour hHour) {
 	th := s.th
 	bg, text := toRGB(th.Bg), toRGB(th.Text)
@@ -1792,36 +1814,42 @@ func (s *hanamiScene) reflect(cv *hCanvas, g hGeo, hour hHour) {
 		case c.ch != 0 && !c.filled:
 			l = l.lit(c.c.over(bg).times(0.35))
 		case c.mask != 0 && !c.filled:
-			l = l.lit(c.c.over(bg).times(c.a * math.Min(1, float64(bits.OnesCount8(c.mask))/3)))
+			l = l.lit(c.c.over(bg).times(c.a * float64(bits.OnesCount8(c.mask)) / 8)) // by coverage: a thin line is faint
 		}
 		return l
 	}
 	src := make([]hrgb, cv.w)
 	for j := 0; j < rows; j++ {
 		depth := float64(j) / float64(max(1, rows-1))
-		k := (0.42 - 0.22*depth) / 2
+		k := 0.6 - 0.3*depth
 		wave := float64(g.waterRow+j)*1.7 + s.t*0.9 + s.beatPhase
 		shift := int(math.Round(2 * depth * math.Sin(wave)))
+		top, bottom := j*g.waterRow/rows, (j+1)*g.waterRow/rows // the band of sky, in rows up from the waterline
 		for x := 0; x < cv.w; x++ {
 			sx := min(cv.w-1, max(0, x-shift))
-			var l hrgb
-			for d := 0; d < 2; d++ {
-				if r := g.waterRow - 1 - 2*j - d; r >= 0 {
-					l = l.lit(seen(&cv.cells[r*cv.w+sx]))
+			var best hrgb
+			for d := top; d < max(bottom, top+1); d++ {
+				if r := g.waterRow - 1 - d; r >= 0 {
+					if l := seen(&cv.cells[r*cv.w+sx]); l.r+l.g+l.b > best.r+best.g+best.b {
+						best = l
+					}
 				}
 			}
-			src[x] = l.times(0.5)
+			src[x] = best
 			if !th.NoColor {
-				cv.cells[(g.waterRow+j)*cv.w+x].light = l.times(k)
+				cv.cells[(g.waterRow+j)*cv.w+x].light = best.times(k)
 			}
 		}
-		// the glitter: on every second dot row, dashes of 2 to 5 dots in buckets of 8, sliding slowly
+		// the glitter: on every second dot row, dashes in a frame that slides with the water, so a dash travels
+		// with its bucket; where the sky is dark the sea is calm: a few long faint dashes
 		slide := int(s.t*1.5 + 3*math.Sin(wave))
 		for _, dy := range [2]int{1, 3} {
 			y := 4*(g.waterRow+j) + dy
-			for bucket := -1; bucket <= cv.w/4; bucket++ {
-				h := hashf(y, bucket-((slide+64)>>3), 7)
-				cx := min(cv.w-1, max(0, bucket*4+2))
+			for bucket := (-slide - 16) >> 3; bucket <= (2*cv.w-slide)>>3; bucket++ {
+				h := hashf(y, bucket, 7)
+				n0 := hashf(y, bucket, 11)
+				x0 := bucket*8 + slide + int(hashf(y, bucket, 13)*3)
+				cx := min(cv.w-1, max(0, (x0+3)/2))
 				l := src[cx]
 				b := math.Min(1, (l.r+l.g+l.b)/140)
 				if th.NoColor {
@@ -1830,22 +1858,29 @@ func (s *hanamiScene) reflect(cv *hCanvas, g hGeo, hour hHour) {
 						b = 0.6
 					}
 				}
+				dark := b < 0.15
 				p := (0.1 + 0.9*b) * (1 - 0.3*depth)
+				if dark {
+					p = 0.07
+				}
 				if th.NoColor {
 					p = 0.5 * b
 				}
 				if h >= p {
 					continue
 				}
-				n := min(7, 2+int(hashf(y, bucket-((slide+64)>>3), 11)*(2+3*depth+3*b)))
-				x0 := bucket*8 + int(hashf(y, bucket, 13)*float64(9-n)) + slide&7
+				n := min(7, 2+int(n0*(2+3*depth+3*b)))
+				alpha := 0.3 + 0.7*b
+				if dark {
+					n, alpha = 5+int(n0*3), 0.22
+				}
 				m := math.Max(1, math.Max(l.r, math.Max(l.g, l.b)))
 				col := hour.c.times(6).mix(l.times(230/m), math.Min(1, 2*b))
 				if th.NoColor {
 					col = text
 				}
 				for i := 0; i < n; i++ {
-					cv.plot(float64(x0+i), float64(y), col, 0.3+0.7*b)
+					cv.plot(float64(x0+i), float64(y), col, alpha)
 				}
 			}
 		}
@@ -1878,8 +1913,8 @@ var hanamiLegend = [][2]string{
 	{"✧", "light along a branch: a brief out to a new agent; work rising"},
 	{"Aa", "words: a blossom's role, a lantern's number, a question's slug"},
 	{"◌", "a ripple from the disc: the site manager's tick"},
-	{"⠒", "water: a ring a tool call, the sky mirrored. Horizon: the hour"},
-	{"◐", "the beat: the rate of tool calls. The disc, staff, blossoms pulse"},
+	{"⠒", "water: a ring: a tool call. Sky mirrored; horizon: the hour"},
+	{"◐", "the beat: tool-call rate; disc, staff pulse; swell every 4th"},
 	{"", "colour: the agent's role, on blossoms, notes, streaks and petals"},
 	{"", "ambient, not data: the breath, the lanterns' sway, the slowest breeze"},
 }

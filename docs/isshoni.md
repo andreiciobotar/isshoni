@@ -411,9 +411,9 @@ The fifth view (`5`) draws the same work as motion, for a second screen: the mar
 | the bars at the right of the staff | calls per second on that voice |
 | a lantern rising to the sky; flickering; green; red; going out | an open pull request; checks running; passed; failed; closed without a merge |
 | a firework that lights the whole stage, then a star `✶` near where the lantern was | a merge; the star stays 6 hours (the 64 latest) |
-| a pale light from the disc to a bell at the left edge of the sky, with the task's slug beside it; the light returns and the bell goes | a task asked you a question, and waits until it is answered |
+| a pale light from the disc to a bell at the left edge of the sky, with the task's slug beside it; the light returns and the bell goes | a task asked you a question, and waits until it is answered. Bells that do not fit above the disc overlap at the top |
 | water along the bottom of the field, mirroring the sky; a ring on it under each call | every tool call drops a ring under its agent's blossom (the branch tip for a main session); one agent always lands in one place |
-| a band of light over the waterline | the hour of day (your time zone; in a replay, the replay's clock): indigo by night, rose at dawn, pale blue by day, amber at dusk. Merge stars are fainter by day |
+| a band of light over the waterline | the hour of day (the time zone of the machine running the dashboard, which over `--serve` is the server's; in a replay, the replay's clock, while the clock in the sub-header is UTC): indigo by night, rose at dawn, pale blue by day, amber at dusk. Merge stars are fainter by day |
 | the disc, the staff's playhead and working blossoms pulsing on a beat; every fourth beat a swell across the water | tempo is the rate of tool calls, from about 50 to 140 beats a minute; none without tool calls |
 | a light running out along a branch, then the blossom opening | a subagent dispatched: the brief goes out, and the blossom is a bud until it arrives |
 | beads of light rising along a branch (dim for a call, bright for output) | work: a tool call or output tokens from that session, six beads in flight at most on a branch |
@@ -430,7 +430,11 @@ It runs at 20 frames a second and only while it is shown: the view starts `issho
 ```sh
 bin/isshoni-tui --replay events.jsonl              # replay a recording (python3 -m isshoni events --since 24h > events.jsonl), looping
 bin/isshoni-tui --replay events.jsonl --replay-speed 300  # event seconds per second; the default is 60
-make strip REPLAY=internal/tui/testdata/hanami-replay.jsonl SCENE=merge AT=89s FRAMES=12 STEP=200ms ARGS="--replay-speed 3"
+TZ=UTC make strip REPLAY=internal/tui/testdata/hanami-replay.jsonl SCENE=merge AT=88s FRAMES=14 STEP=250ms ARGS="--replay-speed 3"
+TZ=UTC make strip REPLAY=internal/tui/testdata/hanami-lead.jsonl SCENE=lead AT=30s FRAMES=12 STEP=400ms ARGS="--replay-speed 1"   # one lead, no subagents
+TZ=UTC make strip REPLAY=internal/tui/testdata/hanami-day.jsonl SCENE=replay AT=5s FRAMES=14 STEP=15s ARGS="--replay-speed 300"    # a synthetic day, 05:00 to 22:30 UTC: night, dawn, day, dusk, night
 ```
+
+Pin `TZ=UTC` on every strip: the horizon follows the machine's time zone, and the fixtures are written in UTC.
 
 `make strip` renders consecutive frames (`--snapshot hanami --replay FILE --at D --frames N --frame-step D`, add `--legend` for the legend) to `shots/hanami-<scene>-<size>.png`, a contact strip, and `.gif`, an animation (the GIF needs Pillow; the PNG needs Chrome, as `make screenshot` does). `make snapshot VIEW=hanami` without a replay is the idle scene.
