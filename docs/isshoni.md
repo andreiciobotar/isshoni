@@ -412,9 +412,11 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   another task says so in its row, with its reason beneath, and is not in the band), each
   with how long it has waited; when nothing waits it says so. The `3 Factory` tab carries
   `▲N` for the number waiting on every view (in a narrow header the live count then
-  shows as `● N`, without the word). A task the site manager paused reads `paused 12m: waits a, b`
-  in place of `blocked on a, b`, yellow from 30 minutes on (a stale pause); a task the queue
-  prioritizes reads `motion · prioritized 3m` (or `review · …`) in the phase column. It refreshes every 30 seconds while shown, every 2
+  shows as `● N`, without the word). A task the site manager paused reads
+  `paused 12m: waits a, b` in place of `blocked on a, b`, yellow from 30 minutes on (a
+  stale pause); a task the queue prioritizes reads `motion · prioritized 3m` (or
+  `review · …`, or `blocked · …` for a released task still declared paused) in the phase
+  column. It refreshes every 30 seconds while shown, every 2
   minutes otherwise, in two passes. The first, for every repository, is
   `factory status --json --cached` (10 s limit): it never contacts GitHub, so the rows
   show at once. The second, only while the view is shown, is

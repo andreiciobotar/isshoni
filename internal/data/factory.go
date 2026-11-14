@@ -56,7 +56,7 @@ type FactoryTask struct {
 	WaitsOn     string `json:"waits_on"`     // a blocked task: human, dispatcher or a task's slug; empty when null
 
 	Paused      *FactoryFlag `json:"paused"`      // the site manager paused this blocked task; nil when not, or from a script before the field
-	Prioritized *FactoryFlag `json:"prioritized"` // the queue prioritizes this task in motion or review; nil likewise
+	Prioritized *FactoryFlag `json:"prioritized"` // the queue prioritizes this task: in motion, in review, or a still-blocked task just released; nil likewise
 }
 
 // FactoryFlag is a paused or prioritized mark. Since is the zero time when the script's

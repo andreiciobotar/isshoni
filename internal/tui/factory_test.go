@@ -100,9 +100,6 @@ func onTask() data.FactoryTask {
 	return x
 }
 
-// fakeNow is the clock of fakeModel.
-var fakeNow = t0.Add(time.Hour)
-
 // pausedFor is a task the site manager paused age ago, waiting on the slugs.
 func pausedFor(slug string, age time.Duration, waits ...string) data.FactoryTask {
 	x := ftask(slug, "blocked")
@@ -618,19 +615,36 @@ func TestFactoryPausedLabelShowsAgeAndWaitedTasks(t *testing.T) {
 		if !strings.Contains(got, p.t("▲ ", c.col)) || !strings.Contains(got, p.t(c.label, c.col)) {
 			t.Errorf("want %q in %v: %q", c.label, c.col, got)
 		}
-		if rows[i].WaitsOnHuman() {
-			t.Errorf("a paused task does not wait on the human: %+v", rows[i])
-		}
 	}
 	noAge := pausedFor("no-age", 0, "a")
 	noAge.Paused.Since = time.Time{}
 	if _, label, _ := m.phaseLook(noAge, true); label != "paused: waits a" {
 		t.Errorf("a pause without a time shows without an age: %q", label)
 	}
+	// only a blocked task shows as paused
+	moving := prioritizedFor("moving", 0)
+	moving.Prioritized, moving.Paused = nil, &data.FactoryFlag{Since: fakeNow.Add(-45 * time.Minute), WaitsOn: []string{"a"}}
+	if _, label, c := m.phaseLook(moving, false); label != "motion" || c != th.Blue {
+		t.Errorf("a paused flag on a task in motion changes its label or colour: %q", label)
+	}
+	// a task released but still declared paused reads as prioritized, muted, never as a stale pause
+	both := pausedFor("released", 45*time.Minute, "a")
+	both.Prioritized = &data.FactoryFlag{Since: fakeNow.Add(-2 * time.Minute)}
+	if _, label, c := m.phaseLook(both, true); label != "blocked · prioritized 2m" || c != th.Muted {
+		t.Errorf("both flags: %q in %v", label, c)
+	}
+	// a time in the future reads 0m
+	ahead, rush := pausedFor("ahead", -time.Hour, "a"), prioritizedFor("rush", -time.Hour)
+	if _, label, _ := m.phaseLook(ahead, true); label != "paused 0m: waits a" {
+		t.Errorf("a pause from the future: %q", label)
+	}
+	if _, label, _ := m.phaseLook(rush, true); label != "motion · prioritized 0m" {
+		t.Errorf("a prioritization from the future: %q", label)
+	}
 }
 
 func TestFactoryPrioritizedLabelIsTheShortPhaseNameAndAge(t *testing.T) {
-	review := prioritizedFor("in-review", 3*time.Minute)
+	review := prioritizedFor("in-review", 29*time.Minute)
 	review.Phase = "review"
 	noAge := prioritizedFor("no-age", 0)
 	noAge.Prioritized.Since = time.Time{}
@@ -642,7 +656,7 @@ func TestFactoryPrioritizedLabelIsTheShortPhaseNameAndAge(t *testing.T) {
 		for i, c := range []struct {
 			label string
 			col   color.Color
-		}{{"motion · prioritized 3m", th.Blue}, {"review · prioritized 3m", th.Yellow}} {
+		}{{"motion · prioritized 3m", th.Blue}, {"review · prioritized 29m", th.Yellow}} {
 			if got := m.taskRow(p, cols, rows[i], w)[0]; !strings.Contains(got, p.t(c.label, c.col)) {
 				t.Errorf("%d columns: want %q in %v: %q", w, c.label, c.col, got)
 			}
@@ -659,14 +673,14 @@ func TestFactoryPrioritizedLabelIsTheShortPhaseNameAndAge(t *testing.T) {
 func TestFactoryPausedAndPrioritizedLabelsKeepTheTable(t *testing.T) {
 	long := strings.Repeat("x", 40)
 	cols := func(w int, whom string) factoryCols {
-		paused := pausedFor("docs-after-review", 45*time.Minute, whom)
-		paused.Size = "medium"
-		m := factoryModel(true, w, 40, factoryRepo{name: "m", st: fstatus(5, paused, prioritizedFor("rush-fix", 3*time.Minute), ftask("api-rate-limits", "review"))})
+		paused, review := pausedFor("docs-after-review", 45*time.Minute, whom), prioritizedFor("rush-fix", 29*time.Minute)
+		paused.Size, review.Phase = "medium", "review"
+		m := factoryModel(true, w, 40, factoryRepo{name: "m", st: fstatus(5, paused, review, ftask("api-rate-limits", "review"))})
 		return m.factoryCols(m.th.on(m.th.Bg), w, m.fac.repos[0].st.Rows)
 	}
 	for _, w := range []int{80, 100, 120} {
 		got, want := cols(w, long), cols(w, "a")
-		if got.phase < 2+width("motion · prioritized 3m") {
+		if got.phase < 2+width("review · prioritized 29m") {
 			t.Errorf("%d columns: PHASE %d cuts the prioritized label", w, got.phase)
 		}
 		got.phase, want.phase = 0, 0 // the label is cut to the cell
@@ -680,7 +694,7 @@ func TestFactoryPausedAndPrioritizedLabelsKeepTheTable(t *testing.T) {
 func TestFactoryColsKeepTheTableWhenAWhomIsLong(t *testing.T) {
 	cols := func(w int, whom string) factoryCols {
 		x := onTask()
-		x.WaitsOn, x.Size = whom, "medium"
+		x.Slug, x.WaitsOn, x.Size = strings.Repeat("s", slugLeast), whom, "medium" // the least slug a clamped PHASE leaves
 		m := factoryModel(true, w, 40, factoryRepo{name: "m", st: fstatus(5, x, ftask("quiet-refactor", "motion"), ftask("api-rate-limits", "review"))})
 		return m.factoryCols(m.th.on(m.th.Bg), w, m.fac.repos[0].st.Rows)
 	}

@@ -17,7 +17,7 @@ const (
 	meterCells  = 20 // beyond this many slots the meter is a bar
 	baseMax     = 24
 	prMax       = 24
-	phaseMax    = 25 // (glyph, space and the 23 cells of "review · prioritized 3m") PHASE keeps more than this only when every column fits at it
+	phaseMax    = 26 // (glyph, space and the 24 cells of "review · prioritized 29m") PHASE keeps more than this only when every column fits at it
 	slugLeast   = 16
 	pausedStale = 30 * time.Minute // a pause this old is stale: the script's blocked-unanswered bound
 	nameLeast   = 12               // cells the repository name keeps before the meter shrinks
@@ -428,7 +428,7 @@ func (m *model) phaseLook(t data.FactoryTask, long bool) (glyph, label string, c
 		}
 	}
 	stalePause := false
-	if f := t.Paused; f != nil && t.Phase == "blocked" {
+	if f := t.Paused; f != nil && t.Phase == "blocked" && t.Prioritized == nil { // a released task is still declared paused: prioritized wins
 		label = "paused"
 		if !f.Since.IsZero() {
 			age := max(0, m.now().Sub(f.Since))

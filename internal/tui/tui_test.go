@@ -98,6 +98,9 @@ func fakeAgents() *data.Agents {
 		ByModel: map[string]data.Usage{"claude-haiku-5-5": usage(1, 2, 3, 4000000), "claude-fable-5-2": usage(1, 2, 3, 9000000), "claude-nova-9": nova}}
 }
 
+// fakeNow is the clock of every model newFake builds.
+var fakeNow = t0.Add(time.Hour)
+
 func fakeModel(noColor bool, w, h int) *model {
 	return newFake(Options{NoColor: noColor}, w, h)
 }
@@ -105,7 +108,7 @@ func fakeModel(noColor bool, w, h int) *model {
 // newFake is a static model holding three fake sessions, one with detail.
 func newFake(o Options, w, h int) *model {
 	o.Static = true
-	o.Now = func() time.Time { return t0.Add(time.Hour) }
+	o.Now = func() time.Time { return fakeNow }
 	m := New(o)
 	m.w, m.h = w, h
 	m.prices = data.Prices{Currency: "USD", AsOf: "2026-11-14", Path: "/p/prices.toml"}
