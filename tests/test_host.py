@@ -527,9 +527,12 @@ class HostTests(unittest.TestCase):
         self.assertEqual(self.add()[0], 0)
         self.assertEqual(self.add(target="nas2")[0], 0)
         self.assertNotIn(line, self.run_host("remove", "nas")[1])  # another host is left
-        (self.fh / "settings.toml").write_text("")
-        self.assertNotIn(line, self.run_host("remove", "nas2")[1])  # an install here
-        (self.fh / "settings.toml").unlink()
+        for name in ("settings.toml", "settings.json"):  # an install here, migrated or not
+            if name == "settings.json":
+                self.assertEqual(self.add(target="nas2")[0], 0)
+            (self.fh / name).write_text("")
+            self.assertNotIn(line, self.run_host("remove", "nas2")[1])
+            (self.fh / name).unlink()
         self.assertEqual(self.add()[0], 0)
         app = self.fh / "identity/app.json"
         kept = app.read_text()

@@ -80,6 +80,25 @@ class StartScript(unittest.TestCase):
                 self.assertEqual(self.bg(), [{"argv": ["--bg", "-n", "dispatcher-b", "--permission-mode", "auto", "/factory:dispatch"],
                                               "cwd": str(self.home / "code/b")}])
 
+    def test_the_list_comes_from_settings_toml_else_from_a_legacy_settings_json(self):
+        factory = lambda: self.home / ".claude/factory"
+        legacy = lambda names: (factory() / "settings.json").write_text(json.dumps({"dispatchers": names}))
+        cases = {  # name: (arrange, the one started, stderr)
+            "toml only": (lambda: self.settings({"dispatchers": ["dispatcher-a"]}), "a"),
+            "json only": (lambda: (factory().mkdir(parents=True), legacy(["dispatcher-a"])), "a"),
+            "both: the toml wins": (lambda: (self.settings({"dispatchers": ["dispatcher-a"]}), legacy(["dispatcher-b"])), "a"),
+            "neither": (lambda: None, None),
+        }
+        for name, (arrange, started) in cases.items():
+            with self.subTest(name):
+                self.fresh()
+                self.repos("a", "b")
+                self.running()
+                arrange()
+                done = self.start()
+                self.assertEqual((done.returncode, done.stderr), (0, ""))
+                self.assertEqual([c["argv"][2] for c in self.bg()], [f"dispatcher-{started}"] if started else [])
+
     def test_a_new_container_records_its_id_and_starts_nothing(self):
         for before in (None, "other\n"):
             with self.subTest(before=before):

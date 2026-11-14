@@ -658,7 +658,7 @@ def cmd_remove(args):
     save_registry(reg)
     print("Removed host %s: container and image are gone. %s" % (args.name, "The state directory was deleted." if args.purge_state
           else "The state directory %s on the server is kept." % state))
-    if not reg and (store() / "identity/app.json").exists() and not (store() / "settings.toml").exists():
+    if not reg and (store() / "identity/app.json").exists() and not any((store() / n).exists() for n in ("settings.toml", "settings.json")):
         print("No install uses the GitHub App any more: `make uninstall` (or `factory uninstall`) removes its installation and the identity kept here.")
     return 0
 
