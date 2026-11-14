@@ -622,36 +622,44 @@ class ModeTests(Store):
     def setUp(self):
         super().setUp()
         at = lambda hhmm: "%sT%s:00Z" % (DAY, hhmm)  # noqa: E731
-        slugs = ("s1", "s2", "t1", "t2", "o1")
+        slugs = ("s1", "s2", "t1", "t2", "o1", "h1", "u1")
         self.log("events-2026-11.jsonl", [
             ev(at("10:00"), "TaskStarted", slug="s1", mode="single", size="small"),
             ev(at("10:00"), "TaskStarted", slug="s2", mode="single", size="small"),
             ev(at("10:00"), "TaskStarted", slug="t1", mode="team", size="small"),
+            ev(at("09:59"), "TaskStarted", slug="t2", mode="single", size="medium"),  # started again, in the other mode
             ev(at("10:00"), "TaskStarted", slug="t2", mode="team", size="medium"),
+            ev(at("10:00"), "TaskStarted", slug="h1", mode="single", size="large"),
+            ev(at("10:00"), "TaskStarted", slug="u1", mode="single", size="large"),
             ev(at("10:00"), "TaskStarted", slug="o1"),
             ev(at("10:20"), "UserPromptSubmit", slug="t1", role="lead", **{"from": "human"}),  # after the hand-over
             ev(at("10:05"), "UserPromptSubmit", slug="t1", role="lead", **{"from": "human"})])  # before it
         self.log("tasks-2026-11.jsonl", [{"ts": at(hhmm), "repo": ALPHA, "slug": s, "state": "handed-over"}
-                                         for s, hhmm in (("s1", "10:30"), ("s2", "11:00"), ("t1", "10:10"), ("o1", "10:40"))])
+                                         for s, hhmm in (("s1", "10:30"), ("s2", "11:00"), ("t1", "10:10"), ("o1", "10:40"),
+                                                          ("h1", "09:00"))])  # h1 was handed over before it started
         self.log("retros-2026-11.jsonl", [ev(at("12:00"), "", slug="t1", defects=[{"caught_by": "reviewer"}] * 4 + [{"caught_by": "lead"}])])
         self.log("techlead-2026-11.jsonl", [{**came_back(at("12:00"), "built", 2.0, slug="t1"), "kind": "build"},
                                             {**came_back(at("12:00"), "stopped", slug="t1"), "kind": "build"},
                                             {**came_back(at("12:00"), "built", slug="t2"), "kind": "build"},
                                             {**came_back(at("12:00"), "built", slug="t2"), "kind": "build"},
-                                            {**came_back(at("12:00"), "built", slug="t2"), "kind": "build"}])
+                                            {**came_back(at("12:00"), "built", slug="t2"), "kind": "build"},
+                                            {**came_back(at("12:00"), "built", 1.0, slug="h1", session="s-h1"), "kind": "build"}])
         session(self.projects, ALPHA, "s1", "%sT10:00:05.000Z" % DAY, 1000000,
                 written={"lead": [("Write", {"file_path": ALPHA + "/.claude/worktrees/s1/isshoni/x.py", "content": "a\nb\nc\n"})]})
         session(self.projects, ALPHA, "s2", "%sT10:00:05.000Z" % DAY, 3000000)
+        session(self.projects, ALPHA, "h1", "%sT10:00:05.000Z" % DAY, 1000000)  # a build run's session
+        session(self.projects, ALPHA, "u1", "%sT10:00:05.000Z" % DAY, 0, [("coder", "claude-sonnet-5-5", 1000000, "10:05", "10:06")])  # unpriced
         session(self.projects, ALPHA, "t1", "%sT10:00:05.000Z" % DAY, 200000, [("reviewer", "claude-opus-5-5", 0, "10:05", "10:06")])
         prs = [pr(i, "worktree-" + s, at("10:50"), at("11:30")) for i, s in enumerate(slugs)]
         self.doc = self.build(lambda p: prs)
         self.rows = {(r["mode"], r["size"]): r for r in self.doc["summary"]["by_mode"]}
 
     def test_a_task_has_its_last_started_mode_and_single_when_none_is_recorded(self):
-        self.assertEqual({t["slug"]: t["mode"] for t in self.doc["tasks"]}, {"s1": "single", "s2": "single", "t1": "team", "t2": "team", "o1": "single"})
+        self.assertEqual({t["slug"]: t["mode"] for t in self.doc["tasks"]}, {"s1": "single", "s2": "single", "t1": "team", "t2": "team", "o1": "single",
+                                                                                      "h1": "single", "u1": "single"})
 
     def test_rows_are_by_size_then_mode_and_only_where_a_task_landed(self):
-        self.assertEqual(list(self.rows), [("single", "small"), ("team", "small"), ("team", "medium"), ("single", None)])
+        self.assertEqual(list(self.rows), [("single", "small"), ("team", "small"), ("team", "medium"), ("single", "large"), ("single", None)])
 
     def test_a_row_holds_medians_and_counts_of_its_tasks(self):
         self.assertEqual(self.rows[("single", "small")], {
@@ -663,6 +671,15 @@ class ModeTests(Store):
             "handover_s_median": 600.0, "first_pass": 1, "review_rounds_median": 1.0,
             "defects": {"tests": 0, "reviewer": 4, "lead": 1, "ci": 0, "human": 0, "other": 0}, "lead_wakeups": 1,
             "build_runs_median": 2.0})
+
+    def test_a_hand_over_before_the_start_is_unknown_and_a_task_with_only_unpriced_tokens_has_no_cost_in_the_median(self):
+        row = self.rows[("single", "large")]
+        self.assertEqual((row["n"], row["handover_s_median"], row["cost_median"]), (2, None, 10.0))  # h1: 10.0; u1: unpriced, not 0
+
+    def test_the_cost_of_a_build_run_session_is_the_tech_leads(self):
+        by_role = {t["slug"]: t["cost"]["by_role"] for t in self.doc["tasks"] if t["cost"]}
+        self.assertEqual((by_role["h1"]["tech-lead"], by_role["h1"]["lead"]), (10.0, 0.0))
+        self.assertEqual((by_role["t1"]["tech-lead"], by_role["t1"]["lead"]), (0.0, 2.0))
 
     def test_what_is_not_known_is_null_not_zero(self):
         self.assertEqual(self.rows[("team", "medium")], {
@@ -687,11 +704,12 @@ class ModeTests(Store):
         with contextlib.redirect_stdout(out):
             cli.print_modes(self.doc["summary"]["by_mode"], "USD")
         self.assertEqual(out.getvalue(), "\n".join([
-            "landed tasks: single 3, team 2",
+            "landed tasks: single 5, team 2",
             "size    mode    n  cost USD  lead share  lead calls  hand-over min  first pass  rounds  defects             wakeups  builds",
             "small   single  2     20.00        100%           1             45         0/2       0  -                         0       -",
             "small   team    1      2.00           -           2             10         1/1       1  reviewer 4, lead 1        1       2",
             "medium  team    1         -           -           -              -         0/1       -  -                         0       3",
+            "large   single  2     10.00           -           2              -         0/2       0  -                         0       -",
             "none    single  1         -           -           -             40         0/1       -  -                         0       -", ""]))
 
     def test_no_row_says_so(self):

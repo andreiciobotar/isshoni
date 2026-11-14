@@ -320,9 +320,8 @@ def _handed_over(recs):
     return min((ts for r in recs["tasks"] if r.get("state") == "handed-over" for ts in [_ts(r)] if ts), default=None)
 
 
-def _wakeups(recs):
-    """Prompts to the lead, from the session or the human, after the task's first hand-over."""
-    handed = _handed_over(recs)
+def _wakeups(recs, handed):
+    """Prompts to the lead, from the session or the human, after the task's first hand-over (`handed`)."""
     return sum(1 for e in recs["events"] for ts in [_ts(e)] if handed and ts and ts > handed
                and e.get("event") == "UserPromptSubmit" and e.get("role") == "lead" and e.get("from") in ("session", "human"))
 
@@ -340,13 +339,13 @@ def _task(key, recs, sessions, prices, tech_sessions):
     version = _str(started_rec, "version") if started_rec and _str(started_rec, "version") else (
         _str(earliest[1], "version") if earliest else None)
     states = [r["state"] for r in recs["tasks"] if _str(r, "state")]
+    handed = _handed_over(recs)
     t = {"repo": _name(repo), "repo_path": repo, "slug": slug, "version": version, "started": started,
          "state": states[-1] if states else None, "pr": None, "landed": False,
          "mode": last_start.get("mode") if last_start.get("mode") in MODES else "single",
          "brief_to_pr_s": None, "pr_to_merge_s": None, "cost": None, "review_rounds": None, "first_pass": None,
-         "_roles": _role_facts(sessions, prices, tech_sessions), "_wakeups": _wakeups(recs),
+         "_roles": _role_facts(sessions, prices, tech_sessions), "_wakeups": _wakeups(recs, handed),
          "_size": last_start.get("size") if last_start.get("size") in SIZES else None, "_handover_s": None}
-    handed = _handed_over(recs)
     if handed and started and handed >= started:
         t["_handover_s"] = _seconds(handed, started)
     t["authoring"] = _authoring(t["_roles"])
@@ -505,7 +504,7 @@ def _by_mode(landed):
             defects = [t["defects"] for t in ts if t["defects"]]
             rows.append({
                 "mode": mode, "size": size, "n": len(ts),
-                "cost_median": _median(t["cost"]["total"] for t in ts if t["cost"]),
+                "cost_median": _median(t["cost"]["total"] for t in ts if t["cost"] and (t["cost"]["total"] or not t["cost"]["unpriced_tokens"])),
                 "lead_share_median": _median(t["authoring"]["lead_share"] for t in ts),
                 "lead_calls_median": _median(roles),
                 "handover_s_median": _median(t["_handover_s"] for t in ts),
