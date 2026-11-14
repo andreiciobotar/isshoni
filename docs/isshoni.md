@@ -316,7 +316,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 |---|---|
 | `tab` `shift+tab`, `1` `2` `3` `4` | switch view: dashboard, agents, factory, kaizen |
 | `↑` `↓` `j` `k`, `g` `G`, `pgup` `pgdn` | move, first and last, page |
-| `←` `→` `h` `l` | dashboard: collapse the repository the cursor is in (the cursor moves to its row), expand it. A collapsed row (`▸`) keeps its totals, and the tiles and follow mode still count what is inside; a filter leaves it collapsed, counting the matches. Folding turns follow mode off and is forgotten on exit |
+| `←` `→` `h` `l` | dashboard: collapse the repository the cursor is in (the cursor moves to its row), expand it. A collapsed row (`▸`) keeps its totals, and the tiles and follow mode still count what is inside; a filter leaves it collapsed, counting the matches. Folding turns follow mode off and is forgotten on exit. On a short-runs row, `→` opens it and `←` closes it (also from one of its sessions); on a closed one `←` still folds the repository |
 | `enter`, `esc` | dashboard: open the session row under the cursor full screen (the zoom; in it `↑` `↓` `g` `G` `pgup` `pgdn` move over the dispatches and `enter` swaps the list for the selected dispatch); on `all`, a repository or a task, a message says to pick a session row and the cursor stays. Back: first the detail, then the zoom, then the dashboard from any other view |
 | `r` | range: 24h, 7d, 30d, all (on the error screen: retry) |
 | `s` | sort: recent, cost, subagent share; within a repository, tasks and sessions without a task are one list; also puts the held order right |
@@ -330,7 +330,12 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   tree of repository, task and session (with the agent and model mix beside it from 120
   columns), a pane about the row under the cursor, and every dispatch running now.
   A group row sums its sessions (rates from summed counts, never a mean of rates); a
-  group of one session is a single row. The cursor starts on the top row, `all`, which
+  group of one session is a single row. A **short run** is a finished session (not live)
+  under a minute long and under $0.25; two or more in one task, or two or more of a
+  repository's sessions without a task, fold into one `N short runs` row after the rest
+  of that task or repository (one alone stays a session row). The row is closed (`▸`) and
+  opens one step deeper with `→`; it sums its sessions, and short runs count in every
+  total, tile and `×N` as before. The cursor starts on the top row, `all`, which
   sums every session shown, and moves over every row. The tiles always total every
   session shown, and a line under them says so; under 30 rows one line stands for the
   tiles and that line. In the mix a plugin's agent counts with its role

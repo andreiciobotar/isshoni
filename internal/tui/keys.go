@@ -40,7 +40,7 @@ var keys = keyMap{
 	PageDown: key.NewBinding(key.WithKeys("pgdown", "ctrl+d"), key.WithHelp("pgdn pgup", "page")),
 	PageUp:   key.NewBinding(key.WithKeys("pgup", "ctrl+u")),
 
-	Fold:   key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←→/hl", "fold repo")),
+	Fold:   key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←→/hl", "fold repo/runs")),
 	Unfold: key.NewBinding(key.WithKeys("right", "l")),
 
 	Open: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
