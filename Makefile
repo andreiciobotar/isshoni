@@ -1,4 +1,4 @@
-.PHONY: install up build test test-factory snapshot screenshot clean
+.PHONY: install up build test test-factory wizard snapshot screenshot clean
 
 BIN := bin/isshoni-tui
 VIEW ?= dashboard
@@ -30,6 +30,10 @@ test: test-factory
 
 test-factory:
 	python3 -m unittest discover -s factory/tests
+
+# Create and install the factory's own GitHub App, or verify the stored one (optional), e.g. make wizard ARGS="--owner my-org"
+wizard:
+	factory/bin/factory wizard $(ARGS)
 
 # Render one frame to stdout without a TTY, e.g. make snapshot VIEW=session ARGS="--session 04ca0148 --no-color"
 snapshot: build
