@@ -1216,7 +1216,7 @@ class StatusTests(unittest.TestCase):
         _, out, _, _ = invoke(["status", "--json"], answers, '{"task_time_limit_hours": 1}')
         self.assertTrue(json.loads(out)["rows"][0]["overtime"])
 
-    def rows_for(self, minutes, size=None, criteria=NEARING, state=None, hours=None):
+    def rows_for(self, minutes, size=None, criteria=NEARING, state="working", hours=None):
         """The row of a working task `minutes` into its run, with `criteria` as the criteria file's text."""
         s = {"cwd": f"{WT}/alpha", "kind": "background", "status": "busy", "state": "working",
              "startedAt": int(time.time() * 1000) - minutes * 60 * 1000}
@@ -1257,9 +1257,16 @@ class StatusTests(unittest.TestCase):
             with self.subTest(criteria=criteria):
                 self.assertFalse(self.rows_for(40, "small", criteria)["nearing"])
 
-    def test_a_handed_over_task_is_not_nearing(self):
-        self.assertFalse(self.rows_for(40, "small", state="handed-over")["nearing"])
-        self.assertTrue(self.rows_for(40, "small", state="working")["nearing"])
+    def test_only_a_working_task_is_nearing(self):
+        for state in ("handed-over", "blocked", None):
+            with self.subTest(state=state):
+                self.assertFalse(self.rows_for(40, "small", state=state)["nearing"])
+        self.assertTrue(self.rows_for(40, "small")["nearing"])
+
+    def test_nearing_is_past_the_threshold_not_at_it(self):
+        self.assertFalse(self.rows_for(30, "small")["nearing"])  # 67% of 45m
+        self.assertFalse(self.rows_for(40)["nearing"])  # 33% of the 2h ceiling
+        self.assertTrue(self.rows_for(91)["nearing"])  # 76% of the 2h ceiling
 
     def test_table_cell_and_size_column(self):
         s = {"cwd": f"{WT}/alpha", "kind": "background", "status": "busy", "state": "working",

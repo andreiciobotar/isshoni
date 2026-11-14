@@ -598,8 +598,8 @@ def collect(repo, sessions, limit_hours, prs=None):
         row["state"] = declared.get(slug, {}).get("state")
         timed = running and row["elapsed"] is not None
         row["overtime"] = timed and row["elapsed"] > row["limit"]
-        row["nearing"] = bool(timed and not row["overtime"] and row["state"] != "handed-over" and percent is not None
-                              and row["elapsed"] * 100 >= row["limit"] * percent)
+        row["nearing"] = bool(timed and not row["overtime"] and row["state"] == "working" and percent is not None
+                              and row["elapsed"] * 100 > row["limit"] * percent)
         rc, out, _ = repo.git("status", "--porcelain", path=path)
         row["dirty"] = bool(out.strip()) if rc == 0 else None
         rc, out, _ = repo.git("rev-list", "--left-right", "--count", f"{row['base']}...HEAD", path=path)
@@ -1470,7 +1470,7 @@ def gather(repo, fallback):
     return {"now": time.time(), "repo": repo, "dispatcher": found and found["name"], "dispatcher_why": why,
             "sessions": sessions,
             "monitor": settings["monitor"], "lgtm_from_author": settings["lgtm_from_author"],
-            "lean_start": settings["lean_start"], "limit_hours": settings["task_time_limit_hours"],
+            "lean_start": settings["lean_start"],
             "rows": None if sessions is None else collect(repo, sessions, settings["task_time_limit_hours"]),
             "declared": read_tasks(repo.root), "events": repo_log("events", repo.root), "models": pinned_models(),
             "gh": lambda *args: gh_json(repo, *args)}
@@ -1545,15 +1545,10 @@ def c_past_limit(p, _):
             for r in tasks(p) if r["overtime"]]
 
 
-def c_nearing_limit(p, threshold):
-    found = []
-    for r in unfinished(phased(p)):
-        s = task_session(p, r["path"])
-        pct = 100 * (r["elapsed"] or 0) / (p["limit_hours"] * 3600)
-        if r["state"] == "working" and s and not finished(s) and not r["overtime"] and pct > threshold:
-            found.append((r["slug"], r["slug"], f"working for {age(p['now'] - r['elapsed'], p['now'])}, "
-                          f"{pct:.0f}% of the {p['limit_hours']}h limit"))
-    return found
+def c_nearing_limit(p, _):
+    return [(r["slug"], r["slug"], f"working for {age(p['now'] - r['elapsed'], p['now'])}, "
+                                   f"{100 * r['elapsed'] / r['limit']:.0f}% of the {span(r['limit'])} limit")
+            for r in tasks(p) if r["nearing"]]
 
 
 def c_ci_red_default(p, _):
