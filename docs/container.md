@@ -83,7 +83,7 @@ The dispatcher and the leads are background sessions in the container: `ssh -t n
 ## Known limits
 - One factory container per server.
 - The SSH user must run `docker` without sudo.
-- After a container restart or a server reboot the dispatchers are gone until `host add <target>` is run again; it starts them fresh, without their earlier conversation. Transcripts, worktrees and declared states survive, and `factory status` still lists every task.
+- After a container restart or a server reboot the container's start script (`docker/start`) starts, in the background, each name in `"dispatchers"` of the factory's `settings.json` that `claude agents --json` does not list, fresh and without its earlier conversation. It is silent when there is no settings file or nothing is missing, and when it cannot (repository missing, not logged in, ...) it writes one line to `docker logs isshoni-factory`; the container comes up either way. A recreated container does not do this: it records its id (`~/.container-id`) and waits, and `host add` starts the dispatchers after shipping the new source and plugin. A changed `docker/` changes the image label, so the next `host add` recreates the container, which is the update path. Transcripts, worktrees and declared states survive, and `factory status` still lists every task.
 - The dispatcher runs in `auto` permission mode, because nobody is there to answer prompts.
 - A server that no longer answers cannot be removed from the registry except by editing `hosts.json`.
 - Not documented by Anthropic, and so only the first real run shows them: that the token reaches background sessions, that a `--bg` session on a fresh configuration needs no onboarding or trust answer, and that `"/factory:dispatch"` as the prompt of a `--bg` session starts the skill. Steps 7 and 11 verify what they can and say so when it does not hold.
@@ -119,7 +119,7 @@ A container has no systemd, and a cron daemon needs root. So the container's mai
 What differs from cron on a host:
 - `crontab` knows only `-l` and `-` (what the factory uses). Edit `~/.crontab` by hand and supercronic does not notice until `pkill -USR2 supercronic` or the factory's next change.
 - supercronic also writes a line per run to the container's log (`docker logs isshoni-factory`).
-- After the container restarts, a job line left in `~/.crontab` runs once, finds no dispatcher and removes itself.
+- After the container restarts, a job line left in `~/.crontab` can run before the start script has brought the dispatchers back; it then finds none and removes itself.
 - There is no desktop: `dispatcher-missing` becomes a `notify: ...` line in `~/.claude/factory/watch.log`.
 
 ## What a confused lead could damage
