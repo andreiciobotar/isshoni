@@ -36,6 +36,7 @@ class Machine(FakeRun):
         super().__init__({})
         self.root, self.claude, self.after, self.comment, self.push = root, claude or said(), after or {}, comment, push
         self.state = {"head": OLD, "remote": OLD, "dirty": False, "branch": f"worktree-{SLUG}", "ancestor": True, "merged": True}
+        self.config = {}
         self.cwds, self.groups, self.comments, self.lines, self.prompts, self.lead, self.pushes = [], [], [], [], [], lead, []
 
     def __call__(self, argv, cwd=None, input=None, timeout=None, env=None, group=False):
@@ -70,6 +71,8 @@ class Machine(FakeRun):
             return self.comment
         if a[:3] == ["gh", "pr", "ready"]:
             return 0, "", ""
+        if a[:3] == ["git", "config", "--get"]:
+            return (0, self.config[a[3]] + "\n", "") if a[3] in self.config else (1, "", "")
         if a[:3] == ["git", "rev-parse", "HEAD"]:
             return 0, s["head"] + "\n", ""
         if a[:3] == ["git", "rev-parse", "--abbrev-ref"]:
@@ -212,21 +215,38 @@ class RunTests(Case):
         [argv] = m.tech_lead_calls()
         role = (BIN.parent.parent / "roles" / "tech-lead.md").read_text()
         self.assertEqual(argv[:-1], [
-            "claude", "-p", "--model", "opus", "--permission-mode", "dontAsk", "--plugin-dir", str(BIN.parent.parent),
+            "claude", "-p", "--model", "opus", "--permission-mode", "auto", "--plugin-dir", str(BIN.parent.parent),
             "--strict-mcp-config", "--settings", json.dumps(LEAN_SETTINGS),
             "--tools=Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch",
             "--allowedTools", "Read", "Edit", "Write", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "Bash(git *)",
             "Bash(make *)", "Bash(gh pr view *)", "Bash(gh pr diff *)", "Bash(gh pr checks *)", "Bash(gh run view *)",
-            "--disallowedTools", "Bash(git push*)", "Bash(git rebase*)", "Bash(git commit --amend*)", "Bash(git worktree*)",
+            "--disallowedTools", *factory.ROLE_DENIED, "Bash(git push*)",
             "--max-budget-usd", "5.00", "--output-format", "json", "--json-schema", json.dumps(factory.TECH_LEAD_SCHEMA),
             "--append-system-prompt", role])
         self.assertEqual(argv[-1], (
             f"Task slug: {SLUG}. Pull request: #{N} {URL}. It came back from the merge queue: {CONFLICT}. "
-            f"The spec is {self.spec}. The default branch is main, on remote origin. The pull request came back at {OLD}."
+            f"The spec is {self.spec}. The default branch is main, on remote origin. The pull request came back at {OLD}. "
+            "The test command is not stated: find how this repository runs its tests and run that. The golden command is none."
             "\n\nEarlier tech lead runs on this pull request:\nnone"))
         i = m.calls.index(argv)
         self.assertEqual((m.cwds[i], m.timeouts[i], m.envs[i]["FACTORY_ROLE"], m.groups[i]),
                          (f"{self.root}/.claude/worktrees/{SLUG}", 1800, "tech-lead", True))
+
+    def test_the_prompt_carries_the_stated_commands(self):
+        self.use(Machine(self.root)).config.update({f"branch.worktree-{SLUG}.factoryTest": "./check.sh",
+                                                    f"branch.worktree-{SLUG}.factoryGolden": "./gen.sh"})
+        prompt = factory.tech_lead_prompt(factory.Repo(), SLUG, self.pr(), CONFLICT, self.spec)
+        self.assertIn("The test command is ./check.sh. The golden command is ./gen.sh.", prompt)
+
+    def test_a_test_command_that_is_not_stated_still_starts_the_run(self):
+        code, _, _, m = self.go()
+        self.assertEqual(len(m.tech_lead_calls()), 1)
+        self.assertIn("The test command is not stated: find how", m.tech_lead_calls()[0][-1])
+
+    def test_the_permission_mode_comes_from_the_settings(self):
+        (self.store / "settings.json").write_text('{"lead_permission_mode": "acceptEdits"}')
+        *_, m = self.go()
+        self.assertEqual(m.tech_lead_calls()[0][5], "acceptEdits")
 
     def test_the_model_comes_from_the_settings(self):
         (self.store / "settings.json").write_text('{"tech_lead_model": "sonnet"}')
