@@ -1,10 +1,10 @@
-"""Turn ANSI frames on stdin (separated by a line that is exactly a form feed) into a PNG contact strip, a GIF and a WebP.
+"""Turn ANSI frames on stdin (separated by a line that is exactly a form feed) into a PNG contact strip and a GIF.
 
     tools/strip.py --out shots/NAME --size WxH [--cols N] [--frame-ms 120] [--chrome PATH]
 
 Writes NAME.html and NAME.png (one Chrome screenshot of all frames in a grid; NAME-1.png, NAME-2.png... when the
-grid is too tall for one screenshot), and NAME.gif and NAME.webp (lossless), the frames cropped out of the
-screenshots. Without Pillow only the PNG is written. tools/record.py imports render().
+grid is too tall for one screenshot), and NAME.gif, the frames cropped out of the
+screenshots. Without Pillow only the PNG is written. tools/record.py imports render() and encodes the frames itself.
 """
 import argparse,os,re,subprocess,sys
 import ansi2html as a2h
@@ -14,8 +14,9 @@ PAD=8         # the pre's padding, around each frame
 GAP=6         # between frames, and around the grid
 MAX_SHOT_H=8000  # px of one screenshot; a taller grid is split in several
 
-def render(frames,out,size,cols=4,frame_ms=120,chrome=os.environ.get('CHROME','')):
-    """Draw ANSI `frames` in Chrome and write out.html, out.png, out.gif and out.webp; returns the paths written."""
+def render(frames,out,size,cols=4,chrome=os.environ.get('CHROME','')):
+    """Draw ANSI `frames` in Chrome and write out.html and out.png; returns (the PNG paths, the frames cropped out of
+    them as Pillow images, or None without Pillow)."""
     if not chrome: sys.exit('strip: Chrome or Chromium is missing. Install one, or pass --chrome PATH.')
     w,h=map(int,size.split('x'))
     cols=min(cols,len(frames))
@@ -41,17 +42,14 @@ def render(frames,out,size,cols=4,frame_ms=120,chrome=os.environ.get('CHROME',''
     try:
         from PIL import Image
     except ImportError:
-        print('strip: Pillow is missing, wrote the PNG only (pip install pillow for the GIF and WebP).',file=sys.stderr)
-        return pngs
+        print('strip: Pillow is missing, wrote the PNG only (pip install pillow for the GIF).',file=sys.stderr)
+        return pngs,None
     imgs=[]
     for png,boxes,height in crops:
         shot=Image.open(png).convert('RGB')
         if shot.size[1]<height: sys.exit('strip: Chrome cut the screenshot to %dx%d, wanted height %d'%(*shot.size,height))
         imgs+=[shot.crop((x,y,x+fw,y+fh)) for x,y in boxes]
-    gif=[i.convert('P',palette=Image.ADAPTIVE) for i in imgs]
-    gif[0].save(out+'.gif',save_all=True,append_images=gif[1:],duration=frame_ms,loop=0)
-    imgs[0].save(out+'.webp',save_all=True,append_images=imgs[1:],duration=frame_ms,loop=0,lossless=True)
-    return pngs+[out+'.gif',out+'.webp']
+    return pngs,imgs
 
 def main():
     ap=argparse.ArgumentParser()
@@ -64,6 +62,12 @@ def main():
     frames=[f.rstrip('\n') for f in re.split(r'^\f\n?',sys.stdin.read(),flags=re.M)]
     frames=[f for f in frames if f]
     if not frames: sys.exit('strip: no frames on stdin')
-    for p in render(frames,args.out,args.size,args.cols,args.frame_ms,args.chrome): print(p)
+    pngs,imgs=render(frames,args.out,args.size,args.cols,args.chrome)
+    for p in pngs: print(p)
+    if imgs:
+        from PIL import Image
+        gif=[i.convert('P',palette=Image.ADAPTIVE) for i in imgs]
+        gif[0].save(args.out+'.gif',save_all=True,append_images=gif[1:],duration=args.frame_ms,loop=0)
+        print(args.out+'.gif')
 
 if __name__=='__main__': main()

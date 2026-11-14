@@ -16,8 +16,8 @@ sys.path.insert(0,HERE)
 import strip
 
 SIZE='110x32'
-CEILING=1_000_000  # bytes per file
-HANAMI_FRAMES=48
+CEILING=1_200_000  # bytes per file
+HANAMI_FRAMES=36
 HANAMI_STEP='150ms'
 
 # name -> (ms per frame, the argument lists of bin/isshoni-tui, one snapshot each; {replay} and {at} are Hanami's)
@@ -26,8 +26,8 @@ SCENES={
                      +[['--snapshot','dashboard','--range','24h','--row','1','--fold']]),
     'agents':(1200,[['--snapshot','agents','--range',r] for r in ('24h','7d','30d','all')]),
     'factory':(900,[['--snapshot','factory','--range','24h']]*4),
-    'kaizen':(2000,[['--snapshot',v,'--range','7d'] for v in ('kaizen','kaizen-flow','kaizen-board','kaizen-anatomy')]),
-    'hanami':(120,[['--snapshot','hanami','--replay','{replay}','--at','{at}','--frames',str(HANAMI_FRAMES),
+    'kaizen':(2000,[['--snapshot',v,'--range','7d'] for v in ('kaizen','kaizen-flow','kaizen-anatomy','kaizen-board')]),
+    'hanami':(130,[['--snapshot','hanami','--replay','{replay}','--at','{at}','--frames',str(HANAMI_FRAMES),
                     '--frame-step',HANAMI_STEP]]),
 }
 
@@ -85,6 +85,11 @@ def hanami_at(events,speed=60.0,dt=0.05,lead=1.0,gap=3.0):
         if ts[ri]-clock>timedelta(seconds=speed*gap): clock=ts[ri]-timedelta(seconds=speed*gap)
         while ri<len(ts) and ts[ri]<=clock: ri+=1
     return steps*dt
+
+def save_webp(imgs,path,frame_ms):
+    """Write `imgs` as one looping lossy animated WebP."""
+    imgs[0].save(path,save_all=True,append_images=imgs[1:],lossless=False,quality=70,method=6,minimize_size=True,
+                 duration=frame_ms,loop=0)
 
 def split_frames(out): return [f.rstrip('\n') for f in re.split(r'^\f\n?',out,flags=re.M) if f.strip()]
 
@@ -149,10 +154,9 @@ def main():
         written=[]
         for n,(frames,_) in scenes.items():
             started=time.time(); work=os.path.join(tmp,'render-'+n)
-            strip.render(frames,os.path.join(work,n),args.size,frame_ms=SCENES[n][0],chrome=args.chrome)
-            for ext in ('gif','webp'):
-                dest=os.path.join(args.out,'%s.%s'%(n,ext))
-                shutil.copyfile(os.path.join(work,'%s.%s'%(n,ext)),dest); written.append(dest)
+            imgs=strip.render(frames,os.path.join(work,n),args.size,chrome=args.chrome)[1]
+            if not imgs: sys.exit('record: Pillow is missing (pip install pillow).')
+            dest=os.path.join(args.out,n+'.webp'); save_webp(imgs,dest,SCENES[n][0]); written.append(dest)
             print('record: %s rendered in %.1f s'%(n,time.time()-started),file=sys.stderr)
     finally:
         shutil.rmtree(tmp,ignore_errors=True)

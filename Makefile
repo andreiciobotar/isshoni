@@ -72,7 +72,7 @@ strip: build
 	@[ -n "$(CHROME)" ] || { echo "isshoni: Chrome or Chromium is missing. Install one, or set CHROME=/path/to/chrome." >&2; exit 1; }
 	$(BIN) --snapshot hanami --replay $(REPLAY) --at $(AT) --frames $(FRAMES) --frame-step $(STEP) --size $(SIZE) $(ARGS) | python3 tools/strip.py --out shots/hanami-$(SCENE)-$(SIZE) --size $(SIZE) --chrome "$(CHROME)"
 
-# Record a looping GIF and WebP of every tab from this repository's own data into $(OUT), e.g. make pictures SCENES="hanami" OUT=/tmp/tabs SIZE=100x30 (see docs/isshoni.md)
+# Record a looping animated WebP of every tab from this repository's own data into $(OUT), e.g. make pictures SCENES="hanami" OUT=/tmp/tabs SIZE=100x30 (see docs/isshoni.md)
 OUT ?= assets/tabs
 SCENES ?=
 pictures: build

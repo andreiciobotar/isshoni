@@ -77,3 +77,23 @@ class HanamiAtTests(unittest.TestCase):
         evs = [{"ts": "2026-01-01T00:00:00+00:00", "kind": "tool"}, {"ts": "2026-01-01T06:00:00+00:00", "kind": "merge"}]
         # frame 1 applies the first event, frame 2 jumps to 3 replay s before the merge, 60 more frames reach it
         self.assertAlmostEqual(record.hanami_at(evs), 62 * 0.05, delta=0.001)
+
+
+class WebpTests(unittest.TestCase):
+    def test_every_frame_keeps_the_scene_duration(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is missing")
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "t.webp")
+            record.save_webp([Image.new("RGB", (8, 8), "black"), Image.new("RGB", (8, 8), "white")], path, 900)
+            data = open(path, "rb").read()
+        # an ANMF chunk holds x, y, width-1, height-1 (3 bytes each) and then the duration (3 bytes)
+        durations, pos = [], 12
+        while pos < len(data):
+            size = int.from_bytes(data[pos + 4:pos + 8], "little")
+            if data[pos:pos + 4] == b"ANMF":
+                durations.append(int.from_bytes(data[pos + 8 + 12:pos + 8 + 15], "little"))
+            pos += 8 + size + size % 2
+        self.assertEqual(durations, [900, 900])
