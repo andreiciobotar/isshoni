@@ -85,7 +85,7 @@ func roleN(v data.AnatomyVersion, role string) int {
 
 func (m *model) anatomyLines(p paint, w int) block {
 	a := m.kz.doc.Summary.Anatomy
-	lines := m.anatomyVerdict(p, w)
+	lines := append(m.prWarnings(p, w), m.anatomyVerdict(p, w)...)
 	for _, c := range []struct {
 		title string
 		get   func(*data.AnatomyMedians) *float64

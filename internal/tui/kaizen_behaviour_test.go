@@ -918,6 +918,16 @@ func TestAnatomyChangeColumnNeedsTheMinimumOnBothSides(t *testing.T) {
 	}
 }
 
+func TestAnatomySaysWhenPullRequestsAreUnavailable(t *testing.T) {
+	doc := kaizenDoc(t)
+	doc.Repos[0].PRs = "gh timed out"
+	m := fakeModel(true, 140, 100)
+	setKaizen(m, doc, pageAnatomy)
+	if out := plain(m); !strings.Contains(out, "pull requests unavailable for "+doc.Repos[0].Repo+": gh timed out") {
+		t.Fatalf("an empty page must say why:\n%s", out)
+	}
+}
+
 func TestAnatomyOneVersionAndNone(t *testing.T) {
 	doc := kaizenDoc(t)
 	doc.Summary.Anatomy.Versions = doc.Summary.Anatomy.Versions[:1]

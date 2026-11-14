@@ -179,7 +179,14 @@ func (m *model) pulseLines(p paint, w int) block {
 	th := m.th
 	lines = append(lines, "", p.sp(1)+p.t(fmt.Sprintf("%d open issues · %d decisions · %d acted on  ", d.Outbox.Issues.Open,
 		decisions.Open+decisions.Accepted+decisions.Rejected+decisions.Done, acted), th.Muted)+p.b("→ Board", th.Purple))
-	for _, r := range d.Repos {
+	return append(lines, m.prWarnings(p, w)...)
+}
+
+// prWarnings names each repository whose pull requests could not be read: without them no
+// task counts as landed.
+func (m *model) prWarnings(p paint, w int) block {
+	var lines block
+	for _, r := range m.kz.doc.Repos {
 		if r.PRs == "ok" {
 			continue
 		}
@@ -189,7 +196,7 @@ func (m *model) pulseLines(p paint, w int) block {
 			if i == 0 {
 				lead = "⚠ "
 			}
-			lines = append(lines, p.sp(1)+p.t(lead+l, th.Yellow))
+			lines = append(lines, p.sp(1)+p.t(lead+l, m.th.Yellow))
 		}
 	}
 	return lines
