@@ -45,7 +45,7 @@ fi
 # end stops a child and waits for it. A TERM that reaches a child the shell has just forked is lost (it still has
 # the shell's handler, not yet its own), so it is sent every 0.1 s until the child is gone.
 end() {
-	while kill -TERM "$1" 2>/dev/null; do sleep 0.1; done
+	while kill -TERM "$1" 2>/dev/null; do sleep 0.1 || :; done
 	wait "$1" 2>/dev/null || :
 }
 
@@ -88,9 +88,6 @@ loop=$!
 
 status=0
 [ -n "$stopping" ] || wait "$cron" || status=$?
-if [ -n "$stopping" ]; then
-	end "$cron"
-	status=0
-fi
+[ -z "$stopping" ] || status=0
 end "$loop"
 exit "$status"
