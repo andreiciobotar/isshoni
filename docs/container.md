@@ -2,7 +2,7 @@
 
 For a machine that is always on: the dispatcher, its leads and the site manager live in one container, and you reach them from a laptop or a phone. The host needs Docker and a user in the `docker` group; nothing else is installed or changed on it.
 
-The image ([docker/Dockerfile](../docker/Dockerfile)) holds tools only, each at a pinned version: Claude Code, `gh`, git, Python 3.13, Go, make, openssl, tmux and [supercronic](https://github.com/aptible/supercronic) on Debian 13 slim. It is IMAGE_SIZE (Claude Code 365 MB, Go 240 MB) and builds in BUILD_TIME on a GitHub runner. It has no Chromium, so `make screenshot` does not work there.
+The image ([docker/Dockerfile](../docker/Dockerfile)) holds tools only, each at a pinned version: Claude Code, `gh`, git, Python 3.13, Go, make, openssl, tmux and [supercronic](https://github.com/aptible/supercronic) on Debian 13 slim. It is 886 MB on x86-64 (Claude Code 365 MB, Go 240 MB) and builds in about 35 seconds on a GitHub runner; CI prints both on every run. It has no Chromium, so `make screenshot` does not work there.
 
 ## Start it
 On the host:
@@ -84,7 +84,7 @@ With your own token the factory's pull requests are yours, and GitHub lets nobod
 
 - **A GitHub App** is the way: `factory wizard` creates, installs and verifies one ([factory.md](factory.md#identity): its permissions, files and undo). It keeps the App's key in `~/.claude/factory/identity/`, which is in the state directory. The wizard cannot create the App from inside the container: GitHub sends your browser back to the wizard on `127.0.0.1`, and the container publishes no port. Run `factory wizard` on your laptop, copy `~/.claude/factory/identity` to `<FACTORY_STATE>/home/.claude/factory/identity`, and run `factory wizard` in the container: it verifies and prints the report.
 - **Not built yet**: the factory acting as that App. Until then every command, in the container too, uses the `gh` login of step 3.
-- **Fallback: a second GitHub account** with write access to the repositories and a fine-grained token for those only (Contents and Pull requests: read and write; Actions, Commit statuses, Metadata: read), given to `gh auth login`, its name and email in `git config --global`. GitHub takes it for a person, so set `"lgtm_from_author": false` in `~/.claude/factory/settings.json`: its own `lgtm` then stops counting.
+- **Fallback: a second GitHub account** with write access to the repositories and a fine-grained token for those only (Contents and Pull requests: read and write; Actions, Commit statuses, Metadata: read; Workflows: read and write if tasks may edit `.github/workflows`), given to `gh auth login`, its name and email in `git config --global`. GitHub takes it for a person, so set `"lgtm_from_author": false` in `~/.claude/factory/settings.json`: its own `lgtm` then stops counting.
 
 ## Not verified
 - Anything that needs a real Claude login: logging in from the container, background sessions and their supervisor there (`factory new`, `claude attach`), `auto` permission mode, the site manager's Sonnet run, Remote Control.
