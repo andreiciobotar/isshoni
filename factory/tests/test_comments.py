@@ -62,9 +62,9 @@ class Comments(Home):
         out = io.StringIO()
         with mock.patch.object(factory, "run", self.fake), redirect_stdout(out):
             if whole:  # the tick's own gate and snapshot
-                factory.cheap_tick(self.repo, "dispatcher-repo")
+                factory.cheap_tick(self.repo, None)
             else:
-                factory.watch_comments(self.repo, "dispatcher-repo", factory.snapshot(self.repo))
+                factory.watch_comments(self.repo, None, factory.snapshot(self.repo))
         return out.getvalue()
 
     def prime(self, prs=None):
@@ -180,6 +180,12 @@ class WatchCommentsTests(Comments):
         self.assertIn("PR COMMENTS: t1 (not delivered to its lead): 1 new from the human on #1: read ", prompt)
         self.assertEqual(self.logs()[0]["to"], "dispatcher")
 
+    def test_the_courier_is_sent_to_the_name_the_registered_dispatcher_has_now(self):
+        factory.repo_state(ROOT, "dispatcher", "json").write_text(json.dumps({"root": ROOT, "session": "sid-d"}))
+        self.prime()
+        self.tick([pr(comments=[comment("IC_1")])], sessions=[DISPATCHER | {"name": "renamed", "pid": 7}])
+        self.assertIn("session named renamed", self.couriers()[0][-1])
+
     def test_courier_failure_falls_to_the_dispatcher_then_a_notice(self):
         self.prime()
         out = self.tick([pr(comments=[comment("IC_1")])], courier=(0, json.dumps({"result": "failed: no"}), ""))
@@ -215,7 +221,7 @@ class WatchCommentsTests(Comments):
 
     def test_gh_failure_prints_and_keeps_the_state(self):
         self.prime()
-        state = factory.repo_state(self.repo, "comments", "json")
+        state = factory.repo_state(self.repo.root, "comments", "json")
         before = state.read_text()
         out = self.tick([], gh=(1, "", "boom"), whole=True)
         self.assertEqual((out, state.read_text()), ("comments: gh pr list failed: boom\n", before))

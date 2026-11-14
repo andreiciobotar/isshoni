@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -37,12 +38,16 @@ type SnapshotOptions struct {
 	Fold    bool   // dashboard: collapse the repository the cursor is in
 	W, H    int
 
+	// frames: dashboard, that many frames of one load, the cursor one row lower in each; hanami, see below.
 	// hanami: frames of a replay of Options.Replay (none: the idle scene), the first after At, then one
-	// every FrameStep, separated by a form-feed line
+	// every FrameStep. Frames are separated by a form-feed line.
 	At, FrameStep time.Duration
 	Frames        int
 	Legend        bool
 }
+
+// frameSep separates the frames of a snapshot.
+const frameSep = "\n\f\n"
 
 // Snapshot loads data once and renders a single settled frame; no TTY needed. A
 // session prefix is resolved by the python CLI, so an ambiguous one is an error here.
@@ -138,19 +143,27 @@ func Snapshot(so SnapshotOptions) (string, error) {
 	}
 	m.normalizeSelection()
 	onTree := m.view == viewDashboard && !m.zoom
-	if onTree && so.Row > 0 && len(m.rows()) > 0 {
-		rows := m.rows()
-		m.selID = rows[min(so.Row, len(rows)-1)].key
-		if s, d := m.paneSession(); s != nil && d == nil {
-			if err := detail(s.ID); err != nil {
-				return "", err
+	n := 1
+	if onTree {
+		n = max(1, so.Frames)
+	}
+	frames := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		if row := so.Row + i; onTree && row > 0 && len(m.rows()) > 0 {
+			rows := m.rows()
+			m.selID = rows[min(row, len(rows)-1)].key
+			if s, d := m.paneSession(); s != nil && d == nil {
+				if err := detail(s.ID); err != nil {
+					return "", err
+				}
 			}
 		}
+		if so.Fold && onTree {
+			m.fold(true)
+		}
+		frames = append(frames, m.finishSnapshot())
 	}
-	if so.Fold && onTree {
-		m.fold(true)
-	}
-	return m.finishSnapshot(), nil
+	return strings.Join(frames, frameSep), nil
 }
 
 func (m *model) finishSnapshot() string {
