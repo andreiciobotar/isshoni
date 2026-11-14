@@ -1,4 +1,4 @@
-.PHONY: install up build test fmt-check test-factory wizard wizard-remote uninstall uninstall-remote snapshot screenshot strip pictures clean FORCE
+.PHONY: install up build test fmt-check test-factory test-python test-go wizard wizard-remote uninstall uninstall-remote snapshot screenshot strip pictures clean FORCE
 
 BIN := bin/isshoni-tui
 VIEW ?= dashboard
@@ -37,10 +37,16 @@ up: build
 build:
 	go build -o $(BIN) ./cmd/isshoni-tui
 
-test: fmt-check test-factory
+# The parts are independent, so CI runs them side by side: make -j3 test GOTESTFLAGS=-race
+GOTESTFLAGS ?=
+test: fmt-check test-factory test-python test-go
+
+test-python:
 	python3 -m unittest discover -s tests
+
+test-go:
 	go vet ./...
-	go test ./...
+	go test $(GOTESTFLAGS) ./...
 
 fmt-check:
 	@files=$$(gofmt -l $$(git ls-files -co --exclude-standard '*.go')); [ -z "$$files" ] || { echo "isshoni: gofmt would change these files:" >&2; echo "$$files" >&2; echo "Fix with: gofmt -w $$files" >&2; exit 1; }
