@@ -32,9 +32,9 @@ const (
 	maxLanterns  = 60
 	maxRipples   = 40
 	maxCanopy    = 14 // blossoms on one branch; the longest closed go first
-	maxStars     = 40
+	maxStars     = 64
 	noteDrift    = 4.0  // cells per second, right to left
-	noteHold     = 12.0 // seconds a note is held at most while its agent has not called again
+	noteHold     = 12.0 // event seconds a note is held at most while its agent has not called again
 	staffRows    = 6
 	hanamiSecond = 1.0 / hanamiFPS
 )
@@ -140,6 +140,7 @@ type hBranch struct {
 	last     time.Time
 	blossoms []*hBlossom
 	spawned  int
+	leaving  bool // withdrawing: its slot went to a newer session
 }
 
 type hPetal struct {
@@ -239,6 +240,7 @@ type hanamiScene struct {
 	lanterns []*hLantern
 	fire     []hFire
 	stars    []hStar
+	starred  int // stars ever placed: where the next one sits
 	bells    []*hBell
 	ripples  []hRipple
 }
@@ -276,10 +278,10 @@ func (s *hanamiScene) geo() hGeo {
 }
 
 // The branches fan up and to the right of the disc, as the blossoms of the mark do.
-var slotAngles = [hanamiSlots]float64{44, 24, 63, 34, 54, 14, 73, 29, 59, 19, 68, 49}
+var slotAngles = [hanamiSlots]float64{44, 24, 63, 34, 54, 13, 73, 5, 59, 19, 68, 49}
 
 // point is where a branch is at u in 0..1 of its grown length.
-func (b *hBranch) point(g hGeo, t, u float64) (x, y float64) {
+func (b *hBranch) point(g hGeo, u float64) (x, y float64) {
 	a := slotAngles[b.slot]*math.Pi/180 + b.jitter
 	dx, dy := math.Cos(a), -math.Sin(a)
 	sx, sy := g.cx+(g.R+1)*dx, g.cy+(g.R+1)*dy
@@ -294,10 +296,10 @@ func (b *hBranch) point(g hGeo, t, u float64) (x, y float64) {
 }
 
 // blossomAt is where a blossom sits: on a short twig off its branch.
-func (b *hBranch) blossomAt(g hGeo, t float64, bl *hBlossom) (x, y, bx, by float64) {
+func (b *hBranch) blossomAt(g hGeo, bl *hBlossom) (x, y, bx, by float64) {
 	u := (0.2 + 0.8*frac(bl.n, 0.21)) * b.grow.x
-	bx, by = b.point(g, t, u)
-	x2, y2 := b.point(g, t, math.Min(1, u+0.02))
+	bx, by = b.point(g, u)
+	x2, y2 := b.point(g, math.Min(1, u+0.02))
 	nx, ny := -(y2 - by), x2-bx
 	if l := math.Hypot(nx, ny); l > 0 {
 		nx, ny = nx/l, ny/l
@@ -315,8 +317,8 @@ func blossomSize(g hGeo, work float64) float64 {
 }
 
 func (s *hanamiScene) lanternTarget(g hGeo, l *hLantern) (x, y float64) {
-	x = g.W * (0.36 + 0.6*frac(l.slot, 0.1))
-	y = 8 + float64(l.slot%3)*g.H*0.08
+	x = g.W * (0.42 + 0.54*frac(l.slot, 0.1))
+	y = 8 + frac(l.slot, 0.55)*g.H*0.42
 	return x + math.Sin(s.t*0.7+float64(l.slot))*1.6, y + math.Sin(s.t*0.5+float64(l.slot)*2)*0.8 // ambient sway
 }
 
@@ -324,22 +326,41 @@ func (s *hanamiScene) lanternTarget(g hGeo, l *hLantern) (x, y float64) {
 
 func (s *hanamiScene) branch(session string, at time.Time) *hBranch {
 	for _, b := range s.branches {
-		if b.session == session {
+		if b.session == session && !b.leaving {
 			if at.After(b.last) {
 				b.last = at
 			}
 			return b
 		}
 	}
+	// one branch a slot: when every slot is taken, the branch that has rested longest gives way. Only when all
+	// twelve are working does a slot hold two, a little apart.
 	used := [hanamiSlots]int{}
+	var oldest *hBranch
 	for _, b := range s.branches {
+		if b.leaving {
+			continue
+		}
 		used[b.slot]++
+		if oldest == nil || b.last.Before(oldest.last) {
+			oldest = b
+		}
 	}
 	slot := 0
 	for i := range used {
 		if used[i] < used[slot] {
 			slot = i
 		}
+	}
+	switch {
+	case used[slot] == 0:
+	case at.Sub(oldest.last) > hanamiQuiet:
+		oldest.leaving, slot = true, oldest.slot
+		used[slot]--
+	case used[slot] >= 2: // more sessions at work at once than the tree can hold: the least recent goes at once
+		slot = oldest.slot
+		used[slot]--
+		s.branches = slices.DeleteFunc(s.branches, func(b *hBranch) bool { return b == oldest })
 	}
 	b := &hBranch{session: session, slot: slot, last: at, jitter: float64(used[slot]) * 0.07}
 	s.branches = append(s.branches, b)
@@ -348,10 +369,13 @@ func (s *hanamiScene) branch(session string, at time.Time) *hBranch {
 
 // touch is the agent's blossom on the branch, reopened if it had closed, with work added; nil for the
 // session's own work, which shows at the branch tip.
-func (s *hanamiScene) touch(g hGeo, b *hBranch, agent string, work float64) *hBlossom {
+func (s *hanamiScene) touch(b *hBranch, agent string, at time.Time, work float64) *hBlossom {
 	for _, bl := range b.blossoms {
 		if bl.agent == agent {
-			bl.closed = time.Time{}
+			// only something later reopens it: the tokens of the message that handed back carry the return's own time
+			if at.After(bl.closed) {
+				bl.closed = time.Time{}
+			}
 			bl.work += work
 			return bl
 		}
@@ -362,10 +386,10 @@ func (s *hanamiScene) touch(g hGeo, b *hBranch, agent string, work float64) *hBl
 // origin is where an agent's events come from: its blossom, or its session's branch tip.
 func (s *hanamiScene) origin(g hGeo, b *hBranch, bl *hBlossom) (x, y float64) {
 	if bl != nil {
-		x, y, _, _ = b.blossomAt(g, s.t, bl)
+		x, y, _, _ = b.blossomAt(g, bl)
 		return
 	}
-	return b.point(g, s.t, b.grow.x)
+	return b.point(g, b.grow.x)
 }
 
 func prKey(e data.Event) string { return e.Repo + "#" + strconv.Itoa(e.PR) }
@@ -414,7 +438,7 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 		if e.Kind == "tokens" {
 			work = float64(e.Out) / 800
 		}
-		bl := s.touch(g, b, e.Agent, work)
+		bl := s.touch(b, e.Agent, e.TS, work)
 		if settled {
 			b.grow.x = 1
 			if bl != nil {
@@ -424,7 +448,7 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 		}
 		s.acc++
 		b.heat = 1
-		if bl != nil {
+		if bl != nil && bl.closed.IsZero() {
 			bl.heat = 1
 		}
 		if e.Kind == "tool" {
@@ -442,7 +466,7 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 		}
 	case "spawn":
 		b := s.branch(e.Session, e.TS)
-		if s.touch(g, b, e.Agent, 0) != nil {
+		if slices.ContainsFunc(b.blossoms, func(bl *hBlossom) bool { return bl.agent == e.Agent }) {
 			return
 		}
 		bl := &hBlossom{agent: e.Agent, role: e.Role, n: b.spawned}
@@ -475,7 +499,7 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 			return
 		}
 		s.acc++
-		x, y, _, _ := b.blossomAt(g, s.t, bl)
+		x, y, _, _ := b.blossomAt(g, bl)
 		for k := 0; k < 5 && len(s.petals) < maxPetals; k++ {
 			a := s.rnd.span(0, 2*math.Pi)
 			s.petals = append(s.petals, hPetal{
@@ -498,11 +522,12 @@ func (s *hanamiScene) Apply(e data.Event, settled bool) {
 	case "merge":
 		i := s.lit(e)
 		switch {
-		case settled && i >= 0:
-			l := s.lanterns[i]
-			s.lanterns = slices.Delete(s.lanterns, i, i+1)
-			s.star(g, l.x.x, l.y.x, e.TS)
-		case settled:
+		case settled: // merged before the viewer arrived: no lantern, its star
+			l := s.lantern(g, e, true)
+			s.lanterns = slices.DeleteFunc(s.lanterns, func(x *hLantern) bool { return x == l })
+			if l.placed {
+				s.star(g, l.x.x, l.y.x, e.TS)
+			}
 		case i >= 0 && s.lanterns[i].placed:
 			l := s.lanterns[i]
 			s.lanterns = slices.Delete(s.lanterns, i, i+1)
@@ -556,14 +581,11 @@ func (s *hanamiScene) star(g hGeo, x, y float64, at time.Time) {
 	if len(s.stars) >= maxStars {
 		s.stars = s.stars[1:]
 	}
-	st := hStar{u: x / g.W, v: y / g.H, at: at}
-	for i := 0; i < len(s.stars); i++ { // lanterns reuse their places: a later star sits beside an earlier one
-		if o := s.stars[i]; math.Abs(o.u-st.u)*g.W < 4 && math.Abs(o.v-st.v)*g.H < 3 {
-			st.u += 6 / g.W
-			i = -1
-		}
-	}
-	s.stars = append(s.stars, st)
+	// lanterns reuse their places, so stars would pile up: each sits a little further round its lantern's place
+	k := float64(s.starred)
+	s.starred++
+	x, y = x+(3+1.6*math.Sqrt(k)*4)*math.Cos(2.4*k), y+(2+1.1*math.Sqrt(k)*4)*math.Sin(2.4*k)
+	s.stars = append(s.stars, hStar{u: math.Max(0.02, math.Min(0.98, x/g.W)), v: math.Max(0.04, math.Min(0.9, y/g.H)), at: at})
 }
 
 // note strikes a tool call on its voice. It sounds until who calls again, so who's held note is released.
@@ -581,12 +603,14 @@ func (s *hanamiScene) note(g hGeo, tool string, col hrgb, who string) {
 	s.voiceAcc[row]++
 	s.voiceCol[row] = col
 	head := float64(s.w - 5)
-	for i := len(s.notes) - 1; i >= 0 && i >= len(s.notes)-24; i-- {
-		n := &s.notes[i]
-		if n.who == who {
-			n.held = 0
+	for i := range s.notes {
+		if s.notes[i].who == who {
+			s.notes[i].held = 0
 		}
-		if n.row == row && head-n.x0 < 1 { // struck within the same cell: one louder note
+	}
+	for i := len(s.notes) - 1; i >= 0 && head-s.notes[i].x0 < 1; i-- { // notes are in order of their start
+		n := &s.notes[i]
+		if n.row == row { // struck within the same cell: one louder note
 			n.n++
 			n.age, n.who, n.held = 0, who, hanamiSecond // and it is this caller's note now, sounding
 			if glyph != '·' {
@@ -654,8 +678,8 @@ func (s *hanamiScene) Step(now time.Time) {
 		b := s.branches[i]
 		quiet := s.now.Sub(b.last)
 		target := 1.0
-		if quiet > hanamiKeep {
-			target = 0
+		if b.leaving || quiet > hanamiKeep || (quiet > hanamiQuiet && len(b.blossoms) == 0) {
+			target = 0 // nothing left to show: a session that bore no blossom goes when it rests
 		}
 		b.grow.to(springGrow, target)
 		b.heat *= 1 - dt/0.7
@@ -667,7 +691,7 @@ func (s *hanamiScene) Step(now time.Time) {
 			bl.open.to(springBloom, 1)
 			bl.size.to(springSize, blossomSize(g, bl.work))
 			bl.heat *= 1 - dt/0.6
-			if bl.closed.IsZero() || s.now.Sub(bl.closed) < hanamiKeep {
+			if (bl.closed.IsZero() || s.now.Sub(bl.closed) < hanamiKeep) && !(b.leaving && b.grow.x < 0.5) {
 				kept = append(kept, bl)
 			}
 		}
@@ -748,7 +772,7 @@ func (s *hanamiScene) Step(now time.Time) {
 		n.x0 -= drift
 		n.age += dt
 		if n.held > 0 {
-			if n.held += dt; n.held > noteHold {
+			if n.held += dt * s.scale; n.held > noteHold { // event seconds: a fast replay holds as briefly as it plays
 				n.held = 0
 			}
 		} else {
@@ -960,7 +984,10 @@ func (cv *hCanvas) lines(th *Theme) []string {
 			}
 			// colours in steps: a glow that breathes, or dots that brighten as the stage gets louder, then change a
 			// cell every few frames, not every frame, and the terminal has a fraction of the cells to repaint
-			bg = bg.stepped(4)
+			if l := cell.light; !cell.filled && l.r+l.g+l.b < 9 {
+				bg = base // too faint to see: not worth a colour change on the line
+			}
+			bg = bg.stepped(6)
 			ch, c, bold := cell.ch, cell.c, cell.bold
 			switch {
 			case ch != 0:
@@ -1088,7 +1115,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 		steps := int(160 * b.grow.x)
 		for k := 0; k <= steps; k++ {
 			u := b.grow.x * float64(k) / float64(max(1, steps))
-			x, y := b.point(g, s.t, u)
+			x, y := b.point(g, u)
 			col := wood.mix(yellow, 0.25+0.75*b.heat*u)
 			cv.plot(x, y, col, 0.9*rest*loud)
 			if u < 0.6 {
@@ -1106,7 +1133,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 				if bl.closed.IsZero() != (pass == 1) {
 					continue
 				}
-				x, y, bx, by := b.blossomAt(g, s.t, bl)
+				x, y, bx, by := b.blossomAt(g, bl)
 				col := toRGB(th.AgentColor(bl.role))
 				r := math.Max(1.5, bl.size.x) * math.Max(0.15, bl.open.x)
 				cv.layer = 3
@@ -1118,7 +1145,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 				rot := 1.2 * frac(bl.n, 0.5)
 				if pass == 0 {
 					fade := s.now.Sub(bl.closed).Seconds() / hanamiKeep.Seconds()
-					cv.flower(x, y, r, rot, col, 0.5-0.34*fade, true)
+					cv.flower(x, y, 0.85*r, rot, col, 0.42-0.28*fade, true)
 					cv.glow(x, y, 1.6*r, col, 0.035*(1-fade))
 					continue
 				}
@@ -1169,7 +1196,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 		for k, tr := range f.trail {
 			cv.plot(tr[0], tr[1], f.col, a*(0.8-0.15*float64(k)))
 		}
-		if a > 0.7 {
+		if a > 0.7 && f.twink > 6 {
 			cv.glow(pos.X, pos.Y, 6, f.col, 0.1*a)
 		}
 		if f.star && a > 0.6 && a < 0.9 && pos.Y < g.H {
@@ -1218,12 +1245,12 @@ func (s *hanamiScene) draw(legend bool) []string {
 	// glyphs on top: branch tips, blossom hearts, lanterns, bells
 	for _, b := range s.branches {
 		if b.grow.x > 0.15 {
-			x, y := b.point(g, s.t, b.grow.x)
+			x, y := b.point(g, b.grow.x)
 			cv.glow(x, y, 8, yellow, 0.25*b.heat)
 			cv.glyph(int(x/2), int(y/4), '•', wood.mix(yellow, 0.45+0.55*b.heat), b.heat > 0.4)
 		}
 		for _, bl := range b.blossoms {
-			x, y, _, _ := b.blossomAt(g, s.t, bl)
+			x, y, _, _ := b.blossomAt(g, bl)
 			col, ch := toRGB(th.AgentColor(bl.role)), roleGlyph(bl.role)
 			switch {
 			case !bl.closed.IsZero():
@@ -1336,7 +1363,8 @@ var hanamiLegend = [][2]string{
 	{"●", "the disc: all the work. It swells and brightens with the rate of events"},
 	{"─•", "a branch: one session. Its tip glows at each call; at rest it dims"},
 	{"✿❀✾✽", "a blossom: an agent (coder, reviewer, explorer, other), as large as its work"},
-	{"⠶", "petals: it returns to the disc and its blossom closes to an outline for 2 h"},
+	{"⠶", "petals: it returns to the disc. An outline, for 2 h: it returned, or its"},
+	{"", "session has been silent for 3 minutes"},
 	{"⠶", "petals turned back in red, with a red ring: a reviewer asked for changes"},
 	{"⠐⠂", "wind: cache reads. Bright streaks off an agent: output tokens"},
 	{"●○◆■▲◇", "notes: shell, read, edit, write, dispatch, message. Each sounds until its"},
@@ -1346,7 +1374,7 @@ var hanamiLegend = [][2]string{
 	{"✦", "a ringed star above the disc: a question waiting for the human"},
 	{"◌", "a ripple from the disc: the site manager's tick"},
 	{"", "colour: the agent's role, on blossoms, notes, streaks and petals"},
-	{"", "ambient, not data: the breath, the sway, the slowest breeze"},
+	{"", "ambient, not data: the breath, the lanterns' sway, the slowest breeze"},
 }
 
 func (s *hanamiScene) drawLegend(cv *hCanvas) {

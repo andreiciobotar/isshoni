@@ -292,6 +292,137 @@ func TestHanamiSceneFollowsEvents(t *testing.T) {
 	}
 }
 
+// The message that hands back carries its tokens at the return's own time: they must not reopen the blossom.
+func TestHanamiReturnStaysClosed(t *testing.T) {
+	who := func(e *data.Event) { e.Agent, e.Role, e.Tool, e.Out = "a1", "coder", "message", 900 }
+	for _, settled := range []bool{false, true} {
+		s := newHanamiScene(NewTheme(true))
+		s.Apply(ev("spawn", 0, who), settled)
+		s.Apply(ev("tool", 5, who), settled) // the handback call
+		s.Apply(ev("return", 5, who), settled)
+		s.Apply(ev("tokens", 5, who), settled) // its message's usage, same instant
+		if bl := s.branches[0].blossoms[0]; bl.closed.IsZero() {
+			t.Fatalf("settled %v: the agent's own last words reopened its blossom", settled)
+		}
+		s.Apply(ev("tool", 6, who), settled) // resumed a second later
+		if bl := s.branches[0].blossoms[0]; !bl.closed.IsZero() {
+			t.Fatalf("settled %v: a resumed agent's blossom stays closed", settled)
+		}
+	}
+}
+
+// A note sounds until its agent's next call, whatever that call lands on.
+func TestHanamiNotesAreReleasedByTheirAgent(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	call := func(agent, tool string) {
+		s.Apply(ev("tool", 0, func(e *data.Event) { e.Agent, e.Tool = agent, tool }), false)
+	}
+	held := func() (n int) {
+		for _, x := range s.notes {
+			if x.held > 0 {
+				n++
+			}
+		}
+		return
+	}
+	call("a", "read")
+	stepFor(s, goldenNow, time.Second)
+	call("b", "shell")
+	if len(s.notes) != 2 || held() != 2 {
+		t.Fatalf("two agents, two sounding notes: %d notes, %d held", len(s.notes), held())
+	}
+	call("a", "shell") // lands in the cell of b's note and merges with it: a's read must stop all the same
+	if len(s.notes) != 2 || held() != 1 || s.notes[0].held != 0 || s.notes[1].who != "s1/a" {
+		t.Fatalf("a's next call did not release a's note: %d notes, %d held", len(s.notes), held())
+	}
+	for i := 0; i < 40; i++ { // many notes later, an old held one is still released by its agent
+		stepFor(s, goldenNow, 300*time.Millisecond)
+		call(fmt.Sprint("x", i), "edit")
+	}
+	call("a", "write")
+	for _, x := range s.notes {
+		if x.who == "s1/a" && x.held > 0 && x.glyph != '■' {
+			t.Fatal("an older note of a is still held after a called again")
+		}
+	}
+	s.scale = 60 // a replay holds for event seconds
+	call("z", "read")
+	stepFor(s, goldenNow, time.Second)
+	if n := s.notes[len(s.notes)-1]; n.held != 0 {
+		t.Fatal("at a minute a second a note is still held after a second (a minute of events)")
+	}
+}
+
+// The tree holds twelve branches: a newer session takes the place of the one at rest longest, and a flood of
+// sessions all at work is bounded too. The canopy and the sky are capped likewise.
+func TestHanamiTreeIsBounded(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	session := func(i int, sec float64) {
+		s.Apply(ev("spawn", sec, func(e *data.Event) { e.Session, e.Agent = fmt.Sprint("s", i), "a" }), false)
+	}
+	for i := 0; i < 40; i++ { // one every five minutes: each finds the earlier ones at rest
+		session(i, float64(i)*300)
+		stepFor(s, goldenNow.Add(time.Duration(i)*5*time.Minute), 3*time.Second)
+		slots := map[int]bool{}
+		for _, b := range s.branches {
+			if !b.leaving {
+				if slots[b.slot] {
+					t.Fatalf("after %d sessions two branches share slot %d", i+1, b.slot)
+				}
+				slots[b.slot] = true
+			}
+		}
+		if len(slots) > hanamiSlots || len(s.branches) > hanamiSlots+1 {
+			t.Fatalf("after %d sessions: %d branches", i+1, len(s.branches))
+		}
+	}
+	if b := s.branches[len(s.branches)-1]; b.session != "s39" || b.leaving {
+		t.Fatal("the newest session has no branch")
+	}
+	for i := 100; i < 400; i++ { // all at once
+		session(i, 40*300)
+	}
+	if len(s.branches) > 3*hanamiSlots { // two a slot at work, and those just told to leave
+		t.Fatalf("a flood of sessions at work: %d branches", len(s.branches))
+	}
+	stepFor(s, goldenNow.Add(40*5*time.Minute), 5*time.Second)
+	if len(s.branches) > 2*hanamiSlots {
+		t.Fatalf("the branches told to leave are still there: %d", len(s.branches))
+	}
+
+	one := newHanamiScene(NewTheme(true))
+	agent := func(kind string, i int, sec float64) {
+		one.Apply(ev(kind, sec, func(e *data.Event) { e.Agent = fmt.Sprint("a", i) }), false)
+	}
+	for i := 0; i < maxCanopy+6; i++ {
+		agent("spawn", i, float64(i))
+		if i < 3 {
+			agent("return", i, float64(i)+0.5)
+		}
+	}
+	bl := one.branches[0].blossoms
+	if len(bl) != maxCanopy || !bl[0].closed.IsZero() || bl[0].agent != "a6" { // three closed went first, then the three oldest open
+		t.Fatalf("a full branch drops its closed blossoms first, then the oldest: %d, first %s", len(bl), bl[0].agent)
+	}
+	for i := 0; i < maxStars+10; i++ {
+		one.Apply(ev("pr", 100, func(e *data.Event) { e.PR = i }), true)
+		one.Apply(ev("merge", 100, func(e *data.Event) { e.PR = i }), true)
+	}
+	if len(one.stars) != maxStars || len(one.lanterns) != 0 || len(one.fire) != 0 || one.forte != 0 {
+		t.Fatalf("settled merges leave their stars and nothing else: %d stars, %d lanterns", len(one.stars), len(one.lanterns))
+	}
+	for i, a := range one.stars {
+		if a.u < 0 || a.u > 1 || a.v < 0 || a.v > 1 {
+			t.Fatalf("star %d is outside the field", i)
+		}
+		for _, b := range one.stars[:i] {
+			if a.u == b.u && a.v == b.v {
+				t.Fatalf("two stars in one place")
+			}
+		}
+	}
+}
+
 // What happened before the viewer arrived is there, without any motion.
 func TestHanamiSettledEventsDoNotMove(t *testing.T) {
 	s := newHanamiScene(NewTheme(true))

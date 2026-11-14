@@ -7,7 +7,7 @@ BG='#12111C'
 
 def one_cell(c):
     # characters the fallback font draws wider than one cell: braille, block elements and the scene's glyphs
-    return '⠀'<=c<='⣿' or '▀'<=c<='▟' or c in '✿❀✾✽∘•◉✦✶◇◆○●■▲'
+    return '⠀'<=c<='⣿' or '▀'<=c<='▟' or c in '✿❀✾✽∘•◉✦✶◇◆○●■▲━┃'
 
 def cell(c):
     # pinned to a fixed box so the line keeps one height and the next cell starts where the grid says
