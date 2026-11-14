@@ -4,9 +4,11 @@ import io
 import json
 import os
 import re
+import socket
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -74,7 +76,8 @@ class Wizard(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.home = Path(tmp.name)
-        patcher = mock.patch.dict(os.environ, {"HOME": tmp.name, "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"})
+        patcher = mock.patch.dict(os.environ, {"HOME": tmp.name, "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1",
+                                                "DISPLAY": ":0"})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.identity = self.home / ".claude" / "factory" / "identity"
@@ -221,9 +224,47 @@ class FirstRunTests(Wizard):
     def test_no_answer_stores_nothing(self):
         rc = self.wizard("--owner", "octocat", browser=lambda url: None, wait=0)
         self.assertEqual(rc, 1)
-        self.assertIn("nothing was stored", self.err)
+        self.assertIn("nothing was stored here", self.err)
+        self.assertIn("delete it at https://github.com/settings/apps before running again", self.err)
         self.assertEqual(self.files(), [])
         self.assertFalse(self.gh.called("POST", "/app-manifests/THECODE/conversions"))
+
+    def idle_socket(self, url):
+        """A browser's preconnect: a connection that sends nothing."""
+        idle = socket.create_connection(("127.0.0.1", int(url.rsplit(":", 1)[1].rstrip("/"))))
+        self.addCleanup(idle.close)
+
+    def test_an_idle_connection_does_not_block_the_flow(self):
+        def browser(url):
+            self.idle_socket(url)
+            self.browser(url)
+        self.assertEqual(self.wizard("--owner", "octocat", browser=browser), 0, self.err)
+
+    def test_an_idle_connection_does_not_block_the_timeout(self):
+        start = time.monotonic()
+        self.assertEqual(self.wizard("--owner", "octocat", browser=self.idle_socket, wait=0), 1)
+        self.assertLess(time.monotonic() - start, 5)
+        self.assertIn("nothing was stored here", self.err)
+
+    def test_failed_exchange_says_the_app_may_exist(self):
+        github = routes(self.pem, {("POST", "/app-manifests/THECODE/conversions"): (0, {"message": "offline"})})
+        self.assertEqual(self.wizard("--owner", "octocat", github=github), 1)
+        self.assertIn("network error: offline", self.err)
+        self.assertIn("If you confirmed on GitHub, the App exists: delete it at https://github.com/settings/apps", self.err)
+        self.assertEqual(self.files(), [])
+        github[("GET", "/users/octocat")] = (200, {"type": "Organization"})
+        github[("POST", "/app-manifests/THECODE/conversions")] = (422, {"message": "expired"})
+        self.assertEqual(self.wizard("--owner", "octocat", github=github), 1)
+        self.assertIn("https://github.com/organizations/octocat/settings/apps before", self.err)
+
+    def test_key_without_app_json_stops_before_any_call(self):
+        self.stored()
+        (self.identity / "app.json").unlink()
+        self.assertEqual(self.wizard("--owner", "octocat"), 1)
+        self.assertIn("rm -r", self.err)
+        self.assertEqual(self.gh.calls, [])
+        self.assertEqual(self.opened, [])
+        self.assertEqual((self.identity / "key.pem").read_text(), self.pem)
 
     def test_owner_lookup_failing_is_reported(self):
         rc = self.wizard("--owner", "octocat", github={("GET", "/users/octocat"): (0, {"message": "offline"})})
@@ -275,6 +316,21 @@ class RerunTests(Wizard):
         self.assertEqual(self.app_json()["installation_id"], 7654321)
         self.assertIn("octocat/two", self.out)
         self.assertQuiet()
+
+    def test_another_owner_is_refused(self):
+        self.stored()
+        self.assertEqual(self.wizard("--owner", "someone-else"), 1)
+        self.assertIn("factory-octocat", self.err)
+        self.assertIn("octocat", self.err)
+        self.assertEqual(self.gh.calls, [])
+        self.assertEqual(self.wizard("--owner", "OCTOCAT"), 0, self.err)
+
+    def test_401_names_the_clock(self):
+        self.stored()
+        self.wizard(github=routes(self.pem, {("GET", "/app"): (401, {})}))
+        self.assertIn("clock is off by minutes", self.err)
+        self.wizard(github=routes(self.pem, {("GET", "/app"): (404, {})}))
+        self.assertNotIn("clock", self.err)
 
     def test_loose_modes_are_repaired(self):
         self.stored()
@@ -339,3 +395,22 @@ class RerunTests(Wizard):
         self.assertEqual(self.wizard(github=github), 0, self.err)
         self.assertIn("101 repositories", self.out)
         self.assertIn("octocat/last", self.out)
+
+
+class BrowserTests(unittest.TestCase):
+    def opens(self, platform, **env):
+        with mock.patch.object(factory.sys, "platform", platform), \
+                mock.patch.dict(os.environ, env), mock.patch.object(factory.webbrowser, "open") as opened:
+            for name in ("DISPLAY", "WAYLAND_DISPLAY"):
+                if name not in env:
+                    os.environ.pop(name, None)
+            factory.open_browser("http://127.0.0.1:1/")
+            return opened.called
+
+    def test_linux_needs_a_display(self):
+        self.assertFalse(self.opens("linux"))
+        self.assertTrue(self.opens("linux", DISPLAY=":0"))
+        self.assertTrue(self.opens("linux", WAYLAND_DISPLAY="wayland-0"))
+
+    def test_other_platforms_always_open(self):
+        self.assertTrue(self.opens("darwin"))

@@ -2451,7 +2451,7 @@ def github_api(method, path, bearer=None, body=None):
             status, raw = response.status, response.read()
     except urllib.error.HTTPError as e:
         status, raw = e.code, e.read()
-    except (urllib.error.URLError, OSError) as e:
+    except OSError as e:
         return 0, {"message": str(e)}
     try:
         return status, json.loads(raw)
@@ -2479,11 +2479,7 @@ def installation_token(identity):
 
 
 def remote_owner():
-    try:
-        repo = Repo()
-    except Fail:
-        return None
-    rc, out, _ = repo.git("remote", "get-url", "origin")
+    rc, out, _ = run(["git", "remote", "get-url", "origin"])
     m = re.search(r"github\.com[:/]+([^/\s]+)/", out) if rc == 0 else None
     return m and m.group(1)
 
@@ -2527,19 +2523,34 @@ class CallbackHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def open_browser(url):
+    """Where no display exists, webbrowser would start a text browser inside the terminal: the printed URL is enough."""
+    if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return
+    webbrowser.open(url)
+
+
+def apps_page(owner, org):
+    return f"https://github.com/{'organizations/' + owner + '/' if org else ''}settings/apps"
+
+
+def orphan_note(owner, org):
+    return f"If you confirmed on GitHub, the App exists: delete it at {apps_page(owner, org)} before running again."
+
+
 def manifest_code(owner, org, name):
     """Run the manifest flow in the browser; the code GitHub redirects back with."""
-    server = http.server.HTTPServer(("127.0.0.1", 0), CallbackHandler)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), CallbackHandler)
     server.state, server.codes = secrets.token_urlsafe(), queue.Queue()
     server.page = manifest_page(owner, org, name, server.server_port, server.state)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{server.server_port}/"
     try:
         print(f"Open {url} if no browser opens (over ssh, forward that port).")
-        webbrowser.open(url)
+        open_browser(url)
         return server.codes.get(timeout=WIZARD_WAIT)
     except queue.Empty:
-        raise Fail("no answer from GitHub within 10 minutes; nothing was stored", 1)
+        raise Fail(f"no answer from GitHub within 10 minutes; nothing was stored here. {orphan_note(owner, org)}", 1)
     finally:
         server.shutdown()
         server.server_close()
@@ -2564,13 +2575,16 @@ def create_app(owner):
           "after one confirmation in your browser.")
     print("Then you install it on the repositories you choose, with a second confirmation.")
     code = manifest_code(owner, org, name)
-    app = api("POST", f"/app-manifests/{urllib.parse.quote(code)}/conversions", 201)
+    status, app = github_api("POST", f"/app-manifests/{urllib.parse.quote(code)}/conversions")
+    if status != 201:
+        raise Fail(f"GitHub did not hand over the App's credentials ({reason(status, app)}); nothing was stored here. "
+                   + orphan_note(owner, org), 1)
     try:
         identity = {"app_id": app["id"], "slug": app["slug"], "client_id": app["client_id"], "html_url": app["html_url"],
                     "owner": app["owner"]["login"], "owner_type": "Organization" if org else "User"}
         pem = app["pem"]
     except (KeyError, TypeError) as e:
-        raise Fail(f"GitHub created the App but its answer lacks {e}; delete the App on GitHub and run again", 1)
+        raise Fail(f"GitHub's answer lacks {e}; nothing was stored here. {orphan_note(owner, org)}", 1)
     store_identity(identity, pem)
     return identity
 
@@ -2596,7 +2610,7 @@ def repair_modes(directory):
 
 
 def find_installation(identity):
-    for i in api("GET", "/app/installations?per_page=100", 200, app_jwt(identity)):
+    for i in api("GET", "/app/installations", 200, app_jwt(identity)):
         if i["account"]["login"].lower() == identity["owner"].lower():
             return i
 
@@ -2607,7 +2621,7 @@ def installation_for(identity):
         return found
     url = f"{identity['html_url']}/installations/new"
     print(f"Install the App on {identity['owner']} and choose its repositories: {url}")
-    webbrowser.open(url)
+    open_browser(url)
     deadline = time.monotonic() + WIZARD_WAIT
     while not found and time.monotonic() < deadline:
         time.sleep(INSTALL_POLL)
@@ -2635,7 +2649,8 @@ def verify_app(identity):
     repair_modes(directory)
     status, body = github_api("GET", "/app", bearer=app_jwt(identity))
     if status in (401, 404):
-        raise stopped(identity, "The stored App no longer exists on GitHub or its key was revoked.")
+        raise stopped(identity, "The stored App no longer exists on GitHub or its key was revoked"
+                                + (", or this machine's clock is off by minutes." if status == 401 else "."))
     if status != 200:
         raise Fail(f"GitHub GET /app failed: {reason(status, body)}", 1)
     installation = installation_for(identity)
@@ -2657,7 +2672,15 @@ def verify_app(identity):
 
 
 def cmd_wizard(args):
-    identity = load_identity() or create_app(args.owner)
+    identity = load_identity()
+    if identity is None:
+        if (IDENTITY.expanduser() / "key.pem").exists():
+            raise Fail(f"{IDENTITY.expanduser() / 'key.pem'} exists without app.json: remove the directory with "
+                       f"`rm -r {IDENTITY}` and run again", 1)
+        identity = create_app(args.owner)
+    elif args.owner and args.owner.lower() != identity["owner"].lower():
+        raise Fail(f"this machine's identity is the App {identity['slug']} of {identity['owner']}, not {args.owner}: "
+                   f"one identity per machine (to replace it, undo it first)", 1)
     verify_app(identity)
     return 0
 
