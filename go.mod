@@ -9,6 +9,7 @@ require (
 	charm.land/log/v2 v2.0.1
 	charm.land/ssh v0.4.3
 	charm.land/wish/v2 v2.0.5
+	github.com/charmbracelet/harmonica v0.2.0
 	github.com/charmbracelet/x/ansi v0.11.9
 	golang.org/x/crypto v0.57.0
 )

@@ -1,0 +1,7 @@
+{"ts":"2026-11-14T10:01:00Z","repo":"/r/alpha","slug":"one","state":"working"}
+{"ts":"2026-11-14T10:02:00Z","repo":"/r/alpha","slug":"one","state":"blocked"}
+{"ts":"2026-11-14T10:02:30Z","repo":"/r/alpha","slug":"one","state":"blocked"}
+{"ts":"2026-11-14T10:03:00Z","repo":"/r/alpha","slug":"one","state":"working"}
+{"ts":"2026-11-14T10:03:30Z","repo":"/r/alpha","slug":"two","state":"blocked"}
+{"ts":"2026-11-14T10:04:00Z","repo":"/r/alpha","slug":"two","event":"no state here"}
+{"ts":"2026-11-14T10:04:30Z","repo":"/r/broken","slug":"three","state":"working"}
