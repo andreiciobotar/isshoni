@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -36,6 +37,13 @@ const shutdownGrace = 5 * time.Second
 // writeOption is the authorized_keys option that lets a key change the worktree cap.
 const writeOption = "write"
 
+// The bound on connections that have not authenticated yet, in total and from one remote
+// IP address.
+const (
+	maxUnauthenticated           = 32
+	maxUnauthenticatedPerAddress = 4
+)
+
 // serveOptions configures serve. The Runner is shared by every session.
 type serveOptions struct {
 	Runner         *data.Runner
@@ -45,6 +53,9 @@ type serveOptions struct {
 	Follow         bool
 	NoColor        bool // the --no-color flag only: the server's own environment says nothing about a client's terminal
 	Log            *log.Logger
+
+	MaxUnauthenticated           int // zero means maxUnauthenticated
+	MaxUnauthenticatedPerAddress int // zero means maxUnauthenticatedPerAddress
 }
 
 // server holds what the session and auth handlers share.
@@ -78,6 +89,9 @@ func serve(ctx context.Context, ln net.Listener, o serveOptions) error {
 	}
 	srv.Handler = s.session
 	srv.HandshakeTimeout = 30 * time.Second // before authentication only
+	g := newGate(cmp.Or(o.MaxUnauthenticated, maxUnauthenticated), cmp.Or(o.MaxUnauthenticatedPerAddress, maxUnauthenticatedPerAddress), o.Log)
+	srv.ConnCallback = g.admit
+	srv.ServerConfigCallback = g.serverConfig
 	o.Log.Printf("serving ssh on %s, host key %s", ln.Addr(), fingerprint)
 
 	served := make(chan error, 1)
@@ -105,6 +119,98 @@ func serve(ctx context.Context, ln net.Listener, o serveOptions) error {
 	cancelShare()
 	o.Runner.Wait()
 	return nil
+}
+
+// limiter counts the connections that have not authenticated yet, in total and per address.
+type limiter struct {
+	mu                sync.Mutex
+	total, perAddress int // the limits
+	n                 int
+	byAddr            map[string]int
+}
+
+func (l *limiter) acquire(addr string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.n >= l.total || l.byAddr[addr] >= l.perAddress {
+		return false
+	}
+	l.n++
+	l.byAddr[addr]++
+	return true
+}
+
+func (l *limiter) release(addr string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.n--
+	if l.byAddr[addr]--; l.byAddr[addr] == 0 {
+		delete(l.byAddr, addr)
+	}
+}
+
+// gate admits a connection only while the limiter has room for it, and gives the slot back
+// when the connection authenticates or closes. It logs refusals at most once a minute.
+type gate struct {
+	l   limiter
+	log *log.Logger
+
+	mu      sync.Mutex
+	refused int // since the last log line
+	logged  time.Time
+}
+
+func newGate(total, perAddress int, log *log.Logger) *gate {
+	return &gate{l: limiter{total: total, perAddress: perAddress, byAddr: map[string]int{}}, log: log}
+}
+
+type slotKey struct{} // the context key of the func that gives a connection's slot back
+
+// slotConn gives its slot back when closed, whatever way the connection ended.
+type slotConn struct {
+	net.Conn
+	release func()
+}
+
+func (c slotConn) Close() error {
+	c.release()
+	return c.Conn.Close()
+}
+
+// admit is the server's ConnCallback: nil closes the connection before any byte is sent.
+func (g *gate) admit(ctx ssh.Context, conn net.Conn) net.Conn {
+	addr := conn.RemoteAddr().String()
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		addr = host
+	}
+	if !g.l.acquire(addr) {
+		g.refuse()
+		return nil
+	}
+	release := sync.OnceFunc(func() { g.l.release(addr) })
+	ctx.SetValue(slotKey{}, release)
+	return slotConn{conn, release}
+}
+
+func (g *gate) refuse() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.refused++
+	if time.Since(g.logged) < time.Minute {
+		return
+	}
+	g.log.Printf("refused %d connections that had not authenticated (limits: %d in all, %d per address)", g.refused, g.l.total, g.l.perAddress)
+	g.refused, g.logged = 0, time.Now()
+}
+
+// serverConfig is the server's ServerConfigCallback. AuthLogCallback runs with a nil error
+// only once authentication succeeded, before the success reaches the client.
+func (g *gate) serverConfig(ctx ssh.Context) *gossh.ServerConfig {
+	return &gossh.ServerConfig{AuthLogCallback: func(_ gossh.ConnMetadata, _ string, err error) {
+		if release, ok := ctx.Value(slotKey{}).(func()); ok && err == nil {
+			release()
+		}
+	}}
 }
 
 // loadHostKey returns the host key's PEM and SHA256 fingerprint, creating an ed25519 key

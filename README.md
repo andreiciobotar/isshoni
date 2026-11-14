@@ -31,7 +31,7 @@ Isshoni is two tools for people who run [Claude Code](https://claude.com/claude-
 
 ## Setup
 
-Needs `git` and Python 3.11+; the factory also needs Claude Code and an authenticated [`gh`](https://cli.github.com), on macOS or Linux.
+Needs `git`, Python 3.11+, [Go 1.27+](https://go.dev/dl) for the dashboard, and, for the factory, Claude Code and an authenticated [`gh`](https://cli.github.com), on macOS or Linux.
 
 Monitor:
 
@@ -41,11 +41,9 @@ bin/isshoni sessions --since 7d    # where the money went
 make install && make up            # live dashboard; needs Go 1.27+
 ```
 
-Factory, in Claude Code, in the repository you want work done in:
+Factory: `make wizard` in the clone checks the tools, builds the dashboard, installs the plugin, writes the settings, offers cost alerts with the daily digest and offers the factory its own GitHub App ([what each step does](docs/factory.md#setup-and-uninstall)). Then, in Claude Code, in the repository you want work done in:
 
 ```
-/plugin marketplace add andreiciobotar/isshoni
-/plugin install factory@factory
 /rename dispatcher-<repository directory name>
 /factory:dispatch
 ```
@@ -54,9 +52,9 @@ Describe a task; ask for progress whenever you like. By default leads run unatte
 
 Optional:
 
-- [Its own GitHub identity](docs/factory.md#identity): `make wizard ARGS="--owner <owner of your repositories>"` in the clone. Pull requests then come from a bot, so you can approve them.
-- [Always on](docs/container.md): the factory in a container on a Linux host.
-- [Cost alerts and a daily digest](docs/factory.md#site-manager): set `"monitor": "<clone>/bin/isshoni"` in `~/.claude/factory/settings.json`.
+- [Always on](docs/container.md): `bin/isshoni host add <ssh target> --state <dir> --repo <owner/name>` runs the factory in a container on a Linux host that has Docker.
+
+`make uninstall` removes what the wizard put on the machine.
 
 ## Factory
 
@@ -73,7 +71,7 @@ flowchart TD
     lander[Lander · Sonnet] -- merges --> pr
 ```
 
-A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the lander merges it within a few minutes once checks are green.
+A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the lander merges it within a few minutes once checks are green. Your other comments on a pull request reach its lead on the next watch tick.
 
 <!-- screenshot: factory status with several tasks -->
 
@@ -100,6 +98,8 @@ On day one, agents reported the same shell friction eleven times and counting. I
 ## Monitor
 
 `isshoni` reads the transcripts Claude Code already keeps in `~/.claude/projects` and never writes there. Beyond cost and tokens it shows the signs of wasted work: repeated dispatches, review loops, agents on a model other than the one pinned for them.
+
+Parsing a transcript is slow, so parsed sessions are cached, one file per transcript, in `$XDG_CACHE_HOME/isshoni/sessions` (else `~/.cache/isshoni/sessions`). Set `ISSHONI_CACHE_DIR` to another directory, or to an empty value to turn the cache off. An entry is dropped when its transcript or its `subagents/` files change, or when the parser or the price file does. Each run deletes the entries of transcripts that no longer exist, so the cache stays a small fraction of the transcripts' size; only a projects directory you stop using leaves its folder behind. Deleting the whole cache is always safe and costs one slow run. Entries are Python pickles, trusted like the code itself: the cache directory and its files are private to you (0700 and 0600), and anything that can write there can run code as you. The cache lives outside `~/.claude/projects`, which is still only read.
 
 Cost is the API list price, from [isshoni/prices.toml](isshoni/prices.toml). `isshoni-tui` is the same data live, plus the factory's tasks and whether it is getting better. Its fifth view, [Hanami (花見)](docs/isshoni.md#hanami-花見-the-work-as-something-to-watch), draws the work as motion: something to leave on a second screen.
 

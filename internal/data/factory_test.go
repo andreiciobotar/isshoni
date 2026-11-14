@@ -39,7 +39,7 @@ func TestFactoryStatusDecodesNulls(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := t.TempDir()
-	st, err := r.FactoryStatus(context.Background(), repo)
+	st, err := r.FactoryStatus(context.Background(), repo, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestFactoryStatusDecodesNulls(t *testing.T) {
 	if a := st.Rows[0]; a.Elapsed != nil || a.Waited != nil || a.StopKind != "" || a.StopSummary != "" || a.Slug != "cost-in-money" || a.PRState != "unknown" {
 		t.Fatalf("row with nulls: %+v", a)
 	}
-	if b := st.Rows[1]; b.Elapsed == nil || *b.Elapsed != 252 || !b.Overtime || !b.Stale || b.PRURL == "" {
+	if b := st.Rows[1]; b.Elapsed == nil || *b.Elapsed != 252 || !b.Overtime || !b.Stale || b.PRURL == "" || b.PRDraft || !st.Rows[0].PRDraft {
 		t.Fatalf("row: %+v", b)
 	}
 	if c := st.Rows[2]; c.Waited == nil || *c.Waited != 600 || c.StopKind != "QUESTION" || c.StopSummary != "Which database should it use?" {
@@ -67,19 +67,19 @@ func TestFactoryStatusDecodesNulls(t *testing.T) {
 func TestFactoryStatusErrors(t *testing.T) {
 	r, dir := factoryStub(t)
 	os.WriteFile(filepath.Join(dir, "fail"), nil, 0o644)
-	if _, err := r.FactoryStatus(context.Background(), t.TempDir()); err == nil || err.Error() != "not inside a git repository" {
+	if _, err := r.FactoryStatus(context.Background(), t.TempDir(), false); err == nil || err.Error() != "not inside a git repository" {
 		t.Fatalf("exit 2 gives the stderr line without its prefix: %v", err)
 	}
 	os.Remove(filepath.Join(dir, "fail"))
 
 	os.WriteFile(filepath.Join(dir, "status.json"), []byte("nope"), 0o644)
-	if _, err := r.FactoryStatus(context.Background(), t.TempDir()); err == nil || !strings.Contains(err.Error(), "decode factory output") {
+	if _, err := r.FactoryStatus(context.Background(), t.TempDir(), false); err == nil || !strings.Contains(err.Error(), "decode factory output") {
 		t.Fatalf("decode error: %v", err)
 	}
 	os.Remove(filepath.Join(dir, "status.json"))
 
 	missing := &Runner{Root: t.TempDir(), Python: r.Python}
-	if _, err := missing.FactoryStatus(context.Background(), t.TempDir()); err == nil || !strings.Contains(err.Error(), "factory command not found: "+filepath.Join(missing.Root, "factory", "bin", "factory")) {
+	if _, err := missing.FactoryStatus(context.Background(), t.TempDir(), false); err == nil || !strings.Contains(err.Error(), "factory command not found: "+filepath.Join(missing.Root, "factory", "bin", "factory")) {
 		t.Fatalf("missing script names its path: %v", err)
 	}
 }
@@ -87,7 +87,7 @@ func TestFactoryStatusErrors(t *testing.T) {
 func TestFactoryStatusTimeoutKillsTheChildren(t *testing.T) {
 	r, dir := factoryStub(t)
 	os.WriteFile(filepath.Join(dir, "hang"), nil, 0o644)
-	if _, err := r.FactoryStatus(context.Background(), t.TempDir()); err == nil {
+	if _, err := r.FactoryStatus(context.Background(), t.TempDir(), false); err == nil {
 		t.Fatal("a hung call must time out")
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "child"))
@@ -111,7 +111,7 @@ func TestFactoryStatusTimesOutAndFreesTheRunner(t *testing.T) {
 	r, dir := factoryStub(t)
 	os.WriteFile(filepath.Join(dir, "hang"), nil, 0o644)
 	start := time.Now()
-	_, err := r.FactoryStatus(context.Background(), t.TempDir())
+	_, err := r.FactoryStatus(context.Background(), t.TempDir(), false)
 	if err == nil || err.Error() != "factory status timed out after 700ms" {
 		t.Fatalf("got %v", err)
 	}
@@ -130,7 +130,7 @@ func TestFactoryStatusTimesOutAndFreesTheRunner(t *testing.T) {
 func TestFactoryStatusNoProcessAfterWait(t *testing.T) {
 	r, dir := factoryStub(t)
 	r.Wait()
-	if _, err := r.FactoryStatus(context.Background(), t.TempDir()); err == nil {
+	if _, err := r.FactoryStatus(context.Background(), t.TempDir(), false); err == nil {
 		t.Fatal("a call after Wait must fail")
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "calls")); len(b) != 0 {
@@ -155,7 +155,7 @@ func TestFactoryStatusRealScriptInEmptyRepo(t *testing.T) {
 			t.Fatalf("git %v: %v %s", args, err, out)
 		}
 	}
-	st, err := (&Runner{Root: root}).FactoryStatus(context.Background(), repo)
+	st, err := (&Runner{Root: root}).FactoryStatus(context.Background(), repo, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,5 +304,47 @@ func TestSettingsErrorsNameTheFileShort(t *testing.T) {
 		if err == nil || !strings.HasPrefix(err.Error(), "~/.claude/factory/settings.json: ") || strings.Contains(err.Error(), home) {
 			t.Errorf("%s: want an error starting with the ~ path and no absolute path, got %v", name, err)
 		}
+	}
+}
+
+func TestFactoryStatusPassesTellApartByCachedAndDecodePRs(t *testing.T) {
+	r, dir := factoryStub(t)
+	repo := t.TempDir()
+	cached := `{"rows":[],"cap":5,"prs":{"as_of":null,"error":null}}`
+	fetched := `{"rows":[],"cap":5,"prs":{"as_of":1794668400.5,"error":"timed out after 10 s"}}`
+	os.WriteFile(filepath.Join(dir, "status.json"), []byte(cached), 0o644)
+	os.WriteFile(filepath.Join(dir, "status-fetch.json"), []byte(fetched), 0o644)
+	st, err := r.FactoryStatus(context.Background(), repo, false)
+	if err != nil || st.PRs.AsOf != nil || st.PRs.Error != nil {
+		t.Fatalf("cached pass: %+v, %v", st, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "fetches")); len(b) != 0 {
+		t.Fatalf("the cached pass is not a fetch pass: %q", b)
+	}
+	st, err = r.FactoryStatus(context.Background(), repo, true)
+	if err != nil || st.PRs.AsOf == nil || *st.PRs.AsOf != 1794668400.5 || st.PRs.Error == nil || *st.PRs.Error != "timed out after 10 s" {
+		t.Fatalf("fetch pass: %+v, %v", st, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "fetches")); !strings.HasPrefix(string(b), "factory ") {
+		t.Fatalf("the fetch pass is logged: %q", b)
+	}
+}
+
+func TestFactoryStatusFetchPassFailsAndHangsAlone(t *testing.T) {
+	r, dir := factoryStub(t)
+	os.WriteFile(filepath.Join(dir, "fetch-hang"), nil, 0o644)
+	if _, err := r.FactoryStatus(context.Background(), t.TempDir(), false); err != nil {
+		t.Fatalf("a hung fetch pass does not touch the cached one: %v", err)
+	}
+	if _, err := r.FactoryStatus(context.Background(), t.TempDir(), true); err == nil || err.Error() != "factory status timed out after 700ms" {
+		t.Fatalf("the fetch pass times out: %v", err)
+	}
+	os.Remove(filepath.Join(dir, "fetch-hang"))
+	os.WriteFile(filepath.Join(dir, "fetch-fail"), nil, 0o644)
+	if _, err := r.FactoryStatus(context.Background(), t.TempDir(), false); err != nil {
+		t.Fatalf("a failing fetch pass does not touch the cached one: %v", err)
+	}
+	if _, err := r.FactoryStatus(context.Background(), t.TempDir(), true); err == nil {
+		t.Fatal("the fetch pass fails")
 	}
 }

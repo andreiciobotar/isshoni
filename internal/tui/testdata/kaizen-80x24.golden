@@ -1,8 +1,9 @@
  Isshoni 1 Dash 2 Agents 3 Factory [4 Kaizen] 5 ✿       24h [7d] 30d all ○ idle 
  Kaizen  [Pulse] Flow  Anatomy  Board   ←→  · as of 11:00:00                    
-▌ LANDED         ▌ COST / TASK   ▌ BRIEF → PR    ▌ PR → MERGE    ▌ FIRST PASS   
-▌ 20             ▌ $6.20         ▌ 25m50s        ▌ 5m45s         ▌ 7/19         
-▌ 3 in flight    ▌ ↓ 44% vs 10   ▌ ↓ 61% vs 10   ▌ ↓ 47% vs 10   ▌ rework 9%    
+▌ LANDED      ▌ COST        ▌ OVERHEAD    ▌ BRIEF      ▌ MERGE      ▌ 1ST PASS  
+▌ 20          ▌ $6.20       ▌ $2.06       ▌ 25m50s     ▌ 5m45s      ▌ 7/19      
+▌ 3 open      ▌ ↓ 44%       ▌ 20 landed   ▌ ↓ 61%      ▌ ↓ 47%      ▌ ↺ 9%      
+ overhead: $38.40 dispatcher + $2.70 site manager over 20 landed tasks          
                                                                                 
  ✦ 4 landed first-pass in a row · fx-quiet-refactor   ✦ record low cost: $2.31 …
                                                                                 
@@ -19,6 +20,5 @@
 ╭─ review rounds · last 17/19 ─────────╮ ╭─ pull request → merge · last 14/20 ─╮
 │ 3   █   █   █     █                  │ │ 12m00s █       ▁                    │
 │ 2 ▃·█·▃·█·▃·█···▃·█···▃···▃········· │ │        █   ▃   █                    │
-│   █ █ █ █ █ █   █ █   █   █          │ │  5m45s █·▄·█···█·▁···▆·····▂······· │
- +18 more lines · ↓ to scroll                                                   
+ +19 more lines · ↓ to scroll                                                   
  ←→/hl kaizen page  ·  ↑↓/jk move  ·  r range  ·  ? help  ·  q quit             

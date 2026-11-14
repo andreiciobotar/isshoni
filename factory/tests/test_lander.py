@@ -287,16 +287,18 @@ class TickTests(SchedHarness, World):
                 self.setUp()
                 code, out, _ = self.tick([reviewed(1)], state=state)
                 self.assertEqual(code, 0)
-                self.assertEqual(self.noticed(), [])
+                self.assertEqual(len(self.noticed()), 1)  # the one list the comment forwarder reads
                 self.assertEqual(self.landers(), [])
+                self.assertFalse(any(c[:3] == ["gh", "pr", "checks"] for c in self.fake.calls))
         self.setUp()
         self.cli("watch", entries=[])
         self.assertFalse(any(c[0] == "gh" for c in self.fake.calls))
 
     def test_a_task_whose_worktree_is_gone_is_not_handed_over(self):
         self.seed("tasks", [{"repo": ROOT, "slug": "gone", "state": "handed-over", "ts": iso(NOW - 3600)}])
-        self.cli("watch", entries=[])
-        self.assertFalse(any(c[0] == "gh" for c in self.fake.calls))
+        answers = {LIST: (0, json.dumps([reviewed(1)]), "")}
+        self.cli("watch", entries=[], answers=answers)
+        self.assertEqual(self.landers(), [])
 
     def test_an_approving_review_or_an_lgtm_starts_one_lander_for_all_of_them(self):
         code, out, _ = self.tick([reviewed(1), said(2), plain(3), reviewed(4, state="COMMENTED")],
@@ -420,12 +422,11 @@ class TickTests(SchedHarness, World):
                 self.cli("watch", entries=[], at=NOW + later)
                 self.assertEqual(self.fake.ran("claude", "agents"), ran)
 
-    def test_the_notice_does_not_list_sessions_without_a_run(self):
+    def test_a_tick_with_a_handed_over_task_lists_sessions_once_for_the_drafts_and_starts_nothing_unapproved(self):
         self.tick([plain(1)])  # the first tick also runs health
         self.tick([plain(1)], at=NOW + 120)
-        self.assertFalse(self.fake.ran("claude", "agents"))
-        self.tick([reviewed(1)], at=NOW + 240, answer=reply("#1 merged u"))
-        self.assertTrue(self.fake.ran("claude", "agents"))
+        self.assertEqual(sum(c[:2] == ["claude", "agents"] for c in self.fake.calls), 1)
+        self.assertEqual(self.landers(), [])
 
     def test_a_stop_of_the_lander_fires_lgtm_blocked_in_the_health_run(self):
         self.tick([reviewed(1)], answer=reply("#1 stopped ci: red https://x/run/1"))

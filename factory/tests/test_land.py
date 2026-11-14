@@ -30,6 +30,8 @@ elif a[:2] in (["pr", "edit"], ["pr", "comment"]):
     if "--body-file" in a:
         rec["body"] = open(a[a.index("--body-file") + 1]).read()
     open(f"{d}/gh.jsonl", "a").write(json.dumps(rec) + "\\n")
+elif a[:2] == ["pr", "ready"]:
+    open(f"{d}/ready.jsonl", "a").write(json.dumps(a) + "\\n")
 else:
     sys.exit(1)
 """
@@ -41,6 +43,8 @@ REPLY = "## Result\\n`%s\\n\\n## Facts\\n- conflicts: a.txt - merged by hand\\n-
         "## Needs the lead\\n- a.txt:1 both sides\\n\\n## Factory feedback\\n- the brief was fine\\n"
 if a[:1] == ["agents"]:
     print(open(f"{d}/agents.json").read())
+elif a[:2] == ["plugin", "list"]:
+    print('[{"id": "alpha@m", "enabled": true}, {"id": "factory@factory", "enabled": true}]')
 elif a[:1] == ["-p"]:
     open(f"{d}/claude.jsonl", "a").write(json.dumps({"argv": a, "cwd": os.path.realpath(os.getcwd())}) + "\\n")
     mode = os.environ["FAKE_LANDER"]
@@ -226,6 +230,23 @@ class LandTests(unittest.TestCase):
         self.advance_main(1, "main line")
         return wt, self.git("rev-parse", "HEAD", cwd=wt)
 
+    def test_lean_start_off_gives_the_lander_its_old_argv(self):
+        (self.home / ".claude" / "factory").mkdir(parents=True)
+        (self.home / ".claude" / "factory" / "settings.json").write_text('{"lean_start": false}')
+        self.conflict()
+        self.land("t1")
+        (call,) = self.claude_calls()
+        self.assertFalse(any(a.startswith("--strict") or a == "--settings" for a in call["argv"]))
+
+    def test_a_broken_settings_file_stops_the_land_before_anything_is_declared(self):
+        (self.home / ".claude" / "factory").mkdir(parents=True)
+        (self.home / ".claude" / "factory" / "settings.json").write_text('{"lean_start": "no"}')
+        self.conflict()
+        p = self.land("t1")
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("lean_start", p.stderr)
+        self.assertEqual((self.last_state(), self.claude_calls()), ("handed-over", []))
+
     def test_a_conflict_goes_to_the_lander_in_the_worktree(self):
         wt, old = self.conflict()
         p = self.land("t1", FAKE_LANDER="push")
@@ -236,6 +257,9 @@ class LandTests(unittest.TestCase):
         self.assertEqual(argv[:5], ["-p", "--agent", "factory:lander", "--plugin-dir", str(BIN.parent.parent)])
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
+        i = argv.index("--strict-mcp-config")
+        self.assertEqual(argv[i:i + 3], ["--strict-mcp-config", "--settings", json.dumps(
+            {"disableBundledSkills": True, "enabledPlugins": {"alpha@m": False}})])
         tools = argv[argv.index("--allowedTools") + 1:-3]
         self.assertEqual(tools, ["Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
                                  "Bash(gh pr edit *)", "Bash(factory state working)"])
@@ -451,6 +475,23 @@ class LandTests(unittest.TestCase):
         self.assertEqual(self.result(p), "`LANDED, LOOK https://x/pull/t1`")
         self.assertEqual(seen.read_text().strip(), "working")
         self.assertEqual([r["state"] for r in self.declared() if r["slug"] == "t1"], ["handed-over", "working"])
+
+    def test_declaring_working_puts_the_pull_request_back_to_draft(self):
+        self.task("t1", line=20)
+        self.advance_main(2, "main line")
+        self.land("t1")
+        ready = self.state / "ready.jsonl"
+        self.assertEqual([json.loads(l) for l in ready.read_text().splitlines()],
+                         [["pr", "ready", "--undo", "worktree-t1"]])
+
+    def test_declaring_working_on_a_branchless_landing_makes_no_gh_call(self):
+        loader = importlib.machinery.SourceFileLoader("factory_land_nobranch", str(BIN))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_land_nobranch", loader))
+        loader.exec_module(module)
+        with mock.patch.object(module, "declare") as declare, mock.patch.object(module, "run") as run:
+            module.Landing(mock.Mock(), {"path": "/x/t1", "branch": None}, False).mark_working()
+        declare.assert_called_once()
+        run.assert_not_called()
 
     def test_a_lander_that_exits_non_zero_is_a_stop_with_what_git_shows(self):
         wt, old = self.conflict()

@@ -14,7 +14,8 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	time.Local = time.UTC // rendered times must not depend on the machine
+	os.Setenv("ISSHONI_CACHE_DIR", "") // the tests never touch the real session cache
+	time.Local = time.UTC              // rendered times must not depend on the machine
 	os.Exit(m.Run())
 }
 

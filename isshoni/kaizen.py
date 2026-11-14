@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import os
 import re
 import subprocess
+import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from . import metrics, transcript
+from . import authoring, metrics, transcript
 from .cli import fmt_duration
 
 ROLES = ("lead", "coder", "reviewer", "explorer", "lander", "other")
@@ -17,9 +21,10 @@ STOP_KINDS = ("QUESTION", "BLOCKED", "OVERTIME")
 STATUSES = ("open", "accepted", "rejected", "done")
 TREND_MIN = 10
 MIX_WINDOW = 5
+PR_CACHE_TTL = 600  # seconds a repository's pull request cache is trusted
+PAGE_SIZE, MAX_PAGES, PAGE_TIMEOUT, SLOW_GH = 100, 10, 10, 2
 ANATOMY_WINDOW = MIX_WINDOW
 VERSION_MIN = 5
-GH_FIELDS = "number,url,state,headRefName,createdAt,mergedAt"
 TOPICS = [(name, re.compile(pat, re.I)) for name, pat in (
     ("permissions", r"permission|denied|refus|sandbox|isolation|not allowed"),
     ("brief", r"\bbrief\b|\bspec\b|did not say|unstated|ambigu"),
@@ -86,24 +91,112 @@ def _seconds(later, earlier):
 
 # ---- gh -----------------------------------------------------------------------------
 
-def gh_prs(repo_path, fields=GH_FIELDS):
-    """Every pull request of the repository with the given gh fields; GhError when gh cannot."""
+def _log_gh(factory_dir, argv, cwd, seconds, rc, error):
+    """One line in the factory's gh debug log for a slow or failed call; never raises."""
+    now = datetime.now(timezone.utc)
+    try:
+        fd = os.open(os.path.join(factory_dir, "gh-%s.jsonl" % now.strftime("%Y-%m")),
+                     os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": _iso(now), "argv": argv, "cwd": cwd, "seconds": round(seconds, 1), "rc": rc,
+                                "error": error or ""}) + "\n")
+    except OSError:
+        pass
+
+
+def _gh_page(repo_path, factory_dir, page):
+    """One page of the repository's pull requests, newest update first; GhError when gh cannot."""
+    argv = ["gh", "api", "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=%d&page=%d" % (PAGE_SIZE, page)]
+    start, rc, error = time.monotonic(), None, None
+    try:
+        p = subprocess.run(argv, cwd=repo_path, capture_output=True, text=True, timeout=PAGE_TIMEOUT)
+        rc = p.returncode
+        if rc != 0:
+            error = (p.stderr.strip().splitlines() or ["gh exited %d" % rc])[0]
+        else:
+            try:
+                rows = json.loads(p.stdout)
+            except ValueError:
+                error = "gh printed no JSON"
+            else:
+                if not isinstance(rows, list):
+                    error = "gh printed an unexpected document"
+    except (OSError, subprocess.SubprocessError) as e:
+        rc = 124 if isinstance(e, subprocess.TimeoutExpired) else 127  # as the factory logs them
+        error = "gh unavailable: %s" % str(e).splitlines()[0] if str(e) else "gh unavailable"
+    seconds = time.monotonic() - start
+    if error or seconds > SLOW_GH:
+        _log_gh(factory_dir, argv, repo_path, seconds, rc, error)
+    if error:
+        raise GhError(error)
+    return rows
+
+
+def _from_rest(r):
+    merged = r.get("merged_at")
+    return {"number": r["number"], "url": r.get("html_url"), "state": "MERGED" if merged else str(r.get("state")).upper(),
+            "headRefName": (r.get("head") or {}).get("ref"), "createdAt": r.get("created_at"), "mergedAt": merged}
+
+
+def _refresh(repo_path, factory_dir, cache):
+    """The cache brought up to date, page by page, down to its watermark; GhError discards the partial result."""
+    prs, watermark = dict(cache["prs"]) if cache else {}, cache["watermark"] if cache else None
+    newest = watermark
+    for page in range(1, MAX_PAGES + 1):
+        rows = [r for r in _gh_page(repo_path, factory_dir, page) if isinstance(r, dict) and isinstance(r.get("number"), int)]
+        for r in rows:
+            prs[str(r["number"])] = _from_rest(r)
+        stamps = [str(r.get("updated_at") or "") for r in rows]
+        newest = max([newest or ""] + stamps) or None
+        if len(rows) < PAGE_SIZE or (watermark and min(stamps) <= watermark):
+            break
+    return {"as_of": time.time(), "watermark": newest, "prs": prs}
+
+
+def _read_cache(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            c = json.load(f)
+    except (OSError, ValueError):
+        return None
+    ok = isinstance(c, dict) and isinstance(c.get("as_of"), (int, float)) and isinstance(c.get("prs"), dict)
+    return c if ok and isinstance(c.get("watermark"), (str, type(None))) else None
+
+
+def _write_cache(path, cache):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".kaizen-prs-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cache, f)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def gh_prs(repo_path, factory_dir, cached=False):
+    """(pull requests, epoch of the data, why it could not be refreshed or None), from the repository's disk cache,
+    refreshed when older than PR_CACHE_TTL; GhError when there is no data at all."""
     if not os.path.isdir(repo_path):
         raise GhError("no such repository path")
+    path = os.path.join(factory_dir, "cache", "kaizen-prs-%s.json" % hashlib.sha256(os.path.realpath(repo_path).encode()).hexdigest()[:16])
+    cache = _read_cache(path)
+    if cached:
+        if not cache:
+            raise GhError("not fetched yet")
+        return list(cache["prs"].values()), cache["as_of"], None
+    if cache and time.time() - cache["as_of"] < PR_CACHE_TTL:
+        return list(cache["prs"].values()), cache["as_of"], None
     try:
-        p = subprocess.run(["gh", "pr", "list", "--state", "all", "--limit", "1000", "--json", fields],
-                           cwd=repo_path, capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError) as e:
-        raise GhError("gh unavailable: %s" % str(e).splitlines()[0] if str(e) else "gh unavailable")
-    if p.returncode != 0:
-        raise GhError((p.stderr.strip().splitlines() or ["gh exited %d" % p.returncode])[0])
-    try:
-        prs = json.loads(p.stdout)
-    except ValueError:
-        raise GhError("gh printed no JSON")
-    if not isinstance(prs, list):
-        raise GhError("gh printed an unexpected document")
-    return prs
+        fresh = _refresh(repo_path, factory_dir, cache)
+        _write_cache(path, fresh)
+    except (GhError, OSError) as e:
+        if not cache:
+            raise GhError(str(e)) from e
+        return list(cache["prs"].values()), cache["as_of"], str(e)
+    return list(fresh["prs"].values()), fresh["as_of"], None
 
 
 def _pr_for(prs, slug):
@@ -198,8 +291,24 @@ def _role_facts(sessions, prices):
     for role, r in anatomy.by_role(runs, prices).items():
         b = r.block()
         out[role] = {"calls": b["calls"], "peak": b["context"]["peak"], "tools": sum(b["tools"].values()),
-                     "dispatches": b["dispatches"], "cost": b["cost"]}
+                     "dispatches": b["dispatches"], "cost": b["cost"], "written": b["written"]}
     return out
+
+
+def _authoring(roles):
+    """Who wrote the product code and tests of a task: lines and calls per role, and the lead's share of the lines."""
+    part = lambda key: {r: sum(roles[r]["written"][k][key] for k in authoring.CODE) if r in roles else 0 for r in ROLES}  # noqa: E731
+    lines = part("lines")
+    total = sum(lines.values())
+    return {"lines": lines, "calls": part("calls"), "lead_share": round(lines["lead"] / total, 6) if total else None}
+
+
+def _pooled(tasks):
+    """The authoring of some tasks together: each role's part of the summed lines, not a median (most tasks have a lead share of zero)."""
+    lines = {r: sum(t["authoring"]["lines"][r] for t in tasks) for r in ROLES}
+    wrote = [t for t in tasks if sum(t["authoring"]["lines"].values())]
+    return {"tasks": len(wrote), "lead_tasks": sum(1 for t in wrote if t["authoring"]["calls"]["lead"]), "lines": lines,
+            "share": {r: round(n / sum(lines.values()), 6) for r, n in lines.items()} if wrote else None}
 
 
 def _task(key, recs, sessions, prices):
@@ -218,6 +327,7 @@ def _task(key, recs, sessions, prices):
          "state": states[-1] if states else None, "pr": None, "landed": False,
          "brief_to_pr_s": None, "pr_to_merge_s": None, "cost": None, "review_rounds": None, "first_pass": None,
          "_roles": _role_facts(sessions, prices)}
+    t["authoring"] = _authoring(t["_roles"])
     if sessions:
         t["cost"], t["review_rounds"] = _cost(sessions)
         t["first_pass"] = t["review_rounds"] == 1
@@ -289,7 +399,7 @@ def _anatomy(landed, versions):
         for r in ROLES:
             xs = ran(window, r)
             roles[r] = {k: med(xs, k) for k in ("calls", "peak", "tools")} if len(xs) >= ANATOMY_WINDOW // 2 + 1 else None
-        points.append({"slug": t["slug"], "version": t["version"], "roles": roles})
+        points.append({"slug": t["slug"], "version": t["version"], "roles": roles, "authoring": _pooled(window)})
     out = []
     for v in versions:
         mine = [t for t in costed if t["version"] == v]
@@ -310,7 +420,7 @@ def _anatomy(landed, versions):
                 **{k: med(xs, k) for k in ("calls", "peak", "tools", "dispatches")},
                 "tools_per_dispatch": _median(x["tools"] / x["dispatches"] for x in xs if x["dispatches"] > 0),
                 "classes": {k: round(classes[k] / whole, 6) for k in ("input", "output", "cache_write", "cache_read")} if whole else None}
-        out.append({"version": v, "tasks": len(mine), "roles": roles})
+        out.append({"version": v, "tasks": len(mine), "roles": roles, "authoring": _pooled(mine)})
     return {"window": ANATOMY_WINDOW, "min": VERSION_MIN, "points": points, "versions": out}
 
 
@@ -359,6 +469,36 @@ def _summary(tasks, versions):
         "defects": {k: sum(d[k] for d in defects) for k in DEFECT_KINDS},
         "trend_min": TREND_MIN, "trend": _trend(landed),
     }
+
+
+_SITE_MANAGER = re.compile(r"Job: (watch|digest)\. Repo: ")
+
+
+def _overhead(sessions, tasks, landed, cutoff, prices):
+    """What the dispatcher and the site manager spent in the period (the calls of their sessions at or after the cutoff),
+    per task landed in it (`landed`). Only sessions without a task, in a repository of the document, count."""
+    repos = {t["repo_path"] for t in tasks}
+    spent = {"dispatcher": 0.0, "site_manager": 0.0}
+    unpriced = counted = 0
+    for s in sessions:
+        if s.task or s.repo_path not in repos:
+            continue
+        who = ("dispatcher" if s.name == "dispatcher-" + _name(s.repo_path)
+               else "site_manager" if _SITE_MANAGER.match(s.first_prompt) else None)
+        if who is None:
+            continue
+        counted += 1
+        for run in [s.run] + [d.run for d in s.dispatches]:
+            for c in run.calls if run else ():
+                if cutoff is not None and not (c.ts and c.ts >= cutoff):
+                    continue
+                parts = prices.parts(c.model, c.raw)
+                if parts is None:
+                    unpriced += c.context + c.output
+                else:
+                    spent[who] += sum(parts.values())
+    return {**{k: round(v, 6) for k, v in spent.items()}, "sessions": counted, "unpriced_tokens": unpriced, "landed": landed,
+            "per_landed": round(sum(spent.values()) / landed, 6) if landed else None}
 
 
 # ---- outbox -------------------------------------------------------------------------
@@ -444,8 +584,9 @@ def _site_manager(records, cutoff):
 
 # ---- the document -------------------------------------------------------------------
 
-def build(factory_dir, load_sessions, prices, cutoff=None, now=None):
-    """The kaizen document. `load_sessions()` is called once, and only when the store has tasks."""
+def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=False):
+    """The kaizen document. `load_sessions()` is called once, and only when the store has tasks.
+    `cached`: pull requests come from the disk cache and gh is never run."""
     factory_dir = os.path.expanduser(factory_dir)
     logs = {n: read_log(factory_dir, n) for n in ("events", "retros", "feedback", "tasks")}
     logs["tasks"].sort(key=lambda r: str(r.get("ts")))  # a carried record sits in a newer file than its ts
@@ -473,16 +614,24 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None):
     if cutoff is not None:
         tasks = [t for t in tasks if t["started"] and t["started"] >= cutoff]
     tasks.sort(key=lambda t: (t["started"] is not None, t["started"] or transcript.EPOCH, t["slug"], t["repo_path"]))
-    repos = []
-    for path in sorted({t["repo_path"] for t in tasks}):
+    def load_prs(path):
         try:
-            prs, status = gh_prs(path), "ok"
+            return gh_prs(path, factory_dir, cached)
         except GhError as e:
-            prs, status = [], str(e)
+            return [], None, str(e)
+
+    paths = sorted({t["repo_path"] for t in tasks})
+    with ThreadPoolExecutor(max(len(paths), 1)) as pool:
+        loaded = list(pool.map(load_prs, paths))
+    repos = []
+    for path, (prs, as_of, error) in zip(paths, loaded):
         for t in tasks:
             if t["repo_path"] == path:
                 _apply_pr(t, _pr_for(prs, t["slug"]))
-        repos.append({"repo": _name(path), "repo_path": path, "prs": status})
+        data = as_of is not None
+        repos.append({"repo": _name(path), "repo_path": path, "prs": "ok" if data else error,
+                      "prs_as_of": _iso(datetime.fromtimestamp(as_of, timezone.utc)) if data else None,
+                      "prs_error": None if cached or not error else error})
     kept = {(t["repo_path"], t["slug"]) for t in tasks}
     slowed = [{"ts": _iso(_ts(r)), "repo": _name(r["repo"]), "slug": r["slug"], "text": x}
               for k in sorted(kept) for r in by_task[k]["retros"] for x in (r.get("slowed") if isinstance(r.get("slowed"), list) else [])
@@ -490,6 +639,7 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None):
     slowed.sort(key=lambda s: s["ts"] or "", reverse=True)
     ordered = [v for v, _ in sorted(versions.items(), key=lambda x: (x[1], x[0]))]
     summary = _summary(tasks, ordered)
+    summary["overhead"] = _overhead(sessions, tasks, summary["landed"], cutoff, prices)
     for t in tasks:
         t["started"] = _iso(t["started"])
         del t["_roles"]

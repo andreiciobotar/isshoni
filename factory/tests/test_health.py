@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from test_factory import DISPATCHER, ROOT, WT, FakeRun, factory, repo_answers, task_entry
+from test_factory import DISPATCHER, LEAN_SETTINGS, ROOT, WT, FakeRun, factory, repo_answers, task_entry
 
 NOW = 1_800_000_000
 HOUR = 3600
@@ -664,6 +664,14 @@ class WatchTests(Harness):
         self.assertEqual(len(self.claude_runs()), 1)
         self.assertIn(f"{record['id']}  past-limit  x  undecided", out)
 
+    def test_lean_start_off_keeps_the_old_site_manager_argv(self):
+        p = {"repo": mock.Mock(root=ROOT), "dispatcher": "d", "lean_start": False}
+        with mock.patch.object(factory, "run", side_effect=AssertionError("no plugin list")):
+            argv = factory.site_manager_argv(p, [])
+        self.assertEqual(argv[:6], ["claude", "-p", "--model", "sonnet", "--permission-mode", "dontAsk"])
+        self.assertEqual(argv[6:9], ["--allowedTools", "SendMessage", "ToolSearch"])
+        self.assertFalse(any(a.startswith(("--tools", "--strict", "--settings", "--disable")) for a in argv))
+
     def test_the_launch_argv(self):
         path = self.transcript("{sid}.jsonl", NOW - 60)
         entries = [{"timestamp": "T0", "message": {"role": "user", "content": "start"}}] + [
@@ -676,7 +684,9 @@ class WatchTests(Harness):
         self.tick()
         [argv] = self.claude_runs()
         self.assertEqual(argv[:-1], [
-            "claude", "-p", "--model", "sonnet", "--permission-mode", "dontAsk", "--allowedTools", "SendMessage",
+            "claude", "-p", "--model", "sonnet", "--permission-mode", "dontAsk", "--strict-mcp-config", "--settings",
+            json.dumps(LEAN_SETTINGS), "--disable-slash-commands", "--tools=SendMessage,ToolSearch",
+            "--allowedTools", "SendMessage",
             "ToolSearch", "--output-format", "json", "--json-schema", json.dumps(factory.RUN_SCHEMA),
             "--append-system-prompt", "SITE MANAGER RULES"])
         schema = factory.RUN_SCHEMA

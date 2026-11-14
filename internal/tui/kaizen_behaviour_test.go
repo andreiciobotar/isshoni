@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"image/color"
@@ -97,19 +98,27 @@ func TestKaizenPagesAndScroll(t *testing.T) {
 
 // ---- loading ----------------------------------------------------------------------
 
+// kaizenStub is a model whose cached kaizen document has pull request data as fresh as the model's clock.
 func kaizenStub(t *testing.T) (*model, string, *time.Time) {
 	t.Helper()
 	m, dir := stubModel(t)
+	now := t0.Add(time.Hour)
+	writeKaizen(t, dir, "kaizen.json", now)
+	m.now = func() time.Time { return now }
+	return m, dir, &now
+}
+
+// writeKaizen puts the fixture in the stub's dir as file, its repositories' pull request data dated at.
+func writeKaizen(t *testing.T, dir, file string, at time.Time) {
+	t.Helper()
 	b, err := os.ReadFile("testdata/kaizen-fixture.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "kaizen.json"), b, 0o644); err != nil {
+	b = bytes.ReplaceAll(b, []byte(`"prs": "ok"`), []byte(`"prs": "ok", "prs_as_of": "`+at.UTC().Format(time.RFC3339)+`"`))
+	if err := os.WriteFile(filepath.Join(dir, file), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	now := t0.Add(time.Hour)
-	m.now = func() time.Time { return now }
-	return m, dir, &now
 }
 
 func TestKaizenLoadsOnEntryNotWithinThirtySeconds(t *testing.T) {
@@ -157,7 +166,7 @@ func TestKaizenRangeChangeLoadsAgainWithTheNewSince(t *testing.T) {
 	// the range "all" passes no --since
 	only[kaizenMsg](upd(m, press("r")))
 	b, _ = os.ReadFile(filepath.Join(dir, "calls"))
-	if !strings.Contains(string(b), "kaizen --json\n") {
+	if !strings.Contains(string(b), "kaizen --cached\n") {
 		t.Fatalf("all passes no --since:\n%s", b)
 	}
 }
@@ -201,6 +210,103 @@ func TestKaizenFailedLoadKeepsTheOldResult(t *testing.T) {
 	fresh.applyKaizen(kaizenMsg{gen: 0, err: errors.New("first\nsecond")})
 	if out := plain(fresh); !strings.Contains(out, "⚠ first") || strings.Contains(out, "second") {
 		t.Fatalf("first line of the error:\n%s", out)
+	}
+}
+
+func TestKaizenFirstFrameComesFromTheCacheWhileGitHubHangs(t *testing.T) {
+	m, dir, now := kaizenStub(t)
+	writeKaizen(t, dir, "kaizen.json", now.Add(-time.Hour)) // pull request data an hour old
+	os.WriteFile(filepath.Join(dir, "fetch-hang"), nil, 0o644)
+	first := only[kaizenMsg](upd(m, press("4")))
+	if len(first) != 1 || !first[0].cached {
+		t.Fatalf("entering loads from the cache first: %+v", first)
+	}
+	_, second := m.Update(first[0])
+	if m.kz.doc == nil || !m.kz.busy || second == nil || !strings.Contains(plain(m), "LANDED") {
+		t.Fatalf("the cached document shows while the second load is due: doc=%v busy=%v", m.kz.doc != nil, m.kz.busy)
+	}
+	if n := calls(t, dir, "kaizen"); n != 1 {
+		t.Fatalf("one call so far: %d", n)
+	}
+	start := time.Now()
+	got := only[kaizenMsg](run(second))
+	if len(got) != 1 || got[0].cached || time.Since(start) > 5*time.Second {
+		t.Fatalf("the hung second load ends at its timeout: %+v", got)
+	}
+	upd(m, got[0])
+	if out := plain(m); m.kz.busy || m.kz.doc == nil || !strings.Contains(out, "timed out") || !strings.Contains(out, "LANDED") {
+		t.Fatalf("a failed second load keeps the document and says why:\n%s", out)
+	}
+	os.Remove(filepath.Join(dir, "fetch-hang"))
+	writeKaizen(t, dir, "kaizen-fetch.json", *now)
+	send(m, "1")
+	*now = now.Add(time.Minute)
+	msgs := upd(m, press("4"))
+	if got := only[kaizenMsg](msgs); len(got) != 1 || !got[0].cached {
+		t.Fatalf("entering again starts from the cache: %d", len(got))
+	}
+	_, second = m.Update(only[kaizenMsg](msgs)[0])
+	upd(m, only[kaizenMsg](run(second))[0])
+	if m.kz.err != "" || m.kz.busy || calls(t, dir, "kaizen") != 4 {
+		t.Fatalf("a good second load clears the error: err=%q busy=%v calls=%d", m.kz.err, m.kz.busy, calls(t, dir, "kaizen"))
+	}
+}
+
+func TestKaizenFailedRefreshKeepsTheCachedDocumentAndRecovers(t *testing.T) {
+	m, dir, now := kaizenStub(t)
+	writeKaizen(t, dir, "kaizen.json", now.Add(-time.Hour))
+	os.WriteFile(filepath.Join(dir, "fetch-fail"), nil, 0o644)
+	load := func() {
+		t.Helper()
+		first := only[kaizenMsg](upd(m, press("4")))
+		_, second := m.Update(first[0])
+		upd(m, only[kaizenMsg](run(second))[0])
+	}
+	load()
+	out := plain(m)
+	if m.kz.doc == nil || m.kz.err != "boom" || !strings.Contains(out, "⚠ boom") || !strings.Contains(out, "LANDED") || m.kz.busy {
+		t.Fatalf("the failed refresh keeps the document and shows one line:\n%s", out)
+	}
+	os.Remove(filepath.Join(dir, "fetch-fail"))
+	writeKaizen(t, dir, "kaizen-fetch.json", *now)
+	send(m, "1")
+	*now = now.Add(time.Minute)
+	load()
+	if m.kz.err != "" || strings.Contains(plain(m), "⚠") {
+		t.Fatalf("recovery clears the line: %q", m.kz.err)
+	}
+}
+
+func TestKaizenAFreshCacheStartsNoSecondLoad(t *testing.T) {
+	m, dir, _ := kaizenStub(t)
+	first := only[kaizenMsg](upd(m, press("4")))
+	_, second := m.Update(first[0])
+	if second != nil || m.kz.busy || calls(t, dir, "kaizen") != 1 {
+		t.Fatalf("data under 10 minutes old needs no second load: busy=%v calls=%d", m.kz.busy, calls(t, dir, "kaizen"))
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "fetches")); len(b) != 0 {
+		t.Fatalf("no fetch pass: %q", b)
+	}
+}
+
+func TestKaizenPullRequestWarnings(t *testing.T) {
+	m := kaizenModel(t, true, 140, 100, pagePulse)
+	m.now = func() time.Time { return time.Date(2026, 11, 14, 14, 0, 0, 0, time.UTC) }
+	repos := &m.kz.doc.Repos
+	*repos = []data.KaizenRepo{
+		{Repo: "fresh", PRs: "ok", PRsAsOf: "2026-11-14T13:55:00Z"},
+		{Repo: "old", PRs: "ok", PRsAsOf: "2026-11-14T13:40:00Z"},
+		{Repo: "failed", PRs: "ok", PRsAsOf: "2026-11-14T13:55:00Z", PRsError: "timed out after 10 s"},
+		{Repo: "none", PRs: "not fetched yet"},
+	}
+	out := plain(m)
+	for _, want := range []string{"⚠ pull requests for old as of 20m ago", "⚠ pull requests for failed as of 5m ago: timed out after 10 s", "pull requests unavailable for none: not fetched yet"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "for fresh") || strings.Count(out, "⚠") != 3 {
+		t.Fatalf("a fresh repository gets no line:\n%s", out)
 	}
 }
 
@@ -911,7 +1017,7 @@ func TestAnatomyChangeColumnNeedsTheMinimumOnBothSides(t *testing.T) {
 	} {
 		m := fakeModel(true, 140, 100)
 		setKaizen(m, c.doc, pageAnatomy)
-		out := plain(m)
+		out, _, _ := strings.Cut(plain(m), "who wrote the product code and tests")
 		if !strings.Contains(out, c.want) || strings.Contains(out, "change") || strings.Contains(out, " pts") {
 			t.Fatalf("%s: the numbers show without a change column:\n%s", name, out)
 		}
@@ -1017,5 +1123,111 @@ func TestAnatomyShowsAVersionWithoutTasksBetweenOthers(t *testing.T) {
 	setKaizen(m, doc, pageAnatomy)
 	if out := plain(m); !strings.Contains(out, "0.2.0") || !strings.Contains(out, "n=0") {
 		t.Fatalf("the empty version in the middle shows as -, n=0:\n%s", out)
+	}
+}
+
+// authoringBlock is the authoring block of the Anatomy page: its table and the line under it.
+func authoringBlock(t *testing.T, m *model) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(plain(m), "who wrote the product code and tests")
+	if !ok {
+		t.Fatal("the authoring block is missing")
+	}
+	block, _, _ := strings.Cut(rest, "share of product code and test lines")
+	return block
+}
+
+func TestAnatomyAuthoringShowsTheShiftAndItsCounts(t *testing.T) {
+	m := kaizenModel(t, true, 140, 100, pageAnatomy)
+	out := authoringBlock(t, m)
+	for _, want := range []string{"landed tasks only", "0.1.0", "68%", "6 of 6 tasks", "0.2.0", "18%", "81%", "1%", "6 of 8 tasks", "0.3.0", "0 of 5 tasks", "↓ 18 pts",
+		"fx-session-ttl 0% · fx-feature-flags 0% · fx-email-digest 0%", "fx-quiet-refactor 0%"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q is missing:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(plain(m), "share of product code and test lines") {
+		t.Error("the chart is missing")
+	}
+}
+
+func TestAnatomyAuthoringChangeNeedsTheMinimumOnBothSides(t *testing.T) {
+	for name, task := range map[string]func(*data.Kaizen){
+		"latest is short": func(d *data.Kaizen) { d.Summary.Anatomy.Versions[2].Authoring.Tasks = 4 },
+		"before is short": func(d *data.Kaizen) { d.Summary.Anatomy.Versions[1].Authoring.Tasks = 4 },
+	} {
+		doc := kaizenDoc(t)
+		task(doc)
+		m := fakeModel(true, 140, 100)
+		setKaizen(m, doc, pageAnatomy)
+		if out := authoringBlock(t, m); strings.Contains(out, "change") || strings.Contains(out, "pts") {
+			t.Errorf("%s: no change column below the minimum:\n%s", name, out)
+		}
+	}
+}
+
+func TestAnatomyAuthoringIsFaintBelowTheMinimum(t *testing.T) {
+	doc := kaizenDoc(t)
+	doc.Summary.Anatomy.Versions[2].Authoring.Tasks = 4
+	m := fakeModel(false, 140, 100)
+	setKaizen(m, doc, pageAnatomy)
+	p := m.th.on(m.th.Bg)
+	seq := func(c color.Color) string { s := p.t("X", c); return s[:strings.Index(s, "X")] }
+	var rows = map[string]string{}
+	for _, l := range strings.Split(m.Render(), "\n") {
+		for _, v := range []string{"0.2.0  ", "0.3.0  "} {
+			if s := ansi.Strip(l); strings.Contains(s, v) && strings.Contains(s, " of ") && strings.Contains(s, " tasks") {
+				rows[strings.TrimSpace(v)] = l
+			}
+		}
+	}
+	if !strings.Contains(rows["0.3.0"], seq(m.th.Faint)+"   99%") || !strings.Contains(rows["0.2.0"], seq(m.th.Text)+"   81%") {
+		t.Fatalf("0.3.0 (4 tasks) is faint, 0.2.0 (8) is not:\n%q\n%q", rows["0.2.0"], rows["0.3.0"])
+	}
+}
+
+func TestAnatomyAuthoringNullShareShowsDashes(t *testing.T) {
+	doc := kaizenDoc(t)
+	au := &doc.Summary.Anatomy.Versions[2].Authoring
+	au.Tasks, au.LeadTasks, au.Share = 0, 0, nil
+	for i := range doc.Tasks {
+		doc.Tasks[i].Authoring.LeadShare = nil
+	}
+	for i := range doc.Summary.Anatomy.Points {
+		doc.Summary.Anatomy.Points[i].Authoring.Share = nil
+	}
+	m := fakeModel(true, 140, 100)
+	setKaizen(m, doc, pageAnatomy)
+	out := authoringBlock(t, m)
+	for _, want := range []string{"0.3.0              -       -       -  0 of 0 tasks", "fx-quiet-refactor -"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q is missing:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "change") || strings.Contains(out, "pts") {
+		t.Errorf("no share, no change:\n%s", out)
+	}
+	checkFrame(t, "null authoring", m, true)
+}
+
+func TestPulseOverheadPerLandedTask(t *testing.T) {
+	out := plain(kaizenModel(t, true, 140, 40, pagePulse))
+	for _, want := range []string{"OVERHEAD", "$2.06", "20 landed", "overhead: $38.40 dispatcher + $2.70 site manager over 20 landed tasks"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("pulse lacks %q:\n%s", want, out)
+		}
+	}
+	doc := kaizenDoc(t)
+	doc.Summary.Overhead.PerLanded, doc.Summary.Overhead.Landed = nil, 0
+	m := fakeModel(true, 140, 40)
+	setKaizen(m, doc, pagePulse)
+	out = plain(m)
+	if !strings.Contains(out, "overhead: - (no landed task); $38.40 dispatcher + $2.70 site manager") || strings.Contains(out, "$2.06") {
+		t.Errorf("no landed task, no figure:\n%s", out)
+	}
+	doc.Summary.Overhead.PerLanded, doc.Summary.Overhead.Landed, doc.Summary.Overhead.UnpricedTokens = &doc.Summary.Overhead.Dispatcher, 20, 1500
+	setKaizen(m, doc, pagePulse)
+	if out := plain(m); !strings.Contains(out, "* excludes 1.5k unpriced tokens") {
+		t.Errorf("unpriced tokens are named:\n%s", out)
 	}
 }
