@@ -2676,7 +2676,8 @@ def cmd_wizard(args):
     if identity is None:
         if (IDENTITY.expanduser() / "key.pem").exists():
             raise Fail(f"{IDENTITY.expanduser() / 'key.pem'} exists without app.json: remove the directory with "
-                       f"`rm -r {IDENTITY}` and run again", 1)
+                       f"`rm -r {IDENTITY}`, delete the App it belongs to on your GitHub apps settings page "
+                       f"(it holds the name), and run again", 1)
         identity = create_app(args.owner)
     elif args.owner and args.owner.lower() != identity["owner"].lower():
         raise Fail(f"this machine's identity is the App {identity['slug']} of {identity['owner']}, not {args.owner}: "

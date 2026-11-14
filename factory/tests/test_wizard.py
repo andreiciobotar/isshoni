@@ -99,16 +99,16 @@ class Wizard(unittest.TestCase):
         self.opened.append(url)
         if not url.endswith("/"):
             return
-        page = urllib.request.urlopen(url).read().decode()
+        page = urllib.request.urlopen(url, timeout=5).read().decode()
         action = html.unescape(re.search(r'action="([^"]*)"', page).group(1))
         manifest = json.loads(html.unescape(re.search(r'name=manifest value="([^"]*)"', page).group(1)))
         self.forms.append((action, manifest))
         state = urllib.parse.parse_qs(urllib.parse.urlparse(action).query)["state"][0]
         for query in ("code=X&state=wrong", "code=X", f"state={state}"):
             with self.assertRaises(urllib.error.HTTPError) as caught:
-                urllib.request.urlopen(f"{url}callback?{query}")
+                urllib.request.urlopen(f"{url}callback?{query}", timeout=5)
             self.assertEqual(caught.exception.code, 400)
-        urllib.request.urlopen(f"{url}callback?code=THECODE&state={state}")
+        urllib.request.urlopen(f"{url}callback?code=THECODE&state={state}", timeout=5)
 
     def wizard(self, *args, github=None, browser=None, wait=600, git=None):
         self.gh = FakeGitHub(github if github is not None else routes(self.pem))
@@ -242,7 +242,7 @@ class FirstRunTests(Wizard):
 
     def test_an_idle_connection_does_not_block_the_timeout(self):
         start = time.monotonic()
-        self.assertEqual(self.wizard("--owner", "octocat", browser=self.idle_socket, wait=0), 1)
+        self.assertEqual(self.wizard("--owner", "octocat", browser=self.idle_socket, wait=1), 1)
         self.assertLess(time.monotonic() - start, 5)
         self.assertIn("nothing was stored here", self.err)
 
