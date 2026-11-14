@@ -16,7 +16,7 @@ ARG UID=1000
 ARG GID=1000
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git less make openssl procps python3 tmux \
+ && apt-get install -y --no-install-recommends ca-certificates curl git less lsof make openssl procps python3 tmux \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=go /usr/local/go /usr/local/go

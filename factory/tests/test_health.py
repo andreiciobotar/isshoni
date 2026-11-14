@@ -29,7 +29,7 @@ def register(sid):
 
 def row(slug, **kw):
     return {"slug": slug, "branch": f"worktree-{slug}", "path": f"{WT}/{slug}", "base": "main", "phase": "motion",
-            "overtime": False, "elapsed": None, "last_commit": None, "pr_url": "", "pr_state": "none", "state": None,
+            "overtime": False, "nearing": False, "size": None, "limit": 2 * HOUR, "elapsed": None, "last_commit": None, "pr_url": "", "pr_state": "none", "state": None,
             "deliverable": None, **kw}
 
 
@@ -49,7 +49,7 @@ def pic(**kw):
             "dispatcher_why": why, "sessions": sessions, "rows": [], "declared": {}, "events": [],
             "models": {"coder": "sonnet", "explorer": "haiku", "reviewer": "opus"},
             "gh": lambda *a: [], "monitor": None, "lgtm_from_author": True,
-            "limit_hours": 2, **kw}
+            **kw}
 
 
 def check(name, p, threshold=None):
@@ -134,15 +134,14 @@ class CriteriaTests(Home):
         self.assertEqual(check("past-limit", pic(rows=[row("x", elapsed=HOUR)])), [])
 
     def test_nearing_limit(self):
-        def run(state="working", phase="motion", **kw):
-            return check("nearing-limit", pic(rows=[row("x", state=state, phase=phase, **kw)], sessions=[lead("x")]), 75)
-        at_76, at_74 = int(2 * HOUR * 0.76), int(2 * HOUR * 0.74)
-        self.assertEqual(run(elapsed=at_76), [("x", "x", "working for 1h, 76% of the 2h limit")])
-        self.assertEqual(run(elapsed=at_74), [])
+        def run(**kw):
+            return check("nearing-limit", pic(rows=[row("x", **kw)], sessions=[lead("x")]), 75)
+        self.assertEqual(run(elapsed=35 * 60, limit=45 * 60, nearing=True),
+                         [("x", "x", "working for 35m, 78% of the 45m limit")])
+        self.assertEqual(run(elapsed=int(2 * HOUR * 0.76), nearing=True),
+                         [("x", "x", "working for 1h, 76% of the 2h limit")])
+        self.assertEqual(run(elapsed=35 * 60, limit=45 * 60), [])  # the row decides, not the arithmetic
         self.assertEqual(run(elapsed=3 * HOUR, overtime=True), [])
-        for state in ("handed-over", "blocked"):
-            busy = factory.phase("open", [lead("x")], state)
-            self.assertEqual(run(state, busy, elapsed=at_76), [], state)
 
     def test_ci_red_default(self):
         def runs(*items):
@@ -756,7 +755,8 @@ class WatchTests(Harness):
         self.assertNotIn("transcript", sent)
         self.assertEqual(sent["task"], {"phase": "motion", "state": None, "session": "working", "elapsed": "3h",
                                         "last_commit": "?", "dirty": None, "ahead": None, "behind": None,
-                                        "pr_state": "none", "pr_url": "", "overtime": True,
+                                        "pr_state": "none", "pr_url": "", "limit": "2h", "size": None,
+                                        "nearing": False, "overtime": True,
                                         "worktree": f"{WT}/x", "branch": "worktree-x", "lead": "x", "pid": None})
         self.assertEqual(sent["transcripts"], [str(path)])
         tail = sent["transcript_tail"]

@@ -53,6 +53,11 @@ func start(t *testing.T, keys bool, env ...string) *run {
 	}
 	write(filepath.Join(home, "code", "isshoni", "bin", "isshoni-tui"), strings.NewReplacer("%[1]s", "server", "%[2]s", ":").Replace(stub), 0o755)
 	write(filepath.Join(bin, "supercronic"), strings.NewReplacer("%[1]s", "cron", "%[2]s", cronExit).Replace(stub), 0o755)
+	// A hung claude, and a settings file and container id that make the script revive a dispatcher
+	// when the test sets HOSTNAME=same; without it revive does not run.
+	write(filepath.Join(bin, "claude"), strings.NewReplacer("%[1]s", "claude", "%[2]s", ":").Replace(stub), 0o755)
+	write(filepath.Join(home, ".container-id"), "same\n", 0o644)
+	write(filepath.Join(home, ".claude", "factory", "settings.json"), `{"dispatchers":["dispatcher-isshoni"]}`, 0o644)
 	if keys {
 		write(filepath.Join(home, ".claude", "factory", "dashboard", "authorized_keys"), "ssh-ed25519 AAAA test\n", 0o644)
 	}
@@ -73,7 +78,7 @@ func start(t *testing.T, keys bool, env ...string) *run {
 	t.Cleanup(func() {
 		// The whole group: the restart loop's subshell outlives the script when it is killed.
 		syscall.Kill(-r.cmd.Process.Pid, syscall.SIGKILL)
-		for _, f := range []string{"server.pids", "cron.pids"} {
+		for _, f := range []string{"server.pids", "cron.pids", "claude.pids"} {
 			for _, pid := range r.pids(f) {
 				syscall.Kill(pid, syscall.SIGKILL)
 			}
@@ -133,7 +138,7 @@ func (r *run) exit() int {
 // noStubLeft fails if a process a stub recorded is still there.
 func (r *run) noStubLeft() {
 	r.t.Helper()
-	for _, name := range []string{"server.pids", "cron.pids"} {
+	for _, name := range []string{"server.pids", "cron.pids", "claude.pids"} {
 		for _, pid := range r.pids(name) {
 			if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 				r.t.Errorf("%s: process %d is still there: %v", name, pid, err)
@@ -188,6 +193,20 @@ func TestNoKeyFileMeansOnlySupercronic(t *testing.T) {
 	}
 	if r.read("server.pids") != "" {
 		t.Fatal("the server was started without a key file")
+	}
+	r.noStubLeft()
+}
+
+func TestSIGTERMEndsAHungRevive(t *testing.T) {
+	r := start(t, true, "HOSTNAME=same")
+	r.started("claude", 1)
+	r.started("server", 1)
+	r.cmd.Process.Signal(syscall.SIGTERM)
+	if status := r.exit(); status != 0 {
+		t.Fatalf("exit status %d, want 0", status)
+	}
+	if r.read("claude.term") == "" {
+		t.Error("claude got no SIGTERM")
 	}
 	r.noStubLeft()
 }
