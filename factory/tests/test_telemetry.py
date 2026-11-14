@@ -383,7 +383,7 @@ class RetroTests(StoreCase):
         return self.run_main(["retro"], text, {"CLAUDE_PROJECT_DIR": project, "CLAUDE_CODE_SESSION_ID": SID})
 
     def test_valid_object_is_stored_with_tags(self):
-        self.assertEqual(self.retro(self.GOOD), (0, "", ""))
+        self.assertEqual(self.retro(self.GOOD), (0, "retro: stored for my-task\n", ""))
         (line,) = self.lines("retros")
         self.assertEqual({k: line[k] for k in ("repo", "slug", "role", "version", "session")},
                          {"repo": REPO, "slug": "my-task", "role": "lead", "version": VERSION, "session": SID})

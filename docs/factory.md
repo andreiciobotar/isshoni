@@ -44,7 +44,7 @@ factory land (<slug> | --all)
 - **`ack`** is run by the dispatcher on the human's word, for a task that was handed over.
 - **`wizard`** creates the factory's GitHub App, gets it installed and verifies it; rerun, it verifies or repairs. See Identity.
 - **`env`** prints `export` lines that make `git` and `gh` act as the App, or nothing (exit 0) when no installed identity is stored. See Identity.
-- **`retro`** takes the task from the working directory and reads the JSON from `<file>` when one is given (exit 2 if it cannot be read), else from stdin.
+- **`retro`** takes the task from the working directory and reads the JSON from `<file>` when one is given (exit 2 if it cannot be read), else from stdin. On success it prints `retro: stored for <slug>`; a failure prints nothing on stdout.
 - **`land`** lands a handed-over task whose base moved or merged, or whose pull request conflicts, without waking its lead (see Landing without the lead).
 
 ## Declared state, phases and the cap
