@@ -411,13 +411,13 @@ class RetroTests(StoreCase):
 
     def test_refused_outside_a_task_worktree(self):
         for project in ("/plain/dir", f"{REPO}/.claude/worktrees/agent-ab12"):
-            self.assertEqual(self.retro(self.GOOD, project)[0], 2)
+            self.assertEqual(self.retro(self.GOOD, project)[:2], (2, ""))
         self.assertEqual(self.lines("retros"), [])
 
     def test_unwritable_store_exits_1(self):
         (self.tmp / ".claude").mkdir()
         self.store.write_text("a file")
-        self.assertEqual(self.retro(self.GOOD)[0], 1)
+        self.assertEqual(self.retro(self.GOOD)[:2], (1, ""))
 
 
 class TaskEventTests(StoreCase):

@@ -492,8 +492,8 @@ class RetroTests(Identity):
         self.assertEqual(len(list(factory.read_log("retros"))), 1)
 
     def test_an_unreadable_file_is_refused(self):
-        rc, _, err = self.retro(str(self.home / "missing.json"))
-        self.assertEqual(rc, 2)
+        rc, out, err = self.retro(str(self.home / "missing.json"))
+        self.assertEqual((rc, out), (2, ""))
         self.assertIn("retro: cannot read", err)
         self.assertEqual(list(factory.read_log("retros")), [])
 
