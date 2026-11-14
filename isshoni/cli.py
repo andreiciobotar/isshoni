@@ -10,7 +10,7 @@ import sys
 import threading
 from datetime import datetime, timedelta, timezone
 
-from . import host, metrics, prices as price_file, transcript
+from . import host, metrics, prices as price_file, sessioncache, transcript
 from .transcript import SessionError
 
 DEFAULT_PROJECTS = "~/.claude/projects"
@@ -115,6 +115,8 @@ def footer(prices, models, tokens):
 
 def load_all(args, prices):
     paths = transcript.discover_sessions(args.projects_dir)
+    cache = sessioncache.SessionCache(args.projects_dir, prices)
+    cache.prune(paths)
     cutoff = parse_since(args.since) if getattr(args, "since", None) else None
     sessions = []
     for p in paths:
@@ -124,7 +126,7 @@ def load_all(args, prices):
                     continue
             except OSError:
                 continue
-        s = transcript.load_session(p, prices)
+        s = cache.load(p)
         if cutoff is not None and s.last_ts is not None and s.last_ts < cutoff:
             continue
         if getattr(args, "repo", None) not in (None, s.repo) or getattr(args, "task", None) not in (None, s.task):
@@ -184,7 +186,7 @@ def usage_rows(mapping, currency):
 def cmd_session(args):
     prices = price_file.load(args.prices)
     path = transcript.find_session(args.projects_dir, args.id)
-    s = transcript.load_session(path, prices)
+    s = sessioncache.SessionCache(args.projects_dir, prices).load(path)
     metrics.analyze(s, args.agents_dir, args.repeat_threshold)
     x = metrics.session_summary(s, detail=True)
     x["prices"] = prices.to_dict()

@@ -101,7 +101,7 @@ Everything that must survive is under the state directory, mounted at `/state`. 
     .crontab                 the site manager's job
     code/<repository>/       the repositories; task worktrees under .claude/worktrees/
     .isshoni/                this repository's source and build, replaced on every update
-    go/  .cache/             Go modules and build caches
+    go/  .cache/             Go modules and build caches; isshoni's session cache
   tmp/                       temporary files (TMPDIR); safe to empty while nothing runs
 ```
 
