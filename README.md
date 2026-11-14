@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/tabs/dashboard.webp" alt="The dashboard: the cursor moves over a repository, its tasks and a session; cost, agent mix and dispatches follow the selected row">
+  <img src="assets/tabs/dashboard.webp" alt="The live terminal dashboard: the cursor moves over a repository, its tasks and a session; cost, agent mix and dispatches follow the selected row">
 </p>
 
 Isshoni is two tools for people who run [Claude Code](https://claude.com/claude-code) on their repositories. Each works without the other.
