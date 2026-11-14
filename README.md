@@ -55,7 +55,7 @@ Describe a task; ask for progress whenever you like. By default leads run unatte
 Optional:
 
 - [Its own GitHub identity](docs/factory.md#identity): `make wizard ARGS="--owner <owner of your repositories>"` in the clone. Pull requests then come from a bot, so you can approve them.
-- [Always on](docs/container.md): the factory in a container on a Linux host.
+- [Always on](docs/container.md): `bin/isshoni host add <ssh target> --state <dir> --repo <owner/name>` runs the factory in a container on a Linux host that has Docker.
 - [Cost alerts and a daily digest](docs/factory.md#site-manager): set `"monitor": "<clone>/bin/isshoni"` in `~/.claude/factory/settings.json`.
 
 ## Factory

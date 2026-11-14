@@ -10,7 +10,7 @@ import sys
 import threading
 from datetime import datetime, timedelta, timezone
 
-from . import metrics, prices as price_file, transcript
+from . import host, metrics, prices as price_file, transcript
 from .transcript import SessionError
 
 DEFAULT_PROJECTS = "~/.claude/projects"
@@ -389,6 +389,7 @@ def build_parser():
     s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")
     s.add_argument("--no-gh", action="store_true", help="do not ask gh for pull requests")
     s.set_defaults(func=cmd_events)
+    host.register(sub)
     return p
 
 
