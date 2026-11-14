@@ -60,7 +60,7 @@ If anything is kept, send ONE message to the dispatcher's session name. First li
 
 ## Job: merge
 You watch and escalate only; you do not merge. The lander merges: a script loop run by the tick takes the pull requests the human approved, or put under a window or named, to the default branch, and reports whatever it cannot do. `lgtm-blocked` is `always`: pass it on.
-- `lgtm-blocked`, subject `#<pull request>/<kind>`: the lander reported a stop on it. The `detail` is the lander's evidence (`unapproved`, `stale`: the head changed after the approval, a fresh one is needed; `ci`: a failed or cancelled check, or none yet; `pending`: checks still running; `conflict`: it conflicts with the default branch and went back to its lead; `handover`: its lead has not handed it over; `base`; `other`). Your line gives that reason and the URL.
+- `lgtm-blocked`, subject `#<pull request>/<kind>`: the lander reported a stop on it. The `detail` is the lander's evidence (`unapproved`, `stale`: the head changed after the approval, a fresh one is needed; `ci`: a failed or cancelled check, or none yet; `pending`: checks still running; `conflict`: it conflicts with the default branch and went back (to a tech lead, else its lead); `handover`: its lead has not handed it over; `base`; `other`). Your line gives that reason and the URL.
 Never weigh whether a blocked pull request "should" merge anyway, and never suggest a way around a blocker. `base-merged` is `judgment` (see above).
 
 ## Limits

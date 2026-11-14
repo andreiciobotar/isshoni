@@ -19,7 +19,6 @@ import secrets
 import signal
 import shlex
 import shutil
-import signal
 import statistics
 import subprocess
 import sys
@@ -100,7 +99,7 @@ def kill_group(pgid):
 
 
 def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
-    """The only place a subprocess starts, and the owner of its lifetime. Returns (returncode, stdout, stderr).
+    """The only place a subprocess is waited for (`spawn` starts one detached), and the owner of its lifetime. Returns (returncode, stdout, stderr).
     Every call ends after `timeout` seconds (RUN_TIMEOUT unless told otherwise; `gh` gets GH_TIMEOUT). A `group=True`
     child, one that starts children of its own, runs in a process group of its own, which a timeout or a signal to
     this script kills whole; any other child stays in the script's group and only it is killed on a timeout.
