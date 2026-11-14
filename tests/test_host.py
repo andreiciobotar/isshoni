@@ -244,7 +244,10 @@ class HostTests(unittest.TestCase):
             self.assertIn("cannot tell which dispatchers run", err)
             self.assertIn("supervisor unreachable", err)
             self.assertEqual(len([c for c in self.calls() if "--bg" in c["argv"][1]]), started)
-            self.assertEqual(self.run_host("status")[0], 1)
+            rc, out, _ = self.run_host("status")
+            self.assertEqual(rc, 1)
+            self.assertIn("dispatcher-widgets unknown", out)
+            self.assertNotIn("missing", out)
             (self.srv / "home/agents-broken").unlink()
         with self.subTest("list needs no network, status follows what runs"):
             n = len(self.calls())
@@ -269,7 +272,7 @@ class HostTests(unittest.TestCase):
             self.assertIn("cannot move", err)
             self.assertEqual(self.add("--repo", "a/x", "--repo", "b/x")[0], 1)
             self.assertEqual(self.run_host("add", "other")[0], 1)
-            self.assertEqual(self.run_host("add", "nas", "--state", self.state + "/sub/../")[0], 0)  # the same directory, written another way
+            self.assertEqual(self.run_host("add", "nas", "--state", "/" + self.state + "/sub/../")[0], 0)  # the same directory, written another way
         with self.subTest("status and remove when something does not answer"):
             (self.srv / "home/stub-state.json").write_text(json.dumps({"agents": [], "plugins": [], "marketplaces": []}))
             rc, out, _ = self.run_host("status", "nas")
@@ -326,7 +329,7 @@ class HostTests(unittest.TestCase):
 
     def test_bad_arguments_are_refused_before_anything_is_done(self):
         for argv in (["--repo", "a/.."], ["--repo", "./x"], ["--repo=-a/b"], ["--repo=a/-b"], ["--repo", "a/."],
-                     ["--name", "bad name"], ["--name", "a.b"], ["--state", "relative/dir"], ["--state", "/srv/.."]):
+                     ["--name", "bad name"], ["--name", "a.b"], ["--state", "relative/dir"], ["--state", "/srv/.."], ["--state", "//"]):
             with self.subTest(argv):
                 self.assertEqual(self.run_host("add", "nas", *([] if "--state" in argv else ["--state", self.state]), *argv)[0], 1)
         self.assertEqual(self.run_host("add", "a b", "--state", self.state)[0], 1)
@@ -341,6 +344,38 @@ class HostTests(unittest.TestCase):
         rc, out, err = self.add("--repo", "acme/private-thing")
         self.assertEqual(rc, 0, err)
         self.assertTrue((self.srv / "home/code/private-thing/.git/HEAD").exists())
+
+    def test_scratch_clone_never_touches_another_repository_and_empty_ones_are_kept(self):
+        code = self.srv / "home/code"
+        (code / "x.new/.git").mkdir(parents=True)
+        (code / "x.new/.git/HEAD").touch()
+        (code / "x.new/work").write_text("mine")
+        (code / "empty/.git").mkdir(parents=True)  # a repository with no commit yet
+        self.assertEqual(self.add("--repo", "acme/x", "--repo", "acme/empty")[0], 0)
+        self.assertEqual((code / "x.new/work").read_text(), "mine")
+        self.assertTrue((code / "x/.git/HEAD").exists())
+        self.assertEqual(self.steps(self.add("--repo", "acme/x", "--repo", "acme/empty")[1]), ["already"] * 12)
+
+    def test_a_leftover_directory_that_is_not_a_checkout_is_refused(self):
+        (self.srv / "home/code/widgets").mkdir(parents=True)
+        (self.srv / "home/code/widgets/notes").write_text("mine")
+        rc, _, err = self.add("--repo", "acme/widgets")
+        self.assertEqual(rc, 1)
+        self.assertIn("not a checkout", err)
+        self.assertEqual((self.srv / "home/code/widgets/notes").read_text(), "mine")
+
+    def test_server_without_ss_says_the_port_was_not_checked(self):
+        bare = self.tmp / "bare"
+        bare.mkdir()
+        for tool in ("docker", "uname"):
+            (bare / tool).symlink_to(self.srv / "bin" / tool)
+        (bare / "grep").symlink_to(shutil.which("grep"))
+        out = subprocess.run(["/bin/sh", "-c", host.SERVER_CHECK, "sh", "2222"], env={**os.environ, "PATH": str(bare)}, capture_output=True, text=True).stdout
+        self.assertEqual(out.split(), ["noss"])
+        with mock.patch.object(host, "SERVER_CHECK", "echo noss"):
+            rc, out, err = self.add()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("port 2222 could not be checked", out)
 
     def test_alias_refused_elsewhere_and_created_0600(self):
         config = self.laptop / ".ssh/config"

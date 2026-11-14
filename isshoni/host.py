@@ -120,9 +120,9 @@ SERVE = "docker exec -d %s sh -c 'exec \"$HOME/.isshoni/bin/isshoni-tui\" --serv
 CLONE = """set -eu
 mkdir -p "$HOME/code"; cd "$HOME/code"
 if [ -e "$2" ]; then echo "~/code/$2 exists and is not a checkout: move it away and run this again." >&2; exit 1; fi
-rm -rf "$2.new"; trap 'rm -rf "$HOME/code/$2.new"' EXIT
-if ! GIT_TERMINAL_PROMPT=0 git clone "https://github.com/$1" "$2.new"; then
-  rm -rf "$2.new"; git init -q "$2.new"; cd "$2.new"
+rm -rf "$2~clone"; trap 'rm -rf "$HOME/code/$2~clone"' EXIT
+if ! GIT_TERMINAL_PROMPT=0 git clone "https://github.com/$1" "$2~clone"; then
+  rm -rf "$2~clone"; git init -q "$2~clone"; cd "$2~clone"
   git remote add origin "https://github.com/$1"
   eval "$("$HOME/.isshoni/factory/bin/factory" env)"
   branch=$(git ls-remote --symref origin HEAD | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2}')
@@ -130,7 +130,7 @@ if ! GIT_TERMINAL_PROMPT=0 git clone "https://github.com/$1" "$2.new"; then
   git checkout -B "$branch" "origin/$branch"
   cd ..
 fi
-mv "$2.new" "$2"
+mv "$2~clone" "$2"
 """
 
 
@@ -421,7 +421,7 @@ def repositories(c):
     done = False
     for repo in c.repos:
         name = repo.split("/")[1]
-        if box(c.target, 'git -C "$HOME/code/$1" rev-parse --verify -q HEAD >/dev/null', name)[0] == 0:
+        if box(c.target, 'test -d "$HOME/code/$1/.git"', name)[0] == 0:
             continue
         need(box(c.target, CLONE, repo, name), "cloning %s" % repo)
         done = True
@@ -437,7 +437,7 @@ def dashboard_key(c):
         if box(c.target, DASHBOARD_SERVING)[0] == 0:
             return True
         time.sleep(1)
-    raise Stop("the dashboard is not serving; see `ssh %s docker logs %s`." % (c.target, CONTAINER))
+    raise Stop("the dashboard is not serving; run it in the foreground to see why: `ssh -t %s docker exec -it %s sh -c '~/.isshoni/bin/isshoni-tui --serve 0.0.0.0:2222'`." % (c.target, CONTAINER))
 
 
 def running_dispatchers(target):
@@ -504,7 +504,9 @@ def cmd_add(args):
         raise Stop("%r is not an ssh target." % args.target)
     if not HOST_NAME_RE.fullmatch(name):
         raise Stop("%r is not a usable name: use letters, digits, _ and -." % name)
-    given_state = posixpath.normpath(args.state) if args.state else None
+    if args.state and not args.state.startswith("/"):
+        raise Stop("--state must be an absolute directory on the server, e.g. /srv/factory.")
+    given_state = "/" + posixpath.normpath(args.state).lstrip("/") if args.state else None
     if entry and entry["target"] != args.target:
         raise Stop("host %s is recorded for target %s, not %s; use --name for another host." % (name, entry["target"], args.target))
     values = {}
@@ -559,7 +561,7 @@ def host_status(name, e, head):
              "  dashboard %s" % ("serving" if serving else "not serving")]
     missing = [r for r in e["repos"] if "dispatcher-" + r.split("/")[1] not in listed]
     for r in e["repos"]:
-        lines.append("  dispatcher-%s %s" % (r.split("/")[1], "missing" if r in missing else "running"))
+        lines.append("  dispatcher-%s %s" % (r.split("/")[1], "unknown" if why else "missing" if r in missing else "running"))
     if why:
         lines.append("  " + why.replace("\n", "\n  "))
     return lines, state == "running" and serving and not missing and not why
