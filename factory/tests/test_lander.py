@@ -29,9 +29,9 @@ class Sim:
         self.prs, self.merged, self.tip, self.log, self.lines, self.cwd_of = {}, [], 0, [], [], {}
 
     def add(self, n, behind=True, base="main", approved=True, draft=False, checks=None, after=None, conflicts=(),
-            update_conflict=(), local=None, diverged=False, mergeable=("MERGEABLE",), lag=False, stays_behind=False):
+            update_conflict=(), local=None, diverged=False, mergeable=("MERGEABLE",), lag=False, stays_behind=False, ahead=False):
         self.prs[n] = {"head": f"h{n}", "base": base, "behind": behind, "approved": approved, "draft": draft,
-                       "local": local, "diverged": diverged, "lag": lag, "stale": 0, "shown": None, "stays_behind": stays_behind, "mergeable": list(mergeable),
+                       "local": local, "diverged": diverged, "lag": lag, "stale": 0, "shown": None, "stays_behind": stays_behind, "ahead": ahead, "mergeable": list(mergeable),
                        "checks": [GREEN] if checks is None else checks, "after": [GREEN] if after is None else after,
                        "conflicts": list(conflicts), "update_conflict": list(update_conflict)}
 
@@ -112,12 +112,15 @@ class Sim:
             p = self.prs[n]
             if a[:2] == ["git", "log"]:
                 return 0, f"{NOW} {p['local'] or p['head']}\n", ""
+            if a[:3] == ["git", "rev-parse", f"origin/worktree-t{n}"]:
+                return 0, f"{p['head']}\n", ""  # the branch as the remote has it
             if a[:3] == ["git", "rev-parse", "HEAD"]:
                 return 0, f"{p['local'] or p['head']}\n", ""
             if a[:3] == ["git", "merge", "--ff-only"]:
                 if p["diverged"]:
                     return 1, "", "not possible to fast-forward"
-                p["local"] = None
+                if not p["ahead"]:
+                    p["local"] = None
                 self.log.append(("ff", n))
                 return 0, "", ""
             if a[:3] == ["git", "merge", "--no-edit"]:
@@ -214,6 +217,12 @@ class MergeInOrderTests(Loop):
         self.go("lander")
         self.assertEqual(self.sim.lines, [])
 
+    def test_a_stacked_pull_request_in_no_queue_is_not_conflict_checked(self):
+        self.sim.add(1, approved=False, behind=False)
+        self.sim.add(2, approved=False, base="worktree-t1", conflicts=["a.txt"])
+        self.go("lander")
+        self.assertEqual((self.sim.lines, self.sim.events("undo")), ([], []))
+
     def test_a_stop_is_reported_once_per_number_head_and_kind(self):
         self.sim.add(1, base="elsewhere", behind=False)
         self.go("lander")
@@ -301,6 +310,15 @@ class LevelTests(Loop):
         code, out, _ = self.go("lander")
         self.assertEqual((code, self.sim.merged, self.sim.events("ff", "push")), (0, [1], [("ff", 1)]))
         self.assertEqual(self.stopped(out), [])
+
+    def test_a_worktree_ahead_of_its_remote_is_a_handover_stop_not_lag_and_the_next_one_is_updated(self):
+        self.sim.add(1, behind=False, local="unpushed", ahead=True)
+        self.sim.add(2)
+        code, out, _ = self.go("lander")
+        self.assertEqual(self.sim.pushes(), [2])
+        self.assertEqual(self.sim.merged[0], 2)
+        self.assertEqual(self.lander_json()["waiting"]["1"]["kind"], "handover")
+        self.assertNotIn("pending", out)
 
     def test_a_diverged_worktree_is_a_quiet_handover_stop_and_nothing_is_pushed(self):
         self.sim.add(1, behind=False, local="old", diverged=True)

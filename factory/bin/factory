@@ -4455,7 +4455,8 @@ def attempt(repo, p, pr, permission):
     if stop and stop[0] == "handover" and row and row["phase"] == "review" and row["head"] != pr["headRefOid"] \
             and level(repo, row) is None:
         row["head"] = repo.git("rev-parse", "HEAD", path=row["path"])[1].strip()
-        if row["head"] != pr["headRefOid"]:
+        pushed = repo.git("rev-parse", f"{repo.remote}/{row['branch']}", path=row["path"])[1].strip()
+        if row["head"] != pr["headRefOid"] and row["head"] == pushed:
             return "pending", f"GitHub does not show the pushed head {row['head']} yet"
         stop = merge_one(p, pr, False, False, permission)
     return stop
@@ -4499,7 +4500,8 @@ def lander_pass(repo, fallback, p, snap, line, updated):
             stops[pr["number"]] = (pr, *stop)
     queued, declared = {pr["number"] for pr, _ in line}, read_tasks(repo.root)
     for pr in snap:
-        if pr["number"] not in queued and declared.get(task_slug(repo, pr), {}).get("state") == "handed-over" and fetched(p, pr) \
+        if pr["number"] not in queued and pr["baseRefName"] == repo.default \
+                and declared.get(task_slug(repo, pr), {}).get("state") == "handed-over" and fetched(p, pr) \
                 and (files := conflicting_files(repo, pr)):
             stops[pr["number"]] = (pr, "conflict", f"conflicts with {repo.default} in {', '.join(files)}")
     flight, tip = held(read_lander(repo), stops), lambda: repo.git("rev-parse", f"{repo.remote}/{repo.default}")[1].strip()
