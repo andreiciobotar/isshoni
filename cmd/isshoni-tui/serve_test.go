@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -556,11 +557,24 @@ func TestServeColourFollowsTheClientTerminal(t *testing.T) {
 }
 
 func settingsPath(e *testEnv) string {
-	return filepath.Join(e.home, ".claude", "factory", "settings.json")
+	return filepath.Join(e.home, ".claude", "factory", "settings.toml")
 }
 
 func TestServeOnlyAWriteKeyChangesTheCap(t *testing.T) {
 	e := newTestEnv(t)
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is missing")
+	}
+	script, err := filepath.Abs("../../factory/bin/factory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.Symlink(script, filepath.Join(bin, "factory")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FACTORY_HOME", "")
 	ro, rw := newSigner(t), newSigner(t)
 	e.allow(keyLine(ro, ""), keyLine(rw, "write"))
 	addr, _ := e.start()
@@ -580,7 +594,7 @@ func TestServeOnlyAWriteKeyChangesTheCap(t *testing.T) {
 	w.send("3c\x7f6\r")
 	waitFor(t, "the cap in the settings file", func() bool {
 		b, _ := os.ReadFile(settingsPath(e))
-		return strings.Contains(string(b), `"worktree_cap": 6`)
+		return strings.Contains(string(b), "worktree_cap = 6\n")
 	})
 	if !strings.Contains(e.logs.String(), "write") {
 		t.Fatalf("the log does not say the session may write: %s", e.logs.String())

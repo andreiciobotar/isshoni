@@ -1,4 +1,9 @@
+import os
+import tempfile
 import unittest
+from unittest import mock
+
+from pathlib import Path
 
 from tests.support import AGENTS, by_desc, load
 from isshoni import metrics
@@ -105,6 +110,25 @@ class MetricsTests(unittest.TestCase):
         self.assertTrue(metrics.model_matches("inherit", "anything"))
         self.assertTrue(metrics.model_matches("claude-opus-5-5[1m]", "claude-opus-5-5"))
         self.assertFalse(metrics.model_matches("claude-opus-5-5", "claude-opus-5-4"))
+
+    def settings(self, text=None):
+        """A factory home with this settings.toml (none when text is None), as FACTORY_HOME."""
+        home = self.enterContext(tempfile.TemporaryDirectory())
+        if text is not None:
+            Path(home, "settings.toml").write_text(text)
+        self.enterContext(mock.patch.dict(os.environ, {"FACTORY_HOME": home}))
+
+    def test_expected_model_of_a_factory_agent_is_the_configured_one(self):
+        self.settings('[models]\ncoder = "haiku"\nreviewer = "claude-opus-4-1"\n')
+        self.assertEqual(metrics.expected_model("factory:coder", "/nonexistent", AGENTS), "haiku")
+        self.assertEqual(metrics.expected_model("factory:reviewer", "/nonexistent"), "claude-opus-4-1")
+        self.assertEqual(metrics.expected_model("factory:explorer", "/nonexistent", AGENTS), "haiku")  # not set: the frontmatter
+        self.assertEqual(metrics.expected_model("coder", "/nonexistent", AGENTS), "sonnet")  # not a factory agent
+
+    def test_expected_model_without_a_settings_file_or_with_one_that_cannot_be_read(self):
+        for text in (None, "[models\n", "models = 3\n", "[models]\ncoder = 3\n"):
+            self.settings(text)
+            self.assertEqual(metrics.expected_model("factory:coder", "/nonexistent", AGENTS), "sonnet", text)
 
     def test_expected_model_missing_definition(self):
         self.assertIsNone(metrics.expected_model("general-purpose", "/nonexistent", AGENTS))

@@ -1,8 +1,10 @@
 import io
 import json
 import re
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -54,6 +56,15 @@ class StarterTests(World):
         [argv] = self.claude_runs()
         at = self.fake.calls.index(argv)
         return argv, self.fake.timeouts[at], self.fake.envs[at]
+
+    def test_the_lander_runs_on_the_configured_model(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "settings.toml"
+            path.write_text('[models]\nlander = "haiku"\n')
+            with mock.patch.object(factory, "SETTINGS_PATH", path):
+                self.lander("12", prs=[plain(12)], answer=reply("## Result\n#12 merged u12"))
+        argv, _, _ = self.started()
+        self.assertEqual(argv[argv.index("--model") + 1], "haiku")
 
     def test_the_word_of_the_human_starts_one_lander_with_exactly_those_merge_commands(self):
         code, out, _ = self.lander("12", "13", prs=[plain(12), plain(13), plain(14)],

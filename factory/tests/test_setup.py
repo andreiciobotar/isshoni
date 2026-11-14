@@ -102,7 +102,7 @@ class Setup(unittest.TestCase):
         for patcher in (mock.patch.dict(os.environ, {"HOME": str(self.home), "DISPLAY": ":0",
                                                      "XDG_CONFIG_HOME": str(self.home / ".config")}),
                         mock.patch.object(factory, "STORE", self.store),
-                        mock.patch.object(factory, "SETTINGS_PATH", self.store / "settings.json"),
+                        mock.patch.object(factory, "SETTINGS_PATH", self.store / "settings.toml"),
                         mock.patch.object(factory, "IDENTITY", self.store / "identity"),
                         mock.patch.object(factory, "run", self.machine),
                         mock.patch.object(factory.shutil, "which", self.machine.which),
@@ -130,7 +130,7 @@ class Setup(unittest.TestCase):
         return {str(p): (p.stat().st_mtime_ns, p.read_bytes()) for p in self.tmp.rglob("*") if p.is_file()}
 
     def settings(self):
-        return json.loads((self.store / "settings.json").read_text())
+        return factory.load_settings()
 
     def set_up(self):
         """Everything the wizard sets up, in place and verified."""
@@ -145,9 +145,9 @@ class WizardFlow(Setup):
                                                     ["claude", "plugin", "install", PLUGIN]])
         self.assertEqual(self.machine.calls[0], ["gh", "auth", "status"])
         self.assertTrue((self.root / "bin" / "isshoni-tui").exists())
-        self.assertEqual(self.settings(), {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                                           "task_time_limit_hours": 2, "monitor": str(self.root / "bin" / "isshoni"),
-                                           "lgtm_from_author": True, "reserve_percent": 10, "lean_start": True})
+        monitor = str(self.root / "bin" / "isshoni")
+        self.assertEqual(self.settings(), {**factory.SETTINGS_DEFAULTS, "monitor": monitor})
+        self.assertEqual((self.store / "settings.toml").read_text(), factory.settings_text() + f"monitor = {json.dumps(monitor)}\n")  # added in place, after the example
         self.assertEqual(self.created, [("octocat", None)])
         self.assertEqual(json.loads((self.store / "identity" / "app.json").read_text())["installation_id"], 7654321)
         self.assertNotIn("Nothing to do", self.out)
@@ -196,7 +196,7 @@ class WizardFlow(Setup):
         self.machine.calls.clear()
         self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
         self.assertEqual(self.machine.mutations(), [["claude", "plugin", "install", PLUGIN]])
-        self.assertTrue((self.store / "settings.json").exists())
+        self.assertTrue((self.store / "settings.toml").exists())
 
     def test_dashboard_without_go_or_a_clone_is_skipped_and_the_run_goes_on(self):
         self.machine.tools.discard("go")
@@ -214,7 +214,7 @@ class WizardFlow(Setup):
         self.assertEqual(self.command("wizard", "--yes"), 1)
         self.assertIn("needs you: make build failed: it broke", self.out)
         self.assertIn(PLUGIN, self.machine.plugins)
-        self.assertTrue((self.store / "settings.json").exists())
+        self.assertTrue((self.store / "settings.toml").exists())
 
     def test_a_long_name_exits_2_before_any_step(self):
         self.assertEqual(self.command("wizard", "--yes", "--name", "n" * 35), 2)
@@ -261,7 +261,17 @@ class WizardFlow(Setup):
         (self.root / "go.mod").write_text("x")
         self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
         self.assertIn("skipped: this clone is a task worktree", self.out)
-        self.assertNotIn("monitor", self.settings())
+        self.assertEqual((self.store / "settings.toml").read_text(), factory.settings_text())
+        self.assertEqual(self.settings(), factory.SETTINGS_DEFAULTS)
+        self.assertIsNone(self.settings()["monitor"])
+
+    def test_an_old_settings_json_is_moved_over_by_the_settings_step(self):
+        self.store.mkdir(parents=True)
+        (self.store / "settings.json").write_text('{"worktree_cap": 9}')
+        self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
+        self.assertEqual(self.settings()["worktree_cap"], 9)
+        self.assertTrue((self.store / "settings.json.migrated").exists())
+        self.assertFalse((self.store / "settings.json").exists())
 
     def test_the_plugin_step_reuses_the_marketplace_it_finds(self):
         self.machine.markets.append({"name": "factory", "source": "github", "repo": SOURCE})
@@ -277,20 +287,22 @@ class WizardFlow(Setup):
 
     def test_an_invalid_settings_file_is_never_overwritten(self):
         self.store.mkdir(parents=True)
-        (self.store / "settings.json").write_text('{"worktree_cap": 0}')
+        (self.store / "settings.toml").write_text('[limits]\nworktree_cap = 0\n')
         self.assertEqual(self.command("wizard", "--yes"), 1)
         self.assertIn("worktree_cap must be an integer", self.out)
-        self.assertIn(str(self.store / "settings.json"), self.out)
-        self.assertEqual((self.store / "settings.json").read_text(), '{"worktree_cap": 0}')
-        (self.store / "settings.json").write_text("{not json")
+        self.assertIn(str(self.store / "settings.toml"), self.out)
+        self.assertEqual((self.store / "settings.toml").read_text(), '[limits]\nworktree_cap = 0\n')
+        (self.store / "settings.toml").write_text("[not toml")
         self.assertEqual(self.command("wizard", "--yes"), 1)
-        self.assertEqual((self.store / "settings.json").read_text(), "{not json")
+        self.assertEqual((self.store / "settings.toml").read_text(), "[not toml")
 
     def test_the_monitor_joins_the_settings_and_every_other_key_survives(self):
         self.store.mkdir(parents=True)
-        (self.store / "settings.json").write_text('{"worktree_cap": 9, "dashboard_theme": "dark", "monitor": "/gone/isshoni"}')
+        mine = '# mine\n[paths]\nmonitor = "/gone/isshoni" # old\n\n[limits]\nworktree_cap = 9\n[x]\ny = 1\n'
+        (self.store / "settings.toml").write_text(mine)
         self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
-        self.assertEqual(self.settings(), {"worktree_cap": 9, "dashboard_theme": "dark", "monitor": str(self.root / "bin" / "isshoni")})
+        monitor = str(self.root / "bin" / "isshoni")
+        self.assertEqual((self.store / "settings.toml").read_text(), mine.replace('"/gone/isshoni"', json.dumps(monitor)))
         self.assertIn("it pointed at /gone/isshoni, which is missing", self.out)
 
     def test_a_declined_offer_changes_nothing(self):
@@ -299,7 +311,7 @@ class WizardFlow(Setup):
             self.assertEqual(self.command("wizard", stdin=stdin), 0, self.out + self.err)
             self.assertEqual([c for c in self.machine.mutations() if c[0] == "make"], [])
             self.assertEqual(self.created, [])
-            self.assertNotIn("monitor", self.settings())
+            self.assertIsNone(self.settings()["monitor"])
             self.assertNotIn("Nothing to do", self.out)
         self.assertFalse((self.root / "bin" / "isshoni-tui").exists())
         self.assertFalse((self.store / "identity").exists())
@@ -405,7 +417,7 @@ class UninstallFlow(Setup):
         self.assertEqual(self.snapshot(), before)
         self.assertTrue((self.root / "bin" / "isshoni-tui").exists())
         for line in ("found: the marketplace andreiciobotar/isshoni and factory@factory", "found: the App factory-octocat",
-                     str(self.store / "settings.json"), str(self.store / "identity") + " (",
+                     str(self.store / "settings.toml"), str(self.store / "identity") + " (",
                      "/settings/apps/factory-octocat/advanced", "found: " + str(self.root / "bin" / "isshoni-tui")):
             self.assertIn(line, self.out)
 
@@ -414,7 +426,7 @@ class UninstallFlow(Setup):
         self.assertEqual(self.command("uninstall", stdin=""), 0, self.out + self.err)
         self.assertEqual(self.machine.mutations(), [])
         self.assertFalse(self.github.called("DELETE", "/app/installations/7654321"))
-        self.assertTrue((self.store / "settings.json").exists())
+        self.assertTrue((self.store / "settings.toml").exists())
         self.assertIn("the plugin and its marketplace: you declined", self.out)
         self.assertIn(f"the home {self.store}: you declined", self.out)
         self.assertIn("the dashboard binary: you declined", self.out)
@@ -463,7 +475,8 @@ class UninstallFlow(Setup):
 
     def test_the_home_keeps_what_is_not_the_factorys_and_the_directory_with_it(self):
         self.store.mkdir(parents=True)
-        for name in ("settings.json", "watch.log", "events.jsonl", "tasks-2026-11.jsonl", "retros-2026-01.jsonl", ".settings-ab12.tmp"):
+        for name in ("settings.toml", "settings.json.migrated", "settings.json", "watch.log", "events.jsonl", "tasks-2026-11.jsonl",
+                     "retros-2026-01.jsonl", ".settings-ab12.tmp"):
             (self.store / name).write_text("x")
         (self.store / "specs" / "repo").mkdir(parents=True)
         (self.store / "specs" / "repo" / "a.md").write_text("x")
@@ -474,7 +487,8 @@ class UninstallFlow(Setup):
         (self.store / "notes.txt").write_text("not ours")
         (self.store / "events.jsonl.bak").write_text("not ours")
         self.assertEqual(self.command("uninstall", "--list"), 0)
-        for name in ("settings.json", "watch.log", "events.jsonl", "tasks-2026-11.jsonl", ".settings-ab12.tmp"):
+        for name in ("settings.toml", "settings.json.migrated", "settings.json", "watch.log", "events.jsonl", "tasks-2026-11.jsonl",
+                     ".settings-ab12.tmp"):
             self.assertIn(str(self.store / name), self.out)
         self.assertIn(f"{self.store / 'specs'} (1 files)", self.out)
         self.assertEqual(self.command("uninstall", "--yes"), 0, self.out + self.err)

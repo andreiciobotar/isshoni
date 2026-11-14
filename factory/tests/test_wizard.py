@@ -82,7 +82,7 @@ class Wizard(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         store = self.home / ".claude" / "factory"
-        for name, value in (("STORE", store), ("SETTINGS_PATH", store / "settings.json"), ("IDENTITY", store / "identity")):
+        for name, value in (("STORE", store), ("SETTINGS_PATH", store / "settings.toml"), ("IDENTITY", store / "identity")):
             patch = mock.patch.object(factory, name, value)
             patch.start()
             self.addCleanup(patch.stop)

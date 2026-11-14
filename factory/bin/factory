@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -37,7 +38,7 @@ SLUG_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 BACKGROUNDED_RE = re.compile(r"backgrounded\s*·\s*(\S+)\s*·\s*(.+)")
 DEFAULT_STORE = Path("~/.claude/factory")
 STORE = Path(os.environ.get("FACTORY_HOME") or DEFAULT_STORE)
-SETTINGS_PATH = STORE / "settings.json"
+SETTINGS_PATH = STORE / "settings.toml"
 IDENTITY = STORE / "identity"
 CACHE = STORE / "cache"
 GH_TIMEOUT = 30
@@ -120,9 +121,180 @@ def validate_slug(slug):
         raise Fail(f"invalid slug {slug!r}: must not start with 'agent-'")
 
 
-SETTINGS_DEFAULTS = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                     "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "reserve_percent": 10,
-                     "lean_start": True}
+ALIASES = ("fable", "opus", "sonnet", "haiku")
+MODEL_ID_RE = re.compile(r"claude-[a-z0-9.-]+(\[[0-9a-z]+\])?")
+TABLE_RE = re.compile(r"\s*\[([^\[\]]+)\]\s*(#.*)?")
+VALUE_RE = r"(\"(?:[^\"\\]|\\.)*\"|'[^']*'|\[[^\]]*\]|[^#\s]+)(.*)"
+
+
+def int_in(low, high=None):
+    text = f"an integer of at least {low}" if high is None else f"an integer from {low} to {high}"
+    return lambda v: None if isinstance(v, int) and not isinstance(v, bool) and v >= low and (
+        high is None or v <= high) else f" must be {text}"
+
+
+def positive_number(v):
+    return None if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else " must be a positive number"
+
+
+def boolean(v):
+    return None if isinstance(v, bool) else " must be true or false"
+
+
+def nonempty(v):
+    return None if isinstance(v, str) and v.strip() else " must be a non-empty string"
+
+
+def permission_mode(v):
+    return None if v in PERMISSION_MODES else f" must be one of {', '.join(PERMISSION_MODES)}"
+
+
+def a_model(v):
+    ok = isinstance(v, str) and (v in ALIASES or MODEL_ID_RE.fullmatch(v))
+    return None if ok else (f': "{v}" is not a model (an alias: {", ".join(ALIASES)}; or a full id starting claude-)')
+
+
+def name_list(v):
+    return None if isinstance(v, list) and all(isinstance(i, str) and i.strip() for i in v) else " must be a list of strings"
+
+
+def toml_arg(raw):
+    """A command-line value read as TOML (a number or true/false); anything else stays text for the check to refuse."""
+    try:
+        return tomllib.loads(f"v = {raw}")["v"]
+    except tomllib.TOMLDecodeError:
+        return raw
+
+
+def json_arg(raw):
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+# One row per setting: the validation, the defaults and the shipped file all derive from this table.
+Setting = collections.namedtuple("Setting", "table key default check comment parse", defaults=(lambda raw: raw,))
+SETTINGS = (
+    Setting("models", "dispatcher", "fable", a_model, 'Advice only: the human starts the dispatcher. Default "fable".'),
+    Setting("models", "lead", "fable", a_model, 'The lead of each task. Takes effect at the next `factory new`. Default "fable".'),
+    Setting("models", "explorer", "haiku", a_model, 'The lead\'s explorer. Takes effect for the next lead started. Default "haiku".'),
+    Setting("models", "coder", "sonnet", a_model, 'The lead\'s coder. Takes effect for the next lead started. Default "sonnet".'),
+    Setting("models", "reviewer", "opus", a_model, 'The lead\'s reviewer. Takes effect for the next lead started. Default "opus".'),
+    Setting("models", "lander", "sonnet", a_model,
+            'The lander: the lead\'s subagent, also the headless landing and merge runs (next run). Default "sonnet".'),
+    Setting("models", "site_manager", "sonnet", a_model, 'The watch tick\'s judge. Next tick. Default "sonnet".'),
+    Setting("models", "courier", "haiku", a_model, 'Carries pull request comments to a lead. Next tick. Default "haiku".'),
+    Setting("limits", "worktree_cap", 5, int_in(1), "Open task worktrees at most, the dashboard's c key edits it. Default 5.", toml_arg),
+    Setting("limits", "reserve_percent", 10, int_in(0, 100),
+            "Percent of the cap held back for critical tasks, rounded up, never the last slot. Default 10.", toml_arg),
+    Setting("limits", "task_time_limit_hours", 2, positive_number,
+            "Hours a task may run before it is overtime; a decimal is fine. Default 2.", toml_arg),
+    Setting("sessions", "lead_permission_mode", "auto", permission_mode,
+            f"The permission mode of every lead ({', '.join(PERMISSION_MODES)}). Default \"auto\"."),
+    Setting("sessions", "lean_start", True, boolean,
+            "Start leads, the site manager and the lander with no MCP servers, bundled skills or other plugins. Default true.", toml_arg),
+    Setting("sessions", "dispatchers", None, name_list,
+            "The dispatcher session names the served dashboard's `d` key reads; `isshoni host add` sets it. Unset by default.", json_arg),
+    Setting("merging", "lgtm_from_author", True, boolean,
+            "Whether an `lgtm` comment by the pull request's author counts as the human's word. Default true.", toml_arg),
+    Setting("paths", "monitor", None, nonempty,
+            "The isshoni command the cost criteria and the digest run; the wizard's cost step sets it. Unset by default."),
+)
+UNSET_EXAMPLES = {"monitor": '"/path/to/ccmon/bin/isshoni"', "dispatchers": '["dispatcher-<repository>"]'}
+TABLES = tuple(dict.fromkeys(s.table for s in SETTINGS))
+SETTINGS_HEADER = ("# The factory's settings. Edit a line and save: no reinstall.\n"
+                   "# A model is an alias (fable, opus, sonnet, haiku) or a full id (claude-...).")
+warned = set()
+
+
+def flat_settings(values):
+    """The dict every caller reads: each key by its own name, and the models by role."""
+    out = {s.key: values[s.table, s.key] for s in SETTINGS if s.table != "models"}
+    out["models"] = {s.key: values[s.table, s.key] for s in SETTINGS if s.table == "models"}
+    out["monitor"] = out["monitor"] and os.path.expanduser(out["monitor"])
+    return out
+
+
+DEFAULT_VALUES = {(s.table, s.key): s.default for s in SETTINGS}
+SETTINGS_DEFAULTS = flat_settings(DEFAULT_VALUES)
+
+
+def toml_value(v):
+    if isinstance(v, str):
+        return json.dumps(v)
+    if isinstance(v, list):
+        return "[" + ", ".join(json.dumps(i) for i in v) + "]"
+    return str(v).lower()
+
+
+def settings_text(values=None):
+    """The shipped settings file, with `values` ((table, key) -> value) in place of the defaults."""
+    values = {**DEFAULT_VALUES, **(values or {})}
+    out, table = [SETTINGS_HEADER], None
+    for s in SETTINGS:
+        if s.table != table:
+            table = s.table
+            out.append(f"\n[{table}]")
+        out.append(f"# {s.comment}")
+        value = values[s.table, s.key]
+        out.append(f"# {s.key} = {UNSET_EXAMPLES[s.key]}" if value is None else f"{s.key} = {toml_value(value)}")
+    return "\n".join(out) + "\n"
+
+
+def find_line(lines, table, key=None):
+    """The index of the line holding `table.key` (key None: the table's header), else None."""
+    current = None
+    for i, line in enumerate(lines):
+        header = TABLE_RE.fullmatch(line.rstrip("\n"))
+        if header:
+            current = header[1].strip()
+            if key is None and current == table:
+                return i
+        elif key and current == table and re.match(rf"\s*{re.escape(key)}\s*=", line):
+            return i
+    return None
+
+
+def edit_text(text, table, key, literal):
+    """`text` with the line of `table.key` set to `literal`: that line only, its trailing comment kept; a missing key
+    is added at the end of its table, a missing table at the end of the file."""
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    i = find_line(lines, table, key)
+    if i is not None:
+        found = re.fullmatch(rf"(\s*{re.escape(key)}\s*=\s*){VALUE_RE}", lines[i], re.S)
+        if not found:
+            raise Fail(f"{table}.{key} is on a line the editor cannot change: edit the file by hand")
+        lines[i] = f"{found[1]}{literal}{found[3]}"
+        return "".join(lines)
+    header = find_line(lines, table)
+    if header is None:
+        return "".join(lines + (["\n"] if lines else []) + [f"[{table}]\n", f"{key} = {literal}\n"])
+    end = next((j for j in range(header + 1, len(lines)) if TABLE_RE.fullmatch(lines[j].rstrip("\n"))), len(lines))
+    while end - 1 > header and not lines[end - 1].strip():
+        end -= 1
+    lines.insert(end, f"{key} = {literal}\n")
+    return "".join(lines)
+
+
+def write_text(path, content):
+    """Atomically through a symlink, keeping the file's mode: a reader never sees half a file."""
+    real = Path(os.path.realpath(path))
+    real.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=real.parent, prefix=".settings-", suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
+    if real.exists():
+        shutil.copymode(real, tmp)
+    os.replace(tmp, real)
+
+
+def warn(message):
+    if message not in warned:
+        warned.add(message)
+        print(f"factory: {message}", file=sys.stderr)
 
 
 def reserve(cap, percent):
@@ -130,44 +302,136 @@ def reserve(cap, percent):
     return min(cap - 1, -(-cap * percent // 100))
 
 
-def load_settings():
-    settings = dict(SETTINGS_DEFAULTS)
-    path = SETTINGS_PATH.expanduser()
+def checked(data, where):
+    """The values of the parsed settings `data`, each checked; `where(table, key)` says where an error is."""
+    for table, keys in data.items():
+        if table in TABLES and not isinstance(keys, dict):
+            raise Fail(f"{where(table)}: {table} must be a table")
+        for key in keys if table in TABLES else [None]:
+            if (table, key) not in DEFAULT_VALUES:
+                what = f"key {table}.{key}" if key else f"{'table' if isinstance(keys, dict) else 'key'} {table}"
+                warn(f"{where(table, key)}: unknown {what}, ignored")
+    values = dict(DEFAULT_VALUES)
+    for s in SETTINGS:
+        if s.key in data.get(s.table, {}):
+            value = data[s.table][s.key]
+            if problem := s.check(value):
+                raise Fail(f"{where(s.table, s.key)}: {s.table}.{s.key}{problem}")
+            values[s.table, s.key] = value
+    return values
+
+
+def migrate_json(path):
+    """The legacy settings.json beside `path`, written as the shipped text with its values in place and renamed to
+    settings.json.migrated. Nothing when there is no such file; a racing process that got there first is fine."""
+    old = path.with_name("settings.json")
     try:
-        data = json.loads(path.read_text())
+        raw = old.read_text()
     except FileNotFoundError:
-        return settings
-    except (OSError, ValueError) as e:
-        raise Fail(f"settings file {path} cannot be read as JSON: {e}")
+        return
+    try:
+        data = json.loads(raw)
+    except ValueError as e:
+        raise Fail(f"settings file {old} cannot be read as JSON: {e}")
     if not isinstance(data, dict):
-        raise Fail(f"settings file {path} must hold a JSON object")
-    cap = data.get("worktree_cap", settings["worktree_cap"])
-    if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
-        raise Fail("settings: worktree_cap must be an integer of at least 1")
-    model = data.get("lead_model", settings["lead_model"])
-    if not isinstance(model, str) or not model.strip():
-        raise Fail("settings: lead_model must be a non-empty string")
-    mode = data.get("lead_permission_mode", settings["lead_permission_mode"])
-    if mode not in PERMISSION_MODES:
-        raise Fail(f"settings: lead_permission_mode must be one of {', '.join(PERMISSION_MODES)}")
-    hours = data.get("task_time_limit_hours", settings["task_time_limit_hours"])
-    if isinstance(hours, bool) or not isinstance(hours, (int, float)) or not hours > 0:
-        raise Fail("settings: task_time_limit_hours must be a positive number")
-    monitor = data.get("monitor")
-    if "monitor" in data and (not isinstance(monitor, str) or not monitor.strip()):
-        raise Fail("settings: monitor must be a non-empty string")
-    from_author = data.get("lgtm_from_author", settings["lgtm_from_author"])
-    if not isinstance(from_author, bool):
-        raise Fail("settings: lgtm_from_author must be true or false")
-    percent = data.get("reserve_percent", settings["reserve_percent"])
-    if isinstance(percent, bool) or not isinstance(percent, int) or not 0 <= percent <= 100:
-        raise Fail("settings: reserve_percent must be an integer from 0 to 100")
-    lean = data.get("lean_start", settings["lean_start"])
-    if not isinstance(lean, bool):
-        raise Fail("settings: lean_start must be true or false")
-    return {"worktree_cap": cap, "lead_model": model, "lead_permission_mode": mode,
-            "task_time_limit_hours": hours, "monitor": monitor and os.path.expanduser(monitor),
-            "lgtm_from_author": from_author, "reserve_percent": percent, "lean_start": lean}
+        raise Fail(f"settings file {old} must hold a JSON object")
+    carried = {s.key: s for s in SETTINGS if s.table != "models"} | {"lead_model": next(s for s in SETTINGS if s.key == "lead")}
+    values = {}
+    for name, s in carried.items():
+        if name in data:
+            if problem := s.check(data[name]):
+                raise Fail(f"{old}: {name}{problem}")
+            values[s.table, s.key] = data[name]
+    write_text(path, settings_text(values))
+    with contextlib.suppress(FileNotFoundError):
+        old.rename(old.with_name("settings.json.migrated"))
+    left = [k for k in data if k not in carried]
+    print(f"factory: moved {old} to {path} (the old file is now settings.json.migrated)"
+          + (f"; not carried over: {', '.join(left)}" if left else ""), file=sys.stderr)
+
+
+def read_settings(path):
+    """The text of the settings file, migrating settings.json first when only that exists; None when neither does."""
+    for _ in range(2):
+        try:
+            return path.read_text()
+        except FileNotFoundError:
+            migrate_json(path)
+        except OSError as e:
+            raise Fail(f"settings file {path} cannot be read: {e}")
+
+
+def load_settings():
+    path = SETTINGS_PATH.expanduser()
+    content = read_settings(path)
+    if content is None:
+        return flat_settings(DEFAULT_VALUES)
+    try:
+        data = tomllib.loads(content)
+    except tomllib.TOMLDecodeError as e:
+        raise Fail(f"{path}: {e}")
+    lines = content.splitlines()
+
+    def where(table, key=None):
+        i = find_line(lines, table, key)
+        return f"{path.name} line {i + 1}" if i is not None else path.name
+    return flat_settings(checked(data, where))
+
+
+def set_setting(dotted, raw):
+    """`factory settings set`: change one line of the settings file in place and say what happened."""
+    s = next((s for s in SETTINGS if f"{s.table}.{s.key}" == dotted), None)
+    if s is None:
+        raise Fail(f"unknown setting {dotted!r}; the keys are {', '.join(f'{s.table}.{s.key}' for s in SETTINGS)}")
+    value = s.parse(raw)
+    if problem := s.check(value):
+        raise Fail(f"{dotted}{problem}")
+    path = SETTINGS_PATH.expanduser()
+    old = read_settings(path)  # moves a settings.json over first; a wrong value elsewhere in the file is no obstacle
+    base = settings_text() if old is None else old
+    new = edit_text(base, s.table, s.key, toml_value(value))
+    try:
+        want = tomllib.loads(base)
+        want.setdefault(s.table, {})[s.key] = value
+        if tomllib.loads(new) != want:
+            raise Fail("the edit would change more than the one line")
+    except (tomllib.TOMLDecodeError, Fail) as e:
+        raise Fail(f"cannot set {dotted} in {path}: {e}; edit the file by hand. Nothing was changed")
+    if new == old:
+        return "unchanged"
+    write_text(path, new)
+    return f"set {dotted} = {toml_value(value)}"
+
+
+def cmd_settings(args):
+    print(set_setting(args.key, args.value))
+    return 0
+
+
+AGENT_KEYS = ("name", "description", "model", "tools", "skills")
+
+
+def agent_definitions(models):
+    """The `--agents` JSON of a lead: every file in factory/agents as `factory:<name>`, its model the configured one."""
+    out = {}
+    for path in sorted((PLUGIN_ROOT / "agents").glob("*.md")):
+        head, _, body = path.read_text().removeprefix("---\n").partition("\n---\n")
+        meta, key = {}, None
+        for line in head.splitlines():
+            if item := re.fullmatch(r"\s+-\s+(.*)", line):
+                meta[key].append(item[1].strip())
+                continue
+            key, _, value = line.partition(":")
+            if key not in AGENT_KEYS:
+                raise Fail(f"{path}: frontmatter key {key!r} is not one the factory passes on ({', '.join(AGENT_KEYS)})")
+            meta[key] = value.strip() or []
+        if path.stem not in models:
+            raise Fail(f"{path}: no models.{path.stem} setting for this agent")
+        out[f"factory:{path.stem}"] = {
+            "description": meta["description"], "prompt": body, "model": models[path.stem],
+            **({"tools": [t.strip() for t in meta["tools"].split(",")]} if "tools" in meta else {}),
+            **({"skills": meta["skills"]} if "skills" in meta else {})}
+    return out
 
 
 LEAD_TOOLS = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch,SendMessage,WebFetch,WebSearch,TaskStop,Monitor"
@@ -200,7 +464,8 @@ def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now):
     lean = [*lean_flags(), f"--tools={LEAD_TOOLS}"] if settings["lean_start"] else []
     return [
         "claude", "--bg", "--worktree", slug, "-n", slug,
-        "--model", settings["lead_model"],
+        "--model", settings["models"]["lead"],
+        "--agents", json.dumps(agent_definitions(settings["models"])),
         "--permission-mode", settings["lead_permission_mode"],
         "--plugin-dir", str(PLUGIN_ROOT),
         *lean,
@@ -800,6 +1065,10 @@ def cmd_new(args):
     if not brief.strip():
         raise Fail("the brief is empty")
     settings = load_settings()
+    if args.lead_model is not None:
+        if problem := a_model(args.lead_model):
+            raise Fail(f"--lead-model{problem}")
+        settings["models"]["lead"] = args.lead_model
     repo = Repo()
     dispatcher = args.dispatcher or f"dispatcher-{os.path.basename(repo.root)}"
     branch = f"worktree-{args.slug}"
@@ -876,7 +1145,7 @@ def cmd_new(args):
         what = "without a `backgrounded` line" if not match else "after printing a `backgrounded` line"
         raise Fail(f"claude exited {rc} {what}; the session may be running, nothing was removed", code=1)
     print(f"started {match.group(2).strip()} (session {match.group(1)})")
-    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["lead_model"])
+    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"])
     try:
         declare(repo, args.slug, "dispatcher", "working")
     except (OSError, ValueError, KeyError):
@@ -1244,7 +1513,6 @@ def cmd_log(args):
 FACTORY = Path(__file__).resolve()
 CRITERIA_PATH = PLUGIN_ROOT / "criteria.json"
 ROLE_PATH = PLUGIN_ROOT / "roles" / "site-manager.md"
-SITE_MANAGER_MODEL = "sonnet"
 RESURFACE_MINUTES = 120
 WATCH_INTERVAL = 120
 HEALTH_SECONDS = 1800 - 60
@@ -1281,20 +1549,6 @@ def repo_log(name, root):
     return sorted((r for r in read_log(name) if r.get("repo") == root), key=lambda r: str(r.get("ts")))
 
 
-def pinned_models():
-    """Role -> the `model:` alias in the frontmatter of factory/agents/<role>.md."""
-    models = {}
-    for path in (PLUGIN_ROOT / "agents").glob("*.md"):
-        try:
-            head = path.read_text().split("---")[1]
-        except (OSError, IndexError):
-            continue
-        match = re.search(r"^model:\s*(\S+)", head, re.M)
-        if match:
-            models[path.stem] = match.group(1)
-    return models
-
-
 class NoJson(NotEvaluated):
     """`gh` printed no JSON."""
 
@@ -1320,7 +1574,8 @@ def gather(repo, dispatcher):
             "monitor": settings["monitor"], "lgtm_from_author": settings["lgtm_from_author"],
             "lean_start": settings["lean_start"],
             "rows": None if sessions is None else collect(repo, sessions, settings["task_time_limit_hours"]),
-            "declared": read_tasks(repo.root), "events": repo_log("events", repo.root), "models": pinned_models(),
+            "declared": read_tasks(repo.root), "events": repo_log("events", repo.root), "models": {f.stem: settings["models"][f.stem] for f in (PLUGIN_ROOT / "agents").glob("*.md")
+                      if f.stem in settings["models"]},
             "gh": lambda *args: gh_json(repo, *args)}
 
 
@@ -1464,7 +1719,7 @@ def c_review_loops(p, threshold):
 
 def c_wrong_model(p, _):
     if not p["models"]:
-        raise NotEvaluated("no pinned models in factory/agents")
+        raise NotEvaluated("no agent files in factory/agents")
     found = []
     for r in unfinished(tasks(p)):
         mine, started = since_start(events(p), r["slug"])
@@ -1474,7 +1729,7 @@ def c_wrong_model(p, _):
             role, model = e.get("role"), e.get("model")
             if model and want.get(role) and want[role] not in model:
                 wrong.setdefault(role, model)
-        found += [(r["slug"], f"{r['slug']}/{role}", f"{model}, pinned {want[role]}") for role, model in wrong.items()]
+        found += [(r["slug"], f"{r['slug']}/{role}", f"{model}, configured {want[role]}") for role, model in wrong.items()]
     return found
 
 
@@ -1514,7 +1769,7 @@ def monitor_failed(why):
 def monitor_json(p, *args):
     """What the monitor command prints as JSON for `args`."""
     if not p["monitor"]:
-        raise NotEvaluated(f'no monitor: set "monitor" in {SETTINGS_PATH} to the path of the isshoni command')
+        raise NotEvaluated(f'no monitor: set paths.monitor in {SETTINGS_PATH} to the path of the isshoni command')
     rc, out, err = run([p["monitor"], *args], timeout=MONITOR_TIMEOUT)
     if rc:
         raise monitor_failed(err.strip().splitlines()[-1] if err.strip() else f"exit {rc}")
@@ -1977,7 +2232,7 @@ def site_manager_argv(p, firings, job="watch"):
     prompt = (f"Job: {job}. Repo: {p['repo'].root}. The dispatcher's session name is {p['dispatcher']}.\n\n"
               f"{json.dumps(body, indent=2)}")
     lean = [*lean_flags(), "--disable-slash-commands", "--tools=SendMessage,ToolSearch"] if p["lean_start"] else []
-    return ["claude", "-p", "--model", SITE_MANAGER_MODEL, "--permission-mode", "dontAsk", *lean,
+    return ["claude", "-p", "--model", load_settings()["models"]["site_manager"], "--permission-mode", "dontAsk", *lean,
             "--allowedTools", "SendMessage", "ToolSearch", "--output-format", "json",
             "--json-schema", json.dumps(RUN_SCHEMA), "--append-system-prompt", ROLE_PATH.read_text(), prompt]
 
@@ -2800,7 +3055,6 @@ def approval_stop(p, pr, permission):
 
 NOTICE_TIMEOUT = 20
 NOTICE_FIELDS = "number,url,isDraft,headRefOid,headRefName,baseRefName,author,isCrossRepository,latestReviews,reviews,comments"
-COMMENT_MODEL = "haiku"
 COMMENT_TIMEOUT = 120
 HUMAN_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
 COURIER = ("Send one message with the SendMessage tool (load it with ToolSearch if needed) to the session named {name}. "
@@ -2903,7 +3157,7 @@ def write_batch(slug, pr, items):
 
 def courier(repo, name, line):
     """Whether a headless run sent `line` to the session `name`: the only way to put text into a live session."""
-    argv = ["claude", "-p", "--model", COMMENT_MODEL, "--permission-mode", "dontAsk", "--allowedTools", "SendMessage",
+    argv = ["claude", "-p", "--model", load_settings()["models"]["courier"], "--permission-mode", "dontAsk", "--allowedTools", "SendMessage",
             "ToolSearch", "--output-format", "json", COURIER.format(name=name, line=line)]
     rc, out, _ = run(argv, cwd=repo.root, timeout=COMMENT_TIMEOUT)
     try:
@@ -3396,7 +3650,7 @@ def verify_app(identity):
 PLUGIN = "factory@factory"
 SOURCE = "andreiciobotar/isshoni"
 # The names the factory writes at the top of its home; uninstall removes these and nothing else there.
-HOME_FILE_RE = re.compile(r"settings\.json|watch\.log|identity|specs|deliverables|dashboard|\.settings-.*\.tmp"
+HOME_FILE_RE = re.compile(r"settings\.(toml|json(\.migrated)?)|watch\.log|identity|specs|deliverables|dashboard|\.settings-.*\.tmp"
                           r"|(events|tasks|feedback|firings|retros)(-\d{4}-\d\d)?\.jsonl")
 Step = collections.namedtuple("Step", "name purpose optional state act recheck", defaults=(False,))
 
@@ -3513,17 +3767,6 @@ def plugin_act(args, detail):
     return f"installed {PLUGIN}"
 
 
-def write_settings(data):
-    """Atomically: a reader never sees half a file."""
-    directory = SETTINGS_PATH.expanduser().parent
-    directory.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".settings-", suffix=".tmp")
-    with os.fdopen(fd, "w") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, SETTINGS_PATH.expanduser())
-
-
 def settings_state():
     path = SETTINGS_PATH.expanduser()
     if not path.exists():
@@ -3538,8 +3781,10 @@ def settings_state():
 def settings_act(args, detail):
     if SETTINGS_PATH.expanduser().exists():
         raise Fail(detail)
-    write_settings({k: v for k, v in SETTINGS_DEFAULTS.items() if k != "monitor"})
-    return f"wrote the defaults to {SETTINGS_PATH.expanduser()}"
+    load_settings()  # moves a settings.json over when there is one
+    if not SETTINGS_PATH.expanduser().exists():
+        write_text(SETTINGS_PATH.expanduser(), settings_text())
+    return f"wrote {SETTINGS_PATH.expanduser()}"
 
 
 def cost_state():
@@ -3558,9 +3803,8 @@ def cost_state():
 def cost_act(args, detail):
     if not ask("Turn on cost alerts and the daily digest?", args.yes):
         raise Skip("declined")
-    data = json.loads(SETTINGS_PATH.expanduser().read_text())
-    old, target = data.get("monitor"), str(clone() / "bin" / "isshoni")
-    write_settings({**data, "monitor": target})
+    old, target = load_settings()["monitor"], str(clone() / "bin" / "isshoni")
+    set_setting("paths.monitor", target)
     return f"set monitor to {target}" + (f" (it pointed at {old}, which is missing)" if old else "")
 
 
@@ -3996,7 +4240,7 @@ class Landing:
             f"The golden files this task means to change: {', '.join(task_files) or 'none'}. A generated file on this "
             "list may be regenerated with the repository's documented command; any other golden that changes is a stop."])
         lean = lean_flags() if self.lean else []
-        argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", "sonnet",
+        argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", load_settings()["models"]["lander"],
                 "--permission-mode", "dontAsk", *lean, "--allowedTools", *LAND_TOOLS, "--output-format", "json", brief]
         rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT)
         try:
@@ -4188,7 +4432,7 @@ def run_lander(repo, snap, given, word, name):
     sessions = list_sessions()
     alive = bool(sessions and live_dispatchers(sessions, repo.root, name))
     tools = [*MERGE_TOOLS, *(f"Bash(factory merge {n})" for n in sorted(word))]
-    argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", "sonnet",
+    argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", load_settings()["models"]["lander"],
             "--permission-mode", "dontAsk", "--allowedTools", *tools, "--output-format", "json",
             merge_brief(repo, given, word, name if alive else None)]
     # `factory` first on the PATH (the schedule's PATH holds only git, gh, claude and Python), so a nested
@@ -4315,6 +4559,7 @@ def parse_args(argv):
     group.add_argument("--brief")
     group.add_argument("--brief-file")
     new.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
+    new.add_argument("--lead-model", help="the lead's model for this task instead of models.lead in the settings")
     new.add_argument("--base", help="slug of an open task to stack this task on")
     new.add_argument("--critical", action="store_true",
                      help="use the slots held in reserve: the default branch is red, the factory is broken, "
@@ -4388,6 +4633,10 @@ def parse_args(argv):
     schedule = sub.add_parser("schedule", help="install, remove or show the job that runs watch every 2 minutes")
     schedule.add_argument("action", choices=("install", "remove", "status"))
     schedule.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
+    settings = sub.add_parser("settings", help="change one line of the settings file in place")
+    settings.add_argument("action", choices=("set",))
+    settings.add_argument("key", help="table.key, e.g. models.coder")
+    settings.add_argument("value", help="a number, true or false, a model name, or a JSON list")
     wizard = sub.add_parser("wizard", help="set everything up, step by step; rerun to repair or finish")
     wizard.add_argument("--yes", action="store_true", help="accept every offer without asking")
     wizard.add_argument("--list", action="store_true", help="show each step and its state; change nothing")
@@ -4410,7 +4659,7 @@ def main(argv=None):
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
                 "land": cmd_land, "lander": cmd_lander, "schedule": cmd_schedule, "wizard": cmd_wizard,
-                "uninstall": cmd_uninstall, "env": cmd_env}[args.cmd](args)
+                "uninstall": cmd_uninstall, "env": cmd_env, "settings": cmd_settings}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)
         return e.code

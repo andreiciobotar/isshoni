@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -113,7 +114,7 @@ def invoke(argv, answers, settings=None, env=None, tasks=(), cwd=None, events=No
         store = Path(home, ".claude", "factory")
         store.mkdir(parents=True)
         if settings is not None:
-            (store / "settings.json").write_text(settings)
+            (store / "settings.toml").write_text(settings)
         (store / "tasks.jsonl").write_text("".join((t if isinstance(t, str) else json.dumps(t)) + "\n" for t in tasks))
         seeded = written()
         for e in events or ():
@@ -319,54 +320,400 @@ class AckTests(unittest.TestCase):
         self.assertEqual(code, 2, err)
 
 
-class SettingsTests(unittest.TestCase):
+DEFAULT_SETTINGS = {
+    "worktree_cap": 5, "reserve_percent": 10, "task_time_limit_hours": 2, "lead_permission_mode": "auto",
+    "lean_start": True, "dispatchers": None, "lgtm_from_author": True, "monitor": None,
+    "models": {"dispatcher": "fable", "lead": "fable", "explorer": "haiku", "coder": "sonnet", "reviewer": "opus",
+               "lander": "sonnet", "site_manager": "sonnet", "courier": "haiku"}}
+
+# A settings file as a human leaves it: tables and keys in their own order, comments, blank lines, an unknown key.
+HAND_EDITED = '''# my notes
+[paths]
+monitor = "/x"   # where
+
+[limits]  # caps
+reserve_percent = 20
+worktree_cap = 3  # three
+task_time_limit_hours = 1.5
+
+[models]
+coder = 'sonnet'   # mine
+
+[sessions]
+dispatchers = ["a", "b"]  # names
+extra = 1
+'''
+
+
+class InStore(unittest.TestCase):
+    """A temporary factory home whose settings.toml is where the script looks."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.path = self.dir / "settings.toml"
+        patcher = mock.patch.object(factory, "SETTINGS_PATH", self.path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        factory.warned.clear()
+
     def load(self, text=None):
-        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
-            if text is not None:
-                Path(home, ".claude", "factory").mkdir(parents=True)
-                Path(home, ".claude", "factory", "settings.json").write_text(text)
-            return factory.load_settings()
+        if text is not None:
+            self.path.write_text(text)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.settings = factory.load_settings()
+        self.err = err.getvalue()
+        return self.settings
 
+
+class SettingsTests(InStore):
     def test_defaults(self):
-        want = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "reserve_percent": 10,
-                "lean_start": True}
-        self.assertEqual(self.load(), want)
-        self.assertEqual(self.load("{}"), want)
+        self.assertEqual(self.load(), DEFAULT_SETTINGS)
+        self.assertEqual(self.load(""), DEFAULT_SETTINGS)
+        self.assertEqual(self.load("[models]\n[limits]\n"), DEFAULT_SETTINGS)
+        self.assertEqual(factory.SETTINGS_DEFAULTS, DEFAULT_SETTINGS)
 
-    def test_unreadable_file_names_the_file(self):
-        for text in ("not json", "[1]"):
-            with self.assertRaisesRegex(factory.Fail, "settings.json"):
-                self.load(text)
+    def test_the_shipped_text_loads_to_the_defaults_and_says_each_key_once(self):
+        text = factory.settings_text()
+        self.assertEqual(self.load(text), DEFAULT_SETTINGS)
+        for s in factory.SETTINGS:
+            self.assertEqual(len(re.findall(rf"^#? ?{s.key} = ", text, re.M)), 1, s.key)
+            self.assertIn(f"# {s.comment}\n", text)
+        self.assertIn('\n[models]\n# Advice only: the human starts the dispatcher. Default "fable".\ndispatcher = "fable"\n', text)
+        self.assertIn('# monitor = "/path/to/ccmon/bin/isshoni"\n', text)
+        self.assertEqual(self.err, "")
 
-    def test_overrides(self):
-        got = self.load('{"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan", '
-                        '"task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": false, '
-                        '"reserve_percent": 25, "lean_start": false}')
-        self.assertEqual(got, {"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan",
-                               "task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": False,
-                               "reserve_percent": 25, "lean_start": False})
+    def test_every_key_is_read_from_the_file(self):
+        got = self.load('''[models]
+dispatcher = "opus"
+lead = "claude-opus-4-1[1m]"
+explorer = "sonnet"
+coder = "haiku"
+reviewer = "fable"
+lander = "claude-haiku-4-5"
+site_manager = "opus"
+courier = "sonnet"
+[limits]
+worktree_cap = 2
+reserve_percent = 25
+task_time_limit_hours = 0.5
+[sessions]
+lead_permission_mode = "plan"
+lean_start = false
+dispatchers = ["dispatcher-a"]
+[merging]
+lgtm_from_author = false
+[paths]
+monitor = "/bin/isshoni"
+''')
+        self.assertEqual(got, {
+            "worktree_cap": 2, "reserve_percent": 25, "task_time_limit_hours": 0.5, "lead_permission_mode": "plan",
+            "lean_start": False, "dispatchers": ["dispatcher-a"], "lgtm_from_author": False, "monitor": "/bin/isshoni",
+            "models": {"dispatcher": "opus", "lead": "claude-opus-4-1[1m]", "explorer": "sonnet", "coder": "haiku",
+                       "reviewer": "fable", "lander": "claude-haiku-4-5", "site_manager": "opus", "courier": "sonnet"}})
         for percent in (0, 100):
-            self.assertEqual(self.load('{"reserve_percent": %d}' % percent)["reserve_percent"], percent)
-        self.assertEqual(self.load('{"worktree_cap": 9}')["lead_model"], "fable")
+            self.assertEqual(self.load(f"[limits]\nreserve_percent = {percent}\n")["reserve_percent"], percent)
+        self.assertEqual(self.load("[limits]\ntask_time_limit_hours = 3\n")["task_time_limit_hours"], 3)
+        self.assertEqual(self.load("[limits]\nworktree_cap = 9\n")["models"]["lead"], "fable")
 
-    def test_invalid_values_name_the_key(self):
-        for text, key in (('{"worktree_cap": 0}', "worktree_cap"), ('{"worktree_cap": "3"}', "worktree_cap"),
-                          ('{"worktree_cap": true}', "worktree_cap"), ('{"lead_model": ""}', "lead_model"),
-                          ('{"lead_model": 3}', "lead_model"),
-                          ('{"lead_permission_mode": "yolo"}', "lead_permission_mode"),
-                          ('{"task_time_limit_hours": 0}', "task_time_limit_hours"),
-                          ('{"task_time_limit_hours": -1}', "task_time_limit_hours"),
-                          ('{"task_time_limit_hours": "2"}', "task_time_limit_hours"),
-                          ('{"task_time_limit_hours": true}', "task_time_limit_hours"),
-                          ('{"lgtm_from_author": "no"}', "lgtm_from_author"), ('{"lgtm_from_author": 0}', "lgtm_from_author"),
-                          ('{"reserve_percent": true}', "reserve_percent"), ('{"reserve_percent": -1}', "reserve_percent"),
-                          ('{"reserve_percent": 101}', "reserve_percent"), ('{"reserve_percent": 2.5}', "reserve_percent"),
-                          ('{"reserve_percent": "10"}', "reserve_percent"),
-                          ('{"lean_start": "yes"}', "lean_start"), ('{"lean_start": 1}', "lean_start"),
-                          ('{"monitor": ""}', "monitor"), ('{"monitor": 3}', "monitor"), ('{"monitor": null}', "monitor")):
-            with self.assertRaisesRegex(factory.Fail, key):
+    def test_the_monitor_is_expanded_from_home(self):
+        self.assertEqual(self.load('[paths]\nmonitor = "~/bin/isshoni"\n')["monitor"], os.path.expanduser("~/bin/isshoni"))
+
+    def test_invalid_values_name_file_line_and_key(self):
+        for table, key, bad in (
+                ("limits", "worktree_cap", "0"), ("limits", "worktree_cap", '"3"'), ("limits", "worktree_cap", "true"),
+                ("limits", "worktree_cap", "2.5"), ("limits", "task_time_limit_hours", "0"),
+                ("limits", "task_time_limit_hours", "-1"), ("limits", "task_time_limit_hours", '"2"'),
+                ("limits", "task_time_limit_hours", "true"), ("limits", "reserve_percent", "true"),
+                ("limits", "reserve_percent", "-1"), ("limits", "reserve_percent", "101"), ("limits", "reserve_percent", "2.5"),
+                ("limits", "reserve_percent", '"10"'), ("sessions", "lead_permission_mode", '"yolo"'),
+                ("sessions", "lean_start", '"yes"'), ("sessions", "lean_start", "1"),
+                ("sessions", "dispatchers", '"a"'), ("sessions", "dispatchers", "[1]"), ("sessions", "dispatchers", '[""]'),
+                ("merging", "lgtm_from_author", '"no"'), ("merging", "lgtm_from_author", "0"),
+                ("paths", "monitor", '""'), ("paths", "monitor", "3")):
+            with self.subTest(f"{table}.{key} = {bad}"):
+                with self.assertRaises(factory.Fail) as raised:
+                    self.load(f"# c\n\n[{table}]\n{key} = {bad}\n")
+                self.assertTrue(str(raised.exception).startswith(f"settings.toml line 4: {table}.{key} "), raised.exception)
+
+    def test_the_message_for_the_cap(self):
+        with self.assertRaisesRegex(factory.Fail, r"^settings.toml line 3: limits.worktree_cap must be an integer of at least 1$"):
+            self.load("\n[limits]\nworktree_cap = 0\n")
+
+    def test_a_bad_model_fails_for_each_role(self):
+        for s in factory.SETTINGS:
+            if s.table != "models":
+                continue
+            for bad in ('"sonet"', "3", '""', '"claude-"', '"Claude-opus"', '"claude-opus 4"', '"claude-x[1m"'):
+                with self.subTest(f"{s.key} = {bad}"):
+                    with self.assertRaises(factory.Fail) as raised:
+                        self.load(f"[models]\n{s.key} = {bad}\n")
+                    self.assertTrue(str(raised.exception).startswith(f"settings.toml line 2: models.{s.key}: "), raised.exception)
+        with self.assertRaises(factory.Fail) as raised:
+            self.load('[models]\ncoder = "sonet"\n')
+        self.assertEqual(str(raised.exception), 'settings.toml line 2: models.coder: "sonet" is not a model '
+                                                '(an alias: fable, opus, sonnet, haiku; or a full id starting claude-)')
+        for good in ("fable", "opus", "sonnet", "haiku", "claude-opus-4-1", "claude-sonnet-4-5-20250929", "claude-opus-4-1[1m]"):
+            self.assertEqual(self.load(f'[models]\ncoder = "{good}"\n')["models"]["coder"], good)
+
+    def test_a_table_where_a_value_is_wrong(self):
+        with self.assertRaisesRegex(factory.Fail, "settings.toml: models must be a table"):
+            self.load("models = 3\n")
+
+    def test_a_syntax_error_names_the_file(self):
+        for text in ("[limits\n", "worktree_cap = \n", "not toml"):
+            with self.assertRaisesRegex(factory.Fail, f"^{re.escape(str(self.path))}: "):
                 self.load(text)
+
+    def test_an_unknown_table_or_key_is_reported_once_and_ignored(self):
+        got = self.load("[models]\ncoder = \"haiku\"\nflavour = 1\n\n[limits]\n[extra]\ny = 1\nz = 2\n")
+        self.assertEqual(got["models"]["coder"], "haiku")
+        self.assertEqual(sorted(self.err.splitlines()), [
+            "factory: settings.toml line 3: unknown key models.flavour, ignored",
+            "factory: settings.toml line 6: unknown table extra, ignored"])
+        self.load()
+        self.assertEqual(self.err, "")  # said already, once per command
+
+    def test_the_agent_files_pin_the_default_models(self):
+        for path in (BIN.parent.parent / "agents").glob("*.md"):
+            head = path.read_text().split("---")[1]
+            self.assertEqual(re.search(r"^model:\s*(\S+)", head, re.M)[1], factory.SETTINGS_DEFAULTS["models"][path.stem], path)
+
+
+class SetTests(InStore):
+    def set(self, key, value, text=HAND_EDITED):
+        if text is not None:
+            self.path.write_text(text)
+        return factory.set_setting(key, value)
+
+    def test_it_changes_one_line_and_keeps_every_other_byte(self):
+        for key, value, shown, old, new in (
+                ("limits.worktree_cap", "8", "8", "worktree_cap = 3  # three", "worktree_cap = 8  # three"),
+                ("limits.task_time_limit_hours", "2.5", "2.5", "task_time_limit_hours = 1.5", "task_time_limit_hours = 2.5"),
+                ("models.coder", "haiku", '"haiku"', "coder = 'sonnet'   # mine", 'coder = "haiku"   # mine'),
+                ("paths.monitor", "/y/isshoni", '"/y/isshoni"', 'monitor = "/x"   # where', 'monitor = "/y/isshoni"   # where'),
+                ("sessions.dispatchers", '["c"]', '["c"]', 'dispatchers = ["a", "b"]  # names', 'dispatchers = ["c"]  # names')):
+            with self.subTest(key):
+                self.assertEqual(self.set(key, value), f"set {key} = {shown}")
+                self.assertEqual(self.path.read_text(), HAND_EDITED.replace(old, new))
+                self.load()
+
+    def test_a_string_with_a_hash_and_a_comment_after_it(self):
+        self.set("paths.monitor", "/z", '[paths]\nmonitor = "/a#b"  # c # d\n')
+        self.assertEqual(self.path.read_text(), '[paths]\nmonitor = "/z"  # c # d\n')
+
+    def test_the_same_value_is_unchanged_and_the_file_is_not_touched(self):
+        self.path.write_text(HAND_EDITED)
+        before = os.stat(self.path).st_mtime_ns
+        self.assertEqual(self.set("limits.worktree_cap", "3", text=None), "unchanged")
+        self.assertEqual(os.stat(self.path).st_mtime_ns, before)
+        self.assertEqual(self.set("models.coder", "sonnet", text=None), 'set models.coder = "sonnet"')  # 'sonnet' becomes "sonnet"
+
+    def test_a_key_absent_from_its_table_is_added_at_the_end_of_the_table(self):
+        self.set("models.lead", "opus")
+        self.assertEqual(self.path.read_text(), HAND_EDITED.replace("coder = 'sonnet'   # mine\n", "coder = 'sonnet'   # mine\nlead = \"opus\"\n"))
+        self.set("paths.monitor", "/m", "[paths]\n# monitor = \"/path\"\n\n[limits]\nworktree_cap = 2\n")
+        self.assertEqual(self.path.read_text(), "[paths]\n# monitor = \"/path\"\nmonitor = \"/m\"\n\n[limits]\nworktree_cap = 2\n")
+        self.set("limits.reserve_percent", "0", "[limits]\nworktree_cap = 2")  # no newline at the end
+        self.assertEqual(self.path.read_text(), "[limits]\nworktree_cap = 2\nreserve_percent = 0\n")
+
+    def test_a_table_absent_is_appended(self):
+        self.set("merging.lgtm_from_author", "false")
+        self.assertEqual(self.path.read_text(), HAND_EDITED + "\n[merging]\nlgtm_from_author = false\n")
+        self.set("merging.lgtm_from_author", "true", "")
+        self.assertEqual(self.path.read_text(), "[merging]\nlgtm_from_author = true\n")
+
+    def test_a_file_absent_gets_the_shipped_text_first(self):
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.set("limits.worktree_cap", "9", text=None), "set limits.worktree_cap = 9")
+        self.assertEqual(self.path.read_text(), factory.settings_text({("limits", "worktree_cap"): 9}))
+        self.assertEqual(self.load()["worktree_cap"], 9)
+        shutil.rmtree(self.dir / "sub", ignore_errors=True)
+        with mock.patch.object(factory, "SETTINGS_PATH", self.dir / "sub" / "settings.toml"):
+            self.assertEqual(factory.set_setting("limits.worktree_cap", "5"), "set limits.worktree_cap = 5")  # the default, new file
+            self.assertTrue((self.dir / "sub" / "settings.toml").exists())
+
+    def test_an_invalid_value_leaves_the_file_byte_identical(self):
+        for key, value in (("limits.worktree_cap", "0"), ("limits.worktree_cap", "many"), ("models.coder", "sonet"),
+                           ("sessions.lean_start", "maybe"), ("sessions.dispatchers", "a,b"), ("paths.monitor", " "),
+                           ("sessions.lead_permission_mode", "yolo"), ("nope.key", "1"), ("limits.nope", "1")):
+            with self.subTest(f"{key} {value}"):
+                self.path.write_text(HAND_EDITED)
+                with self.assertRaises(factory.Fail):
+                    factory.set_setting(key, value)
+                self.assertEqual(self.path.read_text(), HAND_EDITED)
+        self.assertEqual([p.name for p in self.dir.iterdir()], ["settings.toml"])
+
+    def test_a_line_the_editor_cannot_handle_is_refused_untouched(self):
+        for text in ('[sessions]\ndispatchers = [\n  "a",\n]\n', '[limits]\nworktree_cap = [\n3]\n', "[limits]\nworktree_cap = 3 4\n"):
+            self.path.write_text(text)
+            with self.assertRaisesRegex(factory.Fail, "edit the file by hand"):
+                factory.set_setting("sessions.dispatchers" if "dispatchers" in text else "limits.worktree_cap",
+                                    '["b"]' if "dispatchers" in text else "8")
+            self.assertEqual(self.path.read_text(), text)
+
+    def test_a_file_that_is_not_toml_is_refused_untouched(self):
+        self.path.write_text("[limits\n")
+        with self.assertRaisesRegex(factory.Fail, "edit the file by hand"):
+            factory.set_setting("limits.worktree_cap", "8")
+        self.assertEqual(self.path.read_text(), "[limits\n")
+
+    def test_a_wrong_value_elsewhere_does_not_stop_the_repair_of_that_key(self):
+        self.set("limits.worktree_cap", "4", "[limits]\nworktree_cap = 0\nreserve_percent = 200\n")
+        self.assertEqual(self.path.read_text(), "[limits]\nworktree_cap = 4\nreserve_percent = 200\n")
+
+    def test_it_follows_a_symlink_keeps_the_link_and_the_mode(self):
+        real = self.dir / "real.toml"
+        real.write_text(HAND_EDITED)
+        real.chmod(0o640)
+        self.path.symlink_to(real)
+        factory.set_setting("limits.worktree_cap", "8")
+        self.assertTrue(self.path.is_symlink())
+        self.assertEqual(real.read_text(), HAND_EDITED.replace("worktree_cap = 3", "worktree_cap = 8"))
+        self.assertEqual(stat.S_IMODE(real.stat().st_mode), 0o640)
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["real.toml", "settings.toml"])
+
+    def test_the_command_prints_what_it_did(self):
+        for argv, want in ((["settings", "set", "limits.worktree_cap", "8"], "set limits.worktree_cap = 8\n"),
+                           (["settings", "set", "limits.worktree_cap", "8"], "unchanged\n")):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(factory.main(argv), 0)
+            self.assertEqual(out.getvalue(), want)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(factory.main(["settings", "set", "limits.worktree_cap", "0"]), 2)
+        self.assertEqual(err.getvalue(), "factory: limits.worktree_cap must be an integer of at least 1\n")
+
+
+class MigrationTests(InStore):
+    def legacy(self, data):
+        (self.dir / "settings.json").write_text(data if isinstance(data, str) else json.dumps(data))
+
+    def test_this_machines_shape(self):
+        self.legacy({"worktree_cap": 7, "monitor": "/m/isshoni"})
+        got = self.load()
+        self.assertEqual(got, {**DEFAULT_SETTINGS, "worktree_cap": 7, "monitor": "/m/isshoni"})
+        self.assertEqual(self.path.read_text(), factory.settings_text({("limits", "worktree_cap"): 7, ("paths", "monitor"): "/m/isshoni"}))
+        self.assertIn('\nmonitor = "/m/isshoni"\n', self.path.read_text())
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["settings.json.migrated", "settings.toml"])
+        self.assertEqual(json.loads((self.dir / "settings.json.migrated").read_text()), {"worktree_cap": 7, "monitor": "/m/isshoni"})
+        self.assertEqual(self.err, f"factory: moved {self.dir / 'settings.json'} to {self.path} (the old file is now settings.json.migrated)\n")
+
+    def test_all_eight_keys_and_the_dispatchers(self):
+        old = {"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan", "task_time_limit_hours": 0.5,
+               "monitor": "/bin/isshoni", "lgtm_from_author": False, "reserve_percent": 25, "lean_start": False,
+               "dispatchers": ["dispatcher-x"]}
+        self.legacy(old)
+        got = self.load()
+        self.assertEqual(got, {**DEFAULT_SETTINGS, "worktree_cap": 2, "lead_permission_mode": "plan",
+                               "task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": False,
+                               "reserve_percent": 25, "lean_start": False, "dispatchers": ["dispatcher-x"],
+                               "models": {**DEFAULT_SETTINGS["models"], "lead": "opus"}})
+        self.assertNotIn("not carried", self.err)
+
+    def test_unknown_keys_are_named(self):
+        self.legacy({"worktree_cap": 3, "dashboard_theme": "dark", "zeta": 1})
+        self.load()
+        self.assertTrue(self.err.rstrip().endswith("; not carried over: dashboard_theme, zeta"), self.err)
+        self.assertEqual(self.settings["worktree_cap"], 3)
+
+    def test_invalid_json_writes_nothing(self):
+        for text in ("{not json", "[1]", "null"):
+            self.legacy(text)
+            with self.assertRaisesRegex(factory.Fail, f"settings file {re.escape(str(self.dir / 'settings.json'))} "):
+                self.load()
+            self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["settings.json"])
+            self.assertEqual((self.dir / "settings.json").read_text(), text)
+
+    def test_an_invalid_value_in_the_json_writes_nothing(self):
+        for text, key in (('{"worktree_cap": 0}', "worktree_cap"), ('{"lead_model": ""}', "lead_model"),
+                          ('{"monitor": null}', "monitor"), ('{"lean_start": "yes"}', "lean_start")):
+            self.legacy(text)
+            with self.assertRaisesRegex(factory.Fail, f"settings.json: {key}"):
+                self.load()
+            self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["settings.json"])
+
+    def test_when_both_files_exist_the_json_is_ignored(self):
+        self.legacy({"worktree_cap": 7})
+        self.path.write_text("[limits]\nworktree_cap = 2\n")
+        self.assertEqual(self.load()["worktree_cap"], 2)
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["settings.json", "settings.toml"])
+        self.assertEqual(self.err, "")
+
+    def test_the_second_run_is_a_no_op(self):
+        self.legacy({"worktree_cap": 7, "monitor": "/m"})
+        first = self.load()
+        text, mtime = self.path.read_text(), os.stat(self.path).st_mtime_ns
+        self.assertEqual(self.load(), first)
+        self.assertEqual((self.path.read_text(), os.stat(self.path).st_mtime_ns, self.err), (text, mtime, ""))
+
+    def test_a_rename_that_finds_the_json_gone_is_ignored(self):
+        self.legacy({"worktree_cap": 7})
+        with mock.patch.object(Path, "rename", side_effect=FileNotFoundError):
+            self.assertEqual(self.load()["worktree_cap"], 7)
+
+    def test_a_racing_process_that_got_there_first_is_read(self):
+        self.legacy({"worktree_cap": 7})
+        real = factory.migrate_json
+
+        def other_process(path):  # it moves the file between this process's read and its migration
+            real(path)
+            (self.dir / "settings.json.migrated").rename(self.dir / "settings.json")
+            real(path)
+
+        with mock.patch.object(factory, "migrate_json", other_process):
+            self.assertEqual(self.load()["worktree_cap"], 7)
+
+    def test_set_migrates_first(self):
+        self.legacy({"worktree_cap": 7, "monitor": "/m"})
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(factory.set_setting("paths.monitor", "/n"), 'set paths.monitor = "/n"')
+        self.assertEqual(self.load(), {**DEFAULT_SETTINGS, "worktree_cap": 7, "monitor": "/n"})
+        self.assertTrue((self.dir / "settings.json.migrated").exists())
+
+
+class AgentDefinitionTests(unittest.TestCase):
+    MODELS = {**DEFAULT_SETTINGS["models"], "coder": "haiku", "lander": "claude-haiku-4-5"}
+
+    def files(self, text_by_name):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        (d / "agents").mkdir()
+        for name, text in text_by_name.items():
+            (d / "agents" / f"{name}.md").write_text(text)
+        return d
+
+    def test_the_shipped_agents_become_factory_entries_with_the_configured_models(self):
+        got = factory.agent_definitions(self.MODELS)
+        self.assertEqual(sorted(got), ["factory:coder", "factory:explorer", "factory:lander", "factory:reviewer"])
+        self.assertEqual({k: v["model"] for k, v in got.items()}, {
+            "factory:coder": "haiku", "factory:explorer": "haiku", "factory:lander": "claude-haiku-4-5", "factory:reviewer": "opus"})
+        agents = BIN.parent.parent / "agents"
+        for name, entry in ((k.split(":")[1], v) for k, v in got.items()):
+            text = (agents / f"{name}.md").read_text()
+            head, body = text.removeprefix("---\n").split("\n---\n", 1)
+            self.assertEqual(entry["prompt"], body, name)
+            self.assertEqual(entry["description"], re.search(r"^description: (.*)$", head, re.M)[1], name)
+            tools = re.search(r"^tools: (.*)$", head, re.M)
+            self.assertEqual(entry.get("tools"), tools and [t.strip() for t in tools[1].split(",")], name)
+            self.assertEqual(entry.get("skills"), re.findall(r"^  - (.*)$", head, re.M) or None, name)
+        self.assertEqual(got["factory:explorer"]["tools"], ["Read", "Grep", "Glob", "Bash"])
+        self.assertEqual(got["factory:coder"]["skills"], ["coding-taste"])
+        self.assertNotIn("tools", got["factory:coder"])
+
+    def test_an_unknown_frontmatter_key_fails_naming_file_and_key(self):
+        d = self.files({"coder": "---\nname: coder\ndescription: d\nmodel: sonnet\nmaxTurns: 3\n---\nbody\n"})
+        with mock.patch.object(factory, "PLUGIN_ROOT", d):
+            with self.assertRaisesRegex(factory.Fail, r"coder\.md: frontmatter key 'maxTurns'"):
+                factory.agent_definitions(self.MODELS)
+
+    def test_an_agent_without_a_models_key_fails(self):
+        d = self.files({"janitor": "---\nname: janitor\ndescription: d\nmodel: haiku\n---\nbody\n"})
+        with mock.patch.object(factory, "PLUGIN_ROOT", d):
+            with self.assertRaisesRegex(factory.Fail, r"janitor\.md: no models\.janitor setting"):
+                factory.agent_definitions(self.MODELS)
 
 
 class ReserveTests(unittest.TestCase):
@@ -394,6 +741,7 @@ class NewTests(unittest.TestCase):
         plugin = str(BIN.resolve().parent.parent)
         lead = (BIN.resolve().parent.parent / "roles" / "lead.md").read_text()
         want = ["claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
+                "--agents", fake.calls[-1][fake.calls[-1].index("--agents") + 1],
                 "--permission-mode", "auto", "--plugin-dir", plugin, "--strict-mcp-config",
                 "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}", "--append-system-prompt", lead,
                 "Your task slug is demo-task. The dispatcher's session name is d1. "
@@ -403,11 +751,12 @@ class NewTests(unittest.TestCase):
 
     def test_lean_start_off_launches_the_old_argv_without_listing_plugins(self):
         with mock.patch.object(factory.time, "time", return_value=1794610677):
-            _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), '{"lean_start": false}')
+            _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), '[sessions]\nlean_start = false\n')
         plugin = str(BIN.resolve().parent.parent)
         lead = (BIN.resolve().parent.parent / "roles" / "lead.md").read_text()
         self.assertEqual(fake.calls[-1], [
             "claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
+            "--agents", fake.calls[-1][fake.calls[-1].index("--agents") + 1],
             "--permission-mode", "auto", "--plugin-dir", plugin, "--append-system-prompt", lead,
             "Your task slug is demo-task. The dispatcher's session name is d1. "
             "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
@@ -434,11 +783,41 @@ class NewTests(unittest.TestCase):
         self.assertNotIn("factory", "".join(off))
 
     def test_launch_argv_uses_settings(self):
-        settings = '{"lead_model": "opus", "lead_permission_mode": "plan"}'
+        settings = '[models]\nlead = "opus"\n[sessions]\nlead_permission_mode = "plan"\n'
         _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), settings)
         argv = fake.calls[-1]
         self.assertEqual(argv[argv.index("--model") + 1], "opus")
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "plan")
+
+    def test_the_lead_gets_its_subagents_through_agents_with_the_configured_models(self):
+        settings = '[models]\ncoder = "haiku"\nreviewer = "claude-opus-4-1[1m]"\n'
+        _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), settings)
+        argv = fake.calls[-1]
+        agents = json.loads(argv[argv.index("--agents") + 1])
+        self.assertEqual(sorted(agents), ["factory:coder", "factory:explorer", "factory:lander", "factory:reviewer"])
+        self.assertEqual({k.split(":")[1]: v["model"] for k, v in agents.items()},
+                         {"coder": "haiku", "explorer": "haiku", "lander": "sonnet", "reviewer": "claude-opus-4-1[1m]"})
+        coder = (BIN.parent.parent / "agents" / "coder.md").read_text().split("\n---\n", 1)[1]
+        self.assertEqual(agents["factory:coder"]["prompt"], coder)
+        self.assertEqual(agents["factory:explorer"]["tools"], ["Read", "Grep", "Glob", "Bash"])
+        self.assertEqual(argv[argv.index("--model") + 1], "fable")
+
+    def test_lead_model_overrides_the_setting_for_this_task_and_is_recorded(self):
+        started = []
+        with mock.patch.object(factory, "task_event", lambda kind, repo, slug, **kw: started.append((kind, slug, kw))):
+            _, _, _, fake = invoke([*self.ARGS, "--lead-model", "opus"], self.answers([], (), self.OK), '[models]\nlead = "haiku"\n')
+        argv = fake.calls[-1]
+        self.assertEqual(argv[argv.index("--model") + 1], "opus")
+        self.assertEqual(started, [("TaskStarted", "demo-task", {"base": "main", "lead_model": "opus"})])
+        started.clear()
+        with mock.patch.object(factory, "task_event", lambda kind, repo, slug, **kw: started.append((kind, slug, kw))):
+            _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), '[models]\nlead = "haiku"\n')
+        self.assertEqual(started[0][2]["lead_model"], "haiku")
+
+    def test_a_bad_lead_model_fails_before_anything_is_created(self):
+        for bad in ("sonet", "", "claude-"):
+            code, out, err, fake = invoke([*self.ARGS, "--lead-model", bad], self.answers([], (), self.OK))
+            self.assertEqual((code, out, fake.calls, err.startswith("factory: --lead-model: ")), (2, "", [], True), bad)
 
     def test_brief_file(self):
         with tempfile.NamedTemporaryFile("w", suffix=".md") as f:
@@ -610,12 +989,12 @@ class NewTests(unittest.TestCase):
         self.assertEqual((code, fake.tasks[0]["state"]), (0, "working"))
 
     def test_cap_from_settings(self):
-        code, _, err, _ = invoke(self.ARGS, self.answers([task_entry("a")], (), self.OK), '{"worktree_cap": 1}')
+        code, _, err, _ = invoke(self.ARGS, self.answers([task_entry("a")], (), self.OK), '[limits]\nworktree_cap = 1\n')
         self.assertEqual(code, 2)
         self.assertIn("cap of 1", err)
 
     def test_the_reserve_is_kept_for_critical_tasks(self):
-        settings = '{"worktree_cap": 10}'
+        settings = '[limits]\nworktree_cap = 10\n'
         busy = lambda n: self.answers([task_entry(s) for s in "abcdefghi"[:n]], (), self.OK)
         code, _, err, fake = invoke(self.ARGS, busy(8), settings)
         self.assertEqual(code, 0, err)
@@ -640,7 +1019,7 @@ class NewTests(unittest.TestCase):
         self.assertFalse(fake.ran("claude", "--bg"))
 
     def test_without_a_reserve_the_cap_is_the_limit(self):
-        settings = '{"worktree_cap": 10, "reserve_percent": 0}'
+        settings = '[limits]\nworktree_cap = 10\nreserve_percent = 0\n'
         code, _, err, _ = invoke(self.ARGS, self.answers([task_entry(s) for s in "abcdefghi"], (), self.OK), settings)
         self.assertEqual(code, 0, err)
         code, _, err, _ = invoke(self.ARGS, self.answers([task_entry(s) for s in "abcdefghij"], (), self.OK), settings)
@@ -651,7 +1030,7 @@ class NewTests(unittest.TestCase):
         """`new` with a cap of 2 and tasks a and b; b has no pull request, a's pull requests are `pr`."""
         answers = self.answers([task_entry("a"), task_entry("b")], sessions, self.OK, {
             ("gh",): (0, "[]", ""), ("gh", "pr", "list", "--head", "worktree-a"): (0, json.dumps(pr), "")})
-        code, _, err, fake = invoke(self.ARGS, answers, '{"worktree_cap": 2, "reserve_percent": 0}', tasks=tasks)
+        code, _, err, fake = invoke(self.ARGS, answers, '[limits]\nworktree_cap = 2\nreserve_percent = 0\n', tasks=tasks)
         return code, err, fake
 
     def test_cap_counts_only_tasks_in_motion(self):
@@ -707,13 +1086,13 @@ class NewTests(unittest.TestCase):
     def test_cap_lists_only_the_tasks_in_motion(self):
         answers = self.answers([task_entry(s) for s in "abc"], (), self.OK, {
             ("gh",): (0, "[]", ""), ("gh", "pr", "list", "--head", "worktree-a"): (0, '[{"state": "OPEN"}]', "")})
-        code, _, err, _ = invoke(self.ARGS, answers, '{"worktree_cap": 2, "reserve_percent": 0}')
+        code, _, err, _ = invoke(self.ARGS, answers, '[limits]\nworktree_cap = 2\nreserve_percent = 0\n')
         self.assertEqual(code, 2)
         self.assertRegex(err, "cap of 2 tasks in motion: b, c$")
 
     def test_detached_task_counts_as_in_motion(self):
         answers = self.answers([(f"{WT}/a", None, False)], (), self.OK, {("gh",): (0, '[{"state": "OPEN"}]', "")})
-        code, _, err, _ = invoke(self.ARGS, answers, '{"worktree_cap": 1}')
+        code, _, err, _ = invoke(self.ARGS, answers, '[limits]\nworktree_cap = 1\n')
         self.assertEqual(code, 2)
         self.assertRegex(err, "cap of 1 tasks in motion: a$")
 
@@ -723,10 +1102,10 @@ class NewTests(unittest.TestCase):
         self.assertEqual([c[4] for c in fake.calls if c[0] == "gh"], ["worktree-demo-task"])
 
     def test_invalid_settings_exit_2(self):
-        code, _, err, _ = invoke(self.ARGS, self.answers([]), '{"worktree_cap": 0}')
-        self.assertEqual((code, "worktree_cap" in err), (2, True))
-        code, _, err, _ = invoke(self.ARGS, self.answers([]), "not json")
-        self.assertEqual((code, "settings.json" in err), (2, True))
+        code, _, err, _ = invoke(self.ARGS, self.answers([]), '[limits]\nworktree_cap = 0\n')
+        self.assertEqual((code, "settings.toml line 2: limits.worktree_cap must be" in err), (2, True))
+        code, _, err, _ = invoke(self.ARGS, self.answers([]), "not toml")
+        self.assertEqual((code, "settings.toml" in err), (2, True))
 
     def test_claude_failure_passes_stderr(self):
         for result in ((1, "", "model not found\n"), (0, "no marker line\n", "")):
@@ -1052,7 +1431,7 @@ class StatusTests(unittest.TestCase):
         s = {"cwd": f"{WT}/alpha", "kind": "background", "status": "busy", "state": "working",
              "startedAt": int(time.time() * 1000) - 90 * 60 * 1000}
         answers = repo_answers([task_entry("alpha")], [s], git_task_answers("x", time.time()))
-        _, out, _, _ = invoke(["status", "--json"], answers, '{"task_time_limit_hours": 1}')
+        _, out, _, _ = invoke(["status", "--json"], answers, '[limits]\ntask_time_limit_hours = 1\n')
         self.assertTrue(json.loads(out)["rows"][0]["overtime"])
 
     def test_table_output(self):
@@ -1071,12 +1450,12 @@ class StatusTests(unittest.TestCase):
         answers = repo_answers([], (), git_task_answers("x", time.time()))
         for settings, reserve, line in (
                 (None, 1, "in motion 0/4, reserve 1, cap 5 ("),
-                ('{"worktree_cap": 21}', 3, "in motion 0/18, reserve 3, cap 21 ("),
-                ('{"reserve_percent": 0}', 0, "in motion 0/5 (")):
+                ('[limits]\nworktree_cap = 21\n', 3, "in motion 0/18, reserve 3, cap 21 ("),
+                ('[limits]\nreserve_percent = 0\n', 0, "in motion 0/5 (")):
             with self.subTest(settings):
                 _, out, _, _ = invoke(["status", "--json"], answers, settings)
                 doc = json.loads(out)
-                self.assertEqual((doc["cap"], doc["reserve"]), (json.loads(settings or "{}").get("worktree_cap", 5), reserve))
+                self.assertEqual((doc["cap"], doc["reserve"]), (int(re.search(r"worktree_cap = (\d+)", settings or "").group(1)) if settings and "worktree_cap" in settings else 5, reserve))
                 _, out, _, _ = invoke(["status"], answers, settings)
                 self.assertTrue(out.startswith(line), out)
 

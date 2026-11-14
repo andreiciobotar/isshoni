@@ -406,15 +406,12 @@ def login(c):
 
 
 def merge_settings(c):
-    want = {"monitor": MONITOR, "dispatchers": ["dispatcher-" + r.split("/")[1] for r in c.repos]}
-    try:
-        have = json.loads(box(c.target, "cat ~/.claude/factory/settings.json")[1])
-    except ValueError:
-        have = {}
-    if all(have.get(k) == v for k, v in want.items()):
-        return False
-    need(box(c.target, MERGE, MERGE_PY, "~/.claude/factory/settings.json", stdin=json.dumps(want).encode()), "writing the settings")
-    return True
+    want = {"paths.monitor": MONITOR, "sessions.dispatchers": json.dumps(["dispatcher-" + r.split("/")[1] for r in c.repos])}
+    changed = False
+    for key, value in want.items():
+        out = need(box(c.target, '"$HOME/.isshoni/factory/bin/factory" settings set "$1" "$2"', key, value), "writing the settings")
+        changed |= out.strip() != "unchanged"
+    return changed
 
 
 def repositories(c):

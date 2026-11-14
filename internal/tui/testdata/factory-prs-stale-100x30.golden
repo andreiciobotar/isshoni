@@ -4,7 +4,7 @@
  ◆ alpha  api-rate-limits  review PR         3h00m  #42 https://github.com/o/alpha/pull/42          
  ▲ alpha  needs-an-answer  answer question  45m00s  Should the export keep the legacy column order? 
                                                                                                     
- worktree cap  5  per repo, 1 in reserve   c edit                   ~/.claude/factory/settings.json 
+ worktree cap  5  per repo, 1 in reserve   c edit                   ~/.claude/factory/settings.toml 
                                                                                                     
  alpha                                      in motion ▲●●●● 5/4+1   review 1   merged 1   settled 1 
   pull requests as of 12m ago · GitHub slow: factory status timed out after 25s                     

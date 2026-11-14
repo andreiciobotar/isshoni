@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -19,6 +20,8 @@ from isshoni import cli, host
 SECRET_KEY = "-----BEGIN RSA PRIVATE KEY-----\nSECRETKEYMATERIAL\n-----END RSA PRIVATE KEY-----\n"
 TOKEN = "sk-ant-oat01-SECRETTOKEN"
 PUB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItestkey laptop"
+# The server's factory (its own home, not the laptop's FACTORY_HOME): `settings set` is the real script's (the monitor and the dispatchers are written by it), anything else does nothing.
+FACTORY = '#!/bin/sh\ncase "$1" in settings) exec env -u FACTORY_HOME python3 "%s" "$@";; esac\n' % os.path.join(ROOT, "factory", "bin", "factory")
 
 # Records every call to the directory $FAKE_LOG (N.target, N.cmd, N.in), then runs the remote command in a local
 # shell: the "server". Plain sh, because the tests make hundreds of calls.
@@ -145,8 +148,9 @@ class HostTests(unittest.TestCase):
         (self.fh / "identity/key.pem").write_text(SECRET_KEY)
         (self.fh / "identity/app.json").write_text(json.dumps({"bot_login": "bot[bot]", "owner": "acme"}))
         for name, text in (("docker/Dockerfile", "FROM scratch\n"), ("docker/compose.yaml", "name: isshoni-factory\n"),
-                           ("docker/start", "#!/bin/sh\n"), ("factory/bin/factory", "#!/bin/sh\n"), ("Makefile", "install:\n")):
+                           ("docker/start", "#!/bin/sh\n"), ("Makefile", "install:\n")):
             (self.repo / name).write_text(text)
+        write_exe(self.repo / "factory/bin/factory", FACTORY)
         sh(self.repo, "git", "init", "-q")
         self.commit("first")
         self.state = str(self.srv / "state")
@@ -203,6 +207,10 @@ class HostTests(unittest.TestCase):
             head = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
             self.assertEqual((home / ".isshoni/.rev").read_text().strip(), head)
             self.assertIn("dispatcher-widgets", (home / "stub-state.json").read_text())
+            settings = tomllib.loads((home / ".claude/factory/settings.toml").read_text())
+            self.assertEqual((settings["paths"]["monitor"], settings["sessions"]["dispatchers"]),
+                             ("/state/home/.isshoni/bin/isshoni", ["dispatcher-widgets"]))
+            self.assertFalse((home / ".claude/factory/settings.json").exists())
         with self.subTest("image and compose"):
             args = (self.srv / "image.args").read_text().split()
             self.assertEqual(args[-1], "-")
@@ -419,7 +427,7 @@ exec "$(dirname "$0")/claude-real" "$@"
         keys.parent.mkdir(parents=True)
         keys.write_text("ssh-ed25519 AAAAother bob\n" + PUB + "\n")
         (claude / "settings.json").write_text(json.dumps({"theme": "dark", "env": {"A": "b"}}))
-        (factory / "settings.json").write_text(json.dumps({"worktree_cap": 3, "monitor": "old"}))
+        (factory / "settings.json").write_text(json.dumps({"worktree_cap": 3, "monitor": "old"}))  # an install from before settings.toml
         keys.rename(keys.with_name("keys-aside"))
         keys.mkdir()  # unreadable as a file: not the same as missing, and no key may be dropped over it
         rc, out, err = self.add("--repo", "acme/widgets", "--repo", "acme/private-thing")
@@ -431,8 +439,11 @@ exec "$(dirname "$0")/claude-real" "$@"
         self.assertEqual(rc, 0, err)
         self.assertEqual(json.loads((claude / "settings.json").read_text()),
                          {"theme": "dark", "env": {"A": "b", "CLAUDE_CODE_OAUTH_TOKEN": TOKEN}})
-        self.assertEqual(json.loads((factory / "settings.json").read_text()),
-                         {"worktree_cap": 3, "monitor": "/state/home/.isshoni/bin/isshoni", "dispatchers": ["dispatcher-widgets", "dispatcher-private-thing"]})
+        settings = tomllib.loads((factory / "settings.toml").read_text())
+        self.assertEqual((settings["limits"]["worktree_cap"], settings["paths"]["monitor"], settings["sessions"]["dispatchers"]),
+                         (3, "/state/home/.isshoni/bin/isshoni", ["dispatcher-widgets", "dispatcher-private-thing"]))
+        self.assertTrue((factory / "settings.json.migrated").exists())
+        self.assertFalse((factory / "settings.json").exists())
         self.assertEqual(keys.read_text(), "ssh-ed25519 AAAAother bob\nwrite " + PUB + "\n")
         self.assertTrue((self.srv / "serving").exists())
         calls = [c["argv"][1] for c in self.calls()]

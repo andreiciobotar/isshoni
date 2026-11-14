@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import tomllib
 
 from .transcript import EPOCH, TOKEN_CLASSES, Usage, sum_usage
 
@@ -32,7 +33,21 @@ def role(agent_type):
 
 # ---- model WARN -----------------------------------------------------------
 
+def configured_model(agent_type):
+    """`models.<role>` of the factory's settings.toml for a `factory:<role>` agent type; None when it cannot be read."""
+    prefix, _, name = (agent_type or "").partition(":")
+    path = os.path.join(os.path.expanduser(os.environ.get("FACTORY_HOME") or "~/.claude/factory"), "settings.toml")
+    try:
+        with open(path, "rb") as f:
+            model = tomllib.load(f)["models"][name] if prefix == "factory" else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return model if isinstance(model, str) else None
+
+
 def expected_model(agent_type, cwd, agents_dir=None):
+    if configured := configured_model(agent_type):
+        return configured
     dirs = []
     if agents_dir:
         # the user said where the definitions are: a plugin agent is looked up there by its role

@@ -50,7 +50,7 @@ Factory: `make wizard` in the clone checks the tools, builds the dashboard, inst
 /factory:dispatch
 ```
 
-Describe a task; ask for progress whenever you like. By default leads run unattended on Fable in `auto` permission mode, five tasks at a time per repository, one of them held for emergencies ([settings](docs/factory.md#settings)).
+Describe a task; ask for progress whenever you like. By default leads run unattended in `auto` permission mode, five tasks at a time per repository, one of them held for emergencies. The model of every role is a line of `~/.claude/factory/settings.toml` ([settings](docs/factory.md#settings)).
 
 Optional:
 
@@ -65,12 +65,12 @@ flowchart TD
     you([You]) <-- tasks, questions --> disp[Dispatcher]
     disp <-- brief, questions --> lead
     subgraph task [One per task, in its own worktree]
-        lead[Lead · Fable] --> subs[explorer · Haiku<br>coder · Sonnet<br>reviewer · Opus<br>lander · Sonnet]
+        lead[Lead] --> subs[explorer<br>coder<br>reviewer<br>lander]
     end
     subs -- opens --> pr[Draft pull request]
     you -- approves --> pr
     sm[Site manager<br>every 30 min] -- alerts --> disp
-    lander[Lander · Sonnet] -- merges --> pr
+    lander[Lander] -- merges --> pr
 ```
 
 A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the lander merges it within a few minutes once checks are green. Your other comments on a pull request reach its lead on the next watch tick.

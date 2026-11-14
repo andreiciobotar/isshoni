@@ -36,10 +36,10 @@ class FactoryHome(unittest.TestCase):
         return p.returncode, p.stdout, p.stderr
 
     def test_settings_come_from_it(self):
-        (self.fh / "settings.json").write_text("{bad")
+        (self.fh / "settings.toml").write_text("[bad")
         code, _, err = self.factory("status", home=str(self.fh))
         self.assertEqual(code, 2)
-        self.assertIn(f"settings file {self.fh / 'settings.json'} cannot be read", err)
+        self.assertIn(f"{self.fh / 'settings.toml'}: ", err)
         self.assertEqual(self.factory("status")[0], 0)  # the real home has none
 
     def test_a_write_lands_in_it(self):

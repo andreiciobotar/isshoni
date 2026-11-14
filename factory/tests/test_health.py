@@ -228,20 +228,27 @@ class CriteriaTests(Home):
         started = ev("x", "TaskStarted", lead_model="fable")
         for label, events, expected in (
                 ("a null model is not judged", [started, ev("x", "SubagentStart", role="coder", model=None)], []),
-                ("the pinned model", [started, ev("x", "PostToolUse", role="coder", model="claude-sonnet-5-5")], []),
+                ("the configured model", [started, ev("x", "PostToolUse", role="coder", model="claude-sonnet-5-5")], []),
                 ("a wrong coder", [started, ev("x", "PostToolUse", role="coder", model="claude-opus-5-5")],
-                 [("x", "x/coder", "claude-opus-5-5, pinned sonnet")]),
+                 [("x", "x/coder", "claude-opus-5-5, configured sonnet")]),
                 ("the lead's model", [started, ev("x", "PostToolUse", role="lead", model="claude-fable-5-2")], []),
                 ("a wrong lead", [started, ev("x", "PostToolUse", role="lead", model="claude-opus-5-5")],
-                 [("x", "x/lead", "claude-opus-5-5, pinned fable")]),
+                 [("x", "x/lead", "claude-opus-5-5, configured fable")]),
                 ("a null lead model", [started, ev("x", "PostToolUse", role="lead", model=None)], []),
                 ("no TaskStarted: no lead check", [ev("x", "PostToolUse", role="lead", model="claude-opus-5-5")], []),
-                ("a role that is not pinned", [started, ev("x", "PostToolUse", role="other", model="claude-opus-5-5")],
+                ("a role with no configured model", [started, ev("x", "PostToolUse", role="other", model="claude-opus-5-5")],
                  []),
                 ("before the last TaskStarted", [ev("x", "PostToolUse", role="coder", model="claude-opus-5-5"),
                                                  started], [])):
             with self.subTest(label):
                 self.assertEqual(check("wrong-model", pic(rows=[row("x")], events=events)), expected)
+
+    def test_wrong_model_compares_with_the_configured_model(self):
+        events = [ev("x", "TaskStarted", lead_model="fable"), ev("x", "PostToolUse", role="coder", model="claude-sonnet-5-5")]
+        configured = {"coder": "haiku", "explorer": "haiku", "reviewer": "opus"}
+        self.assertEqual(check("wrong-model", pic(rows=[row("x")], events=events, models=configured)),
+                         [("x", "x/coder", "claude-sonnet-5-5, configured haiku")])
+        self.assertEqual(check("wrong-model", pic(rows=[row("x")], events=events)), [])
 
     def test_ci_red_handover(self):
         r = row("x", phase="review", pr_url="https://pr/1")
@@ -318,7 +325,7 @@ class CriteriaTests(Home):
         self.assertEqual(names, {c["name"] for c in criteria} - {"ci-red-default", "lgtm-blocked"})
         why = {s["criterion"]: s["why"] for s in skipped}
         self.assertIn("sessions cannot be listed", why["past-limit"])
-        self.assertIn("no pinned models", why["wrong-model"])
+        self.assertIn("no agent files", why["wrong-model"])
 
     def test_no_event_log_and_gh_failing(self):
         _, skipped = factory.evaluate(pic(events=None, rows=[row("x")]), [c for c in factory.load_criteria()
@@ -463,7 +470,7 @@ class CostTests(unittest.TestCase):
             return check(name, p, threshold)
 
     def test_no_monitor_is_not_evaluated(self):
-        with self.assertRaisesRegex(factory.NotEvaluated, 'no monitor: set "monitor" in ~/.claude/factory/settings.json'):
+        with self.assertRaisesRegex(factory.NotEvaluated, 'no monitor: set paths.monitor in ~/.claude/factory/settings.toml'):
             check("cost-outlier", pic(rows=[row("x")]), 3)
 
     def test_the_monitor_is_run_once_for_both_criteria_and_a_failure_is_remembered_too(self):
@@ -663,6 +670,15 @@ class WatchTests(Harness):
         self.assertEqual(len(record["id"]), 12)
         self.assertEqual(len(self.claude_runs()), 1)
         self.assertIn(f"{record['id']}  past-limit  x  undecided", out)
+
+    def test_the_site_manager_runs_on_the_configured_model(self):
+        p = {"repo": mock.Mock(root=ROOT), "dispatcher": "d", "lean_start": False}
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "settings.toml"
+            path.write_text('[models]\nsite_manager = "claude-opus-4-1"\n')
+            with mock.patch.object(factory, "SETTINGS_PATH", path):
+                argv = factory.site_manager_argv(p, [])
+        self.assertEqual(argv[:4], ["claude", "-p", "--model", "claude-opus-4-1"])
 
     def test_lean_start_off_keeps_the_old_site_manager_argv(self):
         p = {"repo": mock.Mock(root=ROOT), "dispatcher": "d", "lean_start": False}

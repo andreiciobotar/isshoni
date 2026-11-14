@@ -67,7 +67,7 @@ def strip_ansi(text): return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]','',text)
 def check_frame(frame,words,home,allow=()):
     """Every forbidden string found in an ANSI frame: the home directory (also as a project directory name), `/Users/`,
     `/home/`, and each deny word, whole or cut short by the TUI with `…` (a prefix of 3 or more characters).
-    `~/` is allowed on purpose: the Factory tab shows the generic `~/.claude/factory/settings.json`."""
+    `~/` is allowed on purpose: the Factory tab shows the generic `~/.claude/factory/settings.toml`."""
     text=strip_ansi(frame)
     hits=[sub for sub in (home,encode(home) if home else '','/Users/','/home/') if sub and sub in text]
     for w in sorted(words):

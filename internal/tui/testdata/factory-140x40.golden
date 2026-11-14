@@ -9,7 +9,7 @@
  ▲ delta-docs  stuck-on-keys    blocked            1m30s  no reason recorded: ask its lead                                                  
  ◆ delta-docs  design-review    see deliverable        -  /r/delta/docs/design.md                                                           
                                                                                                                                             
- worktree cap  5  per repo, 1 in reserve   c edit                                                           ~/.claude/factory/settings.json 
+ worktree cap  5  per repo, 1 in reserve   c edit                                                           ~/.claude/factory/settings.toml 
                                                                                                                                             
  alpha                                                                              in motion ▲●●●● 5/4+1   review 1   merged 1   settled 1 
   SLUG              PHASE                   ELAPSED  PR                      BASE          FLAGS                                            
