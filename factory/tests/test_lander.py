@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import ROOT, factory
-from test_health import NOW, SchedHarness, iso
+from test_health import NOW, SchedHarness, iso, register
 from test_merge import SESSION, SHA, World, pr
 
 LIST = ("gh", "pr", "list", "--state", "open")
@@ -104,6 +104,12 @@ class StarterTests(World):
         self.lander(prs=[reviewed(1)], answer=reply("#1 merged u"))
         self.assertTrue(self.claude_runs()[0][-1].endswith(f"The dispatcher's session name is {SESSION}."))
         self.assertNotIn("moved", self.claude_runs()[0][-1])
+
+    def test_the_brief_names_the_registered_dispatcher_by_its_current_name(self):
+        register("sid-d")
+        self.lander(prs=[reviewed(1)], answer=reply("#1 merged u"), sessions=[
+            {"sessionId": "sid-d", "name": "renamed", "cwd": ROOT, "kind": "interactive", "pid": 7}])
+        self.assertTrue(self.claude_runs()[0][-1].endswith("The dispatcher's session name is renamed."))
 
     def test_the_merge_tools_cannot_merge_approve_comment_push_or_edit(self):
         tools = " ".join(factory.MERGE_TOOLS)
@@ -258,7 +264,7 @@ class StarterTests(World):
 
     def test_the_file_is_written_whole_and_leaves_no_temporary(self):
         self.lander("1", prs=[plain(1)], answer=reply("#1 merged u"))
-        path = factory.repo_state(SimpleNamespace(root=ROOT), "lander", "json")
+        path = factory.repo_state(ROOT, "lander", "json")
         self.assertTrue(path.exists())
         self.assertEqual(sorted(p.name for p in self.store.glob("lander-*")),
                          sorted([path.name, path.with_suffix(".lock").name]))
