@@ -25,7 +25,9 @@ TOKEN = "ghs_THROWAWAY_TOKEN"
 INSTALL_URL = "https://github.com/settings/installations/7654321"
 APP = {"id": 123456, "slug": "factory-octocat", "client_id": "Iv23abc", "html_url": "https://github.com/apps/factory-octocat",
        "owner": {"login": "octocat", "type": "User"}, "webhook_secret": "whsec-1", "client_secret": "csec-1"}
-INSTALLATION = {"id": 7654321, "html_url": INSTALL_URL, "account": {"login": "Octocat"}, "repository_selection": "selected"}
+INSTALLATION = {"id": 7654321, "html_url": INSTALL_URL, "account": {"login": "Octocat"}, "repository_selection": "selected",
+                "permissions": {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read",
+                                "actions": "write", "metadata": "read"}}
 BOT = "factory-octocat%5Bbot%5D"
 
 
@@ -194,7 +196,7 @@ class FirstRunTests(Wizard):
                 "hook_attributes": {"url": f"https://github.com/{owner}", "active": False},
                 "default_events": [],
                 "default_permissions": {"contents": "write", "pull_requests": "write", "checks": "read",
-                                       "statuses": "read", "actions": "read"}}
+                                       "statuses": "read", "actions": "write"}}
 
     def test_user_account_end_to_end(self):
         self.assertEqual(self.wizard("--owner", "octocat"), 0, self.err)
@@ -469,6 +471,28 @@ class RerunTests(Wizard):
         self.assertEqual(self.app_json()["repository_selection"], "selected")
         self.assertNotIn("WARNING", self.out)
         self.assertIn("octocat/two", self.out)
+
+    def test_a_lower_permission_is_warned_about_with_both_urls_and_still_verifies(self):
+        self.stored()
+        lower = {**INSTALLATION, "permissions": {**INSTALLATION["permissions"], "actions": "read"}}
+        self.assertEqual(self.wizard(github=routes(self.pem, {("GET", "/app/installations"): (200, [lower])})), 0, self.err)
+        self.assertIn(f"WARNING: the installed App lacks actions: write (it has read). Change it at "
+                      f"https://github.com/settings/apps/factory-octocat/permissions, then accept the new permission at {INSTALL_URL}.\n", self.out)
+        self.assertEqual(self.out.count("WARNING"), 1)
+        self.assertIn("octocat/two", self.out)
+
+    def test_a_missing_permission_and_an_organizations_app_url(self):
+        self.stored(owner_type="Organization")
+        none = {**INSTALLATION, "permissions": {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read"}}
+        self.assertEqual(self.wizard(github=routes(self.pem, {("GET", "/app/installations"): (200, [none])})), 0, self.err)
+        self.assertIn(f"WARNING: the installed App lacks actions: write (it has none). Change it at "
+                      f"https://github.com/organizations/octocat/settings/apps/factory-octocat/permissions, then accept the new "
+                      f"permission at {INSTALL_URL}.\n", self.out)
+
+    def test_the_wanted_permissions_print_no_warning(self):
+        self.stored()
+        self.assertEqual(self.wizard(), 0, self.err)
+        self.assertNotIn("WARNING", self.out)
 
     def test_install_is_polled_until_it_shows_up(self):
         self.stored()

@@ -13,6 +13,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A pull request that changes only docs, assets or top-level Markdown skips the three heavy jobs below.
+  # It is a job-level `if:`, not a workflow `paths:` filter: a skipped job reports success to branch
+  # protection, while a skipped workflow leaves the required checks pending forever.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - id: diff
+        if: github.event_name == 'pull_request'
+        run: |
+          files=$(git diff --no-renames --name-only HEAD^1 HEAD)
+          echo "changed files:"; echo "$files"
+          rc=0
+          printf '%s' "$files" | grep -qvE '^(docs/|assets/|[^/]+\.md$)' || rc=$?
+          if [ "$rc" = 1 ]; then
+            echo "docs only: skipping the heavy jobs"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code changes: running everything"
+          fi
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -24,12 +50,13 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11" # the oldest version the code supports
-      - run: make test
-      - run: go test -race ./...
+      - run: make -j3 --output-sync=target test GOTESTFLAGS=-race
 
   # The README's path on a Linux machine, with the real scheduler and no Claude login.
   linux-walk:
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -59,6 +86,8 @@ jobs:
   # Claude login, the watch's ticks fired by the container's own cron.
   container:
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -90,13 +119,20 @@ jobs:
           test "$(cat /sys/fs/cgroup/pids.max)" = 1024
           claude --version; gh --version; go version; python3 --version; tmux -V; openssl version
           EOF
+      - name: start the watch's life in the background, its cron ticks overlap the tests below
+        run: |
+          (docker exec -e CI=true -e WALK_DAEMON=1 isshoni-factory /state/home/code/isshoni/tools/walk.sh > "$RUNNER_TEMP/walk.log" 2>&1; echo $? > "$RUNNER_TEMP/walk.status") &
       - run: docker exec isshoni-factory make -C /state/home/code/isshoni install
       - run: docker exec isshoni-factory make -C /state/home/code/isshoni test
       - run: docker exec isshoni-factory sh -c 'mkdir -p ~/.claude/projects && make -C ~/code/isshoni snapshot'
       - name: make up (three seconds in a pseudo-terminal, then q)
         run: docker exec isshoni-factory sh -c 'cd ~/code/isshoni && (sleep 3; printf q) | script -qec "make up" /dev/null > /dev/null'
       - name: the watch's life, each tick fired by supercronic
-        run: docker exec -e CI=true -e WALK_DAEMON=1 isshoni-factory /state/home/code/isshoni/tools/walk.sh
+        id: watch
+        run: |
+          timeout 240 sh -c 'until [ -e "$1" ]; do sleep 1; done' sh "$RUNNER_TEMP/walk.status" || echo "the walk did not finish in 240 s"
+          cat "$RUNNER_TEMP/walk.log"
+          test "$(cat "$RUNNER_TEMP/walk.status")" = 0
       - name: a key for the dashboard over SSH, which the container starts serving when it is recreated
         run: |
           mkdir -p "$RUNNER_TEMP/state/home/.claude/factory/dashboard"
@@ -117,12 +153,16 @@ jobs:
             echo "a key that is not listed got in"; exit 1
           fi
           grep -q 'Permission denied (publickey)' "$RUNNER_TEMP/stranger.err"
+      - if: always() && steps.watch.outcome == 'skipped'
+        run: test ! -e "$RUNNER_TEMP/walk.log" || cat "$RUNNER_TEMP/walk.log"
       - if: always()
         run: docker logs isshoni-factory
 
   # launchd for real, off anyone's own machine.
   macos-walk:
     runs-on: macos-latest
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
