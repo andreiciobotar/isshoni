@@ -1,7 +1,8 @@
 # The factory's image: Claude Code, gh, git, Python, Go, tmux and a cron that needs no root.
 # It holds tools only. Everything that changes lives in the volume mounted at /state:
-# see docs/container.md. Upgrade a tool by changing its version here and rebuilding.
-FROM golang:1.27.4-trixie AS go
+# see docs/container.md. Upgrade a tool by changing its version here (for the two images their digest,
+# for supercronic its checksums too) and rebuilding.
+FROM golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9 AS go
 
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 ARG TARGETARCH

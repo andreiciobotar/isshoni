@@ -10,7 +10,7 @@ services:
         UID: ${FACTORY_UID:-1000}
         GID: ${FACTORY_GID:-1000}
     image: isshoni-factory
-    container_name: factory
+    container_name: isshoni-factory
     init: true
     restart: unless-stopped
     # Everything that must survive lives here, and nothing else on the host is visible.
@@ -18,7 +18,7 @@ services:
       - ${FACTORY_STATE:?set FACTORY_STATE to the host directory that holds the factory's state}:/state
     read_only: true
     tmpfs:
-      - /tmp:size=64m,exec
+      - /tmp:size=64m
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     cpus: ${FACTORY_CPUS:-2}

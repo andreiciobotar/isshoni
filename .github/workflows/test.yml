@@ -78,29 +78,31 @@ jobs:
       - run: docker compose up -d
       - name: not root, read-only root, no Docker socket, no privileges, limits applied
         run: |
-          docker exec factory sh -euc '
+          docker exec isshoni-factory sh -euc '
             id
             test "$(id -u)" != 0
-            if touch /probe 2>/dev/null; then echo "the root filesystem is writable"; exit 1; fi
+            awk '$2 == "/" { print $4 }' /proc/mounts | grep -q "^ro"
             if [ -e /var/run/docker.sock ]; then echo "the Docker socket is visible"; exit 1; fi
             grep -qx "NoNewPrivs:[[:space:]]*1" /proc/self/status
             grep -qx "CapBnd:[[:space:]]*0*" /proc/self/status
             test "$(cat /sys/fs/cgroup/memory.max)" = 4294967296
+            test "$(cat /sys/fs/cgroup/memory.swap.max)" = 0
+            test "$(cat /sys/fs/cgroup/cpu.max)" = "200000 100000"
             test "$(cat /sys/fs/cgroup/pids.max)" = 1024
             claude --version; gh --version; go version; python3 --version; tmux -V'
-      - run: docker exec factory make -C /state/home/code/isshoni install
-      - run: docker exec factory make -C /state/home/code/isshoni test
-      - run: docker exec factory sh -c 'mkdir -p ~/.claude/projects && make -C ~/code/isshoni snapshot'
+      - run: docker exec isshoni-factory make -C /state/home/code/isshoni install
+      - run: docker exec isshoni-factory make -C /state/home/code/isshoni test
+      - run: docker exec isshoni-factory sh -c 'mkdir -p ~/.claude/projects && make -C ~/code/isshoni snapshot'
       - name: make up (three seconds in a pseudo-terminal, then q)
-        run: docker exec factory sh -c 'cd ~/code/isshoni && (sleep 3; printf q) | script -qec "make up" /dev/null > /dev/null'
+        run: docker exec isshoni-factory sh -c 'cd ~/code/isshoni && (sleep 3; printf q) | script -qec "make up" /dev/null > /dev/null'
       - name: the watch's life, each tick fired by supercronic
-        run: docker exec -e CI=true -e WALK_DAEMON=1 factory /state/home/code/isshoni/tools/walk.sh
+        run: docker exec -e CI=true -e WALK_DAEMON=1 isshoni-factory /state/home/code/isshoni/tools/walk.sh
       - name: a recreated container finds its state
         run: |
           docker compose up -d --force-recreate
-          docker exec factory sh -c 'test -x ~/code/isshoni/bin/isshoni-tui && test -d ~/go/pkg/mod && test -s ~/.claude/factory/watch.log'
+          docker exec isshoni-factory sh -c 'test -x ~/code/isshoni/bin/isshoni-tui && test -d ~/go/pkg/mod && test -s ~/.claude/factory/watch.log'
       - if: always()
-        run: docker logs factory
+        run: docker logs isshoni-factory
 
   # launchd for real, off anyone's own machine.
   macos-walk:
