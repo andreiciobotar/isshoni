@@ -295,7 +295,7 @@ class DocumentTests(FixtureStore):
                           for v in self.doc["summary"]["anatomy"]["versions"]], [("0.1.0", 0, None), ("0.2.0", 1, 1), ("0.3.0", 0, None)])
 
     def test_summary(self):
-        self.assertEqual({k: v for k, v in self.doc["summary"].items() if k != "anatomy"}, {
+        self.assertEqual({k: v for k, v in self.doc["summary"].items() if k not in ("anatomy", "by_mode")}, {
             "tasks": 4, "landed": 1, "in_flight": 2,  # b1 is acknowledged
             "cost": {"median": 22.0, "n": 1}, "brief_to_pr_s": {"median": 3000.0, "n": 1},
             "pr_to_merge_s": {"median": 600.0, "n": 1}, "review_rounds": {"median": 1.0, "n": 1},
@@ -368,7 +368,8 @@ def shapes(d):
     add("anatomy_point_role", [r for p in a["points"] for r in p["roles"].values()])
     add("anatomy_version_role", [r for v in a["versions"] for r in v["roles"].values()])
     add("anatomy_classes", [r["classes"] for v in a["versions"] for r in v["roles"].values() if r and r["classes"]])
-    add("defects", [t["defects"] for t in tasks] + [s["defects"]])
+    add("defects", [t["defects"] for t in tasks] + [s["defects"]] + [r["defects"] for r in s["by_mode"]])
+    add("by_mode", s["by_mode"])
     add("summary", [s]), add("time", [s["time"]]), add("first_pass", [s["first_pass"]]), add("trend", [s["trend"]])
     add("median", [s[m] for m in ("cost", "brief_to_pr_s", "pr_to_merge_s", "review_rounds")])
     add("stop", d["stops"]), add("slowed", d["slowed"]), add("reward", d["rewards"])
@@ -394,7 +395,7 @@ class DashboardFixtureTests(FixtureStore):
         self.assertLessEqual({"doc", "repo", "version", "task", "pr", "cost", "by_role", "defects", "summary", "time",
                               "first_pass", "median", "stop", "slowed", "outbox", "counts", "topic", "entry",
                               "site_manager", "tech_lead", "mix", "authoring", "authoring_roles", "pooled", "pooled_roles", "pooled_share",
-                              "overhead"}, set(ours))
+                              "overhead", "by_mode"}, set(ours))
         for name in ours:
             self.assertEqual(fixture[name], ours[name], name)
         landed = [t for t in fixture_doc["tasks"] if t["landed"]]
@@ -613,6 +614,109 @@ class TechLeadTests(Store):
             self.build(lambda p: [])
         roles = authoring.call_args.args[0]
         self.assertEqual(sorted(roles), ["coder", "tech-lead"])
+
+
+class ModeTests(Store):
+    """Five landed tasks: s1, s2 single small; t1 team small; t2 team medium, no transcript; o1 started before modes existed."""
+
+    def setUp(self):
+        super().setUp()
+        at = lambda hhmm: "%sT%s:00Z" % (DAY, hhmm)  # noqa: E731
+        slugs = ("s1", "s2", "t1", "t2", "o1", "h1", "u1")
+        self.log("events-2026-11.jsonl", [
+            ev(at("10:00"), "TaskStarted", slug="s1", mode="single", size="small"),
+            ev(at("10:00"), "TaskStarted", slug="s2", mode="single", size="small"),
+            ev(at("10:00"), "TaskStarted", slug="t1", mode="team", size="small"),
+            ev(at("09:59"), "TaskStarted", slug="t2", mode="single", size="medium"),  # started again, in the other mode
+            ev(at("10:00"), "TaskStarted", slug="t2", mode="team", size="medium"),
+            ev(at("10:00"), "TaskStarted", slug="h1", mode="single", size="large"),
+            ev(at("10:00"), "TaskStarted", slug="u1", mode="single", size="large"),
+            ev(at("10:00"), "TaskStarted", slug="o1"),
+            ev(at("10:20"), "UserPromptSubmit", slug="t1", role="lead", **{"from": "human"}),  # after the hand-over
+            ev(at("10:05"), "UserPromptSubmit", slug="t1", role="lead", **{"from": "human"})])  # before it
+        self.log("tasks-2026-11.jsonl", [{"ts": at(hhmm), "repo": ALPHA, "slug": s, "state": "handed-over"}
+                                         for s, hhmm in (("s1", "10:30"), ("s2", "11:00"), ("t1", "10:10"), ("o1", "10:40"),
+                                                          ("h1", "09:00"))])  # h1 was handed over before it started
+        self.log("retros-2026-11.jsonl", [ev(at("12:00"), "", slug="t1", defects=[{"caught_by": "reviewer"}] * 4 + [{"caught_by": "lead"}])])
+        self.log("techlead-2026-11.jsonl", [{**came_back(at("12:00"), "built", 2.0, slug="t1"), "kind": "build"},
+                                            {**came_back(at("12:00"), "stopped", slug="t1"), "kind": "build"},
+                                            {**came_back(at("12:00"), "built", slug="t2"), "kind": "build"},
+                                            {**came_back(at("12:00"), "built", slug="t2"), "kind": "build"},
+                                            {**came_back(at("12:00"), "built", slug="t2"), "kind": "build"},
+                                            {**came_back(at("12:00"), "built", 1.0, slug="h1", session="s-h1"), "kind": "build"}])
+        session(self.projects, ALPHA, "s1", "%sT10:00:05.000Z" % DAY, 1000000,
+                written={"lead": [("Write", {"file_path": ALPHA + "/.claude/worktrees/s1/isshoni/x.py", "content": "a\nb\nc\n"})]})
+        session(self.projects, ALPHA, "s2", "%sT10:00:05.000Z" % DAY, 3000000)
+        session(self.projects, ALPHA, "h1", "%sT10:00:05.000Z" % DAY, 1000000)  # a build run's session
+        session(self.projects, ALPHA, "u1", "%sT10:00:05.000Z" % DAY, 0, [("coder", "claude-sonnet-5-5", 1000000, "10:05", "10:06")])  # unpriced
+        session(self.projects, ALPHA, "t1", "%sT10:00:05.000Z" % DAY, 200000, [("reviewer", "claude-opus-5-5", 0, "10:05", "10:06")])
+        prs = [pr(i, "worktree-" + s, at("10:50"), at("11:30")) for i, s in enumerate(slugs)]
+        self.doc = self.build(lambda p: prs)
+        self.rows = {(r["mode"], r["size"]): r for r in self.doc["summary"]["by_mode"]}
+
+    def test_a_task_has_its_last_started_mode_and_single_when_none_is_recorded(self):
+        self.assertEqual({t["slug"]: t["mode"] for t in self.doc["tasks"]}, {"s1": "single", "s2": "single", "t1": "team", "t2": "team", "o1": "single",
+                                                                                      "h1": "single", "u1": "single"})
+
+    def test_rows_are_by_size_then_mode_and_only_where_a_task_landed(self):
+        self.assertEqual(list(self.rows), [("single", "small"), ("team", "small"), ("team", "medium"), ("single", "large"), ("single", None)])
+
+    def test_a_row_holds_medians_and_counts_of_its_tasks(self):
+        self.assertEqual(self.rows[("single", "small")], {
+            "mode": "single", "size": "small", "n": 2, "cost_median": 20.0, "lead_share_median": 1.0, "lead_calls_median": 1.0,
+            "handover_s_median": 2700.0, "first_pass": 0, "review_rounds_median": 0.0, "defects": None, "lead_wakeups": 0,
+            "build_runs_median": None})
+        self.assertEqual(self.rows[("team", "small")], {
+            "mode": "team", "size": "small", "n": 1, "cost_median": 2.0, "lead_share_median": None, "lead_calls_median": 2.0,
+            "handover_s_median": 600.0, "first_pass": 1, "review_rounds_median": 1.0,
+            "defects": {"tests": 0, "reviewer": 4, "lead": 1, "ci": 0, "human": 0, "other": 0}, "lead_wakeups": 1,
+            "build_runs_median": 2.0})
+
+    def test_a_hand_over_before_the_start_is_unknown_and_a_task_with_only_unpriced_tokens_has_no_cost_in_the_median(self):
+        row = self.rows[("single", "large")]
+        self.assertEqual((row["n"], row["handover_s_median"], row["cost_median"]), (2, None, 10.0))  # h1: 10.0; u1: unpriced, not 0
+
+    def test_the_cost_of_a_build_run_session_is_the_tech_leads(self):
+        by_role = {t["slug"]: t["cost"]["by_role"] for t in self.doc["tasks"] if t["cost"]}
+        self.assertEqual((by_role["h1"]["tech-lead"], by_role["h1"]["lead"]), (10.0, 0.0))
+        self.assertEqual((by_role["t1"]["tech-lead"], by_role["t1"]["lead"]), (0.0, 2.0))
+
+    def test_what_is_not_known_is_null_not_zero(self):
+        self.assertEqual(self.rows[("team", "medium")], {
+            "mode": "team", "size": "medium", "n": 1, "cost_median": None, "lead_share_median": None, "lead_calls_median": None,
+            "handover_s_median": None, "first_pass": 0, "review_rounds_median": None, "defects": None, "lead_wakeups": 0,
+            "build_runs_median": 3.0})
+
+    def test_a_task_that_is_not_landed_is_in_no_row(self):
+        prs = [pr(0, "worktree-t1", "%sT10:50:00Z" % DAY, None, "OPEN")]
+        d = self.build(lambda p: prs)
+        self.assertEqual(d["summary"]["by_mode"], [])
+
+    def test_build_records_are_not_merge_queue_returns(self):
+        self.log("techlead-2026-11.jsonl", [came_back("%sT12:00:00Z" % DAY, "resolved", 1.0, slug="t1"),  # no kind: a merge record
+                                            {**came_back("%sT12:00:00Z" % DAY, "stopped", 9.0, slug="t1"), "kind": "build"},
+                                            {**came_back("%sT12:00:00Z" % DAY, "unstarted", 9.0, slug="t1"), "kind": "merge"}])
+        d = self.build(lambda p: [])["tech_lead"]
+        self.assertEqual((d["came_back"], d["resolved"], d["stopped"], d["unstarted"], d["cost"], d["cost_resolved"]), (2, 1, 0, 1, 10.0, 1.0))
+
+    def test_the_text_table_puts_single_and_team_of_a_size_side_by_side(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.print_modes(self.doc["summary"]["by_mode"], "USD")
+        self.assertEqual(out.getvalue(), "\n".join([
+            "landed tasks: single 5, team 2",
+            "size    mode    n  cost USD  lead share  lead calls  hand-over min  first pass  rounds  defects             wakeups  builds",
+            "small   single  2     20.00        100%           1             45         0/2       0  -                         0       -",
+            "small   team    1      2.00           -           2             10         1/1       1  reviewer 4, lead 1        1       2",
+            "medium  team    1         -           -           -              -         0/1       -  -                         0       3",
+            "large   single  2     10.00           -           2              -         0/2       0  -                         0       -",
+            "none    single  1         -           -           -             40         0/1       -  -                         0       -", ""]))
+
+    def test_no_row_says_so(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.print_modes([], "USD")
+        self.assertEqual(out.getvalue(), "no landed task carries a mode yet\n")
 
 
 class SmallTests(Store):
@@ -1158,6 +1262,13 @@ class CliTests(Store):
         rc, out, _ = run_cli("kaizen", "--factory-dir", "/nonexistent-factory", "--projects-dir", GROUPING, "--prices", PRICES_PATH)
         self.assertEqual((rc, out), (0, "no factory tasks in /nonexistent-factory\n"))
 
+    def test_modes_prints_the_table_and_honours_the_options(self):
+        with mock.patch.object(kaizen, "gh_prs", side_effect=fresh(self.gh)):
+            rc, out, _ = run_cli("kaizen", "--modes", *self.args)
+            self.assertEqual(rc, 0)
+            self.assertRegex(out, r"^landed tasks: single 1, team 0\nsize +mode.*\nnone +single +1 +0\.00 ")
+            self.assertEqual(run_cli("kaizen", "--modes", "--since", "1h", *self.args)[1], "no landed task carries a mode yet\n")
+
     def test_document_keys(self):
         with mock.patch.object(kaizen, "gh_prs", side_effect=fresh(self.gh)):
             _, out, _ = run_cli("kaizen", "--json", *self.args)
@@ -1166,13 +1277,13 @@ class CliTests(Store):
                                    "stops", "slowed", "rewards", "outbox", "site_manager", "tech_lead"])
         self.assertEqual(d["site_manager"], SiteManagerTests.EMPTY)
         self.assertEqual(d["tech_lead"], {**TechLeadTests.EMPTY, "landed": 1})
-        self.assertEqual(list(d["tasks"][0]), ["repo", "repo_path", "slug", "version", "started", "state", "pr", "landed",
+        self.assertEqual(list(d["tasks"][0]), ["repo", "repo_path", "slug", "version", "started", "state", "pr", "landed", "mode",
                                                "brief_to_pr_s", "pr_to_merge_s", "cost", "review_rounds", "first_pass", "authoring", "stops",
                                                "stopped_s", "defects"])
         self.assertEqual(list(d["summary"]), ["tasks", "landed", "in_flight", "cost", "brief_to_pr_s", "pr_to_merge_s",
                                               "review_rounds", "first_pass", "rework_share", "by_role", "mix", "anatomy", "time",
                                               "defects",
-                                              "trend_min", "trend", "overhead"])
+                                              "trend_min", "trend", "overhead", "by_mode"])
         self.assertEqual(list(d["outbox"]), ["issues", "decisions", "topics", "entries"])
 
 
