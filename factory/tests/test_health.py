@@ -140,8 +140,9 @@ class CriteriaTests(Home):
                          [("x", "x", "working for 35m, 78% of the 45m limit")])
         self.assertEqual(run(elapsed=int(2 * HOUR * 0.76), nearing=True),
                          [("x", "x", "working for 1h, 76% of the 2h limit")])
-        self.assertEqual(run(elapsed=30 * 60, limit=45 * 60), [])
+        self.assertEqual(run(elapsed=35 * 60, limit=45 * 60), [])  # the row decides, not the arithmetic
         self.assertEqual(run(elapsed=3 * HOUR, overtime=True), [])
+
     def test_ci_red_default(self):
         def runs(*items):
             return pic(gh=lambda *a: [{"workflowName": w, "status": s, "conclusion": c, "url": f"u/{w}"}
