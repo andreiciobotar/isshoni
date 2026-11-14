@@ -43,7 +43,7 @@ func TestFactoryStatusDecodesNulls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Cap != 7 || st.InMotion != 2 || st.Blocked != 1 || st.InReview != 1 || st.Settled != 1 || len(st.Rows) != 4 {
+	if st.Cap != 7 || st.Reserve != 1 || st.InMotion != 2 || st.Blocked != 1 || st.InReview != 1 || st.Settled != 1 || len(st.Rows) != 4 {
 		t.Fatalf("status %+v", st)
 	}
 	if a := st.Rows[0]; a.Elapsed != nil || a.Waited != nil || a.StopKind != "" || a.StopSummary != "" || a.Slug != "cost-in-money" || a.PRState != "unknown" {
