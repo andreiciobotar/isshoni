@@ -225,6 +225,7 @@ SETTINGS = (
             'The lander: the lead\'s subagent, also the headless run of `factory land` (next run). Default "sonnet".'),
     Setting("models", "site_manager", "sonnet", a_model, 'The watch tick\'s judge. Next tick. Default "sonnet".'),
     Setting("models", "courier", "haiku", a_model, 'Carries pull request comments to a lead. Next tick. Default "haiku".'),
+    Setting("models", "tech_lead", "opus", a_model, 'Resolves a pull request that came back from the merge queue. Its next run. Default "opus".'),
     Setting("limits", "worktree_cap", 5, int_in(1), "Open task worktrees at most, the dashboard's c key edits it. Default 5.", toml_arg),
     Setting("limits", "reserve_percent", 10, int_in(0, 100),
             "Percent of the cap held back for critical tasks, rounded up, never the last slot. Default 10.", toml_arg),
@@ -363,7 +364,8 @@ def checked(data, where):
     return values
 
 
-CARRIED = {s.key: s for s in SETTINGS if s.table != "models"} | {"lead_model": next(s for s in SETTINGS if s.key == "lead")}
+CARRIED = {s.key: s for s in SETTINGS if s.table != "models"} | {"lead_model": next(s for s in SETTINGS if s.key == "lead"),
+                                                          "tech_lead_model": next(s for s in SETTINGS if s.key == "tech_lead")}
 
 
 def legacy_values(old):
@@ -5324,7 +5326,7 @@ def log_tech_lead(repo, settings, slug, n, evidence, outcome, **fields):
     """One `techlead` record; what `fields` leaves out is null, and `noted` false."""
     f = {**dict.fromkeys(("session", "reason", "note", "head_before", "head_after", "cost_usd", "seconds")),
          "noted": False, **fields}
-    log("techlead", {**record(repo.root, slug, "tech-lead", settings["tech_lead_model"], f.pop("session")),
+    log("techlead", {**record(repo.root, slug, "tech-lead", settings["models"]["tech_lead"], f.pop("session")),
                      "pr": n, "evidence": evidence, "outcome": outcome, **f})
 
 
@@ -5368,7 +5370,7 @@ def tech_lead_prompt(repo, slug, pr, evidence, spec):
 def tech_lead_argv(repo, slug, pr, evidence, spec, settings):
     """The tech lead's launch command, the one place another runner would plug in."""
     lean = lean_flags() if settings["lean_start"] else []
-    return ["claude", "-p", "--model", settings["tech_lead_model"], "--permission-mode", "dontAsk",
+    return ["claude", "-p", "--model", settings["models"]["tech_lead"], "--permission-mode", "dontAsk",
             "--plugin-dir", str(PLUGIN_ROOT), *lean, f"--tools={TECH_LEAD_KIT}",
             "--allowedTools", *TECH_LEAD_TOOLS, "--disallowedTools", *TECH_LEAD_DENIED,
             "--max-budget-usd", TECH_LEAD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(TECH_LEAD_SCHEMA),

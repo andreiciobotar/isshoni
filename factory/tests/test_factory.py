@@ -390,7 +390,7 @@ DEFAULT_SETTINGS = {
     "worktree_cap": 5, "reserve_percent": 10, "task_time_limit_hours": 2, "lead_permission_mode": "auto",
     "lean_start": True, "dispatchers": None, "lgtm_from_author": True, "monitor": None,
     "models": {"dispatcher": "fable", "lead": "fable", "explorer": "haiku", "coder": "sonnet", "reviewer": "opus",
-               "lander": "sonnet", "site_manager": "sonnet", "courier": "haiku"}}
+               "lander": "sonnet", "site_manager": "sonnet", "courier": "haiku", "tech_lead": "opus"}}
 
 # A settings file as a human leaves it: tables and keys in their own order, comments, blank lines, an unknown key.
 HAND_EDITED = '''# my notes
@@ -460,6 +460,7 @@ reviewer = "fable"
 lander = "claude-haiku-4-5"
 site_manager = "opus"
 courier = "sonnet"
+tech_lead = "haiku"
 [limits]
 worktree_cap = 2
 reserve_percent = 25
@@ -477,7 +478,8 @@ monitor = "/bin/isshoni"
             "worktree_cap": 2, "reserve_percent": 25, "task_time_limit_hours": 0.5, "lead_permission_mode": "plan",
             "lean_start": False, "dispatchers": ["dispatcher-a"], "lgtm_from_author": False, "monitor": "/bin/isshoni",
             "models": {"dispatcher": "opus", "lead": "claude-opus-4-1[1m]", "explorer": "sonnet", "coder": "haiku",
-                       "reviewer": "fable", "lander": "claude-haiku-4-5", "site_manager": "opus", "courier": "sonnet"}})
+                       "reviewer": "fable", "lander": "claude-haiku-4-5", "site_manager": "opus", "courier": "sonnet",
+                       "tech_lead": "haiku"}})
         for percent in (0, 100):
             self.assertEqual(self.load(f"[limits]\nreserve_percent = {percent}\n")["reserve_percent"], percent)
         self.assertEqual(self.load("[limits]\ntask_time_limit_hours = 3\n")["task_time_limit_hours"], 3)
@@ -706,13 +708,13 @@ class MigrationTests(InStore):
     def test_all_eight_keys_and_the_dispatchers(self):
         old = {"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan", "task_time_limit_hours": 0.5,
                "monitor": "/bin/isshoni", "lgtm_from_author": False, "reserve_percent": 25, "lean_start": False,
-               "dispatchers": ["dispatcher-x"]}
+               "dispatchers": ["dispatcher-x"], "tech_lead_model": "sonnet"}
         self.legacy(old)
         got = self.load()
         self.assertEqual(got, {**DEFAULT_SETTINGS, "worktree_cap": 2, "lead_permission_mode": "plan",
                                "task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": False,
                                "reserve_percent": 25, "lean_start": False, "dispatchers": ["dispatcher-x"],
-                               "models": {**DEFAULT_SETTINGS["models"], "lead": "opus"}})
+                               "models": {**DEFAULT_SETTINGS["models"], "lead": "opus", "tech_lead": "sonnet"}})
         self.assertNotIn("not carried", self.err)
         self.assertNotIn("differs", self.err)
 
