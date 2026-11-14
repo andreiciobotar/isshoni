@@ -71,8 +71,21 @@ The cap (`worktree_cap`) counts slots per repository. Only `new` checks it, so a
 ## Messages
 Leads and the dispatcher talk through Claude Code's `SendMessage`, by session name. A lead's first line starts with `QUESTION:`, `BLOCKED:`, `OVERTIME:`, `SPLIT:` or `DONE:` and its slug. The human can always `claude attach <slug>`.
 
+## Subagents and landing
+A lead works through four agents of the plugin (`factory/agents/`), each pinned to a model: `explorer` (Haiku) finds and counts, `coder` (Sonnet) implements and commits its round, `reviewer` (Opus) reviews a fixed commit range, `lander` (Sonnet) lands. The lead keeps the judgment: the spec, the design calls, what to make of a review, the quality assessment, the pull request's message and the sign-off.
+
+The lander is given the task's base, the head the lead vouches for (the reviewed head) and two files the lead wrote beside the spec: `<slug>.pr.md` (the pull request body) and `<slug>.retro.json` (the retrospective). It fetches, rebases the branch onto its base when the base moved, resolves a conflict only when it is mechanical (independent neighbouring additions; generated files, which it regenerates), regenerates goldens when told to, runs the full tests, pushes (`--force-with-lease` after a rebase), and opens or updates the draft pull request. The same run serves the first landing and every later "your base moved". Its tools are Bash, Read, Edit, Grep and Glob. It never edits code or tests to get through, never drops a side of a conflict, never merges, and reports one of:
+
+| result | means | then |
+|---|---|---|
+| `LANDED` | the reviewed commits were pushed unchanged (`git range-diff` identical), the base changed no file the task changes, tests pass | the lander has filed the retrospective and declared `handed-over`; the lead signs off on the report |
+| `LANDED, LOOK` | pushed, but a conflict was resolved mechanically, or the base changed files the task changes, or a commit differs | nothing declared; the lead reads the flagged hunks, has them reviewed when needed, then files and declares itself |
+| `STOPPED` (`dirty`, `conflict`, `golden`, `tests`, `denied`, `other`) | a decision is needed; nothing pushed, the rebase aborted | the lead decides, then dispatches the lander again |
+
+`factory state` and `factory retro` take the task from the working directory, so a lander's declaration is the lead's (`role: lead`).
+
 ## Stacked tasks
-`new --base <slug>` branches the worktree from the base task's branch and records it in `git config branch.worktree-<slug>.factoryBase`; the pull request targets that branch. The record is never cleared: `status` stops showing a base once it has merged into the default branch, and `clean` stops treating a merged task as stacked. When a base merges, a lead still working on top of it rebases onto the default branch (the `base-merged` criterion flags it); `merge` retargets a stacked pull request itself when its turn comes.
+`new --base <slug>` branches the worktree from the base task's branch and records it in `git config branch.worktree-<slug>.factoryBase`; the pull request targets that branch. The record is never cleared: `status` stops showing a base once it has merged into the default branch, and `clean` stops treating a merged task as stacked. When a base merges, a lead still working on top of it has its lander rebase onto the default branch (the `base-merged` criterion flags it); `merge` retargets a stacked pull request itself when its turn comes.
 
 ## Logs
 All under `~/.claude/factory/`, JSON lines, append-only, mode 0600. Except where noted, a record carries `ts` (UTC, `2026-11-14T00:01:02Z`), `repo` (the main checkout's path), `slug`, `role` (`lead`, `dispatcher`, a subagent's type without the `factory:` prefix such as `coder`, `subagent` when it has none, else `other`; `feedback add` stores the `--role` it is given), `model`, `version` (the plugin's), `session`.
@@ -205,6 +218,7 @@ Then it retargets the pull request onto the default branch when its base is a me
 
 ## Known limits
 - Nothing caps what a lead spends; the time limit is checked by the lead between subagent runs.
+- A message that a base moved still wakes the lead, which only passes it to its lander; the dispatcher cannot run a lander on a task's worktree itself. What the lander may do rests on its rules and its tool list, not on a mechanism: Bash can do anything the lead's session may.
 - A worktree made by hand under a slug used before inherits that slug's last declared state.
 - A store nobody writes to is never pruned. A month file and `watch.log` have no size limit.
 - The monitor adds up the cost of a reused slug, so a task started under an old slug looks dearer than it is. A model the monitor has no price for understates the cost.

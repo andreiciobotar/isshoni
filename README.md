@@ -65,7 +65,7 @@ make up         # run it; ? shows the keys
 
 ## Factory
 
-You talk to one session, the dispatcher. For each task it starts a lead: a background session in its own worktree that writes a spec, builds through three subagents (explorer on Haiku, coder on Sonnet, reviewer on Opus), has the result reviewed until it is approved, and opens a draft pull request. A lead asks you only what it cannot decide itself, and nothing merges without you.
+You talk to one session, the dispatcher. For each task it starts a lead: a background session in its own worktree that writes a spec, builds through four subagents (explorer on Haiku, coder and lander on Sonnet, reviewer on Opus), has the result reviewed until it is approved, and signs off on the draft pull request its lander opens. A lead asks you only what it cannot decide itself, and nothing merges without you.
 
 In Claude Code, in the repository you want work done in:
 
