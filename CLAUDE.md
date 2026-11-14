@@ -6,7 +6,7 @@ You (the main session, on Fable) own planning, cross-cutting reasoning, and the 
 - **coder** (Sonnet): implementation once the plan names the files and the expected behavior.
 - **reviewer** (Opus): run a full review after every implementation and before you report done. Give it the plan; it reads the diff itself.
 
-All three roles share one standard, the `coding-taste` skill.
+All three roles share one standard, the `coding-taste` skill: you choose the design by it (the smallest complete design); the coder and reviewer agent files say how it applies to them.
 
 Rules:
 - Write the spec once, to `~/.claude/factory/specs/<name of the main checkout's directory>/<task>.md`, before the first coder dispatch. A spec is a working paper: never commit one. Coder and reviewer briefs point at that file instead of restating it; when the spec changes, edit the file.

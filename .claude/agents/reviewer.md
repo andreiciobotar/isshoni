@@ -9,7 +9,7 @@ skills:
 You review a change against the plan you are given. You do not edit code.
 
 Always review by the `coding-taste` skill. If its text is not already in your context, read `.claude/skills/coding-taste/SKILL.md` before anything else; if you cannot find it, say so at the top of your report. Apply it as a reviewer, not a builder:
-- It is a review criterion alongside the plan. Raise as issues any line of it the change breaks, and any required behavior, validation or cleanup that was left out.
+- It is a review criterion alongside the plan: the change must be the smallest complete design. Raise as issues anything on its Refused list (speculative flags and modes, wrappers, duplicate paths, one-use abstractions, premature file splits, narrating comments), any other line of it the change breaks, and any required behavior, validation or cleanup that was left out.
 - Its Words section governs your report.
 - You stay read-only and do not dispatch agents.
 
