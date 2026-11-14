@@ -334,9 +334,11 @@ class DashboardFixtureTests(FixtureStore):
                               "site_manager", "mix"}, set(ours))
         for name in ours:
             self.assertEqual(fixture[name], ours[name], name)
-        self.assertEqual(fixture_doc["roles"], list(kaizen.ROLES))
-        for point in fixture_doc["summary"]["mix"]["points"]:  # only the newest version's points have a lander share, made up rather than derived from the rows
-            self.assertEqual(set(point["share"]) | {"lander"}, set(kaizen.ROLES))
+        landed = [t for t in fixture_doc["tasks"] if t["landed"]]
+        for t in landed:  # rows of versions before the lander have no lander key; the mix reads it as 0
+            if t["cost"]:
+                t["cost"]["by_role"] = {r: t["cost"]["by_role"].get(r, 0.0) for r in kaizen.ROLES}
+        self.assertEqual((fixture_doc["roles"], fixture_doc["summary"]["mix"]), (list(kaizen.ROLES), kaizen._mix(landed)))
         self.assertEqual(fixture["point"], {frozenset(kaizen._mix(mixed([0.5] * 5))["points"][0])})
         self.assertEqual(fixture["trend"], {frozenset(kaizen._trend([task("t", "2026-11-01T00:00:00Z")] * 10))})
         self.assertEqual(fixture["reward"], {frozenset(kaizen._rewards(days(9, 8, 7, 6, 5))[0])})
