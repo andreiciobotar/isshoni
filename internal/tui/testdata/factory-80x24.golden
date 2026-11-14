@@ -16,9 +16,9 @@
  ◆ delta-docs  design-review    see deliverable        -                        
                /r/delta/docs/design.md                                          
                                                                                 
- worktree cap  5  per repo   c edit             ~/.claude/factory/settings.json 
+ worktree cap  5  per repo, 1 in reserve   c edit                               
                                                                                 
- alpha                    in motion ▲●●●● 5/5   review 1   merged 1   settled 1 
+ alpha                  in motion ▲●●●● 5/4+1   review 1   merged 1   settled 1 
   SLUG              PHASE      ELAPSED  PR                      FLAGS           
  +25 more lines · ↓ to scroll                                                   
  ↑↓/jk move  ·  c edit cap  ·  r range  ·  tab next view  ·  ? help  ·  q quit  

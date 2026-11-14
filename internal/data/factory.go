@@ -55,6 +55,7 @@ type FactoryTask struct {
 type FactoryStatus struct {
 	Rows     []FactoryTask `json:"rows"`
 	Cap      int           `json:"cap"`
+	Reserve  int           `json:"reserve"`   // slots of the cap held back for critical work; 0 when absent
 	InMotion int           `json:"in_motion"` // tasks holding a slot, the blocked included
 	Blocked  int           `json:"blocked"`
 	InReview int           `json:"in_review"`

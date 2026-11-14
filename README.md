@@ -20,7 +20,9 @@
   <a href="https://github.com/andreiciobotar/isshoni/actions/workflows/test.yml"><img src="https://github.com/andreiciobotar/isshoni/actions/workflows/test.yml/badge.svg" alt="tests"></a>
 </p>
 
-<!-- screenshot: isshoni-tui dashboard view -->
+<p align="center">
+  <img src="assets/tabs/dashboard.webp" alt="The dashboard: the cursor moves over a repository, its tasks and a session; cost, agent mix and dispatches follow the selected row">
+</p>
 
 Isshoni is two tools for people who run [Claude Code](https://claude.com/claude-code) on their repositories. Each works without the other.
 
@@ -48,7 +50,7 @@ Factory: `make wizard` in the clone checks the tools, builds the dashboard, inst
 /factory:dispatch
 ```
 
-Describe a task; ask for progress whenever you like. By default leads run unattended on Fable in `auto` permission mode, five tasks at a time per repository ([settings](docs/factory.md#settings)).
+Describe a task; ask for progress whenever you like. By default leads run unattended on Fable in `auto` permission mode, five tasks at a time per repository, one of them held for emergencies ([settings](docs/factory.md#settings)).
 
 Optional:
 
@@ -73,7 +75,9 @@ flowchart TD
 
 A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the site manager merges it once checks are green. Your other comments on a pull request reach its lead on the next watch tick.
 
-<!-- screenshot: factory status with several tasks -->
+<p align="center">
+  <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap">
+</p>
 
 ## Kaizen (改善), built in
 
@@ -85,6 +89,10 @@ Most multi-agent setups run on day 100 the way they ran on day 1. Isshoni's fact
 - Every site manager alert is marked acted-on or noise, so its precision and recall are measured.
 
 The dispatcher reads it all and proposes edits to the factory's own rules; you decide.
+
+<p align="center">
+  <img src="assets/tabs/kaizen.webp" alt="The Kaizen view, page by page: Pulse (cost, time and review rounds per task), Flow (where money and time went), Anatomy (each release compared) and Board (open issues by topic)">
+</p>
 
 ```mermaid
 flowchart TD
@@ -103,7 +111,11 @@ Parsing a transcript is slow, so parsed sessions are cached, one file per transc
 
 Cost is the API list price, from [isshoni/prices.toml](isshoni/prices.toml). `isshoni-tui` is the same data live, plus the factory's tasks and whether it is getting better. Its fifth view, [Hanami (花見)](docs/isshoni.md#hanami-花見-the-work-as-something-to-watch), draws the work as motion: something to leave on a second screen.
 
-<!-- screenshot: isshoni-tui session timeline -->
+<p align="center">
+  <img src="assets/tabs/hanami.webp" alt="Hanami: a day of the factory replayed; blossoms open where agents work and a merge streams away">
+</p>
+
+Every view, the Agents one too, and its keys: [docs/isshoni.md](docs/isshoni.md#dashboard-isshoni-tui).
 
 ## More
 
