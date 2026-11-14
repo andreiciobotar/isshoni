@@ -41,8 +41,8 @@ class Prices:
     def to_dict(self):
         return {"currency": self.currency, "as_of": self.as_of, "source": self.source, "path": self.path}
 
-    def parts(self, model, raw_usage):
-        """Cost of one message by token class, or None when the model has no price."""
+    def _products(self, model, raw_usage):
+        """Tokens times rate per class in the order the cost adds them, or None when the model has no price."""
         t = self.models.get(model) or self.models.get(_DATED.sub("", model))
         if t is None:
             return None
@@ -51,14 +51,19 @@ class Prices:
         if long_prompt and u.input + u.cache_write + u.cache_read > long_prompt["over"]:
             t = long_prompt
         write_5m, write_1h = write_tiers(raw_usage)
-        n = {"input": u.input, "output": u.output, "cache_write_5m": write_5m, "cache_write_1h": write_1h,
-             "cache_read": u.cache_read}
-        return {k: n[k] * t[k] / 1e6 for k in RATES}
+        n = {"input": u.input, "output": u.output, "cache_read": u.cache_read,
+             "cache_write_5m": write_5m, "cache_write_1h": write_1h}
+        return {k: v * t[k] for k, v in n.items()}
+
+    def parts(self, model, raw_usage):
+        """Cost of one message by token class, or None when the model has no price."""
+        p = self._products(model, raw_usage)
+        return None if p is None else {k: p[k] / 1e6 for k in RATES}
 
     def cost(self, model, raw_usage):
         """Cost of one message in the file's currency, or None when the model has no price."""
-        p = self.parts(model, raw_usage)
-        return None if p is None else sum(p.values())
+        p = self._products(model, raw_usage)
+        return None if p is None else sum(p.values()) / 1e6
 
 
 def write_tiers(raw_usage):

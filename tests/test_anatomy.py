@@ -189,6 +189,29 @@ class Anatomy(unittest.TestCase):
         fork = self.role(doc, "fork")
         self.assertEqual((fork["calls"], fork["dispatches"], fork["tools"]), (1, 0, {}))
 
+    def test_a_fork_of_a_subagent_does_not_claim_its_parents_messages(self):
+        spawn = call("m1", usage(i=10), [tool("t1", "Agent", subagent_type="fork"), tool("r1", "Read", file_path="/a")])
+        self.n += 1
+        base = os.path.join(self.tmp, "projects", "p%d" % self.n)
+        wt = REPO + "/.claude/worktrees/t1"
+        self.write(base + "/s.jsonl", [{"type": "worktree-state", "worktreeSession": {"worktreePath": wt, "worktreeName": "t1", "originalCwd": wt}},
+                                      call("l1", usage(i=1), [tool("t0", "Agent", subagent_type="parent")])])
+        for aid, agent, depth, tid, lines in (
+                ("a-fork", "fork", 2, "t1", [dict(spawn), call("f1", usage(i=20))]),
+                ("z-parent", "parent", 1, "t0", [spawn, call("p2", usage(i=15))])):
+            self.write("%s/s/subagents/agent-%s.jsonl" % (base, aid), lines)
+            self.write("%s/s/subagents/agent-%s.meta.json" % (base, aid), [{"agentType": agent, "toolUseId": tid, "spawnDepth": depth}])
+        doc = self.build(transcript.load_session(base + "/s.jsonl", PRICES))
+        parent, fork = self.role(doc, "parent"), self.role(doc, "fork")
+        self.assertEqual((parent["calls"], parent["dispatches"], parent["tools"]), (2, 1, {"Read": 1}))
+        self.assertEqual((fork["calls"], fork["dispatches"], fork["tools"]), (1, 0, {}))
+
+    def test_tools_on_a_later_line_of_the_message_count_once(self):
+        doc = self.build(self.session("t1", [call("m1", usage(i=1)), call("m1", usage(i=1), [
+            tool("x1", "Bash", command="ls"), tool("x2", "Agent", subagent_type="c")])]))
+        r = self.role(doc)
+        self.assertEqual((r["calls"], r["tools"], r["dispatches"]), (1, {"Bash:ls": 1}, 1))
+
     def test_a_plugin_agent_is_its_name(self):
         doc = self.build(self.session("t1", [], subs=[("factory:lander", [call("a1", usage(i=1))]), ("Explore", [call("b1", usage(i=1))])]))
         self.assertEqual(sorted(doc["tasks"][0]["roles"]), ["Explore", "lander", "lead"])

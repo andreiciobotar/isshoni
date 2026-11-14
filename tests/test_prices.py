@@ -34,6 +34,13 @@ class CostTests(unittest.TestCase):
         long_u = usage(i=100000, o=1000, cw=2000, cr=1, h1=1000)  # prompt 102,001: all five long-prompt rates
         self.assertAlmostEqual(p.cost(HAIKU, long_u), 0.05412505)
 
+    def test_cost_divides_the_summed_products_once(self):
+        one = dict.fromkeys(prices.RATES, 1)
+        p = prices.Prices("p", {"currency": "USD", "as_of": "x", "source": "x", "models": {"m": one}})
+        u = usage(i=225, o=49, cw=945, cr=17, h1=465)  # per-class division would give 0.0012360000000000001
+        self.assertEqual(p.cost("m", u), 0.001236)
+        self.assertAlmostEqual(sum(p.parts("m", u).values()), 0.001236)
+
     def test_plain(self):
         self.assertAlmostEqual(PRICES.cost(OPUS, usage(i=1000, o=100, cr=10)), (5000 + 1000 + 5) / 1e6)
 
