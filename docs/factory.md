@@ -98,7 +98,7 @@ The model of every role is a line of `[models]`: an alias (`fable`, `opus`, `son
 | `models.dispatcher` | `fable` | advice only: the human starts the dispatcher, and a session the factory did not launch uses the agent files' pins |
 | `models.lead` | `fable` | at the next `factory new` (`new --lead-model <m>` overrides it for that task; the model used is recorded in `TaskStarted`) |
 | `models.explorer`, `models.coder`, `models.reviewer` | `haiku`, `sonnet`, `opus` | for the next lead started: the lead is launched with `--agents`, one `factory:<role>` entry per file in `factory/agents/` (its description, body, tools and skills, and this model), which shadows the plugin's agent of the same name; a frontmatter key other than `name`, `description`, `model`, `tools` and `skills`, or an agent file without a `models` key, is an error |
-| `models.lander` | `sonnet` | the lead's lander as above, and the headless landing and merge runs at their next run |
+| `models.lander` | `sonnet` | the lead's lander as above, and the headless run of `factory land` at its next run (merging itself is a script and uses no model) |
 | `models.site_manager` | `sonnet` | the next `watch` tick or digest |
 | `models.courier` | `haiku` | the next tick that carries a comment |
 

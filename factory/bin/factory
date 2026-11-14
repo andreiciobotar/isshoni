@@ -215,7 +215,7 @@ SETTINGS = (
     Setting("models", "coder", "sonnet", a_model, 'The lead\'s coder. Takes effect for the next lead started. Default "sonnet".'),
     Setting("models", "reviewer", "opus", a_model, 'The lead\'s reviewer. Takes effect for the next lead started. Default "opus".'),
     Setting("models", "lander", "sonnet", a_model,
-            'The lander: the lead\'s subagent, also the headless landing and merge runs (next run). Default "sonnet".'),
+            'The lander: the lead\'s subagent, also the headless run of `factory land` (next run). Default "sonnet".'),
     Setting("models", "site_manager", "sonnet", a_model, 'The watch tick\'s judge. Next tick. Default "sonnet".'),
     Setting("models", "courier", "haiku", a_model, 'Carries pull request comments to a lead. Next tick. Default "haiku".'),
     Setting("limits", "worktree_cap", 5, int_in(1), "Open task worktrees at most, the dashboard's c key edits it. Default 5.", toml_arg),
