@@ -196,7 +196,7 @@ class MergeCommandTests(World):
         self.assertIn("#1 merged", out)
 
     def test_a_stop_ends_the_run(self):
-        prs = [pr(1), pr(2), pr(3)]
+        prs = [pr(1), pr(2, base="worktree-t1"), pr(3, base="worktree-t2")]
         code, out, _ = self.merge("1", "2", "3", prs=prs, checks={1: GREEN, 2: [{"name": "t", "bucket": "fail"}], 3: GREEN})
         self.assertEqual(code, 1)
         self.assertIn("#1 merged", out)
@@ -221,12 +221,22 @@ class MergeCommandTests(World):
         self.assertIn("#1 merged", out)
 
     def test_all_skips_tasks_not_handed_over(self):
-        code, out, _ = self.merge("--all", prs=[pr(1), pr(2), pr(3)], state={"t1": "handed-over", "t2": "working",
-                                                                             "t3": "handed-over"}, tasks=["t1", "t2", "t3"])
+        code, out, _ = self.merge("--all", prs=[pr(1), pr(2), pr(3, base="worktree-t2")],
+                                  state={"t1": "handed-over", "t2": "working", "t3": "handed-over"},
+                                  tasks=["t1", "t2", "t3"])
         self.assertEqual(code, 0)
         self.assertIn("#2 skipped: task t2 is in phase motion (declared working)\n", out)
-        self.assertEqual([c[1] for c in self.gh_mutations()], ["merge", "merge"])
+        self.assertIn("#3 skipped: its base worktree-t2 was skipped\n", out)
+        self.assertEqual([c[1] for c in self.gh_mutations()], ["merge"])
         self.assertNotIn("stopped", out)
+
+    def test_one_command_merges_one_pull_request_per_base_and_what_is_stacked_on_it(self):
+        code, out, _ = self.merge("1", "2", prs=[pr(1), pr(2)])
+        self.assertEqual(code, 1)
+        self.assertIn("#1 merged", out)
+        self.assertIn("#2 stopped: " + ("its base has moved since its head: bring it up to date (factory land t2) so its checks run on the combination"), out)
+        self.assertEqual([c[2] for c in self.gh_mutations() if c[1] == "merge"], ["1"])
+        self.assertFalse(any(c[:4] == ["gh", "pr", "checks", "2"] for c in self.fake.calls))
 
     def test_a_named_number_that_is_not_open_exits_2(self):
         code, _, err = self.merge("9", prs=[pr(1)])
@@ -262,8 +272,8 @@ class DryRunTests(World):
         self.assertEqual(out.splitlines(), [
             "#1 would merge (draft: would be marked ready)",
             "#2 would merge (retarget onto main first; mergeability is checked after that)",
-            "#3 would stop: failed or cancelled checks: t",
-            "#4 would merge"])
+            "#3 would stop: its base has moved since its head: bring it up to date (factory land t3) so its checks run on the combination",
+            "#4 would stop: its base has moved since its head: bring it up to date (factory land t4) so its checks run on the combination"])
         self.assertEqual(self.gh_mutations(), [])
         self.assertFalse(any(c[:3] == ["gh", "pr", "view"] and c[3] == "2" for c in self.fake.calls))
         self.assertFalse(self.fake.ran("claude", "rm"))
@@ -434,7 +444,7 @@ class ApprovedTests(World):
         self.approved([pr(1), pr(2)], {1: [comment()], 2: [comment(n=2)]})
         self.assertEqual(sum(c[:3] == ["gh", "api", "repos/{owner}/{repo}/collaborators/andrei/permission"]
                              for c in self.fake.calls), 1)
-        self.assertEqual(self.merges(), ["1", "2"])
+        self.assertEqual(self.merges(), ["1"])
 
     def test_every_other_check_still_applies(self):
         code, out, _ = self.approved([pr(1)], {1: [comment()]}, checks=[{"name": "t", "bucket": "fail"}])
@@ -456,9 +466,10 @@ class ApprovedTests(World):
 
     def test_all_skips_what_is_not_approved_and_merges_the_rest(self):
         code, out, _ = self.approved([pr(1), pr(2), pr(3)], {1: [comment()], 3: [comment(n=3)]}, "--all")
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertIn("#2 skipped: not approved on GitHub", out)
-        self.assertEqual(self.merges(), ["1", "3"])
+        self.assertIn("#3 stopped: its base has moved since its head: bring it up to date (factory land t3) so its checks run on the combination", out)
+        self.assertEqual(self.merges(), ["1"])
 
     def test_a_draft_is_not_merged_on_an_approval(self):
         code, out, _ = self.approved([pr(1, draft=True)], {1: [comment()]}, reviews={1: [review()]})

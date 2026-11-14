@@ -2296,12 +2296,14 @@ def merge_one(p, pr, merged, dry, permission=None):
             return "pending", f"cannot read the pull request of its base {base}"
         if (state, into) != ("merged", repo.default):
             return "base", f"its base {base} is not {repo.default} nor the head of a pull request merged into it"
+    moved = "its base has moved since its head: bring it up to date (factory land {}) so its checks run on the combination"
+    if base == repo.default and merged:  # something merged in this command moved the default branch
+        return "behind", moved.format(task_of(p, pr)["slug"])
     if not fetched(p):
         return "pending", f"git fetch {repo.remote} failed: cannot tell whether its base has moved"
     ahead = repo.git("merge-base", "--is-ancestor", f"{repo.remote}/{repo.default}", pr["headRefOid"])[0]
     if ahead == 1:
-        return "behind", (f"its base has moved since its head: bring it up to date (factory land "
-                          f"{task_of(p, pr)['slug']}) so its checks run on the combination")
+        return "behind", moved.format(task_of(p, pr)["slug"])
     if ahead != 0:
         return "pending", "cannot tell whether its base has moved: git merge-base failed"
     try:
@@ -2366,17 +2368,18 @@ def cmd_merge(args):
     unknown = [n for n in args.prs if n not in by_number]
     if unknown:
         raise Fail(f"merge: #{unknown[0]} is not an open pull request; nothing done")
-    selected = [by_number[n] for n in dict.fromkeys(args.prs)]
+    selected, skipped = [by_number[n] for n in dict.fromkeys(args.prs)], set()
     for pr in sorted(prs, key=lambda pr: pr["number"]) if args.all else []:
         reason = handover_reason(p, pr)
         if reason:
+            skipped.add(pr["headRefName"])
             print(f"#{pr['number']} skipped: {reason}")
         else:
             selected.append(pr)
     if not selected:
         print("nothing to merge")
     selected, merged, failed = bottom_up(selected), set(), False
-    permission, skipped = {} if args.approved else None, set()
+    permission = {} if args.approved else None
     for i, pr in enumerate(selected):
         named = pr["number"] in args.prs
         stop = ("skipped", f"its base {pr['baseRefName']} was skipped") if pr["baseRefName"] in skipped and not named \
@@ -3390,7 +3393,7 @@ def run_lander(repo, snap, given, word, name):
     write_lander(repo, state)
     if "num_turns" in reply:
         cost, ms = reply.get("total_cost_usd"), reply.get("duration_ms")
-        print(f"lander: {reply['num_turns']} turns, "
+        print(f"lander: {reply['num_turns'] if reply['num_turns'] is not None else '?'} turns, "
               f"{f'${cost:.2f}' if isinstance(cost, (int, float)) else '$?'}, "
               f"{f'{ms / 1000:.0f}' if isinstance(ms, (int, float)) else '?'} s")
     return all(kind == "merged" for kind, _ in results.values())

@@ -98,7 +98,7 @@ class StarterTests(World):
                                "duration_ms": None}), "")
         code, out, _ = self.lander("1", prs=[plain(1)], answer=null)
         self.assertEqual(code, 0)
-        self.assertIn("lander: None turns, $?, ? s\n", out)
+        self.assertIn("lander: ? turns, $?, ? s\n", out)
 
     def test_the_brief_says_whether_the_base_has_moved(self):
         self.lander(prs=[reviewed(1)], answer=reply("#1 merged u"),
@@ -355,6 +355,26 @@ class TickTests(SchedHarness, World):
         self.cli("watch", answers=answers, sessions=listed, entries=slugs)
         self.tick(newer, at=NOW + 120, answer=reply("#1 stopped ci: red"))
         self.assertEqual(len(self.landers()), 1)
+
+    def test_a_pull_request_not_in_the_run_keeps_its_noticed_key(self):
+        repo = SimpleNamespace(root=ROOT)
+        state = factory.read_lander(repo)
+        state["noticed"] = {"2": f"{SHA}:{iso(NOW - 500)}"}
+        factory.write_lander(repo, state)
+        self.tick([reviewed(1), reviewed(2, at=NOW - 500)], answer=reply("#1 stopped ci: red"))
+        noticed = lander_state()["noticed"]
+        self.assertEqual(noticed["2"], f"{SHA}:{iso(NOW - 500)}")
+        self.assertEqual(sorted(noticed), ["1", "2"])
+        [argv] = self.landers()
+        self.assertNotIn("- #2:", argv[-1])
+
+    def test_a_pull_request_not_in_the_run_that_closed_loses_its_noticed_key(self):
+        repo = SimpleNamespace(root=ROOT)
+        state = factory.read_lander(repo)
+        state["noticed"] = {"9": f"{SHA}:x"}
+        factory.write_lander(repo, state)
+        self.tick([reviewed(1)], answer=reply("#1 stopped ci: red"))
+        self.assertEqual(sorted(lander_state()["noticed"]), ["1"])
 
     def test_a_pull_request_without_a_handed_over_task_or_with_a_stranger_lgtm_is_not_noticed(self):
         self.tick([reviewed(1), reviewed(2), said(3, association="NONE")], tasks=["t1", "t3"],
