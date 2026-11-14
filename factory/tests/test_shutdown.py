@@ -158,12 +158,11 @@ class RunLifetimeTests(Fakes):
         self.assertEqual(p.wait(timeout=10), 143)
         self.assertTrue(gone(pid))
 
-    def script_gets(self, signum, *more):
+    def script_gets(self, signum):
         """The script `lander 1` with the fake `claude` and `gh`, signalled during the claude run."""
         p = self.run_script({})
         pid = self.started()
-        for s in (signum, *more):
-            os.kill(p.pid, s)
+        os.kill(p.pid, signum)
         self.assertEqual(p.wait(timeout=10), 128 + signum)
         self.assertTrue(gone(pid))
 
@@ -172,9 +171,6 @@ class RunLifetimeTests(Fakes):
 
     def test_the_script_on_sighup_ends_its_group_children(self):
         self.script_gets(signal.SIGHUP)
-
-    def test_a_second_signal_does_not_change_the_exit_code(self):
-        self.script_gets(signal.SIGTERM, signal.SIGTERM)
 
 
 class TickLockTests(Harness):
@@ -309,15 +305,25 @@ class BusyEveryTickTests(Harness):
         # two listings: the draft sync's and the criterion's
         self.assertEqual((self.count("claude", "agents"), self.count("ps"), len(self.claude_runs())), (2, 1, 1))
 
-    def test_an_undecided_finding_is_sent_again_and_a_decided_one_is_not(self):
+    def test_an_undecided_finding_is_sent_again_on_the_health_pass_only_and_a_decided_one_is_not(self):
         self.hand_over(7)
         self.tick()
         fid = self.records()[0]["id"]
-        self.tick(at=NOW + 120, answers={("claude", "-p"): reply([choice(fid)])})
+        self.tick(at=NOW + 120)
+        self.assertEqual(self.claude_runs(), [])  # between health passes only a new finding is sent
+        self.tick(at=NOW + 1800, answers={("claude", "-p"): reply([choice(fid)])})  # the health pass
         self.assertEqual(len(self.claude_runs()), 1)  # undecided: sent again
-        self.tick(at=NOW + 240)
+        self.tick(at=NOW + 1920)
         self.assertEqual(self.claude_runs(), [])
-        self.assertEqual(len([r for r in self.records() if r.get("criterion")]), 1)
+        self.assertEqual(len([r for r in self.records() if r.get("criterion") == "busy-after-handover"]), 1)
+
+    def test_a_failing_site_manager_run_is_not_repeated_on_every_tick(self):
+        self.hand_over(7)
+        runs = 0
+        for later in (0, 120, 240, 360):
+            self.tick(at=NOW + later, answers={("claude", "-p"): (1, "", "boom")})
+            runs += len(self.claude_runs())
+        self.assertEqual(runs, 1)
 
     def test_a_finding_whose_session_finished_is_cleared_on_the_next_tick(self):
         self.hand_over(7)

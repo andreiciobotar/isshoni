@@ -349,6 +349,27 @@ class TickTests(SchedHarness, World):
         self.tick([reviewed(1)], answer=reply("#1 stopped handover: busy"), extra={("claude", "agents"): [busy, busy, free]})
         self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:busy"})
 
+    def test_a_retry_that_ends_with_the_lead_busy_writes_free_and_starts_no_run_after(self):
+        self.tick([reviewed(1)], answer=reply("#1 stopped handover: busy"), sessions=self.busy_lead())
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:busy"})
+        # the retry: the lead is free before it, and the stop it sends wakes the lead
+        busy, free = (0, json.dumps(self.busy_lead()), ""), (0, json.dumps(self.busy_lead()[:1]), "")
+        self.tick([reviewed(1)], at=NOW + 120, answer=reply("#1 stopped ci: red"),
+                  extra={("claude", "agents"): [free, free, free, busy]})
+        self.assertEqual(len(self.landers()), 1)
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:free"})
+        self.tick([reviewed(1)], at=NOW + 240)
+        self.assertEqual(self.landers(), [])
+
+    def test_a_stop_that_wakes_the_lead_gives_two_runs_in_four_ticks_not_four(self):
+        busy, free = (0, json.dumps(self.busy_lead()), ""), (0, json.dumps(self.busy_lead()[:1]), "")
+        runs = 0
+        for later in (0, 120, 240, 360):  # free before the run, busy after it, on every tick
+            self.tick([reviewed(1)], at=NOW + later, answer=reply("#1 stopped ci: red"),
+                      extra={("claude", "agents"): [free, free, busy]})
+            runs += len(self.landers())
+        self.assertEqual(runs, 2)
+
     def test_a_free_pull_request_with_an_unchanged_key_starts_no_run(self):
         self.tick([reviewed(1)], answer=reply("#1 stopped ci: red"))
         self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:free"})
