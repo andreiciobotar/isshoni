@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from test_factory import ROOT, factory
-from test_health import HOUR, NOW, Harness, Home, TimedRun, check, choice, fired, iso, pic, reply
+from test_factory import ROOT, FakeRun, factory
+from test_health import HOUR, NOW, Harness, Home, check, choice, fired, iso, pic, reply
 
 MIX = {"cache_read": 0.6, "output": 0.4}
 SHIFTED = {"cache_read": 0.45, "output": 0.3, "cache_write_1h": 0.25}
@@ -49,7 +49,7 @@ class Evidence(Home):
     """anatomy(p) and the window, through a faked monitor and gh."""
 
     def p(self, tasks, prs, **answers):
-        run = TimedRun({(MONITOR, "anatomy"): answers.get("monitor", (0, json.dumps({"tasks": tasks}), ""))})
+        run = FakeRun({(MONITOR, "anatomy"): answers.get("monitor", (0, json.dumps({"tasks": tasks}), ""))})
         self.run = run
         merged = [{"headRefName": f"worktree-{slug}", "mergedAt": iso(at)} for slug, at in prs]
         return pic(monitor=answers.get("setting", MONITOR), gh=lambda *a: merged), run
@@ -381,6 +381,11 @@ class DigestCase(Harness):
         self.assertEqual([f["id"] for f in doc["findings"]], [fired["id"]])
         self.assertEqual(doc["findings"][0]["subject"], "cache_write_1h")
         self.assertEqual(self.fake.timeouts[-1], factory.WATCH_TIMEOUT)
+
+    def test_a_digest_with_no_dispatcher_to_address_is_skipped(self):
+        code, out, _ = self.cli("digest", answers=self.world(), sessions=[])
+        self.assertEqual((code, out), (0, "digest skipped: no dispatcher session for /repo: run /factory:dispatch in a session there\n"))
+        self.assertEqual((self.claude_runs(), self.records()), ([], []))
 
     def test_the_next_window_starts_at_the_marker(self):
         self.cli("digest", answers={**self.world(), ("claude", "-p"): self.judge()})

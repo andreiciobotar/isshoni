@@ -1,4 +1,4 @@
-.PHONY: install up build test fmt-check test-factory test-python test-go wizard uninstall snapshot screenshot strip pictures clean FORCE
+.PHONY: install up build test fmt-check test-factory test-python test-go wizard wizard-remote uninstall uninstall-remote snapshot screenshot strip pictures clean FORCE
 
 BIN := bin/isshoni-tui
 VIEW ?= dashboard
@@ -58,9 +58,17 @@ test-factory:
 wizard:
 	factory/bin/factory wizard $(ARGS)
 
+# Set up a server (asks for what is missing; same as bin/isshoni host add), e.g. make wizard-remote ARGS="me@server --state /srv/factory --repo owner/name"
+wizard-remote:
+	bin/isshoni host add $(ARGS)
+
 # Remove what the wizard and the factory put on this machine, e.g. make uninstall ARGS="--list"
 uninstall:
 	factory/bin/factory uninstall $(ARGS)
+
+# Remove a server's install (asks which; same as bin/isshoni host remove), e.g. make uninstall-remote ARGS="NAME --purge-state"
+uninstall-remote:
+	bin/isshoni host remove $(ARGS)
 
 # Render one frame to stdout without a TTY, e.g. make snapshot VIEW=session ARGS="--session 04ca0148 --no-color"
 snapshot: build $(FIXDIR)
