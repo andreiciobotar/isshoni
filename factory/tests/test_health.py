@@ -732,7 +732,7 @@ class WatchTests(Harness):
         self.assertEqual(sent["task"], {"phase": "motion", "state": None, "session": "working", "elapsed": "3h",
                                         "last_commit": "?", "dirty": None, "ahead": None, "behind": None,
                                         "pr_state": "none", "pr_url": "", "overtime": True,
-                                        "worktree": f"{WT}/x", "lead": "x", "pid": None})
+                                        "worktree": f"{WT}/x", "branch": "worktree-x", "lead": "x", "pid": None})
         self.assertEqual(sent["transcripts"], [str(path)])
         tail = sent["transcript_tail"]
         self.assertEqual(len(tail), 15)
@@ -1106,7 +1106,8 @@ class RoutingTests(Home):
         f = {"id": "aaa", "criterion": "c", "escalate": "judgment", "slug": "x", "subject": "x", "detail": "d",
              "what": "w"}
         task = factory.firing_for_run(p, f)["task"]
-        self.assertEqual((task["lead"], task["worktree"], task["pid"]), ("x", f"{WT}/x", 4242))
+        self.assertEqual((task["lead"], task["worktree"], task["branch"], task["pid"]),
+                         ("x", f"{WT}/x", "worktree-x", 4242))
         self.assertEqual(factory.firing_for_run(p, f)["transcripts"], [str(main), str(sub)])
         gone = factory.firing_for_run(pic(rows=[row("x", session="working", dirty=None, ahead=None, behind=None)], sessions=[lead("x", **FINISHED)]), f)
         self.assertEqual((gone["task"]["lead"], gone["task"]["pid"]), (None, None))

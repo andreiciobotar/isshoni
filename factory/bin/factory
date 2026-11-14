@@ -1985,7 +1985,7 @@ def firing_for_run(p, f):
                        "elapsed": None if row["elapsed"] is None else age(n - row["elapsed"], n),
                        "last_commit": age(row["last_commit"], n), "dirty": row["dirty"], "ahead": row["ahead"],
                        "behind": row["behind"], "pr_state": row["pr_state"], "pr_url": row["pr_url"],
-                       "overtime": row["overtime"], "worktree": row["path"], "lead": lead,
+                       "overtime": row["overtime"], "worktree": row["path"], "branch": row["branch"], "lead": lead,
                        "pid": session.get("pid") if session else None}
         paths = transcripts(session)
         out["transcripts"] = [str(t) for t in paths]

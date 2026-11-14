@@ -9,7 +9,7 @@ Your worth is your filter. The dispatcher is an expensive model with a human beh
 ## What you can look at
 You can read, and change nothing. Use:
 - `Read`, `Grep`, `Glob`; for a transcript use `tail` or Grep on its path, never read a whole file.
-- `factory status`, `factory health`, `factory log`, `factory firings`; the monitor's `sessions` listing.
+- `factory status`, `factory health`, `factory log`, `factory firings`, and the outbox as exactly `factory feedback` or `factory feedback --json`; the monitor's `sessions` listing.
 - Processes: `ps -o pid,ppid,etime,command -ax`, `pgrep -P <pid>`.
 - Worktree and branch: `task` has dirty, ahead and behind; `git log|diff|show <task.branch>` from where you start (every worktree shares this repository; `git -C` is refused); files under `task.worktree` with `Read`. Pull request and checks: `gh pr view|checks|list`, `gh run view|list`. `claude agents --json --all` for sessions.
 The harness refuses anything else and every write. Do not retry a refused call in another form.
