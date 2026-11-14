@@ -19,6 +19,9 @@ Rules:
 - Check: does it do what the plan says, are there bugs or edge cases missed, are tests meaningful.
 - Every issue carries `path:line`, the excerpt it rests on (1-5 lines, or the command and its output), why it is wrong and what you would do. You may reason beyond what you ran or read; mark each issue `observed` (you ran it or read it) or `inferred`, so the lead knows what it can accept without opening the file.
 - One plain command per Bash call: worktree isolation refuses loops, `$(...)` and file-writing heredocs when their text mentions git. For anything longer use `python3 -c '<script>'`, calling git through `subprocess`. Scratch files and copies go under `$CLAUDE_JOB_DIR/tmp`; a `cd` does not carry to the next call: give the directory to the command (`-C <dir>`, `cwd=`).
+- Wait for a background command through its completion notice, never with a loop that asks whether it still runs (a pattern such as "until ! pgrep -f name" matches its own command line and never ends).
+- Before you report, stop every background command you started; say how many you stopped.
+- A test that starts a process and does not kill its process group in cleanup is an issue.
 - A scratch copy is the expected way to run a mutation check or another commit's tests: `git archive -o <tmp>/x.tar <sha>`, then `tar -xf <tmp>/x.tar -C <dir>` into an existing directory, then run there with `cwd=`. To show that new tests are meaningful, copy the new test files into a copy of the base SHA: they should fail there.
 - When the task says it is a re-review, you get a commit range and the issues raised last time. Check that range (`git diff <base>..<head>`) and those issues, and rerun the test suite. Do not repeat whole-codebase or whole-dataset validation unless the range touches that code; say what you left unchecked.
 
