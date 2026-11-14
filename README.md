@@ -13,12 +13,14 @@
 
 <p align="center">
   Give Claude Code a brief, get back a reviewed pull request,<br>
-  and see where every token went on the way.
+  see where every token went, and watch the factory improve with every task.
 </p>
 
 <p align="center">
   <a href="https://github.com/andreiciobotar/isshoni/actions/workflows/test.yml"><img src="https://github.com/andreiciobotar/isshoni/actions/workflows/test.yml/badge.svg" alt="tests"></a>
 </p>
+
+<!-- screenshot: isshoni-tui dashboard view -->
 
 Isshoni is two tools for people who run [Claude Code](https://claude.com/claude-code) on their repositories. Each works without the other.
 
@@ -26,6 +28,54 @@ Isshoni is two tools for people who run [Claude Code](https://claude.com/claude-
 |---|---|---|
 | **Monitor** | Shows where the money and tokens went: per repository, task, session, agent and model | `isshoni`, `isshoni-tui` |
 | **Factory** | Builds several tasks in parallel, each in its own git worktree, each ending in a draft pull request | `/factory:dispatch`, from the `factory` plugin |
+
+## Setup
+
+Needs `git` and Python 3.11+; the factory also needs Claude Code and an authenticated [`gh`](https://cli.github.com), on macOS or Linux.
+
+Monitor:
+
+```sh
+git clone https://github.com/andreiciobotar/isshoni && cd isshoni
+bin/isshoni sessions --since 7d    # where the money went
+make install && make up            # live dashboard; needs Go 1.27+
+```
+
+Factory, in Claude Code, in the repository you want work done in:
+
+```
+/plugin marketplace add andreiciobotar/isshoni
+/plugin install factory@factory
+/rename dispatcher-<repository directory name>
+/factory:dispatch
+```
+
+Describe a task; ask for progress whenever you like. By default leads run unattended on Fable in `auto` permission mode, five tasks at a time per repository ([settings](docs/factory.md#settings)).
+
+Optional:
+
+- [Its own GitHub identity](docs/factory.md#identity): `make wizard ARGS="--owner <owner of your repositories>"` in the clone. Pull requests then come from a bot, so you can approve them.
+- [Always on](docs/container.md): the factory in a container on a Linux host.
+- [Cost alerts and a daily digest](docs/factory.md#site-manager): set `"monitor": "<clone>/bin/isshoni"` in `~/.claude/factory/settings.json`.
+
+## Factory
+
+```mermaid
+flowchart TD
+    you([You]) <-- tasks, questions --> disp[Dispatcher]
+    disp <-- brief, questions --> lead
+    subgraph task [One per task, in its own worktree]
+        lead[Lead · Fable] --> subs[explorer · Haiku<br>coder · Sonnet<br>reviewer · Opus<br>lander · Sonnet]
+    end
+    subs -- opens --> pr[Draft pull request]
+    you -- approves --> pr
+    sm[Site manager<br>every 30 min] -- alerts --> disp
+    sm -- merges --> pr
+```
+
+A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the site manager merges it once checks are green.
+
+<!-- screenshot: factory status with several tasks -->
 
 ## Kaizen (改善), built in
 
@@ -38,58 +88,27 @@ Most agent setups run on day 100 the way they ran on day 1. Isshoni's factory le
 
 The dispatcher reads it all and proposes edits to the factory's own rules; you decide.
 
+```mermaid
+flowchart TD
+    tasks[Every task] -. feedback, decisions,<br>retrospectives, cost .-> disp[Dispatcher]
+    disp -. proposes edits .-> you([You])
+    you -. accepts .-> rules[Rules for the next task]
+```
+
 On day one, agents reported the same shell friction eleven times and counting. It became a rule that day ([#8](https://github.com/andreiciobotar/isshoni/pull/8)).
 
 ## Monitor
 
-`isshoni` reads the transcripts Claude Code already keeps in `~/.claude/projects` and never writes there. It reports cost and tokens by model and agent, the share spent in subagents, and the signs of wasted work: repeated dispatches, review loops, and agents running on a model other than the one pinned for them.
+`isshoni` reads the transcripts Claude Code already keeps in `~/.claude/projects` and never writes there. Beyond cost and tokens it shows the signs of wasted work: repeated dispatches, review loops, agents on a model other than the one pinned for them.
 
-```sh
-git clone https://github.com/andreiciobotar/isshoni && cd isshoni
-bin/isshoni sessions --since 7d    # sessions by repository and task, with totals
-bin/isshoni session <id-prefix>    # one session: models, agents, dispatch timeline
-bin/isshoni agents --since 7d      # per agent type: cost, tokens, p50/p90, repeats
-```
+Cost is the API list price, from [isshoni/prices.toml](isshoni/prices.toml). `isshoni-tui` is the same data live, plus the factory's tasks and whether it is getting better.
 
-Cost is the API list price, from [isshoni/prices.toml](isshoni/prices.toml); edit it when prices change. Python 3.11+, no dependencies. Add `--json` for machine-readable output; [docs/isshoni.md](docs/isshoni.md) has the rest.
-
-`isshoni-tui` is the same data as a live terminal dashboard: sessions grouped by repository and task, a pane for the row under the cursor (timeline and dispatches of a session, `enter` for the full screen), and what is running now. Its factory view (`3`) lists what waits on you across repositories, then each repository's factory tasks with their phase and how many hold a slot against the cap, and `c` there changes the cap: the one thing the dashboard writes (`worktree_cap` in `~/.claude/factory/settings.json`). Its kaizen view (`4`) shows from `isshoni kaizen` whether the factory is getting better: cost, speed, review rounds, defects and the feedback outbox.
-
-```sh
-make install    # needs Go 1.27+ and Python 3.11+; builds bin/isshoni-tui
-make up         # run it; ? shows the keys
-```
-
-<!-- screenshot: isshoni-tui dashboard view -->
 <!-- screenshot: isshoni-tui session timeline -->
-
-## Factory
-
-You talk to one session, the dispatcher. For each task it starts a lead: a background session in its own worktree that writes a spec, builds through four subagents (explorer on Haiku, coder and lander on Sonnet, reviewer on Opus), has the result reviewed until it is approved, and signs off on the draft pull request its lander opens. A lead asks you only what it cannot decide itself, and nothing merges without you.
-
-In Claude Code, in the repository you want work done in:
-
-```
-/plugin marketplace add andreiciobotar/isshoni
-/plugin install factory@factory
-/rename dispatcher-<repository directory name>
-/factory:dispatch
-```
-
-Optionally, give the factory its own GitHub identity: `make wizard` (or `factory wizard`) creates a GitHub App for your account after one confirmation in the browser, has you install it on the repositories you choose, and checks that it works. From then on leads and their subagents push, open pull requests and commit as the App's bot instead of with your login (without it, they use yours), and your approval of a pull request is yours alone, since the pull request's author is not you. This is a default, not a boundary: the dispatcher session still acts with your login, and a lead's shell can still reach it, so no agent ever posts `lgtm` or approves. It needs `openssl`; see [Identity](docs/factory.md#identity).
-
-Describe a task, then ask for progress whenever you like: the dispatcher answers from `factory status`, which lists every task with its phase and pull request. To try it for one session without installing, start `claude --plugin-dir <clone>/factory`.
-
-It needs `git`, an authenticated [`gh`](https://cli.github.com) and Python 3.11+. By default leads run unattended on Fable in `auto` permission mode, and five tasks may be in motion per repository. Every session event, lead retrospective and decision a lead took without asking is logged under `~/.claude/factory/` (events for 12 months); `factory feedback` lists the decisions and what agents reported about the factory itself.
-
-A site manager watches the factory for you: every 30 minutes, without running a model, it checks for stuck, blocked or over-limit tasks, red CI and the like, and only when something new turns up starts a short Sonnet run that tells the dispatcher or drops it as noise with a reason. It also merges for you: approve a handed-over pull request (an approving review on its head, or a comment `lgtm`) and, checks green and no conflict, the next check merges it. It starts by itself when a session becomes the dispatcher and stops when the last dispatcher session of the repository is gone. Once a day, when enough tasks have landed, it also sends the dispatcher a digest of where the money went (which token class, task, role or plugin version cost more than before), computed from the monitor's cost anatomy. It needs `claude` and `gh` on your `PATH` and runs on macOS (launchd) and Linux (a systemd user timer, else cron); Windows is not supported. To keep it running while your laptop sleeps, [docs/container.md](docs/container.md) puts the whole factory in a container on an always-on Linux host.
-
-<!-- screenshot: factory status with several tasks -->
 
 ## More
 
-- [docs/factory.md](docs/factory.md): the factory's commands, states, settings and log formats, and the site manager's criteria
-- [docs/isshoni.md](docs/isshoni.md): the monitor's options, the dashboard's keys and how sessions map to tasks
+- [docs/factory.md](docs/factory.md): commands, states, settings, logs, the site manager
+- [docs/isshoni.md](docs/isshoni.md): the monitor's options and the dashboard's keys
 - `make test` runs everything
 
 ## Status
