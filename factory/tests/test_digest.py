@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from test_factory import ROOT, factory
-from test_health import HOUR, NOW, Harness, Home, TimedRun, check, choice, fired, iso, pic, reply
+from test_factory import ROOT, FakeRun, factory
+from test_health import HOUR, NOW, Harness, Home, check, choice, fired, iso, pic, reply
 
 MIX = {"cache_read": 0.6, "output": 0.4}
 SHIFTED = {"cache_read": 0.45, "output": 0.3, "cache_write_1h": 0.25}
@@ -49,7 +49,7 @@ class Evidence(Home):
     """anatomy(p) and the window, through a faked monitor and gh."""
 
     def p(self, tasks, prs, **answers):
-        run = TimedRun({(MONITOR, "anatomy"): answers.get("monitor", (0, json.dumps({"tasks": tasks}), ""))})
+        run = FakeRun({(MONITOR, "anatomy"): answers.get("monitor", (0, json.dumps({"tasks": tasks}), ""))})
         self.run = run
         merged = [{"headRefName": f"worktree-{slug}", "mergedAt": iso(at)} for slug, at in prs]
         return pic(monitor=answers.get("setting", MONITOR), gh=lambda *a: merged), run

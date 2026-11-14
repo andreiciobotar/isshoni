@@ -568,7 +568,7 @@ class Harness(Home):
         base = repo_answers([task_entry(s) for s in entries], sessions)
         base[("claude", "-p")] = reply()
         base[("gh", "pr", "list")] = (0, "[]", "")
-        self.fake = TimedRun({**base, **(answers or {})})
+        self.fake = FakeRun({**base, **(answers or {})})
         if at is not None:
             self.clock = at
         out, err = io.StringIO(), io.StringIO()
@@ -595,18 +595,6 @@ def reply(decisions=(), sent=True, cost=0.15):
 
 def choice(fid, decision="escalated", reason="because"):
     return {"id": fid, "decision": decision, "reason": reason}
-
-
-class TimedRun(FakeRun):
-    def __init__(self, answers):
-        super().__init__(answers)
-        self.timeouts = []
-        self.envs = []
-
-    def __call__(self, argv, cwd=None, timeout=None, input=None, env=None):
-        self.timeouts.append(timeout)
-        self.envs.append(env)
-        return super().__call__(argv, cwd, input)
 
 
 def fired(fid, criterion="past-limit", escalate="always", subject="x", ts=NOW - 10 * HOUR, repo=ROOT):

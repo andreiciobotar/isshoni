@@ -888,6 +888,11 @@ def cmd_new(args):
         sys.stderr.write(f"factory: warning: cannot check for an existing pull request on {branch}; continuing\n")
     elif old_pr != "none":
         raise Fail(f"a {old_pr} pull request already exists for branch {branch}; pick another slug")
+    rc, _, err = act_git(repo.root, "ls-remote", "--exit-code", "--heads", repo.remote, f"refs/heads/{branch}", timeout=GH_TIMEOUT)
+    if rc == 0:
+        raise Fail(f"branch {branch} already exists on {repo.remote} (another machine's task?); pick another slug")
+    if rc != 2:
+        sys.stderr.write(f"factory: warning: cannot check {repo.remote} for branch {branch}: {err.strip()}; continuing\n")
     if args.base:
         for argv in (["worktree", "add", "-b", branch, path, base],
                      ["config", f"branch.{branch}.factoryBase", base]):
@@ -3095,17 +3100,36 @@ PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", 
 CALLBACK_DONE = "<!doctype html><meta charset=utf-8><p>Done. Go back to the terminal.</p>"
 
 
-def load_identity():
-    path = IDENTITY.expanduser() / "app.json"
+def load_object(path):
+    """The JSON object in `path`, None when there is no such file; Fail when it is not one."""
     try:
-        identity = json.loads(path.read_text())
+        value = json.loads(path.read_text())
     except FileNotFoundError:
         return None
     except ValueError as e:
         raise Fail(f"{path} cannot be read as JSON: {e}", 1)
-    if not isinstance(identity, dict):
+    if not isinstance(value, dict):
         raise Fail(f"{path} is not a JSON object", 1)
-    return identity
+    return value
+
+
+def load_identity():
+    return load_object(IDENTITY.expanduser() / "app.json")
+
+
+def load_hosts():
+    """The servers `isshoni host add` recorded in the store, by name; {} when there are none."""
+    return load_object(STORE.expanduser() / "hosts.json") or {}
+
+
+def print_hosts():
+    hosts = load_hosts()
+    print("hosts:")
+    for name, e in hosts.items():
+        print(f"  {name}  {e.get('target')}  {','.join(e.get('repos') or []) or '-'}")
+    if not hosts:
+        print("  none")
+    print("  their live state: bin/isshoni host status")
 
 
 def write_identity(identity):
@@ -3247,13 +3271,13 @@ def identity_exports():
     return values, None
 
 
-def act_git(path, *args):
+def act_git(path, *args, timeout=None):
     """`git` in `path` as the App when an identity is installed (as the session hook's `factory env` does), for what
     reaches the remote or makes commits: the human's credentials and name are not used then."""
     exports, error = identity_exports()
     if error:
         return 1, "", error
-    return run(["git", *args], cwd=path, env={**os.environ, **exports} if exports else None)
+    return run(["git", *args], cwd=path, timeout=timeout, env={**os.environ, **exports} if exports else None)
 
 
 def cmd_env(args):
@@ -3489,7 +3513,7 @@ def verify_app(identity):
 PLUGIN = "factory@factory"
 SOURCE = "andreiciobotar/isshoni"
 # The names the factory writes at the top of its home; uninstall removes these and nothing else there.
-HOME_FILE_RE = re.compile(r"settings\.json|watch\.log|identity|specs|deliverables|dashboard|\.settings-.*\.tmp"
+HOME_FILE_RE = re.compile(r"settings\.json|watch\.log|identity|specs|deliverables|dashboard|hosts\.json|\.settings-.*\.tmp"
                           r"|(events|tasks|feedback|firings|retros)(-\d{4}-\d\d)?\.jsonl")
 Step = collections.namedtuple("Step", "name purpose optional state act recheck", defaults=(False,))
 
@@ -3741,6 +3765,11 @@ def cmd_wizard(args):
               "  /factory:dispatch")
     if not args.list and not did and not failed and all(done is not False for _, done, _ in states):
         print("Nothing to do: everything is set up.")
+    if args.list:
+        print_hosts()
+    else:
+        print("A server: `make wizard-remote` (docs/container.md)." if clone()
+              else "A server: needs a clone of the repository, then `make wizard-remote` there (docs/container.md).")
     return 0 if required and not failed else 1
 
 
@@ -3774,6 +3803,15 @@ def uninstall_app(args, left):
     identity = load_identity()
     if not identity:
         return print("  nothing to remove")
+    if identity.get("copy"):
+        return print("  this identity is a copy: the App belongs to the machine that ran `host add`, and only the copy "
+                     "here goes, with the home step")
+    hosts = load_hosts()
+    if hosts:
+        names = ", ".join(hosts)
+        print(f"  the App {identity['slug']} and its installation are kept: {len(hosts)} host(s) use it ({names}).\n"
+              "  Run `make uninstall-remote` for each (`bin/isshoni host remove NAME`), then `make uninstall` again.")
+        return left.append(f"the App {identity['slug']} and its installation: {len(hosts)} host(s) use it ({names})")
     problem = None
     if identity.get("installation_id") and uninstall_step(
             args, left, f"the App {identity['slug']}, installed", "its access to your repositories",
@@ -3831,19 +3869,24 @@ def count_files(path):
 def uninstall_home(args, left):
     home = STORE.expanduser()
     entries = sorted(home.iterdir()) if home.is_dir() else []
-    mine = [p for p in entries if HOME_FILE_RE.fullmatch(p.name)]
-    strangers = [p for p in entries if p not in mine]
+    kept = {"identity", "hosts.json"} if load_hosts() else set()
+    mine = [p for p in entries if HOME_FILE_RE.fullmatch(p.name) and p.name not in kept]
+    strangers = [p for p in entries if not HOME_FILE_RE.fullmatch(p.name)]
     if strangers and other_home():
         print(f"  {home} does not look like a factory home: {', '.join(p.name for p in strangers)}; nothing removed")
         return left.append(f"{home}: does not look like a factory home")
     for p in strangers:
         print(f"  not the factory's, kept: {p}")
         left.append(f"{p}: not the factory's")
+    for p in entries:
+        if p.name in kept:
+            print(f"  kept, hosts still use it: {p}")
+            left.append(f"{p}: hosts still use the App (`make uninstall-remote`, then `make uninstall` again)")
     if not mine:
         return print("  nothing to remove")
     found = "\n    ".join(f"{p} ({count_files(p)} files)" if p.is_dir() else str(p) for p in mine)
     if uninstall_step(args, left, "in " + str(home) + "\n    " + found, "all of it, for good, the identity's private key included"
-                      if (home / "identity").exists() else "all of it, for good", f"the home {home}"):
+                      if any(p.name == "identity" for p in mine) else "all of it, for good", f"the home {home}"):
         for p in mine:
             shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()
         try:
@@ -3881,6 +3924,12 @@ def cmd_uninstall(args):
                  "`factory clean` or `git worktree remove` removes them, before the plugin is uninstalled",
                  *([f"this clone ({clone()})"] if clone() else []), "git, gh, Go, Claude Code", *left):
         print(f"  {line}")
+    if args.list:
+        try:
+            print_hosts()
+        except Fail as e:
+            print(f"hosts: failed: {e}")
+            failed = True
     return 1 if failed else 0
 
 
