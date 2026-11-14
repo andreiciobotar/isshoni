@@ -315,7 +315,7 @@ class CriteriaTests(Home):
         firings, skipped = factory.evaluate(pic(sessions=None, rows=None, events=None, models={}), criteria)
         self.assertEqual(firings, [])
         names = {s["criterion"] for s in skipped}
-        self.assertEqual(names, {c["name"] for c in criteria} - {"ci-red-default"})
+        self.assertEqual(names, {c["name"] for c in criteria} - {"ci-red-default", "lgtm-blocked"})
         why = {s["criterion"]: s["why"] for s in skipped}
         self.assertIn("sessions cannot be listed", why["past-limit"])
         self.assertIn("no pinned models", why["wrong-model"])
@@ -595,9 +595,11 @@ class TimedRun(FakeRun):
     def __init__(self, answers):
         super().__init__(answers)
         self.timeouts = []
+        self.envs = []
 
-    def __call__(self, argv, cwd=None, timeout=None, input=None):
+    def __call__(self, argv, cwd=None, timeout=None, input=None, env=None):
         self.timeouts.append(timeout)
+        self.envs.append(env)
         return super().__call__(argv, cwd, input)
 
 
@@ -758,13 +760,14 @@ class WatchTests(Harness):
         self.assertEqual(self.decisions(), [("aaa", "escalated", "first", "site-manager")])
 
     def test_output_that_is_not_the_expected_json_exits_1_and_records_nothing(self):
-        for answer in ((0, "", ""), (0, "not json", ""), (0, "[]", ""), (0, "{}", ""),
-                       (0, json.dumps({"structured_output": {"sent": True}}), ""),
-                       (0, json.dumps({"structured_output": {"sent": True, "decisions": "x"}}), ""),
-                       (1, reply([choice("aaa")])[1], "boom")):
+        answers = ((0, "", ""), (0, "not json", ""), (0, "[]", ""), (0, "{}", ""),
+                   (0, json.dumps({"structured_output": {"sent": True}}), ""),
+                   (0, json.dumps({"structured_output": {"sent": True, "decisions": "x"}}), ""),
+                   (1, reply([choice("aaa")])[1], "boom"))
+        for i, answer in enumerate(answers):
             with self.subTest(answer=answer):
                 self.seed("firings", [fired("aaa", escalate="judgment")])
-                code, out, err = self.tick(answers={("claude", "-p"): answer})
+                code, out, err = self.tick(answers={("claude", "-p"): answer}, at=NOW + i * 1800)
                 self.assertEqual(code, 1)
                 self.assertIn("aaa  past-limit  x  undecided", out)
                 self.assertEqual(self.decisions(), [])
@@ -1091,7 +1094,7 @@ class JobTests(unittest.TestCase):
         self.assertIn("WorkingDirectory=/re%%po\n", unit)
         self.assertIn("ExecStart=/py '/a$$b/f%%y'\n", unit)
         self.assertIn("StandardOutput=append:/lo%%g\n", unit)
-        self.assertEqual(calls[-1][1], "*/30 * * * * cd /re\\%po && PATH=/bin /py /f\\%y >> /lo\\%g 2>&1 # job\n")
+        self.assertEqual(calls[-1][1], "*/2 * * * * cd /re\\%po && PATH=/bin /py /f\\%y >> /lo\\%g 2>&1 # job\n")
 
     def test_two_folders_with_one_name_get_two_labels(self):
         a, b = factory.job_label("/a/repo"), factory.job_label("/b/repo")
@@ -1149,7 +1152,7 @@ class ScheduleTests(SchedHarness):
         self.assertEqual(job, {"Label": self.LABEL,
                                "ProgramArguments": [factory.sys.executable, "/plug/factory/bin/factory", "watch",
                                                     "--dispatcher", "dispatcher-repo"],
-                               "WorkingDirectory": ROOT, "StartInterval": 1800,
+                               "WorkingDirectory": ROOT, "StartInterval": 120,
                                "EnvironmentVariables": {"PATH": job_path()},
                                "StandardOutPath": log, "StandardErrorPath": log})
         uid = os.getuid()
@@ -1235,8 +1238,8 @@ class SystemdTests(SchedHarness):
                          f"ExecStart={factory.sys.executable} /plug/factory/bin/factory watch --dispatcher dispatcher-repo\n"
                          f"StandardOutput=append:{log}\nStandardError=append:{log}\n")
         self.assertEqual(self.unit("timer").read_text(),
-                         f"[Unit]\nDescription=factory watch {ROOT}\n\n[Timer]\nOnActiveSec=1800\n"
-                         "OnUnitActiveSec=1800\n\n[Install]\nWantedBy=timers.target\n")
+                         f"[Unit]\nDescription=factory watch {ROOT}\n\n[Timer]\nOnActiveSec=120\n"
+                         "OnUnitActiveSec=120\n\n[Install]\nWantedBy=timers.target\n")
         self.assertEqual(self.systemctl(), [["--user", "show-environment"], ["--user", "daemon-reload"],
                                             ["--user", "enable", "--now", f"{self.LABEL}.timer"]])
         self.assertEqual([c[0] for c in self.fake.calls if c[0] == "launchctl"], [])
@@ -1287,7 +1290,7 @@ class CronTests(SchedHarness):
         code, out, err = self.schedule("install", crontab=f"{self.OTHER}\n{old}\n")
         self.assertEqual((code, err, out), (0, "", f"installed {self.LABEL} (cron)\n"))
         path = job_path()
-        self.assertEqual(self.written(), [f"{self.OTHER}\n*/30 * * * * cd {ROOT} && PATH={path} {factory.sys.executable} "
+        self.assertEqual(self.written(), [f"{self.OTHER}\n*/2 * * * * cd {ROOT} && PATH={path} {factory.sys.executable} "
                                           f"/plug/factory/bin/factory watch --dispatcher dispatcher-repo "
                                           f">> {self.store / 'watch.log'} 2>&1 # {self.LABEL}\n"])
 
@@ -1324,10 +1327,10 @@ class CronTests(SchedHarness):
 class HookTests(SchedHarness):
     DISPATCHER_SESSION = DISPATCHER | {"name": "dispatcher-repo"}
 
-    def hook(self, event, *, sessions=(DISPATCHER_SESSION,), cwd=ROOT, answers=None, **payload):
+    def hook(self, event, *, sessions=(DISPATCHER_SESSION,), cwd=ROOT, answers=None, entries=(), **payload):
         stdin = json.dumps({"hook_event_name": event, "session_id": "sid-d", "cwd": cwd, **payload})
         with mock.patch.object(factory.sys, "stdin", io.StringIO(stdin)):
-            result = self.cli("hook", sessions=sessions, answers=answers)
+            result = self.cli("hook", sessions=sessions, answers=answers, entries=entries)
         self.assertEqual(result, (0, "", ""))
 
     def listed(self):
@@ -1353,7 +1356,7 @@ class HookTests(SchedHarness):
                 self.put_plist(StartInterval=1)
                 self.hook("SessionStart", source=source)
                 self.assertTrue(self.listed())
-                self.assertEqual(plistlib.loads(self.plist().read_bytes())["StartInterval"], 1800)
+                self.assertEqual(plistlib.loads(self.plist().read_bytes())["StartInterval"], 120)
 
     def test_a_session_that_is_not_the_dispatcher_starts_nothing(self):
         other = [DISPATCHER | {"name": "someone"}]
@@ -1375,6 +1378,12 @@ class HookTests(SchedHarness):
         self.assertFalse(self.plist().exists())
         self.assertTrue(self.fake.ran("launchctl", "bootout"))
 
+    def test_the_last_session_ending_keeps_the_job_while_a_task_is_handed_over(self):
+        self.put_plist()
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "handed-over", "ts": iso(NOW - HOUR)}])
+        self.hook("SessionEnd", reason="other", entries=["x"])
+        self.assertTrue(self.plist().exists())
+
     def test_an_ending_session_that_is_no_longer_listed_is_known_by_its_title(self):
         self.put_plist()
         self.hook("SessionEnd", sessions=[], session_title="someone")
@@ -1390,7 +1399,7 @@ class HookTests(SchedHarness):
     def test_a_job_that_is_present_but_not_loaded_is_installed_again(self):
         self.put_plist(StartInterval=1)
         self.hook("UserPromptSubmit", answers={("launchctl", "print"): (113, "", "not found")})
-        self.assertEqual(plistlib.loads(self.plist().read_bytes())["StartInterval"], 1800)
+        self.assertEqual(plistlib.loads(self.plist().read_bytes())["StartInterval"], 120)
 
     def test_another_live_dispatcher_keeps_the_job(self):
         twin = DISPATCHER | {"name": "dispatcher-repo", "sessionId": "sid-2", "cwd": f"{ROOT}/sub"}
@@ -1445,12 +1454,19 @@ class OrphanTests(SchedHarness):
         self.assertIn("nothing new", out)
         self.assertEqual([r for r in self.records() if "decision" in r], [])
 
-    def test_it_neither_merges_nor_starts_the_site_manager(self):
+    def test_it_does_not_start_the_site_manager(self):
         self.use("past-limit")
-        with mock.patch.object(factory, "watch_lgtm", side_effect=AssertionError("lgtm ran")):
-            _, out, _ = self.watch([self.overtime()])
+        _, out, _ = self.watch([self.overtime()])
         self.assertEqual(self.claude_runs(), [])
         self.assertIn("past-limit", out)
+        self.assertFalse(self.plist().exists())
+
+    def test_a_task_handed_over_keeps_the_job(self):
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "handed-over", "ts": iso(NOW - HOUR)}])
+        _, out, _ = self.watch([])
+        self.assertTrue(self.plist().exists())
+        self.assertNotIn("removing the schedule", out)
+        self.watch([], at=NOW + 1800, entries=[])  # its worktree is gone
         self.assertFalse(self.plist().exists())
 
     def test_it_stays_while_the_missing_dispatcher_could_not_be_judged(self):
