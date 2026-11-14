@@ -78,9 +78,11 @@ The lander is given the task's base, the head the lead vouches for (the reviewed
 
 | result | means | then |
 |---|---|---|
-| `LANDED` | the reviewed commits were pushed unchanged (`git range-diff` identical), the base changed no file the task changes, tests pass | the lander has filed the retrospective and declared `handed-over`; the lead signs off on the report |
-| `LANDED, LOOK` | pushed, but a conflict was resolved mechanically, or the base changed files the task changes, or a commit differs | nothing declared; the lead reads the flagged hunks, has them reviewed when needed, then files and declares itself |
-| `STOPPED` (`dirty`, `conflict`, `golden`, `tests`, `denied`, `other`) | a decision is needed; nothing pushed, the rebase aborted | the lead decides, then dispatches the lander again |
+| `LANDED` | the reviewed commits were pushed unchanged (`git range-diff` identical), the base changed no file the task changes, no golden changed, tests pass | the lander has filed the retrospective and declared `handed-over`; the lead signs off on the report |
+| `LANDED, LOOK` | pushed, but a conflict was resolved mechanically, or the base changed files the task changes, or a commit differs, or goldens were regenerated | nothing declared; the lead reads the flagged hunks, has them reviewed when needed, then files and declares itself |
+| `STOPPED` (`dirty`, `conflict`, `golden`, `tests`, `denied`, `other`) | a decision is needed; nothing pushed (`denied` can follow a push). After `conflict` the rebase is aborted; after `golden` or `tests` the worktree stays on the rebased commits | the lead decides, then dispatches the lander again |
+
+The lander refuses to start unless the worktree is clean and its head is the reviewed head, and refuses to push over commits on the remote branch that the reviewed head does not contain. When a stacked task's base has merged, the lead says so and the lander rebases onto the default branch and retargets the pull request.
 
 `factory state` and `factory retro` take the task from the working directory, so a lander's declaration is the lead's (`role: lead`).
 
@@ -218,7 +220,7 @@ Then it retargets the pull request onto the default branch when its base is a me
 
 ## Known limits
 - Nothing caps what a lead spends; the time limit is checked by the lead between subagent runs.
-- A message that a base moved still wakes the lead, which only passes it to its lander; the dispatcher cannot run a lander on a task's worktree itself. What the lander may do rests on its rules and its tool list, not on a mechanism: Bash can do anything the lead's session may.
+- A message that a base moved still wakes the lead, which only passes it to its lander; the dispatcher cannot run a lander on a task's worktree itself. What the lander may do rests on its rules and its tool list, not on a mechanism: Bash can do anything the lead's session may. When a stacked task's base was itself rebased, or was squash-merged, the lander's rebase replays the base's old commits: it reports a difference or stops on a conflict, and the lead sorts it out.
 - A worktree made by hand under a slug used before inherits that slug's last declared state.
 - A store nobody writes to is never pruned. A month file and `watch.log` have no size limit.
 - The monitor adds up the cost of a reused slug, so a task started under an old slug looks dearer than it is. A model the monitor has no price for understates the cost.
