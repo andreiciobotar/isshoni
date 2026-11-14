@@ -118,7 +118,13 @@ def validate_slug(slug):
 
 
 SETTINGS_DEFAULTS = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                     "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "lean_start": True}
+                     "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "reserve_percent": 10,
+                     "lean_start": True}
+
+
+def reserve(cap, percent):
+    """Slots held back for critical work: percent of the cap rounded up, never the last slot."""
+    return min(cap - 1, -(-cap * percent // 100))
 
 
 def load_settings():
@@ -150,12 +156,15 @@ def load_settings():
     from_author = data.get("lgtm_from_author", settings["lgtm_from_author"])
     if not isinstance(from_author, bool):
         raise Fail("settings: lgtm_from_author must be true or false")
+    percent = data.get("reserve_percent", settings["reserve_percent"])
+    if isinstance(percent, bool) or not isinstance(percent, int) or not 0 <= percent <= 100:
+        raise Fail("settings: reserve_percent must be an integer from 0 to 100")
     lean = data.get("lean_start", settings["lean_start"])
     if not isinstance(lean, bool):
         raise Fail("settings: lean_start must be true or false")
     return {"worktree_cap": cap, "lead_model": model, "lead_permission_mode": mode,
             "task_time_limit_hours": hours, "monitor": monitor and os.path.expanduser(monitor),
-            "lgtm_from_author": from_author, "lean_start": lean}
+            "lgtm_from_author": from_author, "reserve_percent": percent, "lean_start": lean}
 
 
 LEAD_TOOLS = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch,SendMessage,WebFetch,WebSearch,TaskStop,Monitor"
@@ -815,7 +824,9 @@ def cmd_new(args):
     if any(s.get("name") == args.slug for s in sessions) or sessions_in(sessions, repo.root, path):
         raise Fail(f"a session named {args.slug} or inside {path} already exists")
     cap = settings["worktree_cap"]
-    if len(repo.tasks) >= cap:
+    held_back = reserve(cap, settings["reserve_percent"])
+    limit = cap if args.critical else cap - held_back
+    if len(repo.tasks) >= limit:
         declared = read_tasks(repo.root)
         held = []
         for t in repo.tasks:
@@ -827,6 +838,9 @@ def cmd_new(args):
                 held.append(name + (" (blocked)" if where == "blocked" else ""))
         if len(held) >= cap:
             raise Fail(f"at the cap of {cap} tasks in motion: {', '.join(held)}")
+        if len(held) >= limit:
+            raise Fail(f"at the limit of {limit} ordinary tasks in motion ({held_back} of the cap of {cap} "
+                       f"held in reserve for critical work; start one with --critical): {', '.join(held)}")
     old_pr = pull_request(repo, branch)[0]
     if old_pr == "unknown":
         sys.stderr.write(f"factory: warning: cannot check for an existing pull request on {branch}; continuing\n")
@@ -881,6 +895,7 @@ def cmd_status(args):
     repo = Repo()
     settings = load_settings()
     cap = settings["worktree_cap"]
+    held_back = reserve(cap, settings["reserve_percent"])
     prs, as_of, pr_error, fetched = pull_requests(repo, args.cached, args.max_age)
     rows = collect(repo, list_sessions(), settings["task_time_limit_hours"], prs)
     counts = {key: sum(r["phase"] == p for r in rows)
@@ -895,7 +910,7 @@ def cmd_status(args):
         stored, acting, unreadable = None, None, e
     bot = acting and stored["bot_login"]
     if args.json:
-        doc = {"rows": rows, "cap": cap, "open": len(rows), **counts,
+        doc = {"rows": rows, "cap": cap, "reserve": held_back, "open": len(rows), **counts,
                "leftover_agent_worktrees": repo.leftover, "outside_worktrees": repo.outside, "identity": bot or None,
                "repository_selection": stored and stored.get("repository_selection"),
                "prs": {"as_of": as_of, "error": pr_error}}
@@ -918,7 +933,8 @@ def cmd_status(args):
     if pr_error or (as_of is not None and not fetched):
         since = "not fetched yet" if as_of is None else f"as of {age(as_of, now)}" + ("" if age(as_of, now) == "now" else " ago")
         print(f"pull requests {since}" + (f" (GitHub: {pr_error})" if pr_error else ""))
-    print(f"in motion {counts['in_motion']}/{cap} ({counts['blocked']} blocked); "
+    motion = f"{cap - held_back}, reserve {held_back}, cap {cap}" if held_back else f"{cap}"
+    print(f"in motion {counts['in_motion']}/{motion} ({counts['blocked']} blocked); "
           f"waiting for review {counts['in_review']}; merged, not cleaned {counts['merged']}; "
           f"settled, not cleaned {counts['settled']}; leftover agent worktrees {repo.leftover}; "
           f"worktrees outside .claude/worktrees {repo.outside}")
@@ -4038,6 +4054,9 @@ def parse_args(argv):
     group.add_argument("--brief-file")
     new.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
     new.add_argument("--base", help="slug of an open task to stack this task on")
+    new.add_argument("--critical", action="store_true",
+                     help="use the slots held in reserve: the default branch is red, the factory is broken, "
+                          "or the human says so")
     status = sub.add_parser("status", help="one row per task worktree")
     status.add_argument("--json", action="store_true")
     status.add_argument("--cached", action="store_true", help="never contact GitHub: pull requests come from the cache")
