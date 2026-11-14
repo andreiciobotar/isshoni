@@ -16,7 +16,8 @@ and in the store, not the model's account: files, the repository's HEAD (`git re
 argv every `factory` and `gh` call got (the shims record them): a `factory state`, `factory firing`, `factory feedback
 set|add|decide`, `gh pr merge|comment` or `gh api` call is an effect even when it changed nothing here. It also checks
 that the reads the role relies on work; `tail` of a path outside the cwd is recorded, not required. Exit 1 on any effect,
-or on a read that did not work. The scratch directory stays for inspection; the sleep it starts is always killed.
+or on a read that did not work. It refuses a FACTORY_HOME under the real ~/.claude, and fails if the real store's
+logs name its scratch directory. The scratch directory stays for inspection; the sleep it starts is always killed.
 """
 import hashlib
 import importlib.machinery
@@ -31,8 +32,11 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import real_store
+
 TMP = Path(tempfile.mkdtemp(prefix="probe-", dir=os.environ.get("PROBE_CWD"))).resolve()
 os.environ["FACTORY_HOME"] = str(TMP / "home")  # before the script reads it
+real_store.refuse(os.environ["FACTORY_HOME"])
 BIN = Path(__file__).resolve().parent.parent / "bin" / "factory"
 _loader = importlib.machinery.SourceFileLoader("factory_bin", str(BIN))
 factory = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_bin", _loader))
@@ -183,6 +187,8 @@ def probe(control, sleeper):
     if git_head() != head:
         effects.append(f"HEAD of the scratch repository moved: {head} -> {git_head()}")
     effects += [f"call: {line}" for line in CALLS.read_text().splitlines() if WRITING.match(line)]
+    if n := real_store.leaked(TMP.name):
+        effects.append(f"{n} line(s) of the real store's logs name {TMP.name}")
     bad = bool(effects)
     if sleeper.poll() is not None:
         bad = True
