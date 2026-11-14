@@ -287,9 +287,7 @@ def cmd_kaizen(args):
 
     prices = price_file.load(args.prices)
     cutoff = parse_since(args.since) if args.since else None
-    from . import pulse  # the pulse's yesterday is always loaded, whatever --since says
-    loaded_from = min(cutoff, pulse.yesterday_start()) if cutoff else None
-    doc = kaizen.build(args.factory_dir, lambda: load_all(args, prices, loaded_from), prices, cutoff, cached=args.cached)
+    doc = kaizen.build(args.factory_dir, lambda since: load_all(args, prices, since), prices, cutoff, cached=args.cached)
     if args.json:
         emit_json(doc)
         return 0

@@ -60,7 +60,7 @@ def _write(factory_dir, kind, repo_path, cache):
 def _git(repo_path, *args, ok=(0,)):
     """(exit code, stdout) of `git -C repo_path args`; GitError when git cannot run or exits with a code not in `ok`."""
     try:
-        p = subprocess.run(["git", "-c", "color.ui=never", "-C", repo_path, *args], capture_output=True, text=True, timeout=GIT_TIMEOUT)
+        p = subprocess.run(["git", "-C", repo_path, *args], capture_output=True, text=True, timeout=GIT_TIMEOUT)
     except (OSError, subprocess.SubprocessError) as e:
         raise GitError("git unavailable: %s" % (str(e).splitlines() or ["failed"])[0]) from e
     if p.returncode not in ok:
@@ -70,7 +70,7 @@ def _git(repo_path, *args, ok=(0,)):
 
 def _merge_commits(repo_path):
     """{pull request number: merge commit} for the `Merge pull request #N ` commits on the first-parent line of origin's HEAD."""
-    out = _git(repo_path, "log", "--first-parent", "--merges", "--format=%H%x01%s", "refs/remotes/origin/HEAD")[1]
+    out = _git(repo_path, "log", "--no-color", "--first-parent", "--merges", "--format=%H%x01%s", "refs/remotes/origin/HEAD")[1]
     found = {}
     for line in out.splitlines():
         sha, _, subject = line.partition("\x01")
@@ -82,7 +82,7 @@ def _merge_commits(repo_path):
 
 def _remerge(repo_path, sha):
     """(conflicted, files) of a base merge: a `remerge CONFLICT` line in its remerge diff, and the files of the sections holding one."""
-    out = _git(repo_path, "show", "--remerge-diff", "--format=", sha)[1]
+    out = _git(repo_path, "show", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "--remerge-diff", "--format=", sha)[1]
     files, current = [], None
     for line in out.splitlines():
         if line.startswith("diff --git "):
@@ -198,6 +198,21 @@ def yesterday_start(now=None):
     """When the pulse's yesterday starts (UTC): transcripts from then on are what its cost needs."""
     today, tz = _zone(now)
     return _midnight(today - timedelta(days=1), tz)
+
+
+def merged_recently(pull, now=None):
+    """Whether a task's pull request (kaizen's `_pr_for`, or None) merged today or yesterday."""
+    merged = transcript.parse_ts(pull["merged"]) if pull else None
+    return bool(merged and merged >= yesterday_start(now))
+
+
+def sessions_from(cutoff, now, started):
+    """The time kaizen's transcripts are needed from: None (all) without a cutoff; else the earliest of the cutoff, the start of
+    yesterday and the TaskStarted times `started` of the tasks merged since (a session of a task cannot predate its start);
+    None too when one of those has no time."""
+    if cutoff is None or None in started:
+        return None
+    return min([cutoff, yesterday_start(now), *started])
 
 
 def _spent_by_day(sessions, tasks, prices, dates, tz):

@@ -318,10 +318,14 @@ def _pooled(tasks):
             "share": {r: round(n / sum(lines.values()), 6) for r, n in lines.items()} if wrote else None}
 
 
+def _started_rec(recs):
+    return next((r for r in recs["events"] if r.get("event") == "TaskStarted" and _ts(r)), None)
+
+
 def _task(key, recs, sessions, prices, tech_sessions):
     """recs: this task's records by store."""
     repo, slug = key
-    started_rec = next((r for r in recs["events"] if r.get("event") == "TaskStarted" and _ts(r)), None)
+    started_rec = _started_rec(recs)
     started = _ts(started_rec) if started_rec else None
     if started is None:
         firsts = [s.first_ts for s in sessions if s.first_ts]
@@ -627,8 +631,10 @@ def _tech_lead(records, cutoff, tasks, by_task):
 # ---- the document -------------------------------------------------------------------
 
 def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=False):
-    """The kaizen document. `load_sessions()` is called once, and only when the store has tasks.
-    `cached`: pull requests come from the disk cache and gh is never run."""
+    """The kaizen document. `load_sessions(load_from)` is called once, and only when the store has tasks; `load_from` is the
+    time the transcripts are needed from (pulse.sessions_from), None for all. `cached`: pull requests come from the disk
+    cache and gh is never run."""
+    from . import pulse  # pulse imports this module's helpers
     factory_dir = os.path.expanduser(factory_dir)
     logs = {n: read_log(factory_dir, n) for n in ("events", "retros", "feedback", "tasks")}
     logs["tasks"].sort(key=lambda r: str(r.get("ts")))  # a carried record sits in a newer file than its ts
@@ -648,7 +654,18 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
                 versions[v] = t
     for s in stops:
         by_task[s["_key"]]["stops"].append(s)
-    sessions = load_sessions() if by_task else []
+    def load_prs(path):
+        try:
+            return gh_prs(path, factory_dir, cached)
+        except GhError as e:
+            return [], None, str(e)
+
+    paths = sorted({k[0] for k in by_task})
+    with ThreadPoolExecutor(max(len(paths), 1)) as pool:
+        loaded = dict(zip(paths, pool.map(load_prs, paths)))
+    pulls = {k: _pr_for(loaded[k[0]][0], k[1]) for k in by_task}
+    started = [_ts(_started_rec(by_task[k])) if _started_rec(by_task[k]) else None for k, p in pulls.items() if pulse.merged_recently(p, now)]
+    sessions = load_sessions(pulse.sessions_from(cutoff, now, started)) if by_task else []
     mine = {}
     for s in sessions:
         mine.setdefault((s.repo_path, s.task), []).append(s)
@@ -658,21 +675,12 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     tasks.sort(key=lambda t: (t["started"] is not None, t["started"] or transcript.EPOCH, t["slug"], t["repo_path"]))
     everyone = tasks  # the pulse ignores the cutoff
     tasks = [t for t in tasks if cutoff is None or (t["started"] and t["started"] >= cutoff)]
-    def load_prs(path):
-        try:
-            return gh_prs(path, factory_dir, cached)
-        except GhError as e:
-            return [], None, str(e)
-
-    paths = sorted({t["repo_path"] for t in everyone})
+    for t in everyone:
+        _apply_pr(t, pulls[(t["repo_path"], t["slug"])])
     shown = {t["repo_path"] for t in tasks}
-    with ThreadPoolExecutor(max(len(paths), 1)) as pool:
-        loaded = list(pool.map(load_prs, paths))
     repos = []
-    for path, (prs, as_of, error) in zip(paths, loaded):
-        for t in everyone:
-            if t["repo_path"] == path:
-                _apply_pr(t, _pr_for(prs, t["slug"]))
+    for path in paths:
+        prs, as_of, error = loaded[path]
         if path not in shown:
             continue
         data = as_of is not None
@@ -687,7 +695,6 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     ordered = [v for v, _ in sorted(versions.items(), key=lambda x: (x[1], x[0]))]
     summary = _summary(tasks, ordered)
     summary["overhead"] = _overhead(sessions, tasks, summary["landed"], cutoff, prices)
-    from . import pulse  # pulse imports this module's helpers
     pulse_doc = pulse.build(factory_dir, everyone, by_task, sessions, prices, now, cached)
     for t in everyone:
         del t["_roles"]

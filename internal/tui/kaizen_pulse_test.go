@@ -142,6 +142,9 @@ func TestPulseBadValuesAreWarningColoured(t *testing.T) {
 			t.Errorf("%s: not in the warning colour", c.name)
 		}
 	}
+	if bad(func(*data.Pulse) {}, "30m00s") {
+		t.Error("hand-over to approval (30m00s, over 15 min) has no threshold: not in the warning colour")
+	}
 }
 
 func TestPulseFitsNarrowWithoutWrapping(t *testing.T) {

@@ -2,8 +2,9 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 from isshoni import cli, kaizen, pulse
@@ -26,8 +27,8 @@ class PulseStore(Store):
         self.run = patch.start()
         self.addCleanup(patch.stop)
 
-    def task(self, slug, number, merged, handed=None, size=None, repo=ALPHA):
-        self.events.append(ev("2026-11-01T00:00:00Z", "TaskStarted", repo=repo, slug=slug, **({"size": size} if size else {})))
+    def task(self, slug, number, merged, handed=None, size=None, repo=ALPHA, started="2026-11-01T00:00:00Z"):
+        self.events.append(ev(started, "TaskStarted", repo=repo, slug=slug, **({"size": size} if size else {})))
         if handed:
             self.states.append({"ts": handed, "repo": repo, "slug": slug, "state": "handed-over"})
         self.prs.setdefault(repo, []).append(pr(number, "worktree-" + slug, "2026-11-01T00:00:00Z", merged))
@@ -82,22 +83,71 @@ class DayTests(PulseStore):
 
 
 class SinceTests(PulseStore):
-    def test_transcripts_of_yesterday_are_loaded_whatever_since_says(self):
-        start = pulse.yesterday_start()  # real clock: the command takes no `now`
-        at = lambda hours: (start + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
-        self.task("p1", 1, at(13), at(12))
-        with mock.patch.object(test_kaizen, "DAY", at(12)[:10]):
-            session(self.projects, ALPHA, "p1", at(12)[:-1] + ".000Z", 1000000,
-                    [("reviewer", "claude-opus-5-5", 1, "10:20", "10:25")])
+    """The command takes no `now`: times are relative to the real clock."""
+
+    def setUp(self):
+        super().setUp()
+        self.start = pulse.yesterday_start()
+
+    def at(self, hours):
+        return (self.start + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def reviewed(self, slug, hours, rename=None):
+        """A session of `slug` with one review, its lead call `hours` after the start of yesterday (a file of its own when renamed)."""
+        with mock.patch.object(test_kaizen, "DAY", self.at(hours)[:10]):
+            session(self.projects, ALPHA, slug, self.at(hours)[:-1] + ".000Z", 1000000, [("reviewer", "claude-opus-5-5", 1, "10:20", "10:25")])
+        if rename:
+            os.rename(os.path.join(self.projects, "p-" + slug), os.path.join(self.projects, rename))
+
+    def kaizen(self, *argv):
         self.log("events-2026-11.jsonl", self.events)
         self.log("tasks-2026-11.jsonl", self.states)
         args = ("--factory-dir", self.factory, "--projects-dir", self.projects, "--prices", os.path.join(os.path.dirname(self.factory), "prices.toml"),
                 "--agents-dir", AGENTS, "--json")
         with mock.patch.object(kaizen, "gh_prs", side_effect=fresh(lambda path: self.prs[path])):
-            _, out, _ = run_cli("kaizen", "--since", "1h", *args)
-        yesterday = json.loads(out)["pulse"]["yesterday"]
-        self.assertGreaterEqual(yesterday["cost"]["tasks"], 10.0)
-        self.assertEqual(yesterday["first_pass"]["unstated"], {"yes": 1, "of": 1})
+            return json.loads(run_cli("kaizen", *argv, *args)[1])
+
+    def test_a_session_before_yesterday_of_a_task_merged_yesterday_is_loaded(self):
+        self.task("p1", 1, self.at(13), self.at(12), started=self.at(-7))
+        self.reviewed("p1", -6)  # ended long before the cutoff and before yesterday
+        for since in ((), ("--since", "1h")):
+            self.assertEqual(self.kaizen(*since)["pulse"]["yesterday"]["first_pass"]["unstated"], {"yes": 1, "of": 1}, since)
+
+    def test_a_round_before_yesterday_still_counts_so_the_task_is_not_first_pass(self):
+        self.task("p1", 1, self.at(13), self.at(12), started=self.at(-7))
+        self.reviewed("p1", -6, rename="p-early")
+        self.reviewed("p1", 12)
+        for since in ((), ("--since", "1h")):
+            self.assertEqual(self.kaizen(*since)["pulse"]["yesterday"]["first_pass"]["unstated"], {"yes": 0, "of": 1}, since)
+
+    def test_a_session_older_than_what_the_figures_need_is_not_loaded(self):
+        self.task("p1", 1, self.at(13), self.at(12), started=self.at(-7))
+        self.task("old", 2, self.at(-100), self.at(-101), started=self.at(-120))  # merged long ago: its sessions are not needed
+        self.reviewed("p1", -6, rename="p-early")
+        self.reviewed("old", -110)
+        loose(self.projects, "disp", ALPHA, [(self.at(-90), "claude-fable-5-2", 1)], title="dispatcher-alpha")
+        self.assertEqual(self.kaizen()["summary"]["overhead"]["sessions"], 1)
+        self.assertEqual(self.kaizen("--since", "1h")["summary"]["overhead"]["sessions"], 0)  # a dispatcher session older than load_from
+
+    def test_load_from_is_the_earliest_of_the_cutoff_yesterday_and_the_starts_of_tasks_merged_since(self):
+        cutoff = datetime(2026, 11, 15, 6, tzinfo=timezone.utc)
+        yesterday = pulse.yesterday_start(NOW)
+        started = datetime(2026, 11, 13, tzinfo=timezone.utc)
+        self.assertEqual(pulse.sessions_from(cutoff, NOW, []), yesterday)
+        self.assertEqual(pulse.sessions_from(cutoff, NOW, [started]), started)
+        self.assertIsNone(pulse.sessions_from(None, NOW, [started]))
+        self.assertIsNone(pulse.sessions_from(cutoff, NOW, [started, None]))
+        self.assertEqual(pulse.sessions_from(datetime(2026, 11, 1, tzinfo=timezone.utc), NOW, [started]), datetime(2026, 11, 1, tzinfo=timezone.utc))
+
+
+class ZoneTests(unittest.TestCase):
+    def test_the_bounds_of_a_day_follow_the_machines_zone_at_that_date(self):
+        old = os.environ.get("TZ")
+        self.addCleanup(lambda: (os.environ.__setitem__("TZ", old) if old else os.environ.pop("TZ", None), time.tzset()))
+        os.environ["TZ"] = "America/New_York"  # the clock went back on 2026-11-01
+        time.tzset()
+        starts = [pulse._midnight(date(2026, 11, d), None) for d in (1, 2, 3)]
+        self.assertEqual([s.strftime("%m-%dT%H") for s in starts], ["11-01T04", "11-02T05", "11-03T05"])  # the first day is 25 hours long
 
 
 class CostTests(PulseStore):
@@ -356,7 +406,8 @@ class GitTests(PulseStore):
         self.assertEqual({c.kwargs["timeout"] for c in self.run.call_args_list}, {pulse.GIT_TIMEOUT})
 
     def test_a_color_setting_does_not_hide_the_conflict(self):
-        self.git("config", "color.ui", "always")
+        for key, value in (("color.ui", "always"), ("color.diff", "always"), ("diff.noprefix", "true")):
+            self.git("config", key, value)
         self.assertEqual(self.pulse()["today"]["conflicts"]["conflicted"], 1)
 
     def test_a_pull_request_merged_another_way_is_not_in_prs(self):

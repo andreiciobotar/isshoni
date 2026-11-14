@@ -126,7 +126,7 @@ tasks; else the median of each measure over the latest half (`latest_n`) against
 `pulse` is today against yesterday, four figures each, for the Pulse page and the text output. A
 day is a calendar day in the time zone of the time the document is built for (the machine's zone
 unless a caller gives one); a pull request counts on the day it merged (`pr.merged`). The figures
-ignore `--since` (the transcripts of yesterday are always loaded): they are computed from all tasks of the store's repositories, pooled. `queue_since`
+ignore `--since` (with `--since`, the transcripts from the start of yesterday, and from the start of every task merged since, are loaded too): they are computed from all tasks of the store's repositories, pooled. `queue_since`
 is when the `queue` log (`docs/factory.md`) starts, null without one. Each day holds `date`, `merged`
 (merged pull requests) and:
 - `cost` (`tasks`, `dispatcher`, `site_manager`, `unpriced_tokens`, `per_merged`): the all-in cost per

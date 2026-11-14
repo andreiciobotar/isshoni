@@ -121,7 +121,7 @@ class Store(unittest.TestCase):
     def build(self, gh, cutoff=None, sessions=None, now=datetime(2026, 11, 14, 1, 2, 3, tzinfo=timezone.utc), cached=False):
         loaded = []
 
-        def load():
+        def load(load_from=None):
             for p in transcript.discover_sessions(self.projects):
                 s = transcript.load_session(p, self.prices)
                 metrics.analyze(s, AGENTS, 0.5)
@@ -625,7 +625,7 @@ class SmallTests(Store):
         calls = []
         for path, found in ((os.path.join(self.factory, "nope"), False), (self.factory, True)):
             self.factory = path
-            d = self.build(lambda p: calls.append(p), sessions=lambda: calls.append("loaded"))
+            d = self.build(lambda p: calls.append(p), sessions=lambda since: calls.append("loaded"))
             self.assertEqual((d["store_found"], d["tasks"], d["repos"], d["versions"], d["stops"], d["slowed"], d["rewards"]),
                              (found, [], [], [], [], [], []))
             self.assertEqual(d["outbox"]["entries"], [])
