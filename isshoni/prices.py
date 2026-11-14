@@ -41,8 +41,8 @@ class Prices:
     def to_dict(self):
         return {"currency": self.currency, "as_of": self.as_of, "source": self.source, "path": self.path}
 
-    def cost(self, model, raw_usage):
-        """Cost of one message in the file's currency, or None when the model has no price."""
+    def parts(self, model, raw_usage):
+        """Cost of one message by token class, or None when the model has no price."""
         t = self.models.get(model) or self.models.get(_DATED.sub("", model))
         if t is None:
             return None
@@ -50,11 +50,23 @@ class Prices:
         long_prompt = t.get("long_prompt")
         if long_prompt and u.input + u.cache_write + u.cache_read > long_prompt["over"]:
             t = long_prompt
-        tiers = raw_usage.get("cache_creation") if isinstance(raw_usage, dict) else None
-        write_1h = min(_int(tiers.get("ephemeral_1h_input_tokens")) if isinstance(tiers, dict) else 0,
-                       u.cache_write)
-        return (u.input * t["input"] + u.output * t["output"] + u.cache_read * t["cache_read"]
-                + (u.cache_write - write_1h) * t["cache_write_5m"] + write_1h * t["cache_write_1h"]) / 1e6
+        write_5m, write_1h = write_tiers(raw_usage)
+        n = {"input": u.input, "output": u.output, "cache_write_5m": write_5m, "cache_write_1h": write_1h,
+             "cache_read": u.cache_read}
+        return {k: n[k] * t[k] / 1e6 for k in RATES}
+
+    def cost(self, model, raw_usage):
+        """Cost of one message in the file's currency, or None when the model has no price."""
+        p = self.parts(model, raw_usage)
+        return None if p is None else sum(p.values())
+
+
+def write_tiers(raw_usage):
+    """Cache-write tokens of a message as (five-minute, one-hour)."""
+    u = usage_from(raw_usage)
+    tiers = raw_usage.get("cache_creation") if isinstance(raw_usage, dict) else None
+    write_1h = min(_int(tiers.get("ephemeral_1h_input_tokens")) if isinstance(tiers, dict) else 0, u.cache_write)
+    return u.cache_write - write_1h, write_1h
 
 
 def load(path=None):

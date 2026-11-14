@@ -7,6 +7,7 @@ bin/isshoni session <id-prefix>       # totals by model/agent, warnings, dispatc
 bin/isshoni agents [--since 7d]       # per agent type: tokens, p50/p90, repeats, WARN
 bin/isshoni agents --repo isshoni --task ci-workflow   # tokens by agent and model for one task
 bin/isshoni kaizen [--since 30d]      # the factory's improvement measures (see Kaizen measures)
+bin/isshoni anatomy [--since 30d]     # per task and role: calls, contexts, cost by token class (see Cost anatomy)
 ```
 `sessions` and `agents` accept `--repo NAME` and `--task NAME` (exact match).
 Global options: `--json` (one JSON document on stdout), `--projects-dir`,
@@ -147,6 +148,51 @@ Limits: no landed figure without `gh`; a stop logged before the hook stored a su
 the site manager's firings are counted, not listed (`factory firings` lists a
 repository's); rework counts subagent runs only; costs are the list
 prices of `isshoni/prices.toml` (see Cost above).
+
+## Cost anatomy
+```
+isshoni anatomy [--since 7d] [--repo NAME] [--task NAME] [--factory-dir DIR] [--json]
+```
+Where a task's money goes, per role, from the same transcripts and prices as `sessions`.
+A task is what `sessions` calls one: the sessions sharing `(repo_path, task)`; sessions
+without a task are left out. A role is `lead` for a session's own transcript, and for a
+subagent run the name of its agent type without the plugin prefix (`factory:lander` is
+`lander`). `--factory-dir` (default `~/.claude/factory`) is read only for each task's plugin
+version. Without `--json` it prints one row per task and role (`task`, `version`, `role`, `runs`,
+`calls`, `ctx first`, `ctx median`, `ctx peak`, `cost`, the shares of the role's cost by token
+class `in%` `out%` `cw%` `cr%`, own `tools`, `disp`atches) and the prices footer; no tasks prints `no tasks`.
+
+`--json` is `{generated, factory_dir, prices, tasks, versions}`; no tasks gives two empty lists.
+Each task has `repo`, `repo_path`, `task`, `version`, `start`, `end`, `cost` (the sum of its
+roles' `cost.total`), `unpriced_tokens` and `roles`, a map from role name to a block that
+aggregates the role's runs (one run = one transcript):
+
+| field | meaning |
+|---|---|
+| `runs`, `models`, `calls` | transcripts of the role, the models seen, model calls (each message once; `<synthetic>` excluded: exactly what is priced) |
+| `context` | `first` and `peak`: median over runs of a run's first and largest call context; `median`: over all calls; `max`: largest of any call. A call's context is `input + cache write + cache read`. Null when there are no calls |
+| `tokens` | exact sums of `input`, `output`, `thinking` (part of `output`, not added to it), `cache_write_5m`, `cache_write_1h`, `cache_read` |
+| `cost` | `total` and the five classes, rounded to 6 places. Over a task the roles' `total`s add up to the task's `cost.total` in `sessions --json` (to 1e-6) |
+| `tools` | the role's own tool calls by kind, each tool call once, `Agent` excluded. `Bash` is split as `Bash:<command>` by the basename of the first word after an optional `cd <path> &&` |
+| `dispatches` | the role's `Agent` calls |
+| `fill` | where the context came from, see below |
+
+`version` is the plugin version of the earliest record of the task (same repository and slug) in the
+factory's `events`, `retros` and `tasks` logs that carries one; null without one or without a store.
+`versions` rolls the tasks up by version (null last): `version`, `tasks`, `cost`, `unpriced_tokens` and
+`roles`, the role blocks computed over all runs of that version's tasks, not an average of task blocks.
+
+**Fill.** Per run, `base` is the first call's context. For each later call the context grew by
+`delta`: `own_output` is the previous call's output (at most `delta`), the rest is `inbound`,
+what arrived in between. A shrinking context counts one in `compactions` and adds nothing else.
+`base`, `own_output`, `inbound` and `compactions` are exact. Only `inbound_estimate` is an estimate:
+`inbound` split by character share among the sources recorded since the previous call,
+`result:<tool>` (`result:?` when the tool is unknown), `message`, `attachment:<type>` and `handback`
+(Agent results, `<task-notification>` texts); with no characters recorded it is all `unaccounted`.
+The shares are rounded, so they need not sum to `inbound`.
+
+Limits: images count no characters; a compacted run's fill is partial; a reused slug adds up
+into one task; the version is the first one logged, not the one running.
 
 ## Dashboard (`isshoni-tui`)
 
