@@ -30,6 +30,8 @@ elif a[:2] in (["pr", "edit"], ["pr", "comment"]):
     if "--body-file" in a:
         rec["body"] = open(a[a.index("--body-file") + 1]).read()
     open(f"{d}/gh.jsonl", "a").write(json.dumps(rec) + "\\n")
+elif a[:2] == ["pr", "ready"]:
+    open(f"{d}/ready.jsonl", "a").write(json.dumps(a) + "\\n")
 else:
     sys.exit(1)
 """
@@ -473,6 +475,23 @@ class LandTests(unittest.TestCase):
         self.assertEqual(self.result(p), "`LANDED, LOOK https://x/pull/t1`")
         self.assertEqual(seen.read_text().strip(), "working")
         self.assertEqual([r["state"] for r in self.declared() if r["slug"] == "t1"], ["handed-over", "working"])
+
+    def test_declaring_working_puts_the_pull_request_back_to_draft(self):
+        self.task("t1", line=20)
+        self.advance_main(2, "main line")
+        self.land("t1")
+        ready = self.state / "ready.jsonl"
+        self.assertEqual([json.loads(l) for l in ready.read_text().splitlines()],
+                         [["pr", "ready", "--undo", "worktree-t1"]])
+
+    def test_declaring_working_on_a_branchless_landing_makes_no_gh_call(self):
+        loader = importlib.machinery.SourceFileLoader("factory_land_nobranch", str(BIN))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_land_nobranch", loader))
+        loader.exec_module(module)
+        with mock.patch.object(module, "declare") as declare, mock.patch.object(module, "run") as run:
+            module.Landing(mock.Mock(), {"path": "/x/t1", "branch": None}, False).mark_working()
+        declare.assert_called_once()
+        run.assert_not_called()
 
     def test_a_lander_that_exits_non_zero_is_a_stop_with_what_git_shows(self):
         wt, old = self.conflict()

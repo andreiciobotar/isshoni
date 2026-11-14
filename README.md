@@ -52,7 +52,7 @@ Describe a task; ask for progress whenever you like. By default leads run unatte
 
 Optional:
 
-- [Always on](docs/container.md): the factory in a container on a Linux host.
+- [Always on](docs/container.md): `bin/isshoni host add <ssh target> --state <dir> --repo <owner/name>` runs the factory in a container on a Linux host that has Docker.
 
 `make uninstall` removes what the wizard put on the machine.
 
@@ -71,7 +71,7 @@ flowchart TD
     sm -- merges --> pr
 ```
 
-A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the site manager merges it once checks are green.
+A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the site manager merges it once checks are green. Your other comments on a pull request reach its lead on the next watch tick.
 
 <!-- screenshot: factory status with several tasks -->
 
