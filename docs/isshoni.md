@@ -311,12 +311,14 @@ The pictures here and in the README are recordings of this repository's own fact
 ```
 bin/isshoni-tui [--range 24h|7d|30d|all] [--follow] [--no-color]
                 [--projects-dir DIR] [--agents-dir DIR] [--prices PATH]
-bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-flow|kaizen-anatomy|kaizen-board|hanami|help [--size 140x40] [--session ID] [--row N] [--fold]
+bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-flow|kaizen-anatomy|kaizen-board|hanami|help [--size 140x40] [--session ID] [--row N] [--fold] [--frames N]
 ```
 `--range` defaults to `7d`. `NO_COLOR` gives the plain rendering too. `--snapshot`
 prints one settled frame and exits, non-zero when the load fails; `--row N` puts the
 dashboard cursor on table row N (0 is the `all` row) and `--fold` collapses the
-repository that row is in; `--frames N` renders N frames from one load, separated by a form-feed line, frame i with the cursor on row `--row`+i (so the rows keep one order across the frames); `--snapshot session` is the full-screen session (the
+repository that row is in; `--frames N` prints N dashboard frames from one load,
+separated by a form-feed line, frame i with the cursor on row `--row`+i (so the rows
+keep one order across the frames); `--snapshot session` is the full-screen session (the
 dashboard's zoom, below) of `--session ID`, else of the most recent one; `make screenshot
 VIEW=... SIZE=...` turns it into a PNG under `shots/` (needs Chrome). Both make targets
 take `FIXTURE=<name>` (a directory of `tests/fixtures`, e.g. `grouping`): they render a copy
