@@ -50,13 +50,13 @@ Factory, in Claude Code, in the repository you want work done in:
 /factory:dispatch
 ```
 
-Describe a task; ask for progress whenever you like. By default leads run unattended on Fable in `auto` permission mode, five tasks at a time ([settings](docs/factory.md#settings)).
+Describe a task; ask for progress whenever you like. By default leads run unattended on Fable in `auto` permission mode, five tasks per repository ([settings](docs/factory.md#settings)).
 
 Optional:
 
-- [Its own GitHub identity](docs/factory.md#identity): `make wizard`. Pull requests then come from a bot, so you can approve them.
+- [Its own GitHub identity](docs/factory.md#identity): `make wizard ARGS="--owner <your account>"`. Pull requests then come from a bot, so you can approve them.
 - [Always on](docs/container.md): the factory in a container on a Linux host.
-- [Cost alerts and a daily digest](docs/factory.md#site-manager): set `"monitor"` to the path of `bin/isshoni` in `~/.claude/factory/settings.json`.
+- [Cost alerts and a daily digest](docs/factory.md#site-manager): set `"monitor": "<clone>/bin/isshoni"` in `~/.claude/factory/settings.json`.
 
 ## Factory
 
