@@ -505,6 +505,11 @@ class SiteManagerTests(Store):
         self.log("firings.jsonl", [
             fired("f1", "2026-11-10T10:00:00Z", repo), fired("f2", "2026-11-10T10:01:00Z", repo),
             fired("f3", "2026-11-10T10:02:00Z", repo), fired("f4", "2026-11-10T10:03:00Z", repo),
+            fired("f5", "2026-11-10T10:04:00Z", repo), fired("f6", "2026-11-10T10:05:00Z", repo),
+            {"ts": "2026-11-10T10:30:00Z", "repo": repo, "id": "f5", "decision": "escalated", "to": "lead"},
+            {"ts": "2026-11-10T10:31:00Z", "repo": repo, "id": "f5", "outcome": "ignored"},
+            {"ts": "2026-11-10T10:40:00Z", "repo": repo, "id": "f5", "cleared": True},
+            {"ts": "2026-11-10T10:41:00Z", "repo": repo, "id": "f6", "decision": "escalated"},  # f5 fired again, to the dispatcher
             {"ts": "2026-11-10T11:00:00Z", "repo": repo, "id": "f1", "decision": "escalated"},
             {"ts": "2026-11-10T11:01:00Z", "repo": repo, "id": "f2", "decision": "suppressed", "reason": "r"},
             {"ts": "2026-11-10T11:02:00Z", "repo": repo, "id": "f3", "decision": "escalated"},
@@ -517,7 +522,7 @@ class SiteManagerTests(Store):
                            env={**os.environ, "HOME": home}, capture_output=True, text=True, timeout=60)
         self.assertEqual(p.returncode, 0, p.stderr)
         theirs = json.loads(p.stdout)["summary"]
-        self.assertEqual((theirs["escalated"], theirs["missed"]), (3, 2))
+        self.assertEqual((theirs["escalated"], theirs["missed"]), (4, 2))
         theirs.update({k: round(theirs[k], 6) for k in ("precision", "recall")})
         self.assertEqual(self.record(), theirs)
 

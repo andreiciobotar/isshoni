@@ -1379,7 +1379,20 @@ FACTORY = Path(__file__).resolve()
 CRITERIA_PATH = PLUGIN_ROOT / "criteria.json"
 ROLE_PATH = PLUGIN_ROOT / "roles" / "site-manager.md"
 SITE_MANAGER_MODEL = "sonnet"
+SITE_MANAGER_TOOLS = (
+    "Read", "Grep", "Glob", "SendMessage", "ToolSearch",
+    "Bash(factory status)", "Bash(factory status *)", "Bash(factory health)", "Bash(factory health *)",
+    "Bash(factory log *)", "Bash(factory firings)", "Bash(factory firings *)",
+    "Bash(factory feedback)", "Bash(factory feedback --json)",
+    "Bash(ps *)", "Bash(pgrep *)",
+    "Bash(gh pr view *)", "Bash(gh pr checks *)", "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(gh run list *)",
+    "Bash(claude agents --json --all)")
+SITE_MANAGER_TURNS = 30
+SITE_MANAGER_BUDGET = "1.50"
+SETTINGS_ISOLATION = ("--setting-sources", "")
 RESURFACE_MINUTES = 120
+LEAD_GRACE_MINUTES = 30
+LEAD_TOLD = "lead told at "
 WATCH_INTERVAL = 120
 HEALTH_SECONDS = 1800 - 60
 EVERY_TICK = {"busy-after-handover"}  # criteria the watch evaluates on every tick, not only on the health pass
@@ -1392,9 +1405,10 @@ JOBS = ("watch", "digest")
 CLASSES = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")
 RUN_SCHEMA = {"type": "object", "required": ["sent", "decisions"], "properties": {
     "sent": {"type": "boolean"},
-    "decisions": {"type": "array", "items": {"type": "object", "required": ["id", "decision", "reason"], "properties": {
+    "decisions": {"type": "array", "items": {"type": "object", "required": ["id", "decision", "reason", "looked"], "properties": {
         "id": {"type": "string"}, "decision": {"type": "string", "enum": ["escalated", "suppressed"]},
-        "reason": {"type": "string"}}}}}}
+        "to": {"type": "string", "enum": ["dispatcher", "lead"]}, "reason": {"type": "string"},
+        "looked": {"type": "array", "items": {"type": "string"}}}}}}}
 FIRED_KEYS = ("criterion", "escalate", "slug", "subject", "detail")
 
 
@@ -1456,7 +1470,7 @@ def gather(repo, fallback):
     return {"now": time.time(), "repo": repo, "dispatcher": found and found["name"], "dispatcher_why": why,
             "sessions": sessions,
             "monitor": settings["monitor"], "lgtm_from_author": settings["lgtm_from_author"],
-            "lean_start": settings["lean_start"],
+            "lean_start": settings["lean_start"], "limit_hours": settings["task_time_limit_hours"],
             "rows": None if sessions is None else collect(repo, sessions, settings["task_time_limit_hours"]),
             "declared": read_tasks(repo.root), "events": repo_log("events", repo.root), "models": pinned_models(),
             "gh": lambda *args: gh_json(repo, *args)}
@@ -1529,6 +1543,17 @@ def since_start(evs, slug):
 def c_past_limit(p, _):
     return [(r["slug"], r["slug"], f"working for {age(p['now'] - r['elapsed'], p['now'])}")
             for r in tasks(p) if r["overtime"]]
+
+
+def c_nearing_limit(p, threshold):
+    found = []
+    for r in unfinished(phased(p)):
+        s = task_session(p, r["path"])
+        pct = 100 * (r["elapsed"] or 0) / (p["limit_hours"] * 3600)
+        if r["state"] == "working" and s and not finished(s) and not r["overtime"] and pct > threshold:
+            found.append((r["slug"], r["slug"], f"working for {age(p['now'] - r['elapsed'], p['now'])}, "
+                          f"{pct:.0f}% of the {p['limit_hours']}h limit"))
+    return found
 
 
 def c_ci_red_default(p, _):
@@ -1998,8 +2023,8 @@ def c_lead_authoring(p, threshold):
 
 
 CRITERIA = {  # name -> (function, whether it needs a threshold)
-    "past-limit": (c_past_limit, False), "ci-red-default": (c_ci_red_default, False),
-    "dispatcher-missing": (c_dispatcher_missing, False), "quiet": (c_quiet, True),
+    "past-limit": (c_past_limit, False), "nearing-limit": (c_nearing_limit, True),
+    "ci-red-default": (c_ci_red_default, False), "dispatcher-missing": (c_dispatcher_missing, False), "quiet": (c_quiet, True),
     "ended-undeclared": (c_ended_undeclared, True), "blocked-unanswered": (c_blocked_unanswered, True),
     "handover-unacknowledged": (c_handover_unacknowledged, True), "busy-after-handover": (c_busy_after_handover, True), "review-loops": (c_review_loops, True),
     "wrong-model": (c_wrong_model, False), "ci-red-handover": (c_ci_red_handover, False),
@@ -2068,7 +2093,8 @@ def fold(records):
             firings[fid] = {**r, "decision": None, "reason": None, "decided": None, "outcome": None,
                                 "cleared": False}
         elif f and "decision" in r and f["decision"] is None:
-            f.update(decision=r["decision"], reason=r.get("reason"), by=r.get("by"), decided=r.get("ts"))
+            f.update(decision=r["decision"], reason=r.get("reason"), by=r.get("by"), decided=r.get("ts"),
+                     to=r.get("to"), looked=r.get("looked"), run=r.get("run"))
         elif f and "outcome" in r:
             f["outcome"] = r["outcome"]
         elif f and r.get("cleared"):
@@ -2137,11 +2163,21 @@ def transcript_tail(path, count=15):
     return entries[-count:]
 
 
+def task_lead(p, slug):
+    """(status row, worktree path, session, lead) of a task; the row is None on an every-tick picture, the lead is
+    the name SendMessage addresses, None without a live session."""
+    row = next((r for r in p["rows"] or [] if r["slug"] == slug), None)
+    path = row["path"] if row else p["repo"].worktree_path(slug) if slug and p.get("sessions") else None
+    session = path and task_session(p, path)
+    return row, path, session, session and not finished(session) and session.get("name") or None
+
+
 def firing_for_run(p, f):
-    """A firing as the site manager is given it: its fields, and for a task its status row and transcript tail."""
-    out = {k: f[k] for k in ("id", *FIRED_KEYS, "what")}
-    row = next((r for r in p["rows"] or [] if r["slug"] == f["slug"]), None)
-    path = row["path"] if row else p["repo"].worktree_path(f["slug"]) if f.get("slug") and p.get("sessions") else None
+    """A firing as the site manager is given it: its fields, and for a task its status row (or, on an every-tick
+    picture, its worktree, lead and pid), its transcripts and the tail of the lead's."""
+    out = {k: f[k] for k in ("id", *FIRED_KEYS, "what")} | ({"lead_told": True} if f.get("lead_told") else {})
+    row, path, session, lead = task_lead(p, f["slug"])
+    pid = session.get("pid") if session else None
     if row:
         n = p["now"]
         out["task"] = {"phase": row["phase"], "state": row["state"], "session": row["session"],
@@ -2149,11 +2185,14 @@ def firing_for_run(p, f):
                        "last_commit": age(row["last_commit"], n), "dirty": row["dirty"], "ahead": row["ahead"],
                        "behind": row["behind"], "pr_state": row["pr_state"], "pr_url": row["pr_url"],
                        "limit": span(row["limit"]), "size": row["size"], "nearing": row["nearing"],
-                       "overtime": row["overtime"]}
+                       "overtime": row["overtime"], "worktree": path, "branch": row["branch"], "lead": lead, "pid": pid}
+    elif path:
+        out["task"] = {"worktree": path, "lead": lead, "pid": pid}
     if path:
-        session = task_session(p, path)
+        paths = transcripts(session)
+        out["transcripts"] = [str(t) for t in paths]
         sid = session.get("sessionId") if session else None
-        main = next((t for t in transcripts(session) if t.name == f"{sid}.jsonl"), None)
+        main = next((t for t in paths if t.name == f"{sid}.jsonl"), None)
         tail = transcript_tail(main) if main else None
         if tail is not None:
             out["transcript_tail"] = tail
@@ -2169,14 +2208,18 @@ def site_manager_argv(p, firings, job="watch"):
                            "since": last and last["ts"]}, "findings": body}
     prompt = (f"Job: {job}. Repo: {p['repo'].root}. The dispatcher's session name is {p['dispatcher']}.\n\n"
               f"{json.dumps(body, indent=2)}")
-    lean = [*lean_flags(), "--disable-slash-commands", "--tools=SendMessage,ToolSearch"] if p["lean_start"] else []
+    lean = [*lean_flags(), "--disable-slash-commands"] if p["lean_start"] else []
+    monitor = [f"Bash({p['monitor']} sessions *)"] if p["monitor"] else []
     return ["claude", "-p", "--model", SITE_MANAGER_MODEL, "--permission-mode", "dontAsk", *lean,
-            "--allowedTools", "SendMessage", "ToolSearch", "--output-format", "json",
-            "--json-schema", json.dumps(RUN_SCHEMA), "--append-system-prompt", ROLE_PATH.read_text(), prompt]
+            "--tools=Read,Grep,Glob,Bash,SendMessage,ToolSearch", "--allowedTools", *SITE_MANAGER_TOOLS, *monitor,
+            "--disallowedTools", "Edit", "Write", "NotebookEdit", *SETTINGS_ISOLATION,
+            "--max-turns", str(SITE_MANAGER_TURNS), "--max-budget-usd", SITE_MANAGER_BUDGET,
+            "--output-format", "json", "--json-schema", json.dumps(RUN_SCHEMA),
+            "--append-system-prompt", ROLE_PATH.read_text(), prompt]
 
 
-def record_decisions(repo, sent, result):
-    """Log the run's decisions for the firings sent; `watch`, not the model, enforces the always bypass."""
+def record_decisions(p, sent, result, run):
+    """Log the run's decisions for the firings sent; `watch`, not the model, enforces the rules of who is told what."""
     by_id, seen = {f["id"]: f for f in sent}, set()
     for d in result["decisions"]:
         d = d if isinstance(d, dict) else {}
@@ -2185,11 +2228,17 @@ def record_decisions(repo, sent, result):
             continue
         if decision not in ("escalated", "suppressed") or not isinstance(reason, str) or not reason.strip():
             continue
-        if (decision == "suppressed" and by_id[fid]["escalate"] == "always") or \
-                (decision == "escalated" and result.get("sent") is not True):
+        f, to = by_id[fid], (d.get("to") or "dispatcher") if decision == "escalated" else None
+        if decision == "escalated" and (to not in ("dispatcher", "lead") or result.get("sent") is not True):
+            continue
+        if (decision == "suppressed" and f["escalate"] == "always") or \
+                (to == "lead" and (f["escalate"] == "always" or f.get("lead_told") or not task_lead(p, f["slug"])[3])):
             continue
         seen.add(fid)
-        log_firing(repo, id=fid, decision=decision, reason=reason.strip(), by="site-manager")
+        looked = d.get("looked")
+        log_firing(p["repo"], id=fid, decision=decision, reason=reason.strip(), by="site-manager", run=run,
+                   looked=[x for x in looked if isinstance(x, str)] if isinstance(looked, list) else [],
+                   **({"to": to} if to else {}))
 
 
 def notify(repo, f):
@@ -2276,7 +2325,8 @@ def tick_picture(repo, fallback, criteria):
     p = {"now": time.time(), "repo": repo, "dispatcher": None, "dispatcher_why": "sessions not listed",
          "sessions": None, "rows": None, "declared": read_tasks(repo.root)}
     if any(handed_over_before(p, c["threshold"]) for c in criteria):
-        p["sessions"], p["lean_start"] = list_sessions(), load_settings()["lean_start"]
+        settings = load_settings()
+        p["sessions"], p["lean_start"], p["monitor"] = list_sessions(), settings["lean_start"], settings["monitor"]
         found, p["dispatcher_why"] = ((None, "cannot list sessions") if p["sessions"] is None
                                       else find_dispatcher(p["sessions"], repo.root, fallback))
         p["dispatcher"] = found and found["name"]
@@ -2314,10 +2364,14 @@ def watch_tick(args, repo):
         if old and old["decision"] == "suppressed" and p["now"] - (epoch(old["decided"]) or 0) > RESURFACE_MINUTES * 60:
             log_firing(repo, id=old["id"], cleared=True)
             f, old = {**f, "detail": f"{f['detail']}; suppressed earlier: {old['reason']}"}, None
+        elif old and old["decision"] == "escalated" and old.get("to") == "lead" \
+                and p["now"] - (epoch(old["decided"]) or 0) > LEAD_GRACE_MINUTES * 60:
+            log_firing(repo, id=old["id"], cleared=True)
+            f, old = {**f, "detail": f"{f['detail']}; {LEAD_TOLD}{old['decided']}: {old['reason']}", "lead_told": True}, None
         if old is None:
             send.append(fire(repo, f))
         elif old["decision"] is None and full:  # between health passes only new findings are sent
-            send.append({**f, "id": old["id"]})
+            send.append({**f, "id": old["id"], "lead_told": LEAD_TOLD in old["detail"]})
     if not send:
         print("nothing new")
     elif orphaned or p["dispatcher"] is None or any(f["criterion"] == "dispatcher-missing" for f in current):
@@ -2392,12 +2446,15 @@ def run_site_manager(p, send, job="watch"):
     result, cost = doc.get("structured_output"), doc.get("total_cost_usd")
     usable = rc == 0 and isinstance(result, dict) and isinstance(result.get("decisions"), list)
     if usable:
-        record_decisions(repo, send, result)
+        record_decisions(p, send, result, doc.get("session_id"))
     report(repo, send)
     if isinstance(cost, (int, float)) and not isinstance(cost, bool):
         print(f"site manager run cost ${cost:.2f}")
     if not usable:
-        raise Fail(f"the site manager run failed ({rc}): {err.strip() or 'no usable output'}", code=1)
+        why, subtype = err.strip() or "no usable output", doc.get("subtype")
+        if isinstance(subtype, str) and subtype != "success":
+            why = f"{subtype}: {why}"
+        raise Fail(f"the site manager run failed ({rc}): {why}", code=1)
 
 
 def cmd_firing(args):
@@ -2425,7 +2482,8 @@ def cmd_miss(args):
 
 
 def summarize(firings, misses):
-    escalated = [f for f in firings if f["decision"] == "escalated"]
+    """Counts of what the dispatcher received; escalations `to: lead` are left out (`cmd_firings` prints their count)."""
+    escalated = [f for f in firings if f["decision"] == "escalated" and f.get("to") != "lead"]
     acted = sum(f["outcome"] == "acted" for f in escalated)
     ignored = sum(f["outcome"] == "ignored" for f in escalated)
     first = sum(bool(m.get("firing")) for m in misses)
@@ -2446,13 +2504,15 @@ def cmd_firings(args):
         print(json.dumps({"firings": firings, "misses": misses, "summary": s}, indent=2))
         return 0
     for f in firings:
-        print("  ".join([f["id"], f["ts"], f["criterion"], f["subject"], f["decision"] or "undecided",
+        decision = f"{f['decision']} to lead" if f.get("to") == "lead" else f["decision"] or "undecided"
+        print("  ".join([f["id"], f["ts"], f["criterion"], f["subject"], decision,
                          f["outcome"] or "-", "cleared" if f["cleared"] else "open", f["reason"] or "-"]))
     for m in misses:
         print("  ".join(["miss", m["ts"], m.get("slug") or "-", m.get("firing") or "-", m["miss"]]))
     pct = {k: "-" if s[k] is None else f"{s[k]:.2f}" for k in ("precision", "recall")}
+    told = sum(f["decision"] == "escalated" and f.get("to") == "lead" for f in firings)
     print(f"escalated {s['escalated']} (acted {s['acted']}, ignored {s['ignored']}, no outcome {s['no_outcome']}); "
-          f"suppressed {s['suppressed']}; missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
+          f"to lead {told}; suppressed {s['suppressed']}; missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
           f"{s['missed_never_fired']} never fired); precision {pct['precision']}; recall {pct['recall']}")
     return 0
 
