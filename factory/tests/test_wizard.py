@@ -55,7 +55,7 @@ class FakeGitHub:
 def routes(pem, over=None):
     return {("GET", "/users/octocat"): (200, {"type": "User"}),
             ("POST", "/app-manifests/THECODE/conversions"): (201, {**APP, "pem": pem}),
-            ("GET", "/app"): (200, {"slug": "factory-octocat"}),
+            ("GET", "/app"): (200, {"slug": "factory-octocat", "html_url": APP["html_url"]}),
             ("GET", "/app/installations"): (200, [INSTALLATION]),
             ("POST", "/app/installations/7654321/access_tokens"): (201, {"token": TOKEN, "expires_at": "2030-01-01T00:00:00Z"}),
             ("GET", "/installation/repositories"): (200, {"total_count": 2, "repositories": [
@@ -177,7 +177,7 @@ class TokenTests(Wizard):
 
 class FirstRunTests(Wizard):
     def expected_manifest(self, owner):
-        return {"name": f"factory-{owner}", "url": f"https://github.com/{owner}", "public": False,
+        return {"name": f"isshoni-lander-{owner}", "url": f"https://github.com/{owner}", "public": False,
                 "redirect_url": self.opened[0] + "callback",
                 "hook_attributes": {"url": f"https://github.com/{owner}", "active": False},
                 "default_events": [],
@@ -219,7 +219,26 @@ class FirstRunTests(Wizard):
     def test_name_is_cut_to_34_characters(self):
         owner = "o" * 40
         self.wizard("--owner", owner, github={("GET", f"/users/{owner}"): (200, {"type": "User"})})
-        self.assertEqual(self.forms[0][1]["name"], ("factory-" + owner)[:34])
+        self.assertEqual(self.forms[0][1]["name"], ("isshoni-lander-" + owner)[:34])
+
+    def test_name_flag_overrides_the_default(self):
+        self.wizard("--owner", "octocat", "--name", "my-factory")
+        self.assertEqual(self.forms[0][1]["name"], "my-factory")
+        self.assertIn("named my-factory", self.out)
+
+    def test_a_name_over_34_characters_is_refused_not_cut(self):
+        self.assertEqual(self.wizard("--owner", "octocat", "--name", "n" * 35), 2)
+        self.assertIn("35 characters", self.err)
+        self.assertEqual(self.gh.calls, [])
+        self.assertEqual(self.wizard("--owner", "octocat", "--name", "n" * 34), 0, self.err)
+
+    def test_name_with_a_stored_identity_is_refused(self):
+        self.stored()
+        self.assertEqual(self.wizard("--name", "other"), 1)
+        self.assertIn("does not rename", self.err)
+        self.assertIn("GitHub settings page", self.err)
+        self.assertEqual(self.gh.calls, [])
+        self.assertEqual(self.opened, [])
 
     def test_no_answer_stores_nothing(self):
         rc = self.wizard("--owner", "octocat", browser=lambda url: None, wait=0)
@@ -326,6 +345,38 @@ class RerunTests(Wizard):
         self.assertEqual(self.app_json()["installation_id"], 7654321)
         self.assertIn("octocat/two", self.out)
         self.assertQuiet()
+
+    def test_a_renamed_app_is_verified_and_recorded(self):
+        self.stored()
+        cache = self.identity / "token-one.json"
+        cache.write_text('{"token": "t"}')
+        new = "https://github.com/apps/isshoni-lander"
+        github = routes(self.pem, {("GET", "/app"): (200, {"slug": "isshoni-lander", "html_url": new}),
+                                   ("GET", "/users/isshoni-lander%5Bbot%5D"): (200, {"id": 99999999}),
+                                   ("GET", f"/users/{BOT}"): (404, {})})
+        self.assertEqual(self.wizard(github=github), 0, self.err)
+        self.assertEqual(self.app_json(), {
+            "app_id": 123456, "slug": "isshoni-lander", "client_id": "Iv23abc", "html_url": new, "owner": "octocat",
+            "owner_type": "User", "installation_id": 7654321, "installation_url": INSTALL_URL,
+            "repository_selection": "selected", "bot_login": "isshoni-lander[bot]", "bot_id": 99999999,
+            "bot_email": "99999999+isshoni-lander[bot]@users.noreply.github.com"})
+        self.assertIn("renamed: factory-octocat -> isshoni-lander\n", self.out)
+        self.assertIn(f"App isshoni-lander: {new}", self.out)
+        self.assertIn("https://github.com/settings/apps/isshoni-lander/advanced", self.out)
+        self.assertNotIn("factory-octocat\n", self.out.replace("renamed: factory-octocat -> isshoni-lander\n", ""))
+        self.assertEqual(cache.read_text(), '{"token": "t"}')
+
+    def test_an_unchanged_app_prints_no_renamed_line(self):
+        self.stored()
+        self.assertEqual(self.wizard(), 0, self.err)
+        self.assertNotIn("renamed:", self.out)
+
+    def test_app_answer_without_a_slug_writes_nothing(self):
+        self.stored()
+        before = (self.identity / "app.json").read_text()
+        self.assertEqual(self.wizard(github=routes(self.pem, {("GET", "/app"): (200, {"html_url": APP["html_url"]})})), 1)
+        self.assertIn("lacks the App's slug", self.err)
+        self.assertEqual((self.identity / "app.json").read_text(), before)
 
     def test_another_owner_is_refused(self):
         self.stored()

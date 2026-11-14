@@ -2,6 +2,7 @@ import io
 import json
 import os
 import plistlib
+import subprocess
 import tempfile
 import time
 import unittest
@@ -770,6 +771,18 @@ class WatchTests(Harness):
                 for _, path in factory.log_files("firings"):
                     path.unlink()
 
+    def test_a_site_manager_run_is_usable_with_anthropic_log_in_the_parent(self):
+        def claude(argv, **kw):
+            noisy = "ANTHROPIC_LOG" in (kw["env"] or os.environ)
+            return subprocess.CompletedProcess(argv, 0, ("[log_1] sending request\n" if noisy else "") + reply()[1], "")
+        p = {"repo": SimpleNamespace(root=ROOT)}
+        with mock.patch.dict(os.environ, {"ANTHROPIC_LOG": "debug"}), mock.patch.object(factory.subprocess, "run", claude), \
+                mock.patch.object(factory, "site_manager_argv", return_value=["claude", "-p"]), \
+                mock.patch.object(factory, "record_decisions") as record, mock.patch.object(factory, "report"), \
+                redirect_stdout(io.StringIO()):
+            factory.run_site_manager(p, [])
+        record.assert_called_once()
+
     def test_an_open_blocked_firing_survives_an_unplaced_session(self):
         self.seed("firings", [fired("aaa", criterion="blocked-unanswered", escalate="judgment")])
         unplaced = {"id": "s9", "kind": "background", "status": "busy", "state": "working"}
@@ -1072,9 +1085,9 @@ class JobTests(unittest.TestCase):
             return 0, "", ""
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": home}), \
                 mock.patch.object(factory, "run", run):
-            factory.Systemd().install("job", ["/py", "/a$b/f%y"], "/re%po", "/bin", "/lo%g")
+            factory.Systemd().install("job", ["/py", "/a$b/f%y"], "/re%po", {"PATH": "/bin"}, "/lo%g")
             unit = (Path(home) / "systemd" / "user" / "job.service").read_text()
-            factory.Cron().install("job", ["/py", "/f%y"], "/re%po", "/bin", "/lo%g")
+            factory.Cron().install("job", ["/py", "/f%y"], "/re%po", {"PATH": "/bin"}, "/lo%g")
         self.assertIn("WorkingDirectory=/re%%po\n", unit)
         self.assertIn("ExecStart=/py '/a$$b/f%%y'\n", unit)
         self.assertIn("StandardOutput=append:/lo%%g\n", unit)

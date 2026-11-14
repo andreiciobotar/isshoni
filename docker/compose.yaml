@@ -28,5 +28,6 @@ services:
     logging:
       driver: json-file
       options: {max-size: 5m, max-file: "2"}
-    # Reserved for the dashboard served over SSH (not built yet):
-    # ports: ["2222:2222"]
+    # The dashboard over SSH (docs/container.md). On the host's loopback unless DASHBOARD_BIND says otherwise:
+    # the key file is its only gate.
+    ports: ["${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-2222}:2222"]

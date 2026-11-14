@@ -390,6 +390,18 @@ class RunTests(Identity):
         self.assertIsNone(self.run_with(["git", "status"])[1])
         self.assertEqual(self.mints(), 0)
 
+    def test_a_claude_child_gets_no_anthropic_log_and_others_keep_the_environment(self):
+        with mock.patch.dict(os.environ, {"ANTHROPIC_LOG": "debug"}):
+            env = self.run_with(["claude", "-p"])[1]
+            self.assertEqual(env, {k: v for k, v in os.environ.items() if k != "ANTHROPIC_LOG"})
+            self.assertIsNone(self.run_with(["git", "status"])[1])
+            explicit = {"A": "1", "ANTHROPIC_LOG": "debug"}
+            self.started = []
+            with mock.patch.object(factory.subprocess, "run", self.spawn):
+                factory.run(["claude", "-p"], env=explicit)
+                factory.run(["git", "status"], env=explicit)
+            self.assertEqual([e for _, e in self.started], [{"A": "1"}, explicit])
+
     def test_gh_outside_a_repository_of_the_apps_owner_gets_no_token(self):
         self.installed()
         self.github()

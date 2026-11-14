@@ -17,6 +17,8 @@ STOP_KINDS = ("QUESTION", "BLOCKED", "OVERTIME")
 STATUSES = ("open", "accepted", "rejected", "done")
 TREND_MIN = 10
 MIX_WINDOW = 5
+ANATOMY_WINDOW = MIX_WINDOW
+VERSION_MIN = 5
 GH_FIELDS = "number,url,state,headRefName,createdAt,mergedAt"
 TOPICS = [(name, re.compile(pat, re.I)) for name, pat in (
     ("permissions", r"permission|denied|refus|sandbox|isolation|not allowed"),
@@ -187,7 +189,20 @@ def _first_ts(records):
     return min(stamped, key=lambda x: x[0]) if stamped else None
 
 
-def _task(key, recs, sessions):
+def _role_facts(sessions, prices):
+    """What each role that ran in the task did, from the anatomy's blocks over kaizen's own role buckets."""
+    from . import anatomy  # anatomy reads this module's logs: import it where it is used
+    runs = [("lead", s.run) for s in sessions if s.run] + [
+        (_dispatch_role(d), d.run) for s in sessions for d in s.dispatches if d.run]
+    out = {}
+    for role, r in anatomy.by_role(runs, prices).items():
+        b = r.block()
+        out[role] = {"calls": b["calls"], "peak": b["context"]["peak"], "tools": sum(b["tools"].values()),
+                     "dispatches": b["dispatches"], "cost": b["cost"]}
+    return out
+
+
+def _task(key, recs, sessions, prices):
     """recs: this task's records by store."""
     repo, slug = key
     started_rec = next((r for r in recs["events"] if r.get("event") == "TaskStarted" and _ts(r)), None)
@@ -201,7 +216,8 @@ def _task(key, recs, sessions):
     states = [r["state"] for r in recs["tasks"] if _str(r, "state")]
     t = {"repo": _name(repo), "repo_path": repo, "slug": slug, "version": version, "started": started,
          "state": states[-1] if states else None, "pr": None, "landed": False,
-         "brief_to_pr_s": None, "pr_to_merge_s": None, "cost": None, "review_rounds": None, "first_pass": None}
+         "brief_to_pr_s": None, "pr_to_merge_s": None, "cost": None, "review_rounds": None, "first_pass": None,
+         "_roles": _role_facts(sessions, prices)}
     if sessions:
         t["cost"], t["review_rounds"] = _cost(sessions)
         t["first_pass"] = t["review_rounds"] == 1
@@ -258,6 +274,46 @@ def _mix(landed):
         for i, t in enumerate(costed) if i + 1 >= MIX_WINDOW]}
 
 
+def _anatomy(landed, versions):
+    """What drives a task's cost, per role: the median over the ANATOMY_WINDOW tasks ending at each landed task with
+    a cost, and per version the median over its landed tasks. A role that ran in too few tasks is null."""
+    costed = [t for t in landed if t["cost"] and t["cost"]["total"] > 0]
+    ran = lambda ts, r: [t["_roles"][r] for t in ts if r in t["_roles"]]  # noqa: E731
+    med = lambda xs, k: _median(x[k] for x in xs)  # noqa: E731
+    points = []
+    for i, t in enumerate(costed):
+        if i + 1 < ANATOMY_WINDOW:
+            continue
+        window = costed[i + 1 - ANATOMY_WINDOW:i + 1]
+        roles = {}
+        for r in ROLES:
+            xs = ran(window, r)
+            roles[r] = {k: med(xs, k) for k in ("calls", "peak", "tools")} if len(xs) >= ANATOMY_WINDOW // 2 + 1 else None
+        points.append({"slug": t["slug"], "version": t["version"], "roles": roles})
+    out = []
+    for v in versions:
+        mine = [t for t in costed if t["version"] == v]
+        roles = {}
+        for r in ROLES:
+            tasks = [t for t in mine if r in t["_roles"]]
+            xs = [t["_roles"][r] for t in tasks]
+            if not xs:
+                roles[r] = None
+                continue
+            classes = {k: sum(x["cost"][k] for x in xs) for k in ("input", "output", "cache_read")}
+            classes["cache_write"] = sum(x["cost"]["cache_write_5m"] + x["cost"]["cache_write_1h"] for x in xs)
+            whole = sum(classes.values())
+            roles[r] = {
+                "n": len(xs),
+                "share": _median(t["cost"]["by_role"][r] / t["cost"]["total"] for t in tasks),
+                "cost": _median(t["cost"]["by_role"][r] for t in tasks),
+                **{k: med(xs, k) for k in ("calls", "peak", "tools", "dispatches")},
+                "tools_per_dispatch": _median(x["tools"] / x["dispatches"] for x in xs if x["dispatches"] > 0),
+                "classes": {k: round(classes[k] / whole, 6) for k in ("input", "output", "cache_write", "cache_read")} if whole else None}
+        out.append({"version": v, "tasks": len(mine), "roles": roles})
+    return {"window": ANATOMY_WINDOW, "min": VERSION_MIN, "points": points, "versions": out}
+
+
 def _rewards(landed):
     landed = sorted(landed, key=lambda t: (t["pr"]["merged"], t["slug"]))
     if not landed:
@@ -280,7 +336,7 @@ def _rewards(landed):
     return out
 
 
-def _summary(tasks):
+def _summary(tasks, versions):
     landed = [t for t in tasks if t["landed"]]
     ms = [_measures(t) for t in landed]
     med = lambda m: {"median": _median(x[m] for x in ms), "n": sum(1 for x in ms if x[m] is not None)}  # noqa: E731
@@ -296,6 +352,7 @@ def _summary(tasks):
         "first_pass": {"yes": sum(first_pass), "of": len(first_pass)},
         "rework_share": round(sum(c["rework"] for c in costed) / total, 6) if total else None,
         "by_role": {r: round(sum(c["by_role"][r] for c in costed), 6) for r in ROLES}, "mix": _mix(landed),
+        "anatomy": _anatomy(landed, versions),
         "time": {"building_s": sum(max(0, t["brief_to_pr_s"] - t["stopped_s"]) for t in landed if t["brief_to_pr_s"] is not None),
                  "stopped_s": sum(t["stopped_s"] for t in landed),
                  "merge_wait_s": sum(t["pr_to_merge_s"] for t in landed if t["pr_to_merge_s"] is not None)},
@@ -412,7 +469,7 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None):
     mine = {}
     for s in sessions:
         mine.setdefault((s.repo_path, s.task), []).append(s)
-    tasks = [_task(k, recs, mine.get(k, [])) for k, recs in by_task.items()]
+    tasks = [_task(k, recs, mine.get(k, []), prices) for k, recs in by_task.items()]
     if cutoff is not None:
         tasks = [t for t in tasks if t["started"] and t["started"] >= cutoff]
     tasks.sort(key=lambda t: (t["started"] is not None, t["started"] or transcript.EPOCH, t["slug"], t["repo_path"]))
@@ -431,13 +488,16 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None):
               for k in sorted(kept) for r in by_task[k]["retros"] for x in (r.get("slowed") if isinstance(r.get("slowed"), list) else [])
               if isinstance(x, str)]
     slowed.sort(key=lambda s: s["ts"] or "", reverse=True)
+    ordered = [v for v, _ in sorted(versions.items(), key=lambda x: (x[1], x[0]))]
+    summary = _summary(tasks, ordered)
     for t in tasks:
         t["started"] = _iso(t["started"])
+        del t["_roles"]
     return {
         "generated": _iso(now or datetime.now(timezone.utc)), "factory_dir": factory_dir,
         "store_found": os.path.isdir(factory_dir), "prices": prices.to_dict(), "roles": list(ROLES), "repos": repos,
-        "versions": [{"version": v, "first_seen": _iso(t)} for v, t in sorted(versions.items(), key=lambda x: (x[1], x[0]))],
-        "tasks": tasks, "summary": _summary(tasks),
+        "versions": [{"version": v, "first_seen": _iso(versions[v])} for v in ordered],
+        "tasks": tasks, "summary": summary,
         "stops": [{k: v for k, v in s.items() if k != "_key"} for s in stops if s["_key"] in kept],
         "slowed": slowed, "rewards": _rewards([t for t in tasks if t["landed"]]),
         "outbox": _outbox(logs["feedback"], cutoff),

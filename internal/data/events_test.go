@@ -65,7 +65,7 @@ func eventsRunner(t *testing.T) (*Runner, string) {
 	return &Runner{Root: "../..", Python: py, ProjectsDir: dir, Timeout: 500 * time.Millisecond}, dir
 }
 
-func calls(t *testing.T, dir string) string {
+func eventCalls(t *testing.T, dir string) string {
 	t.Helper()
 	b, _ := os.ReadFile(filepath.Join(dir, "calls"))
 	return strings.TrimSpace(string(b))
@@ -80,8 +80,8 @@ func TestEventsHistory(t *testing.T) {
 	if len(evs) != 5 || evs[0].Kind != "tokens" || evs[4].Kind != "spawn" {
 		t.Fatalf("events = %+v", evs)
 	}
-	if want := "-m isshoni events --since 24h --projects-dir " + dir; calls(t, dir) != want {
-		t.Fatalf("call = %q, want %q", calls(t, dir), want)
+	if want := "-m isshoni events --since 24h --projects-dir " + dir; eventCalls(t, dir) != want {
+		t.Fatalf("call = %q, want %q", eventCalls(t, dir), want)
 	}
 }
 
@@ -132,8 +132,8 @@ func TestFollowEventsDeliversThenCancelKillsTheGroup(t *testing.T) {
 	if strings.Join(kinds, " ") != "tool tokens return pr spawn" { // as the process printed them
 		t.Fatalf("kinds = %v", kinds)
 	}
-	if want := "-m isshoni events --follow --since 2m --projects-dir " + dir; calls(t, dir) != want {
-		t.Fatalf("call = %q, want %q", calls(t, dir), want)
+	if want := "-m isshoni events --follow --since 2m --projects-dir " + dir; eventCalls(t, dir) != want {
+		t.Fatalf("call = %q, want %q", eventCalls(t, dir), want)
 	}
 	var child int
 	for i := 0; i < 100 && child == 0; i++ {
@@ -182,7 +182,7 @@ func TestFollowEventsAfterWaitStartsNothing(t *testing.T) {
 	if err := r.FollowEvents(context.Background(), "", func(Event) {}); err == nil {
 		t.Fatal("a follower after Wait must fail")
 	}
-	if calls(t, dir) != "" {
+	if eventCalls(t, dir) != "" {
 		t.Fatal("no process may start after Wait")
 	}
 }
