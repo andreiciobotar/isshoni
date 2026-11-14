@@ -152,7 +152,7 @@ class WizardFlow(Setup):
         self.assertTrue((self.root / "bin" / "isshoni-tui").exists())
         self.assertEqual(self.settings(), {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
                                            "task_time_limit_hours": 2, "monitor": str(self.root / "bin" / "isshoni"),
-                                           "lgtm_from_author": True, "lean_start": True})
+                                           "lgtm_from_author": True, "reserve_percent": 10, "lean_start": True})
         self.assertEqual(self.created, [("octocat", None)])
         self.assertEqual(json.loads((self.store / "identity" / "app.json").read_text())["installation_id"], 7654321)
         self.assertNotIn("Nothing to do", self.out)

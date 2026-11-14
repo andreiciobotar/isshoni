@@ -4,9 +4,12 @@ import argparse
 import base64
 import calendar
 import collections
+import contextlib
+import fcntl
 import hashlib
 import html
 import http.server
+import itertools
 import json
 import os
 import plistlib
@@ -118,7 +121,13 @@ def validate_slug(slug):
 
 
 SETTINGS_DEFAULTS = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                     "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "lean_start": True}
+                     "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "reserve_percent": 10,
+                     "lean_start": True}
+
+
+def reserve(cap, percent):
+    """Slots held back for critical work: percent of the cap rounded up, never the last slot."""
+    return min(cap - 1, -(-cap * percent // 100))
 
 
 def load_settings():
@@ -150,12 +159,15 @@ def load_settings():
     from_author = data.get("lgtm_from_author", settings["lgtm_from_author"])
     if not isinstance(from_author, bool):
         raise Fail("settings: lgtm_from_author must be true or false")
+    percent = data.get("reserve_percent", settings["reserve_percent"])
+    if isinstance(percent, bool) or not isinstance(percent, int) or not 0 <= percent <= 100:
+        raise Fail("settings: reserve_percent must be an integer from 0 to 100")
     lean = data.get("lean_start", settings["lean_start"])
     if not isinstance(lean, bool):
         raise Fail("settings: lean_start must be true or false")
     return {"worktree_cap": cap, "lead_model": model, "lead_permission_mode": mode,
             "task_time_limit_hours": hours, "monitor": monitor and os.path.expanduser(monitor),
-            "lgtm_from_author": from_author, "lean_start": lean}
+            "lgtm_from_author": from_author, "reserve_percent": percent, "lean_start": lean}
 
 
 LEAD_TOOLS = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch,SendMessage,WebFetch,WebSearch,TaskStop,Monitor"
@@ -749,6 +761,12 @@ def read_tasks(root):
     return {slug: r for slug, r in last.items() if r.get("state") in STATES}
 
 
+def handed_over(repo):
+    """Whether a task whose worktree is still there is declared handed-over."""
+    here = {os.path.basename(t["path"]) for t in repo.tasks}
+    return any(r["state"] == "handed-over" and slug in here for slug, r in read_tasks(repo.root).items())
+
+
 def declare(repo, slug, role, state, deliverable=None):
     extra = {"deliverable": deliverable} if deliverable else {}
     log("tasks", {**record(repo.root, slug, role, None, os.environ.get("CLAUDE_CODE_SESSION_ID")),
@@ -815,7 +833,9 @@ def cmd_new(args):
     if any(s.get("name") == args.slug for s in sessions) or sessions_in(sessions, repo.root, path):
         raise Fail(f"a session named {args.slug} or inside {path} already exists")
     cap = settings["worktree_cap"]
-    if len(repo.tasks) >= cap:
+    held_back = reserve(cap, settings["reserve_percent"])
+    limit = cap if args.critical else cap - held_back
+    if len(repo.tasks) >= limit:
         declared = read_tasks(repo.root)
         held = []
         for t in repo.tasks:
@@ -827,12 +847,15 @@ def cmd_new(args):
                 held.append(name + (" (blocked)" if where == "blocked" else ""))
         if len(held) >= cap:
             raise Fail(f"at the cap of {cap} tasks in motion: {', '.join(held)}")
+        if len(held) >= limit:
+            raise Fail(f"at the limit of {limit} ordinary tasks in motion ({held_back} of the cap of {cap} "
+                       f"held in reserve for critical work; start one with --critical): {', '.join(held)}")
     old_pr = pull_request(repo, branch)[0]
     if old_pr == "unknown":
         sys.stderr.write(f"factory: warning: cannot check for an existing pull request on {branch}; continuing\n")
     elif old_pr != "none":
         raise Fail(f"a {old_pr} pull request already exists for branch {branch}; pick another slug")
-    rc, _, err = git_as_app(["ls-remote", "--exit-code", "--heads", repo.remote, f"refs/heads/{branch}"], repo.root, GH_TIMEOUT)
+    rc, _, err = act_git(repo.root, "ls-remote", "--exit-code", "--heads", repo.remote, f"refs/heads/{branch}", timeout=GH_TIMEOUT)
     if rc == 0:
         raise Fail(f"branch {branch} already exists on {repo.remote} (another machine's task?); pick another slug")
     if rc != 2:
@@ -886,6 +909,7 @@ def cmd_status(args):
     repo = Repo()
     settings = load_settings()
     cap = settings["worktree_cap"]
+    held_back = reserve(cap, settings["reserve_percent"])
     prs, as_of, pr_error, fetched = pull_requests(repo, args.cached, args.max_age)
     rows = collect(repo, list_sessions(), settings["task_time_limit_hours"], prs)
     counts = {key: sum(r["phase"] == p for r in rows)
@@ -900,7 +924,7 @@ def cmd_status(args):
         stored, acting, unreadable = None, None, e
     bot = acting and stored["bot_login"]
     if args.json:
-        doc = {"rows": rows, "cap": cap, "open": len(rows), **counts,
+        doc = {"rows": rows, "cap": cap, "reserve": held_back, "open": len(rows), **counts,
                "leftover_agent_worktrees": repo.leftover, "outside_worktrees": repo.outside, "identity": bot or None,
                "repository_selection": stored and stored.get("repository_selection"),
                "prs": {"as_of": as_of, "error": pr_error}}
@@ -923,7 +947,8 @@ def cmd_status(args):
     if pr_error or (as_of is not None and not fetched):
         since = "not fetched yet" if as_of is None else f"as of {age(as_of, now)}" + ("" if age(as_of, now) == "now" else " ago")
         print(f"pull requests {since}" + (f" (GitHub: {pr_error})" if pr_error else ""))
-    print(f"in motion {counts['in_motion']}/{cap} ({counts['blocked']} blocked); "
+    motion = f"{cap - held_back}, reserve {held_back}, cap {cap}" if held_back else f"{cap}"
+    print(f"in motion {counts['in_motion']}/{motion} ({counts['blocked']} blocked); "
           f"waiting for review {counts['in_review']}; merged, not cleaned {counts['merged']}; "
           f"settled, not cleaned {counts['settled']}; leftover agent worktrees {repo.leftover}; "
           f"worktrees outside .claude/worktrees {repo.outside}")
@@ -1145,7 +1170,8 @@ def follow_dispatcher(p):
         return
     if event != "SessionEnd":
         schedule_install(repo, name, backend)
-    elif p.get("reason") != "clear" and not live_dispatchers(sessions, repo.root, name, exclude=p["session_id"]):
+    elif p.get("reason") != "clear" and not live_dispatchers(sessions, repo.root, name, exclude=p["session_id"]) \
+            and not handed_over(repo):
         schedule_remove(repo, backend)
 
 
@@ -1225,7 +1251,8 @@ CRITERIA_PATH = PLUGIN_ROOT / "criteria.json"
 ROLE_PATH = PLUGIN_ROOT / "roles" / "site-manager.md"
 SITE_MANAGER_MODEL = "sonnet"
 RESURFACE_MINUTES = 120
-WATCH_INTERVAL = 1800
+WATCH_INTERVAL = 120
+HEALTH_SECONDS = 1800 - 60
 WATCH_TIMEOUT = 600
 MONITOR_TIMEOUT = 120
 MIN_LANDED = 5
@@ -1574,15 +1601,13 @@ def c_merged_not_cleaned(p, threshold):
 
 
 def c_lgtm_blocked(p, _):
-    if "lgtm" not in p:
-        raise NotEvaluated("the lgtm step did not run")
-    if p["lgtm_unread"]:
-        raise NotEvaluated(p["lgtm_unread"])
+    stopped = read_lander(p["repo"])["stopped"]
     found = []
-    for pr, kind, text in p["lgtm"]:
-        row = task_of(p, pr)
-        if kind not in ("merged", "pending"):
-            found.append((row and row["slug"], f"#{pr['number']}/{kind}", f"{text} {pr['url']}"))
+    for pr in open_prs(p) if stopped else []:
+        s = stopped.get(str(pr["number"]))
+        if s and s.get("head") == pr["headRefOid"]:
+            row = task_of(p, pr)
+            found.append((row and row["slug"], f"#{pr['number']}/{s.get('kind')}", f"{s.get('text')} {pr['url']}"))
     return found
 
 
@@ -2005,7 +2030,6 @@ def cmd_health(args):
     repo = Repo()
     criteria = job_criteria(load_criteria(), "watch")
     p = gather(repo, dispatcher_name(args, repo))
-    lgtm_step(p, dry=True)
     firings, skipped = evaluate(p, criteria)
     if args.json:
         print(json.dumps({"firings": firings, "not_evaluated": skipped}, indent=2))
@@ -2020,19 +2044,19 @@ def cmd_health(args):
 
 
 def cmd_watch(args):
+    """The scheduled tick: the cheap part every time (comments, draft flags, approvals), and every HEALTH_SECONDS the health run."""
     repo = Repo()
     every = load_criteria()
     criteria = job_criteria(every, "watch")
     print(f"{now()} watch {os.path.basename(repo.root)}")
-    p = gather(repo, dispatcher_name(args, repo))
-    try:
-        watch_comments(repo, p["dispatcher"])
-    except Exception as e:  # the tick goes on without it
-        print(f"comments: {why(e)}")
+    name = dispatcher_name(args, repo)
+    cheap_tick(repo, name)
+    state = read_lander(repo)
+    if time.time() - state["health"] < HEALTH_SECONDS:
+        return 0
+    write_lander(repo, {**state, "health": time.time()})
+    p = gather(repo, name)
     orphaned = p["sessions"] is not None and not live_dispatchers(p["sessions"], repo.root, p["dispatcher"])
-    if not orphaned:
-        sync_drafts(p)
-        p = watch_lgtm(p)
     current, skipped = evaluate(p, criteria)
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
@@ -2061,7 +2085,7 @@ def cmd_watch(args):
         report(repo, send)
     else:
         run_site_manager(p, send)
-    if orphaned and "dispatcher-missing" not in {s["criterion"] for s in skipped}:
+    if orphaned and "dispatcher-missing" not in {s["criterion"] for s in skipped} and not handed_over(repo):
         print(f"no dispatcher session for {repo.root}: removing the schedule", flush=True)  # launchd kills this process in remove
         schedule_remove(repo, scheduler())
     last, digests = last_digest(repo.root), job_criteria(every, "digest")
@@ -2505,12 +2529,12 @@ def checks_stop(p, n):
     return None
 
 
-def sync_drafts(p):
-    """Make the draft flag of each open task pull request follow its task: ready exactly when handed over (as
-    handover_reason says) with passing checks, else a draft. Changes no flag for what it cannot read."""
+def sync_drafts(p, prs):
+    """Make the draft flag of each pull request of `prs` (the open ones) that belongs to a task follow its task:
+    ready exactly when handed over (as handover_reason says) with passing checks, else a draft. Changes no flag
+    for what it cannot read."""
     try:
         phased(p)
-        prs = open_prs(p)
     except NotEvaluated as e:
         return print(f"drafts not synced: {e}")
     for pr in prs:
@@ -2539,21 +2563,36 @@ def to_draft(repo, branch):
         run(["gh", "pr", "ready", "--undo", branch], cwd=repo.root)
 
 
-def merge_one(p, pr, merged, dry):
-    """Merge `pr` (with `dry`, only check it as if `merged`, the head branches merged so far, were). None, or the
-    (kind, reason) of the first blocker."""
+def merge_one(p, pr, merged, dry, permission=None):
+    """Merge `pr` (with `dry`, only check it; `merged`: something would have merged before it). None, or the
+    (kind, reason) of the first blocker. The invariant: a pull request is merged only when its head holds the
+    current tip of the default branch and its checks are green on that head. With `permission` (a dict of the
+    permission of each login seen), GitHub's own records must hold a valid approval of it."""
     repo, n, base = p["repo"], str(pr["number"]), pr["baseRefName"]
     if pr["isCrossRepository"]:
         return FORK
     reason = handover_reason(p, pr)
     if reason:
         return "handover", reason
-    if base != repo.default and base not in merged:
+    stop = permission is not None and approval_stop(p, pr, permission)
+    if stop:
+        return stop
+    moved = "its base has moved since its head: bring it up to date (factory land {}) so its checks run on the combination"
+    if dry and merged:  # in a real run the merge before it has moved the default branch, which the tip check sees
+        return "behind", moved.format(task_of(p, pr)["slug"])
+    if base != repo.default:
         state, _, _, into, _ = pull_request(repo, base)
         if state == "unknown":
             return "pending", f"cannot read the pull request of its base {base}"
         if (state, into) != ("merged", repo.default):
             return "base", f"its base {base} is not {repo.default} nor the head of a pull request merged into it"
+    if not fetched(p, pr):
+        return "pending", f"git fetch {repo.remote} failed: cannot tell whether its base has moved"
+    ahead = repo.git("merge-base", "--is-ancestor", f"{repo.remote}/{repo.default}", pr["headRefOid"])[0]
+    if ahead == 1:
+        return "behind", moved.format(task_of(p, pr)["slug"])
+    if ahead != 0:
+        return "pending", "cannot tell whether its base has moved: git merge-base failed"
     try:
         stop = checks_stop(p, n)
     except NotEvaluated as e:
@@ -2587,6 +2626,15 @@ def run_clean():
         return 1
 
 
+def pull_main(repo):
+    """Fast-forward the main checkout to the default branch just merged; one line when it cannot."""
+    if repo.git("rev-parse", "--abbrev-ref", "HEAD")[1].strip() != repo.default:
+        return
+    rc, out, err = act_git(repo.root, "pull", "--ff-only", repo.remote, repo.default)
+    if rc != 0:
+        print(f"main checkout not updated: {(err or out).strip()}")
+
+
 def cmd_merge(args):
     if bool(args.prs) == args.all:
         raise Fail("merge: name pull request numbers or give --all, not both")
@@ -2601,18 +2649,26 @@ def cmd_merge(args):
     unknown = [n for n in args.prs if n not in by_number]
     if unknown:
         raise Fail(f"merge: #{unknown[0]} is not an open pull request; nothing done")
-    selected = [by_number[n] for n in dict.fromkeys(args.prs)]
+    selected, skipped = [by_number[n] for n in dict.fromkeys(args.prs)], set()
     for pr in sorted(prs, key=lambda pr: pr["number"]) if args.all else []:
         reason = handover_reason(p, pr)
         if reason:
+            skipped.add(pr["headRefName"])
             print(f"#{pr['number']} skipped: {reason}")
         else:
             selected.append(pr)
     if not selected:
         print("nothing to merge")
-    selected, merged, failed = bottom_up(selected), set(), False
+    selected, merged, failed = bottom_up(selected), False, False
+    permission = {} if args.approved else None
     for i, pr in enumerate(selected):
-        stop = merge_one(p, pr, merged, args.dry_run)
+        named = pr["number"] in args.prs
+        stop = ("skipped", f"its base {pr['baseRefName']} was skipped") if pr["baseRefName"] in skipped and not named \
+            else merge_one(p, pr, merged, args.dry_run, permission)
+        if stop and (stop[0] == "skipped" or stop[0] in ("unapproved", "stale", "head-time") and not named):
+            skipped.add(pr["headRefName"])
+            print(f"#{pr['number']} skipped: {stop[1]}")
+            continue
         if stop:
             failed = True
             print(f"#{pr['number']} {'would stop' if args.dry_run else 'stopped'}: {stop[1]}")
@@ -2621,7 +2677,7 @@ def cmd_merge(args):
             for rest in selected[i + 1:]:
                 print(f"#{rest['number']} not attempted")
             break
-        merged.add(pr["headRefName"])
+        merged = True
         if not args.dry_run:
             print(f"#{pr['number']} merged {pr['url']}")
         else:
@@ -2631,6 +2687,7 @@ def cmd_merge(args):
                   + (" (draft: would be marked ready)" if pr["isDraft"] else ""))
     if merged and not args.dry_run:
         failed = run_clean() != 0 or failed
+        pull_main(repo)
     return 1 if failed else 0
 
 
@@ -2667,9 +2724,35 @@ def approver(p, pr, x, permission, author=False):
     return login if has_write(p, login, permission) else None
 
 
-def approving_review(p, pr, permission):
+def fetched(p, pr):
+    """Whether `git fetch` of the remote worked for `pr`: asked once per pull request, not once per command, since
+    a merge before it moves the default branch."""
+    done = p.setdefault("fetched", {})
+    if pr.get("number") not in done:
+        done[pr.get("number")] = act_git(p["repo"].root, "fetch", p["repo"].remote)[0] == 0
+    return done[pr.get("number")]
+
+
+def approved_heads(p, pr):
+    """The heads of `pr` an approval may sit on: its head, and, while a head is a merge of the default branch that
+    git would have made itself, the first parent of it. Any other commit on top makes an approval stale. If git
+    cannot answer, just the head."""
+    repo, heads = p["repo"], [pr["headRefOid"]]
+    if not fetched(p, pr):
+        return heads
+    while True:
+        parents = repo.git("rev-list", "--parents", "-n", "1", heads[-1])[1].split()
+        if len(parents) != 3 or repo.git("merge-base", "--is-ancestor", parents[2], f"{repo.remote}/{repo.default}")[0] != 0:
+            return heads
+        rc, merged, _ = repo.git("merge-tree", "--write-tree", parents[1], parents[2])
+        if rc != 0 or merged.split("\n")[0].strip() != repo.git("rev-parse", f"{heads[-1]}^{{tree}}")[1].strip():
+            return heads
+        heads.append(parents[1])
+
+
+def approving_review(p, pr, permission, heads):
     """The review that approves `pr`, or None: a login's newest verdict (a review that only comments is
-    none) is APPROVED. One on the pull request's head is preferred, then the newest."""
+    none) is APPROVED. One on a head in `heads` is preferred, then the newest."""
     verdict = {}
     for r in sorted(paged(p, f"repos/{{owner}}/{{repo}}/pulls/{pr['number']}/reviews"),
                     key=lambda r: r.get("submitted_at") or ""):
@@ -2677,8 +2760,7 @@ def approving_review(p, pr, permission):
         if login and r.get("state") not in ("COMMENTED", "PENDING"):
             verdict[login] = r
     approvals = [r for r in verdict.values() if r.get("state") == "APPROVED" and approver(p, pr, r, permission)]
-    return max(approvals, key=lambda r: (r.get("commit_id") == pr["headRefOid"], r.get("submitted_at") or ""),
-               default=None)
+    return max(approvals, key=lambda r: (r.get("commit_id") in heads, r.get("submitted_at") or ""), default=None)
 
 
 def newest_approval(p, pr, permission):
@@ -2690,51 +2772,33 @@ def newest_approval(p, pr, permission):
     return max(approvals, key=lambda c: c.get("created_at") or "", default=None)
 
 
-def stale_approval(p, pr, approval):
-    """(kind, reason) when the head of `pr` cannot be shown to be unchanged since `approval`, or None."""
-    activity = p["gh"](list, "api", "-X", "GET", ACTIVITY, "-f", f"ref=refs/heads/{pr['headRefName']}", "-F", "per_page=1")
-    latest = activity[0] if activity else {}
-    approved, changed = epoch(approval.get("created_at")), epoch(latest.get("timestamp"))
-    if latest.get("after") != pr["headRefOid"] or approved is None or changed is None:
+def stale_approval(p, pr, approval, heads):
+    """(kind, reason) when the head of `pr` cannot be shown to be unchanged since `approval`, or None: the
+    approval must be newer than the oldest of the newest pushes that left the branch on a head in `heads`."""
+    activity = p["gh"](list, "api", "-X", "GET", ACTIVITY, "-f", f"ref=refs/heads/{pr['headRefName']}", "-F", "per_page=30")
+    pushes = list(itertools.takewhile(lambda a: a.get("after") in heads, activity))
+    approved = epoch(approval.get("created_at"))
+    changed = epoch(pushes[-1].get("timestamp")) if pushes else None
+    if not activity or activity[0].get("after") != pr["headRefOid"] or approved is None or changed is None:
         return "head-time", "cannot tell when its head last changed"
     if approved <= changed:
         return "stale", "its head changed after the lgtm; a fresh lgtm is needed"
     return None
 
 
-def lgtm_step(p, dry):
-    """Merge (with `dry`, only check) each open pull request the human approved, with a review or with
-    `lgtm`. Leaves p["lgtm"], a list of (pull request, "merged" or a blocker kind, the source (`approval` or
-    `lgtm`) and its url or the reason), and p["lgtm_unread"], why the rest could not be looked at."""
-    results, permission, merged = [], {}, set()
-    p["lgtm"], p["lgtm_unread"] = results, None
+def approval_stop(p, pr, permission):
+    """(kind, reason) when GitHub's records hold no valid approval of the head of `pr`, else None."""
     try:
-        phased(p)
-        for pr in bottom_up(open_prs(p)):
-            review = approving_review(p, pr, permission)
-            on_head = bool(review) and review.get("commit_id") == pr["headRefOid"]
-            # A review on the head needs no lgtm; an lgtm can still approve what a review on an older commit cannot.
-            lgtm = None if on_head else newest_approval(p, pr, permission)
-            if review or lgtm:
-                source, approval = ("lgtm", lgtm) if lgtm else ("approval", review)
-                stop = (FORK if pr["isCrossRepository"] else None if on_head else
-                        stale_approval(p, pr, lgtm) if lgtm else STALE_REVIEW) or merge_one(p, pr, merged, dry)
-                if not stop:
-                    merged.add(pr["headRefName"])
-                results.append((pr, *(stop or ("merged", f"{source} {approval.get('html_url') or pr['url']}"))))
+        heads = approved_heads(p, pr)
+        review = approving_review(p, pr, permission, heads)
+        if review and review.get("commit_id") in heads:
+            return None
+        lgtm = newest_approval(p, pr, permission)
+        if lgtm:
+            return stale_approval(p, pr, lgtm, heads)
     except NotEvaluated as e:
-        p["lgtm_unread"] = str(e)
-
-
-def watch_lgtm(p):
-    """The tick's lgtm step; after a merge, clean and a fresh picture that keeps its results."""
-    lgtm_step(p, dry=False)
-    for pr, kind, text in p["lgtm"]:
-        print(f"#{pr['number']} merged on {text}" if kind == "merged" else f"#{pr['number']} blocked: {text}")
-    if not any(kind == "merged" for _, kind, _ in p["lgtm"]):
-        return p
-    run_clean()
-    return {**gather(p["repo"], p["dispatcher"]), "lgtm": p["lgtm"], "lgtm_unread": p["lgtm_unread"]}
+        return "pending", str(e)
+    return STALE_REVIEW if review else ("unapproved", "not approved on GitHub: no review approves it and no lgtm")
 
 
 # ---- pull request comments --------------------------------------------------
@@ -2879,15 +2943,9 @@ def save_comments(path, since, kept):
     os.replace(temp, path)
 
 
-def watch_comments(repo, dispatcher):
-    """Forward what the human wrote on the pull requests of the tasks in motion to their leads; log the rest."""
-    if not any(r["state"] in STATES[:3] for r in read_tasks(repo.root).values()):
-        return
-    try:
-        prs = [pr for pr in snapshot(repo) if task_slug(repo, pr)]
-    except NotEvaluated as e:
-        print(f"comments: {e}")
-        return
+def watch_comments(repo, dispatcher, snap):
+    """Forward what the human wrote on the pull requests of the tasks (of the snapshot `snap`) to their leads; log the rest."""
+    prs = [pr for pr in snap if task_slug(repo, pr)]
     path = repo_state(repo, "comments", "json")
     try:
         state = json.loads(path.read_text())
@@ -3050,15 +3108,6 @@ def installation_token(identity, repository=None):
     return body["token"], body["expires_at"]
 
 
-def git_as_app(args, cwd, timeout=None):
-    """`git` as the App when an identity is installed (as the session hook's `factory env` does), for what reaches the
-    remote or makes commits: the human's credentials and name are not used then."""
-    exports, error = identity_exports()
-    if error:
-        return 1, "", error
-    return run(["git", *args], cwd=cwd, timeout=timeout, env={**os.environ, **exports} if exports else None)
-
-
 def acting_identity(cwd=None):
     """(identity, repository name) once the wizard has installed the App (it writes bot_login last) and `cwd` is in a
     repository of the App's owner, else None."""
@@ -3129,13 +3178,23 @@ def identity_exports():
     return values, None
 
 
+def act_git(path, *args, timeout=None):
+    """`git` in `path` as the App when an identity is installed (as the session hook's `factory env` does), for what
+    reaches the remote or makes commits: the human's credentials and name are not used then."""
+    exports, error = identity_exports()
+    if error:
+        return 1, "", error
+    return run(["git", *args], cwd=path, timeout=timeout, env={**os.environ, **exports} if exports else None)
+
+
 def cmd_env(args):
-    """Print the exports that make git and gh act as the App; nothing when no identity applies."""
+    """Print the exports that make git and gh act as the App; nothing when no identity applies. The token is
+    masked when stdout is a terminal."""
     values, error = identity_exports()
     if error:
         print(f"factory: {error}; git and gh will fail until one can be minted", file=sys.stderr)
     for name, value in values.items():
-        print(f"export {name}={shlex.quote(value)}")
+        print(f"export {name}={'***' if name == 'GH_TOKEN' and sys.stdout.isatty() else shlex.quote(value)}")
     return 1 if error else 0
 
 
@@ -3854,11 +3913,6 @@ class Landing:
     def out(self, *args):
         return self.git(*args)[1].strip()
 
-    def act(self, *args):
-        """`git` as the App when an identity is installed (as the session hook's `factory env` does), for what
-        reaches the remote or makes commits: the human's credentials and name are not used then."""
-        return git_as_app(args, self.path)
-
     def stop(self, reason, needs, facts=()):
         return f"STOPPED {reason}", list(facts), needs
 
@@ -3872,7 +3926,7 @@ class Landing:
         self.base, self.merged = land_base(repo, branch or "")
         self.target_branch = repo.default if self.merged else self.base
         self.target = f"{remote}/{self.target_branch}"
-        rc, _, err = self.act("fetch", remote)
+        rc, _, err = act_git(self.path, "fetch", remote)
         if rc != 0:
             return self.stop("other", f"git fetch {remote} failed: {err.strip()}")
         if branch != f"worktree-{self.slug}" or branch == repo.default:
@@ -3896,7 +3950,7 @@ class Landing:
             return ("LANDED", facts, "none") if error is None else self.stop("other", error, facts)
         task_files = self.out("diff", "--name-only", old_base, "HEAD").splitlines()
         overlap = sorted(set(self.out("diff", "--name-only", old_base, self.target).splitlines()) & set(task_files))
-        rc, out, err = self.act("merge", "--no-edit", self.target)
+        rc, out, err = act_git(self.path, "merge", "--no-edit", self.target)
         if rc != 0:
             return self.conflict(task_files, out + err)
         return self.after_merge(old_base, overlap)
@@ -3929,7 +3983,7 @@ class Landing:
         look = bool(overlap)
         if look:
             self.mark_working()
-        rc, out, err = self.act("push", self.remote, f"HEAD:{branch}")
+        rc, out, err = act_git(self.path, "push", self.remote, f"HEAD:{branch}")
         if rc != 0:
             refusal = (err or out).strip()
             if WORKFLOWS_REFUSAL in refusal:
@@ -4004,7 +4058,7 @@ class Landing:
         needs = "\n".join(sections.get("Needs the lead", [])) or "none"
         stopped = bool(said and said.group(1) == "STOPPED")
         left = [] if stopped else [self.worktree_state()]
-        if self.act("fetch", self.remote)[0] != 0:
+        if act_git(self.path, "fetch", self.remote)[0] != 0:
             return self.stop("other", f"git fetch {self.remote} failed after the lander ran; whether it pushed is unknown",
                              [*facts, *left])
         new_head = self.out("rev-parse", "--verify", "--quiet", f"refs/remotes/{self.remote}/{self.branch}")
@@ -4083,6 +4137,224 @@ def cmd_land(args):
     return 0 if all(landed) else 1
 
 
+# ---- lander -----------------------------------------------------------------
+
+MERGE_TIMEOUT = 3600
+MERGE_BASH_MS = "2400000"
+MERGE_TOOLS = ("Read", "Grep", "Glob", "SendMessage", "ToolSearch", "Bash(factory merge --approved *)",
+               "Bash(factory land *)", "Bash(factory status *)", "Bash(factory status)", "Bash(gh pr view *)", "Bash(gh pr checks *)",
+               "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(sleep *)")
+MERGE_KINDS = ("unapproved", "stale", "behind", "ci", "pending", "conflict", "tests", "handover", "base", "other")
+MERGE_LINE_RE = re.compile(r"#(\d+) (?:merged (\S.*)|stopped (\w+): (\S.*))")
+
+
+def read_lander(repo):
+    """lander.json: what the tick has noticed, the stops of the lander's runs and when health last ran."""
+    try:
+        data = json.loads(repo_state(repo, "lander", "json").read_text())
+    except (OSError, ValueError):
+        data = None
+    return {"noticed": {}, "stopped": {}, "health": 0, **(data if isinstance(data, dict) else {})}
+
+
+def write_lander(repo, state):
+    path = repo_state(repo, "lander", "json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps(state))
+    os.replace(temp, path)
+
+
+@contextlib.contextmanager
+def lander_lock(repo):
+    """Hold the lander lock of this repository; yields whether it was free."""
+    path = repo_state(repo, "lander", "lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+
+
+def approved_at(pr):
+    """The newest time an approving review or an `lgtm` comment was left on `pr`, or None. Only a prefilter: the
+    gate of `factory merge --approved` decides. A draft is never one, and only a comment of an owner, member or
+    collaborator counts as an `lgtm`."""
+    if pr.get("isDraft"):
+        return None
+    times = [r.get("submittedAt") for r in pr.get("latestReviews") or [] if r.get("state") == "APPROVED"]
+    times += [c.get("createdAt") for c in pr.get("comments") or [] if str(c.get("body")).strip().lower() == "lgtm"
+              and c.get("authorAssociation") in HUMAN_ASSOCIATIONS]
+    return max((t for t in times if t), default=None)
+
+
+def candidates(repo, snap):
+    """The pull requests of `snap` that carry an approval and belong to a task declared handed-over."""
+    declared = read_tasks(repo.root)
+    return [pr for pr in snap if approved_at(pr) and declared.get(task_slug(repo, pr), {}).get("state") == "handed-over"]
+
+
+def merge_brief(repo, given, word, dispatcher):
+    lines = ["Merge run.", f"Repository: {repo.root}", "Pull requests:"]
+    for pr in given:
+        n = pr["number"]
+        slug = task_slug(repo, pr)
+        how = (f"on the human's word: merge with `factory merge {n}`" if n in word
+               else f"approved on GitHub: merge with `factory merge --approved {n}`")
+        lines.append(f"- #{n}: head {pr['headRefName']}, base {pr['baseRefName']}, "
+                     f"{f'task {slug} (its lead is the session {slug})' if slug else 'no task'}; {how}")
+    return "\n".join([*lines, "No dispatcher session is alive." if not dispatcher
+                      else "The dispatcher started this run: do not message it." if word
+                      else f"The dispatcher's session name is {dispatcher}."])
+
+
+def lander_results(rc, out, numbers):
+    """({number: ("merged", url) or (stop kind, evidence)}, the reply's JSON or {}). A number the reply has no line
+    for, or every number when the run failed or could not be read, is a stop `other` with the reason."""
+    try:
+        reply = json.loads(out)
+    except ValueError:
+        reply = None
+    reply = reply if isinstance(reply, dict) else {}
+    text = reply.get("result") if rc == 0 else None
+    cause = ("timed out" if rc == 124 else f"exited {rc}") if rc else None if isinstance(text, str) else "its reply could not be read"
+    missing = "the lander gave no line for it" + (f" ({cause})" if cause else "")
+    results = {}
+    for line in text.splitlines() if isinstance(text, str) else []:
+        m = MERGE_LINE_RE.fullmatch(line.strip("`- \t"))
+        if m and int(m[1]) in numbers:
+            results[int(m[1])] = ("merged", m[2]) if m[2] else (m[3] if m[3] in MERGE_KINDS else "other", m[4])
+    return {n: results.get(n, ("other", missing)) for n in numbers}, reply
+
+
+def run_lander(repo, snap, given, word, name):
+    """One merge run of a model lander over the pull requests `given` of the snapshot `snap` (those in `word` on
+    the human's word, the rest on GitHub's approval). Prints its result lines, records the stops and what has been
+    noticed in lander.json, and tells the human of each stop when no dispatcher is alive. True when all merged."""
+    sessions = list_sessions()
+    alive = bool(sessions and live_dispatchers(sessions, repo.root, name))
+    tools = [*MERGE_TOOLS, *(f"Bash(factory merge {n})" for n in sorted(word))]
+    argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", "sonnet",
+            "--permission-mode", "dontAsk", "--allowedTools", *tools, "--output-format", "json",
+            merge_brief(repo, given, word, name if alive else None)]
+    # `factory` first on the PATH (the schedule's PATH holds only git, gh, claude and Python), so a nested
+    # `factory land` finds this script and, as the job's PATH has them, `claude`, `git` and `gh`.
+    env = {**os.environ, "PATH": f"{FACTORY.parent}{os.pathsep}{os.environ.get('PATH', '')}",
+           "BASH_DEFAULT_TIMEOUT_MS": MERGE_BASH_MS, "BASH_MAX_TIMEOUT_MS": MERGE_BASH_MS}
+    rc, out, _ = run(argv, cwd=repo.root, timeout=MERGE_TIMEOUT, env=env)
+    results, reply = lander_results(rc, out, [pr["number"] for pr in given])
+    try:
+        snap, opened = snapshot(repo), True  # the heads and approvals as the run left them
+    except NotEvaluated:
+        opened = False
+    if opened:  # what is no longer open merged, even when the run died; what is still open did not
+        shown = {pr["number"] for pr in snap}
+        for pr in given:
+            n, (kind, _) = pr["number"], results[pr["number"]]
+            if kind == "merged" and n in shown:
+                results[n] = ("other", "the lander said merged but it is still open")
+            elif kind != "merged" and n not in shown and rc:
+                results[n] = ("merged", pr["url"])
+    state, heads = read_lander(repo), {pr["number"]: pr["headRefOid"] for pr in snap}
+    # Only this run's pull requests get a new key, with the stamp read before the run: an approval that came
+    # during it, or on another pull request, starts the next run.
+    state["noticed"] = {**{n: k for n, k in state["noticed"].items() if int(n) in heads},
+                        **{str(pr["number"]): f"{heads[pr['number']]}:{at}" for pr in given
+                           if (at := approved_at(pr)) and pr["number"] in heads}}
+    state["stopped"] = {n: s for n, s in state["stopped"].items() if int(n) in heads}
+    for n, (kind, text) in results.items():
+        if kind == "merged":
+            print(f"#{n} merged {text}")
+            state["stopped"].pop(str(n), None)
+            continue
+        print(f"#{n} stopped {kind}: {text}")
+        if n in heads:
+            state["stopped"][str(n)] = {"head": heads[n], "kind": kind, "text": text, "ts": now()}
+        firing = fire(repo, {"criterion": "lgtm-blocked", "escalate": "always",
+                             "slug": task_slug(repo, next(pr for pr in given if pr["number"] == n)),
+                             "subject": f"#{n}/{kind}", "detail": f"#{n} stopped {kind}: {text}"})
+        if alive:  # the lander told it; the health run must not send it again
+            log_firing(repo, id=firing["id"], decision="escalated", by="lander", reason="reported by the lander run")
+        else:
+            notify(repo, firing)
+    write_lander(repo, state)
+    if "num_turns" in reply:
+        cost, ms = reply.get("total_cost_usd"), reply.get("duration_ms")
+        print(f"lander: {reply['num_turns'] if reply['num_turns'] is not None else '?'} turns, "
+              f"{f'${cost:.2f}' if isinstance(cost, (int, float)) else '$?'}, "
+              f"{f'{ms / 1000:.0f}' if isinstance(ms, (int, float)) else '?'} s")
+    return all(kind == "merged" for kind, _ in results.values())
+
+
+def draft_picture(repo, snap):
+    """What `sync_drafts` reads, built from the snapshot without asking GitHub again: the session list and one row
+    per task, whose pull request comes from `snap`."""
+    sessions = list_sessions()
+    prs = {b: NO_PR for b in needed_branches(repo)}
+    prs.update({pr["headRefName"]: ("open", pr["url"], pr["headRefOid"], pr["baseRefName"], pr["isDraft"] is True)
+                for pr in snap})
+    return {"repo": repo, "sessions": sessions, "gh": lambda *args: gh_json(repo, *args),
+            "rows": None if sessions is None else collect(repo, sessions, load_settings()["task_time_limit_hours"], prs)}
+
+
+def cheap_tick(repo, name):
+    """The part of every tick that costs one `gh pr list`: with a task working, blocked or handed over, take the open
+    pull requests once and give them to the comment forwarder; with one handed over (or a task's pull request that is
+    ready for review while its task is not: it goes back to draft), also set the draft flags; with one handed over,
+    start a lander for what was approved since last noticed."""
+    here = {os.path.basename(t["path"]) for t in repo.tasks}
+    if not any(r["state"] in STATES[:3] and slug in here for slug, r in read_tasks(repo.root).items()):
+        return
+    try:
+        snap = snapshot(repo)
+    except NotEvaluated as e:
+        return print(f"{'notice' if handed_over(repo) else 'comments'}: {e}")
+    try:
+        watch_comments(repo, name, snap)
+    except Exception as e:  # the tick goes on without it
+        print(f"comments: {why(e)}")
+    over = handed_over(repo)
+    if over or any(not pr["isDraft"] and task_slug(repo, pr) for pr in snap):
+        sync_drafts(draft_picture(repo, snap), snap)
+    if over:
+        notice(repo, name, snap)
+
+
+def notice(repo, name, snap):
+    """Pull requests of `snap` approved since last noticed start one lander run."""
+    noticed = read_lander(repo)["noticed"]
+    new = [pr for pr in candidates(repo, snap) if noticed.get(str(pr["number"])) != f"{pr['headRefOid']}:{approved_at(pr)}"]
+    if new:
+        with lander_lock(repo) as free:
+            if free:
+                run_lander(repo, snap, new, set(), name)
+
+
+def cmd_lander(args):
+    repo = Repo()
+    try:
+        snap = snapshot(repo)
+    except NotEvaluated as e:
+        raise Fail(f"lander: {e}", code=1)
+    by_number = {pr["number"]: pr for pr in snap}
+    unknown = [n for n in args.prs if n not in by_number]
+    if unknown:
+        raise Fail(f"lander: #{unknown[0]} is not an open pull request; nothing done")
+    word = set(args.prs)
+    given = [by_number[n] for n in dict.fromkeys(args.prs)] or candidates(repo, snap)
+    if not given:
+        print("nothing approved")
+        return 0
+    with lander_lock(repo) as free:
+        if not free:
+            print("a lander run is already going; run it again when it ends")
+            return 1
+        return 0 if run_lander(repo, snap, given, word, dispatcher_name(args, repo)) else 1
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog="factory", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -4093,6 +4365,9 @@ def parse_args(argv):
     group.add_argument("--brief-file")
     new.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
     new.add_argument("--base", help="slug of an open task to stack this task on")
+    new.add_argument("--critical", action="store_true",
+                     help="use the slots held in reserve: the default branch is red, the factory is broken, "
+                          "or the human says so")
     status = sub.add_parser("status", help="one row per task worktree")
     status.add_argument("--json", action="store_true")
     status.add_argument("--cached", action="store_true", help="never contact GitHub: pull requests come from the cache")
@@ -4151,10 +4426,15 @@ def parse_args(argv):
     merge.add_argument("prs", nargs="*", type=int, metavar="pr")
     merge.add_argument("--all", action="store_true", help="every open pull request whose task is handed over")
     merge.add_argument("--dry-run", action="store_true")
+    merge.add_argument("--approved", action="store_true",
+                       help="merge only what GitHub's own records show approved (a review or an lgtm), read now")
+    lander = sub.add_parser("lander", help="start a lander run that merges pull requests (the human's word, or what GitHub shows approved)")
+    lander.add_argument("prs", nargs="*", type=int, metavar="pr", help="merge these on the human's word; none: those approved on GitHub")
+    lander.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
     land = sub.add_parser("land", help="bring a handed-over task up to its base (a model takes part only on a conflict)")
     land.add_argument("slug", nargs="?")
     land.add_argument("--all", action="store_true", help="every handed-over task whose pull request conflicts or whose base merged")
-    schedule = sub.add_parser("schedule", help="install, remove or show the job that runs watch every 30 minutes")
+    schedule = sub.add_parser("schedule", help="install, remove or show the job that runs watch every 2 minutes")
     schedule.add_argument("action", choices=("install", "remove", "status"))
     schedule.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
     wizard = sub.add_parser("wizard", help="set everything up, step by step; rerun to repair or finish")
@@ -4178,7 +4458,8 @@ def main(argv=None):
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "land": cmd_land, "schedule": cmd_schedule, "wizard": cmd_wizard, "uninstall": cmd_uninstall, "env": cmd_env}[args.cmd](args)
+                "land": cmd_land, "lander": cmd_lander, "schedule": cmd_schedule, "wizard": cmd_wizard,
+                "uninstall": cmd_uninstall, "env": cmd_env}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)
         return e.code
