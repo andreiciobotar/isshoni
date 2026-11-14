@@ -113,7 +113,7 @@ Everything that must survive is under the state directory, mounted at `/state`. 
 - **Undo**: `host remove`; the state directory is yours to keep or delete (`chmod -R u+w` first: Go's module cache is read-only, which `--purge-state` does for you).
 
 ## The site manager's schedule
-A container has no systemd, and a cron daemon needs root. So the container's main process is supercronic, running as the user on `~/.crontab`, and `crontab` in the image is a small script over that file. `factory schedule` finds a `crontab` and uses its cron backend unchanged: the watch ticks every 30 minutes and follows the dispatcher's life by the same rules as on any Linux host ([factory.md](factory.md#site-manager)). CI walks that whole life in the container, each tick fired by supercronic.
+A container has no systemd, and a cron daemon needs root. So the container's main process is supercronic, running as the user on `~/.crontab`, and `crontab` in the image is a small script over that file. `factory schedule` finds a `crontab` and uses its cron backend unchanged: the watch ticks every 2 minutes (it notices approvals each time and runs its health part every 30 minutes) and follows the dispatcher's life by the same rules as on any Linux host ([factory.md](factory.md#site-manager)). CI walks that whole life in the container, each tick fired by supercronic.
 
 What differs from cron on a host:
 - `crontab` knows only `-l` and `-` (what the factory uses). Edit `~/.crontab` by hand and supercronic does not notice until `pkill -USR2 supercronic` or the factory's next change.
