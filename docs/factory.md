@@ -18,7 +18,7 @@ factory feedback [--json] [--status open|accepted|rejected|done] [--kind issue|d
 factory feedback add --role <role> [--slug <slug>] [--model <model>]     # a report or items on stdin
 factory feedback decide '<what>. Why: <why>'                             # 200 characters at most
 factory feedback set <id> open|accepted|rejected|done [--pr <url>]       # id or a unique prefix
-factory retro                                                            # a JSON object on stdin
+factory retro [<file>]                                                   # a JSON object, on stdin or in the file
 factory log events|retros [--since <ts>] [--until <ts>]
 factory hook                                                             # run by the plugin's hooks
 factory health [--json] [--dispatcher <session-name>]
@@ -30,14 +30,17 @@ factory miss <text> [--slug <slug>] [--firing <id>]
 factory firings [--json]
 factory merge (<number>... | --all) [--dry-run]
 factory wizard [--owner <account>]
+factory env                                                              # exports that make git and gh act as the App
 ```
 
 - **`new`** starts a lead: a background session in a new worktree, with `factory/roles/lead.md` appended to its system prompt, declared `working`. The calling session must be named `--dispatcher` (default `dispatcher-<main checkout's directory name>`; set it with `/rename`), and no other session may carry that name. It refuses a slug whose worktree, branch, session or pull request (in any state) already exists (when `gh` cannot say, it warns and goes on), and a repository at its cap. `--base` stacks the task on another open task's branch.
-- **`status`** prints one row per task worktree: slug, phase, declared state, branch, session, base, session state, age (`overtime` when a session whose turn has not ended is past the time limit), uncommitted changes, commits ahead and behind its base, last commit, pull request, and `stale` when the last commit and the session's start are both older than 7 days. Then the counts per phase against the cap, the leftover `agent-*` and outside worktrees, and one `waiting on the human: <slug> <deliverable>` line per task in review. Pull request state is `unknown` without `gh`. `status --json` rows also carry `waited` (seconds since the task's last declared record, `null` when undeclared) and, for a blocked task, `stop_kind` and `stop_summary` (the `kind` and `summary` of the last `QUESTION`, `BLOCKED` or `OVERTIME` stop its lead sent after declaring it; `null` when there is none, and `stop_summary` is `null` for stops logged before summaries existed).
+- **`status`** prints one row per task worktree: slug, phase, declared state, branch, session, base, session state, age (`overtime` when a session whose turn has not ended is past the time limit), uncommitted changes, commits ahead and behind its base, last commit, pull request, and `stale` when the last commit and the session's start are both older than 7 days. Then the counts per phase against the cap, the leftover `agent-*` and outside worktrees, one line saying who acts on GitHub (`acting on GitHub as <bot login> (the factory's App)`, or `acting on GitHub with your gh login` with the reason: no App identity, or the App stored but not installed), and one `waiting on the human: <slug> <deliverable>` line per task in review. Pull request state is `unknown` without `gh`. `status --json` also has `identity` (the bot login, or `null`), and its rows also carry `waited` (seconds since the task's last declared record, `null` when undeclared) and, for a blocked task, `stop_kind` and `stop_summary` (the `kind` and `summary` of the last `QUESTION`, `BLOCKED` or `OVERTIME` stop its lead sent after declaring it; `null` when there is none, and `stop_summary` is `null` for stops logged before summaries existed).
 - **`clean`** removes finished tasks (session, worktree, branch) and says why it kept the rest. It never forces and keeps a task whenever anything is uncertain. A task goes only when its pull request is merged into the default branch with the local head equal to the merged head, or its state is `acknowledged` or `dismissed` with a recorded deliverable, a pull request that is not open and a head that is pushed; and in both cases nothing is uncommitted, no task is stacked on it, no session in it is unfinished and no other worktree is nested in it. It keeps a task on a detached HEAD, and one whose worktree is locked with no session (it prints the `git worktree unlock` to run). If sessions cannot be listed, or an unfinished session has no `cwd`, it removes nothing (exit 2). A dismissed branch that is not merged makes `git branch -d` refuse: reported, exit 1. Git-ignored files in a removed worktree go with it.
 - **`state`** is run by a lead inside its worktree. `handed-over` takes the deliverable: a link (`scheme://...`), or a file that exists and is outside the worktree.
 - **`ack`** is run by the dispatcher on the human's word, for a task that was handed over.
 - **`wizard`** creates the factory's GitHub App, gets it installed and verifies it; rerun, it verifies or repairs. See Identity.
+- **`env`** prints `export` lines that make `git` and `gh` act as the App, or nothing (exit 0) when no installed identity is stored. See Identity.
+- **`retro`** takes the task from the working directory and reads the JSON from `<file>` when one is given (exit 1 if it cannot be read), else from stdin.
 
 ## Declared state, phases and the cap
 | Declared state | By | Meaning |
@@ -201,10 +204,10 @@ To turn the digest off, delete the four `"job": "digest"` lines of `criteria.jso
   - *An `lgtm` comment.* Its whole body, trimmed, in any case, is `lgtm`, and it was created after the head branch last changed (GitHub's activity feed for the branch: the time of the push, not a commit date). Review bodies do not count. An `lgtm` can approve a pull request whose review is on an older commit; the `lgtm` rules then decide.
 - **Who may approve**, for both: a login whose GitHub `user.type` is `User` (a bot never), with `admin` or `write` permission on the repository, and not the pull request's author. The exception: an author's `lgtm` counts while `lgtm_from_author` is `true` (the default); an author's review never does.
 
-**Nothing technical tells the human's approval from one an agent posts when they share a login**, because agents act with the human's GitHub credentials. What is decided, per identity of the pull request's author:
-- *A GitHub App*: its comments and reviews have `user.type` `Bot`, so its `lgtm` or approval never counts. A mechanism, no setting needed.
+**Nothing technical tells the human's approval from one an agent posts when they share a login.** What is decided, per identity of the pull request's author:
+- *The factory's App* (see Identity): the lead's pull requests are authored by the bot, so your approving review counts (GitHub does not let you approve your own pull request, which is why it could not with one account) and so does your `lgtm` (you are not the author). Nothing the bot posts counts: its comments and reviews have `user.type` `Bot`. A mechanism, and `lgtm_from_author` has no effect on it.
 - *A second account of its own* (a regular user with write access): it looks like the human. Set `"lgtm_from_author": false` in the settings once the factory has such an account; its `lgtm` stops counting while another user's still does.
-- *The human's own account* (today): `lgtm_from_author` stays `true`, and the `lgtm` rests on a rule written into every role file: no agent ever posts one, and none ever approves a pull request.
+- *Without an identity* (your own `gh` login, the fallback): `lgtm_from_author` stays `true`, and the `lgtm` from the author rests on a rule written into every role file: no agent ever posts one, and none ever approves a pull request.
 
 Per pull request, bottom-up through a stack (a pull request based on another selected one goes after it). Each check that fails is a blocker with a kind:
 
@@ -228,7 +231,7 @@ Then it retargets the pull request onto the default branch when its base is a me
 - `clean` keeps the worktree the running plugin lives in: leads started by it load their plugin from there.
 
 ## Identity
-`factory wizard [--owner <account>]` (or `make wizard`) gives the factory a GitHub App of its own. Until the factory is switched to it (a separate change), every command still acts with your `gh` login. It needs `openssl` on the `PATH` (it signs the App's JWT) and a browser.
+`factory wizard [--owner <account>]` (or `make wizard`) gives the factory a GitHub App of its own. Once it is installed, the factory acts on GitHub as that App (see How the identity is used); with no identity stored, or an App stored but not installed, every command acts with your `gh` login, and `factory status` says which. It needs `openssl` on the `PATH` (it signs the App's JWT) and a browser.
 
 First run, with nothing stored:
 1. The owner is `--owner`, else the owner of `origin` (https or ssh URL); with neither it exits 1 naming `--owner`. GitHub says whether it is a user or an organization; the App is created under it.
@@ -246,7 +249,7 @@ Permissions the App asks for, and why:
 | Actions | read | `gh run list`: health reads CI on the default branch |
 | Metadata | read | implicit |
 
-Left out on purpose: `workflows` (so the bot cannot change CI: a branch touching `.github/workflows/` must be pushed by you) and `issues`. No webhook is active.
+Left out on purpose: `workflows` (so the bot cannot change CI: a branch touching `.github/workflows/` must be pushed by you, see below) and `issues`. No webhook is active.
 
 Files, in `~/.claude/factory/identity/` (mode 0700):
 - `key.pem` (0600): the App's private key. Never printed or logged.
@@ -255,6 +258,35 @@ Files, in `~/.claude/factory/identity/` (mode 0700):
 Rerun with an identity stored: it never creates a second App, and `--owner` naming another account exits 1 (one identity per machine). A `key.pem` without `app.json` exits 1 before any call, naming the `rm -r` to run. It sets looser modes back to 0600/0700 and says so; reports a missing `key.pem` (exit 1); reports when GitHub no longer knows the App or its key was revoked (exit 1, files untouched); opens the install page when the App is not installed; exits 1 when the installation sees no repositories, naming the page where to choose some; otherwise verifies, refreshes `app.json` and prints the report, exit 0. Every failure that needs a decision prints the undo lines.
 
 Headless machine: on Linux without `DISPLAY` or `WAYLAND_DISPLAY` the wizard does not open a browser (it would start a text browser in the terminal); it only prints the URL. GitHub redirects the browser to `127.0.0.1`, so opening that URL on another machine works only with the port forwarded (`ssh -L PORT:127.0.0.1:PORT`). Otherwise run the wizard on your laptop, then copy the directory (`scp -rp ~/.claude/factory/identity HOST:.claude/factory/`, or mount it into the container) and run `factory wizard` there: it verifies and prints the report.
+
+### How the identity is used
+Who acts as the App: lead sessions and their subagents (pushes, fetches, `gh`, and commits authored and committed as `<bot_login> <bot_email>`), and the script's own `gh` calls (`status`, `new`, `health`, `watch`, `merge`, `digest`). Not the dispatcher's own shell or your terminal; `eval "$(factory env)"` gives any shell the same identity.
+
+Mechanism. `factory env` prints these exports (every value shell-quoted):
+
+| Variable | Value |
+| --- | --- |
+| `GH_TOKEN` | an installation token |
+| `GIT_AUTHOR_NAME`, `GIT_COMMITTER_NAME` | the bot login |
+| `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_EMAIL` | the bot email |
+| `GIT_TERMINAL_PROMPT` | `0` |
+| `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n` | four config entries: an empty `credential.https://github.com.helper` (drops every helper configured before, such as the keychain or `gh auth git-credential`), then a helper that answers `x-access-token` and `$GH_TOKEN` (read from the environment when git calls it; the token is not in the config), and `url.https://github.com/.insteadOf` for `git@github.com:` and `ssh://git@github.com/` (ssh remotes of github.com are used over https) |
+
+The plugin's `SessionStart` hook (`factory hook`) appends one line, `eval "$(<path of factory> env)"`, to the file named by `CLAUDE_ENV_FILE`, which Claude Code runs as shell code before every Bash command. It does so for a lead session (a session in a task worktree, not a subagent's start), once (the line is not added twice), whether or not an identity is stored: running the wizard takes effect in running leads at their next command, and removing the identity undoes it. The dispatcher and any session outside a task worktree get no line. The script's own `gh` calls get `GH_TOKEN` in the child's environment; its `git` calls are local.
+
+Tokens last one hour at GitHub. The token is cached in `identity/token.json` (0600) and minted again when under 15 minutes remain, so every Bash command starts with at least 15 minutes, which is more than a foreground command may run (10 minutes). Limits: a background command that outlives its token; a session started before plugin 0.5.0 has no hook line (restart the lead); `GIT_CONFIG_*` variables set by the caller are replaced; only `github.com`.
+
+Secrets. The token is in the environment of the lead's shell commands: an agent can read it. It is scoped to the installed repositories and the permissions in the table, and it expires. The key never leaves `identity/`, is read only by `openssl` when a token is minted, and no role is told where it is.
+
+Failure. When no token can be minted, `factory env` prints the reason on stderr and sets `GH_TOKEN=unavailable`, so each command shows the reason and `git` and `gh` fail with an authentication error; in a lead session they never fall back to your login.
+
+`.github/workflows/`: GitHub refuses the App's push of a branch that changes a workflow file. The lander stops (`denied`), the lead reports BLOCKED, and you push the branch from your own terminal (`git -C .claude/worktrees/<slug> push -u origin HEAD`, with `--force-with-lease` after a rebase) and tell the dispatcher; the same again whenever that branch is rebased.
+
+What only a real run proves, since no identity may be created for a test (until you run the wizard and a task, these are unproven):
+- the App's token with `gh pr create`, `gh pr edit --base`, `gh pr ready`, `gh pr merge --match-head-commit`, `gh pr view --json statusCheckRollup,reviews`, `gh pr checks`, `gh run list`, and the `collaborators/<login>/permission` and `activity` reads (each needs only permissions the App has, by GitHub's permission tables);
+- a push with the helper's `x-access-token` and the bot's noreply email showing as the bot on GitHub;
+- GitHub's refusal message for a workflow-file push, and that the lander's later push of an already pushed head succeeds;
+- branch protection that restricts who may push or merge: the App must be allowed there.
 
 Undo: uninstall the App (the installation URL the report prints), delete the App (`https://github.com/settings/apps/<slug>/advanced`, or `https://github.com/organizations/<owner>/settings/apps/<slug>/advanced`; no API deletes an App), and `rm -r ~/.claude/factory/identity`.
 
@@ -267,7 +299,7 @@ Undo: uninstall the App (the installation URL the report prints), delete the App
 - A worktree made by hand under a slug used before inherits that slug's last declared state.
 - A store nobody writes to is never pruned. A month file and `watch.log` have no size limit.
 - The monitor adds up the cost of a reused slug, so a task started under an old slug looks dearer than it is. A model the monitor has no price for understates the cost.
-- Merging: with the author's own account the approval rests on a rule, not a mechanism (see Merging). A `CHANGES_REQUESTED` review by a different login does not block a merge. The author comparison and the bot test rest on GitHub's `user.type` and login. Checks are not rerun after a retarget, and GitHub does not test the merge result: mergeable means no conflict. A pull request with no task worktree is a `handover` stop; the human merges it. At most 100 open pull requests are seen. An `lgtm` during a running check waits for the next tick. There is no lock: when a tick and the dispatcher merge at once, the second `gh pr merge` fails and is reported.
+- Merging: without an identity (the author's own account) the author's `lgtm` rests on a rule, not a mechanism (see Merging). A `CHANGES_REQUESTED` review by a different login does not block a merge. The author comparison and the bot test rest on GitHub's `user.type` and login. Checks are not rerun after a retarget, and GitHub does not test the merge result: mergeable means no conflict. A pull request with no task worktree is a `handover` stop; the human merges it. At most 100 open pull requests are seen. An `lgtm` during a running check waits for the next tick. There is no lock: when a tick and the dispatcher merge at once, the second `gh pr merge` fails and is reported.
 - The site manager's thresholds are first guesses; `quiet` reads file times, so a lead waiting on a long command looks quiet; a run that dies after sending may escalate the same firing again next tick. A site manager run is read as one JSON document on `claude`'s standard output: with `ANTHROPIC_LOG=debug` in the environment `claude` logs there too, the message is still sent and the run is recorded as failed.
 - Two repositories whose directories share a name share a spec folder and a default dispatcher name.
-- Identity: one per machine; `workflows` is not granted.
+- Identity: one per machine; `workflows` is not granted; only `github.com`; a background command can outlive its token; a lead started before plugin 0.5.0 has no hook line; `GIT_CONFIG_*` set by the caller is replaced. See How the identity is used, including what only a real run proves.

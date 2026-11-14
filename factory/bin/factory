@@ -66,9 +66,16 @@ class Fail(Exception):
 
 
 def run(argv, cwd=None, timeout=None, input=None):
-    """The only place a subprocess starts. Returns (returncode, stdout, stderr)."""
+    """The only place a subprocess starts. Returns (returncode, stdout, stderr). `gh` acts as the App when an identity is stored."""
+    env = None
+    if argv[0] == "gh":
+        try:
+            if identity := acting_identity():
+                env = {**os.environ, "GH_TOKEN": app_token(identity)}
+        except Fail as e:
+            return 1, "", str(e)
     try:
-        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, input=input)
+        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, input=input, env=env)
     except subprocess.TimeoutExpired:
         return 124, "", "timed out"
     except OSError as e:
@@ -728,9 +735,11 @@ def cmd_status(args):
               for key, p in (("blocked", "blocked"), ("in_review", "review"), ("merged", "merged"),
                              ("settled", "settled"))}
     counts["in_motion"] = sum(r["phase"] in ("motion", "blocked") for r in rows)
+    stored = load_identity()
+    bot = stored and stored.get("bot_login")
     if args.json:
         doc = {"rows": rows, "cap": cap, "open": len(rows), **counts,
-               "leftover_agent_worktrees": repo.leftover, "outside_worktrees": repo.outside}
+               "leftover_agent_worktrees": repo.leftover, "outside_worktrees": repo.outside, "identity": bot or None}
         print(json.dumps(doc, indent=2))
         return 0
     now = time.time()
@@ -751,6 +760,9 @@ def cmd_status(args):
           f"waiting for review {counts['in_review']}; merged, not cleaned {counts['merged']}; "
           f"settled, not cleaned {counts['settled']}; leftover agent worktrees {repo.leftover}; "
           f"worktrees outside .claude/worktrees {repo.outside}")
+    print(f"acting on GitHub as {bot} (the factory's App)" if bot else
+          "acting on GitHub with your gh login (" + ("the App is stored but not installed" if stored else "no App identity")
+          + ": factory wizard)")
     for r in rows:
         if r["phase"] == "review":
             print(f"waiting on the human: {r['slug']} {r['deliverable'] or r['pr_url'] or '-'}")
@@ -917,6 +929,12 @@ def cmd_hook(args):
                 if why := "".join(why.lstrip(" \t\r\n:-–—.,").splitlines()[:1]).strip()[:200]:
                     fields["summary"] = why
         log("events", {**tag, "event": event, **fields})
+        if event == "SessionStart" and tag["slug"] and not p.get("agent_id") and os.environ.get("CLAUDE_ENV_FILE"):
+            line = f'eval "$({shlex.quote(str(FACTORY))} env)"'
+            env_file = Path(os.environ["CLAUDE_ENV_FILE"])
+            have = env_file.read_text() if env_file.exists() else ""
+            if line not in have.splitlines():
+                env_file.write_text(have + ("\n" if have and not have.endswith("\n") else "") + line + "\n")
         if isinstance(text, str) and (lines := feedback_section(text)) is not None:
             file_feedback(lines, tag)
     except Exception:
@@ -956,9 +974,13 @@ def cmd_retro(args):
     if not tag["slug"]:
         raise Fail("retro: run it from inside a task worktree")
     try:
-        doc = json.loads(sys.stdin.read())
+        source = Path(args.file).read_text() if args.file else sys.stdin.read()
+    except OSError as e:
+        raise Fail(f"retro: cannot read {args.file}: {e}")
+    try:
+        doc = json.loads(source)
     except ValueError as e:
-        raise Fail(f"retro: stdin is not JSON: {e}")
+        raise Fail(f"retro: {args.file or 'stdin'} is not JSON: {e}")
     if not isinstance(doc, dict) or set(doc) != {"defects", *RETRO_LISTS}:
         raise Fail(f"retro: the object needs exactly the keys defects, {', '.join(RETRO_LISTS)}")
     for key in RETRO_LISTS:
@@ -2398,6 +2420,7 @@ def watch_lgtm(p):
 # ---- identity ---------------------------------------------------------------
 
 GITHUB = "https://api.github.com"
+TOKEN_MARGIN = 900
 WIZARD_WAIT = 600
 INSTALL_POLL = 3
 PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read", "actions": "read"}
@@ -2476,6 +2499,54 @@ def installation_token(identity):
     path = f"/app/installations/{identity['installation_id']}/access_tokens"
     body = api("POST", path, 201, app_jwt(identity))
     return body["token"], body["expires_at"]
+
+
+def acting_identity():
+    """The stored identity once the wizard has installed it (it writes bot_login last), else None."""
+    identity = load_identity()
+    return identity if identity and identity.get("bot_login") else None
+
+
+def app_token(identity):
+    """An installation token with at least TOKEN_MARGIN seconds left: the cached one, else a fresh one (cached, 0600)."""
+    cache = IDENTITY.expanduser() / "token.json"
+    try:
+        cached = json.loads(cache.read_text())
+        if epoch(cached["expires_at"]) - time.time() > TOKEN_MARGIN:
+            return cached["token"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    token, expires_at = installation_token(identity)
+    fd, tmp = tempfile.mkstemp(dir=cache.parent)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"token": token, "expires_at": expires_at}, f)
+    os.replace(tmp, cache)
+    return token
+
+
+def cmd_env(args):
+    """Print the exports that make git and gh act as the App; nothing without an identity."""
+    identity = acting_identity()
+    if not identity:
+        return 0
+    try:
+        token, code = app_token(identity), 0
+    except Fail as e:
+        print(f"factory: no App token: {e}; git and gh will fail until one can be minted", file=sys.stderr)
+        token, code = "unavailable", 1
+    helper = "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f"
+    credential = "credential.https://github.com.helper"
+    rewrite = "url.https://github.com/.insteadOf"
+    values = {"GH_TOKEN": token, "GIT_TERMINAL_PROMPT": "0",
+              "GIT_AUTHOR_NAME": identity["bot_login"], "GIT_AUTHOR_EMAIL": identity["bot_email"],
+              "GIT_COMMITTER_NAME": identity["bot_login"], "GIT_COMMITTER_EMAIL": identity["bot_email"],
+              "GIT_CONFIG_COUNT": "4"}
+    for i, (key, value) in enumerate(((credential, ""), (credential, helper), (rewrite, "git@github.com:"),
+                                      (rewrite, "ssh://git@github.com/"))):
+        values[f"GIT_CONFIG_KEY_{i}"], values[f"GIT_CONFIG_VALUE_{i}"] = key, value
+    for name, value in values.items():
+        print(f"export {name}={shlex.quote(value)}")
+    return code
 
 
 def remote_owner():
@@ -2707,7 +2778,9 @@ def parse_args(argv):
     ack.add_argument("slug")
     ack.add_argument("state", choices=SETTLED)
     sub.add_parser("hook", help="record one hook payload read from stdin (run by the plugin's hooks)")
-    sub.add_parser("retro", help="store a lead retrospective (a JSON object on stdin)")
+    retro = sub.add_parser("retro", help="store a lead retrospective (a JSON object on stdin, or in a file)")
+    retro.add_argument("file", nargs="?", help="read the JSON from this file instead of stdin")
+    sub.add_parser("env", help="print shell exports that make git and gh act as the factory's App (nothing without one)")
     feedback = sub.add_parser("feedback", help="list or change the factory outbox: issues and decisions")
     feedback.add_argument("--json", action="store_true")
     feedback.add_argument("--status", choices=STATUSES)
@@ -2762,7 +2835,7 @@ def main(argv=None):
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "schedule": cmd_schedule, "wizard": cmd_wizard}[args.cmd](args)
+                "schedule": cmd_schedule, "wizard": cmd_wizard, "env": cmd_env}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)
         return e.code
