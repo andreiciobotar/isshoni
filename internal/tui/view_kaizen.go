@@ -165,6 +165,7 @@ func unpriced(doc *data.Kaizen) int64 {
 func (m *model) pulseLines(p paint, w int) block {
 	d := m.kz.doc
 	lines := m.kaizenTiles(p, w)
+	lines = append(lines, m.overheadLine(p, w)...)
 	lines = append(lines, "", m.rewardsLine(p, w), "")
 	lines = append(lines, m.pulseCharts(p, w)...)
 	lines = append(lines, "")
@@ -225,8 +226,8 @@ func (m *model) kaizenTiles(p paint, w int) block {
 	th := m.th
 	s := m.kz.doc.Summary
 	c := func(k string) float64 { return m.counter[k].Value() }
-	long := (w-4)/5-3 >= 18 // "↓ 35% vs earlier 8" fits
-	tiny := (w-4)/5-3 < 10  // labels and lines shrink to fit
+	long := (w-5)/6-3 >= 18 // "↓ 35% vs earlier 8" fits
+	tiny := (w-5)/6-3 < 10  // labels and lines shrink to fit
 	sp := p.on(th.Surface)
 	value := func(median *float64, show func() string) string {
 		if median == nil {
@@ -237,6 +238,14 @@ func (m *model) kaizenTiles(p paint, w int) block {
 	cost := value(s.Cost.Median, func() string {
 		v := m.kzMoney(c("kz-cost") / 100)
 		if unpriced(m.kz.doc) > 0 {
+			v += "*"
+		}
+		return v
+	})
+	oh := s.Overhead
+	overhead := value(oh.PerLanded, func() string {
+		v := m.kzMoney(*oh.PerLanded)
+		if oh.UnpricedTokens > 0 {
 			v += "*"
 		}
 		return v
@@ -266,11 +275,29 @@ func (m *model) kaizenTiles(p paint, w int) block {
 	tiles := []tile{
 		{"LANDED", strconv.Itoa(int(c("kz-landed"))), flight, th.Green},
 		{label("COST / TASK", "COST"), cost, m.trendSub(sp, func(t *data.KaizenTrend) data.Pair { return t.Cost }, s.Cost.N, long, tiny), th.Blue},
+		{label("OVERHEAD", "OVERHEAD"), overhead, fmt.Sprintf("%d landed", oh.Landed), th.Yellow},
 		{label("BRIEF → PR", "BRIEF"), value(s.BriefToPR.Median, func() string { return kzSecs(c("kz-brief")) }), m.trendSub(sp, func(t *data.KaizenTrend) data.Pair { return t.BriefToPR }, s.BriefToPR.N, long, tiny), th.Purple},
 		{label("PR → MERGE", "MERGE"), value(s.PRToMerge.Median, func() string { return kzSecs(c("kz-merge")) }), m.trendSub(sp, func(t *data.KaizenTrend) data.Pair { return t.PRToMerge }, s.PRToMerge.N, long, tiny), th.Teal},
 		{label("FIRST PASS", "1ST PASS"), first, rework, th.Pink},
 	}
 	return m.tileRow(p, w, tiles, nil)
+}
+
+// overheadLine says what the overhead per landed task is made of.
+func (m *model) overheadLine(p paint, w int) block {
+	oh := m.kz.doc.Summary.Overhead
+	text := "overhead per landed task: " + m.kzMoney(oh.Dispatcher) + " dispatcher + " + m.kzMoney(oh.SiteManager) + " site manager over " + strconv.Itoa(oh.Landed) + " landed"
+	if oh.PerLanded == nil {
+		text = "overhead per landed task: - (no landed task); " + m.kzMoney(oh.Dispatcher) + " dispatcher + " + m.kzMoney(oh.SiteManager) + " site manager"
+	}
+	if oh.UnpricedTokens > 0 {
+		text += " · * excludes " + Human(float64(oh.UnpricedTokens)) + " unpriced tokens"
+	}
+	var lines block
+	for _, l := range wrapPlain(text, w-2) {
+		lines = append(lines, p.sp(1)+p.t(l, m.th.Muted))
+	}
+	return lines
 }
 
 // rewardsLine is the real rewards, or what the trend is waiting for. The rewards shimmer

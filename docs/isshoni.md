@@ -376,7 +376,10 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   changes; there is no periodic refresh. Four pages, switched with `←` `→`, each
   scrolled with the move keys: **Pulse** (the landed count and the median cost, brief to
   pull request, pull request to merge and first-pass rate, each with how the latest half
-  of the landed tasks compares with the earlier half from 10 landed tasks; the rewards;
+  of the landed tasks compares with the earlier half from 10 landed tasks; beside the cost,
+  the overhead per landed task (`summary.overhead.per_landed`, `-` when no task landed,
+  starred when some tokens had no price) and under the tiles what it is made of,
+  `$x dispatcher + $y site manager over N landed`; the rewards;
   a column chart per measure, one column per landed task in start order, with the
   plugin versions marked under it; who caught the defects; the site manager's record:
   precision and recall, then what it escalated with the outcomes, suppressed and missed,
@@ -405,7 +408,15 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   window's tasks, with the plugin versions marked under them, a gap where a role ran in too few
   of the window's tasks, and one line saying when the chart starts below two points; last, a
   table of the other roles, latest against before, `before → latest`, with how many landed
-  tasks each ran in, dimmed under `min`, `-` where the role did not run) and **Board**
+  tasks each ran in, dimmed under `min`, `-` where the role did not run; and between the
+  verdict and the charts, who wrote the product code and tests (`authoring` of the
+  versions, landed tasks only): for the latest version with landed tasks and the one
+  before it, the lead's, the coder's and every other role's share of the lines written,
+  and in how many of the tasks that wrote some the lead did (`lead wrote some in N of M
+  tasks`); the lead's change in points, green down, only when both versions have at least
+  `min` such tasks; a version under `min` is dimmed; `-` where nobody wrote a line. Under it,
+  the lead's share in the last five landed tasks, and a line chart of each role's pooled
+  share over the points, a gap where no one wrote a line) and **Board**
   (the factory's feedback outbox: open issues grouped by topic, what was acted on, the
   decisions). The columns of a chart use the colour of what they measure; review rounds
   are green for a first pass and orange otherwise; a chart too narrow for every task
