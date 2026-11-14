@@ -2064,12 +2064,12 @@ def c_handover_unacknowledged(p, threshold):
 
 def churning(p):
     """{slug: churn evidence} of the handed-over tasks already sent back by the queue whose pull request conflicts
-    again while other open tasks change the same files; one `gh pr list`, and only when such a task exists."""
+    again while other open tasks change the same files; it reads the tick's snapshot, and asks GitHub itself only when the tick took none."""
     def make(p):
         repo = p["repo"]
         due = [s for s, r in p["declared"].items() if r["state"] == "handed-over" and queue_send_backs(repo, s)]
         found = {}
-        for pr in (p.get("snap") or snapshot(repo)) if due else []:
+        for pr in (snapshot(repo) if p.get("snap") is None else p["snap"]) if due else []:
             slug = task_slug(repo, pr)
             if slug in due and (evidence := churn(repo, slug, pr)):
                 found[slug] = {**evidence, "pr": pr["number"]}
@@ -5782,9 +5782,10 @@ def release_paused(repo, fallback):
     `TaskPrioritized` event) and its holder is told the way is clear: a tech lead run, else its lead."""
     live = open_tasks(repo)
     released = {e["slug"]: e["ts"] for e in repo_log("events", repo.root) or [] if e.get("event") == "TaskPrioritized"}
+    held = read_lander(repo)["prioritized"]  # the second guard: an event that could not be written must not release twice
     for slug, row in paused_rows(repo).items():
         waited = row["waits_on"] if isinstance(row.get("waits_on"), list) else []
-        if row["ts"] <= released.get(slug, "") or any(w in live for w in waited):  # once per pause, even after the hold expired
+        if slug in held or row["ts"] <= released.get(slug, "") or any(w in live for w in waited):  # once per pause, even after the hold expired
             continue
         try:
             pr = next(pr for pr in snapshot(repo) if task_slug(repo, pr) == slug)
