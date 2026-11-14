@@ -63,7 +63,7 @@ class Evidence(Home):
         with mock.patch.object(factory, "run", run), self.assertRaises(factory.NotEvaluated) as cm:
             factory.anatomy(p)
         self.assertEqual(str(cm.exception),
-                         'no monitor: set "monitor" in ~/.claude/factory/settings.json to the path of the isshoni command')
+                         'no monitor: set paths.monitor in ~/.claude/factory/settings.toml to the path of the isshoni command')
 
     def test_the_monitor_fails_or_answers_oddly(self):
         for answer, why in (((1, "", "x\nboom"), "the monitor failed: boom"), ((1, "", ""), "the monitor failed: exit 1"),
@@ -337,7 +337,7 @@ class DigestCase(Harness):
         if marker_age is not None:
             self.seed("firings", [{"ts": iso(NOW - marker_age * HOUR), "repo": ROOT, "digest": ["old"]}])
         if monitor:
-            (self.store / "settings.json").write_text(json.dumps({"monitor": MONITOR}))
+            (self.store / "settings.toml").write_text(f'[paths]\nmonitor = "{MONITOR}"\n')
         return {(MONITOR, "anatomy"): (0, json.dumps({"tasks": tasks}), ""),
                 ("gh", "pr", "list", "--state", "merged"): (0, json.dumps(prs), "")}
 

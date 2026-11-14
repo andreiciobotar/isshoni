@@ -30,7 +30,7 @@ The laptop keeps its records in `~/.claude/factory/hosts.json` (`$FACTORY_HOME` 
 5. **Source and plugin.** `HEAD` is extracted to `~/.isshoni` in the container (the tree is replaced), `make install` builds the dashboard, and the plugin is installed from it (`claude plugin marketplace add`, `claude plugin install factory@factory`; on a new revision the `update` forms).
 6. **GitHub identity.** Copies the App's private key and `app.json` into the container's `~/.claude/factory/identity/` (directory 0700, files 0600); skipped when their checksums match.
 7. **Claude login.** See below.
-8. **Settings.** Merges `"monitor"` and `"dispatchers"` into the container's `~/.claude/factory/settings.json`; every other key is kept.
+8. **Settings.** Sets `paths.monitor` and `sessions.dispatchers` in the container's `~/.claude/factory/settings.toml` with the checkout's `factory settings set`, which changes those two lines and keeps every other byte; a `settings.json` from an older install is read once by the same command to write the TOML, and is left as it is.
 9. **Repositories.** `git clone https://github.com/owner/name` into `~/code/<name>`; a private repository is instead fetched as the App (`factory env`). The factory's own tooling lives apart, in `~/.isshoni`, so a repository of this name can be one of them.
 10. **Dashboard key.** Lists your public key in `~/.claude/factory/dashboard/authorized_keys` with `write` (an existing line without it is upgraded). The container's start script serves the dashboard only if the file and the binary exist when the container starts; when it is not serving, `host add` starts it in place with `docker exec -d` and never restarts the container, which would stop the running sessions.
 11. **Dispatchers.** For each repository where `factory dispatcher` finds no registered dispatcher (it registers itself on start): `claude --bg -n dispatcher-<name> --permission-mode auto "/factory:dispatch"` in `~/code/<name>`.
@@ -83,7 +83,7 @@ The dispatcher and the leads are background sessions in the container: `d` in th
 ## Known limits
 - One factory container per server.
 - The SSH user must run `docker` without sudo.
-- After a container restart or a server reboot the container's start script (`docker/start`) starts, in the background, each name in `"dispatchers"` of the factory's `settings.json` that `claude agents --json` does not list, fresh and without its earlier conversation. It is silent when there is no settings file or nothing is missing, and when it cannot (repository missing, not logged in, ...) it writes one line to `docker logs isshoni-factory`; the container comes up either way. A recreated container does not do this: it records its id (`~/.container-id`) and waits, and `host add` starts the dispatchers after shipping the new source and plugin. A changed `docker/` changes the image label, so the next `host add` recreates the container, which is the update path. Transcripts, worktrees and declared states survive, and `factory status` still lists every task.
+- After a container restart or a server reboot the container's start script (`docker/start`) starts, in the background, each name in `sessions.dispatchers` of the factory's `settings.toml` (a `"dispatchers"` list in `settings.json` while there is no `settings.toml` yet, on a server upgraded from before it) that `claude agents --json` does not list, fresh and without its earlier conversation. It is silent when there is no settings file or nothing is missing, and when it cannot (repository missing, not logged in, ...) it writes one line to `docker logs isshoni-factory`; the container comes up either way. A recreated container does not do this: it records its id (`~/.container-id`) and waits, and `host add` starts the dispatchers after shipping the new source and plugin. A changed `docker/` changes the image label, so the next `host add` recreates the container, which is the update path. Transcripts, worktrees and declared states survive, and `factory status` still lists every task.
 - The dispatcher runs in `auto` permission mode, because nobody is there to answer prompts.
 - A server that no longer answers cannot be removed from the registry except by editing `hosts.json`.
 - Not documented by Anthropic, and so only the first real run shows them: that the token reaches background sessions, that a `--bg` session on a fresh configuration needs no onboarding or trust answer, and that `"/factory:dispatch"` as the prompt of a `--bg` session starts the skill. Steps 7 and 11 verify what they can and say so when it does not hold.
@@ -96,7 +96,7 @@ Everything that must survive is under the state directory, mounted at `/state`. 
 <state>/
   home/                      the user's home, /state/home
     .claude/                 Claude Code: settings.json (with the token), transcripts (projects/), plugins/
-      factory/               the factory's stores: logs, settings.json, specs/, watch.log
+      factory/               the factory's stores: logs, settings.toml, specs/, watch.log
         identity/            the App's key and app.json
         dashboard/           the dashboard over SSH: authorized_keys, host_key
     .claude.json             Claude Code: account and per-project trust
@@ -136,7 +136,7 @@ Leads run unattended in `auto` permission mode as the container's only user. One
 Pull requests come from the App's bot, so you approve them with GitHub's Approve and `factory watch` merges on that ([factory.md](factory.md#identity)). `host add` copies the identity `make wizard` made: leads, their subagents and the script's own `gh` calls then act as the App in repositories of its owner, with a token scoped to the repository they run in ([factory.md](factory.md#how-the-identity-is-used)). There is no `gh` login in the container unless you make one yourself (`docker exec -it`); in repositories of other owners the factory falls back to it.
 
 ## Not verified
-- Anything that needs a real Claude login: background sessions and their supervisor in the container (`factory new`, `claude attach`), `auto` permission mode, the site manager's Sonnet run.
+- Anything that needs a real Claude login: background sessions and their supervisor in the container (`factory new`, `claude attach`), `auto` permission mode, the site manager's run (`models.site_manager`).
 - A real `gh` login, and the App's tokens minted from inside the container (the image has the `openssl` they need).
 - An x86-64 server by hand: the end-to-end test passed locally on an arm64 Docker host, and x86-64 is what CI runs.
 - Memory use of a working factory: the 4g default is a guess (Anthropic lists 4 GB as Claude Code's own requirement).
