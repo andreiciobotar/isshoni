@@ -665,9 +665,12 @@ class WatchTests(Harness):
         self.assertIn(f"{record['id']}  past-limit  x  undecided", out)
 
     def test_the_site_manager_can_read_and_cannot_write_with_or_without_lean_start(self):
-        read_only = {"factory status", "factory health", "factory log", "factory firings", "factory feedback",
-                     "factory feedback --json", "ps", "pgrep", "gh pr view", "gh pr checks", "gh pr list",
-                     "gh run view", "gh run list", "claude agents --json --all", "/m/isshoni sessions"}
+        read_only = {"Read", "Grep", "Glob", "SendMessage", "ToolSearch",
+                     "Bash(factory status)", "Bash(factory status *)", "Bash(factory health)", "Bash(factory health *)",
+                     "Bash(factory log *)", "Bash(factory firings)", "Bash(factory firings *)", "Bash(factory feedback)",
+                     "Bash(factory feedback --json)", "Bash(ps *)", "Bash(pgrep *)", "Bash(gh pr view *)",
+                     "Bash(gh pr checks *)", "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(gh run list *)",
+                     "Bash(claude agents --json --all)", "Bash(/m/isshoni sessions *)"}
         for lean in (True, False):
             with self.subTest(lean_start=lean):
                 p = {"repo": mock.Mock(root=ROOT), "dispatcher": "d", "lean_start": lean, "monitor": "/m/isshoni"}
@@ -677,11 +680,7 @@ class WatchTests(Harness):
                 self.assertEqual(tools, "--tools=Read,Grep,Glob,Bash,SendMessage,ToolSearch")
                 allowed = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
                 self.assertEqual(allowed, [*factory.SITE_MANAGER_TOOLS, "Bash(/m/isshoni sessions *)"])
-                for rule in allowed:
-                    if rule.startswith("Bash("):
-                        self.assertIn(rule[5:-1].removesuffix(" *"), read_only, rule)
-                    else:
-                        self.assertIn(rule, ("Read", "Grep", "Glob", "SendMessage", "ToolSearch"))
+                self.assertEqual(set(allowed), read_only)
                 denied = argv[argv.index("--disallowedTools") + 1:argv.index("--disallowedTools") + 4]
                 self.assertEqual(denied, ["Edit", "Write", "NotebookEdit"])
                 self.assertEqual(argv[argv.index("--max-turns") + 1], "30")
@@ -867,6 +866,28 @@ class WatchTests(Harness):
         self.assertTrue(records[3]["detail"].endswith("; suppressed earlier: noise"))
         self.assertNotEqual(records[3]["id"], "aaa")
         self.assertIn(records[3]["id"], argv[-1])
+
+    def told(self, minutes):
+        self.seed("firings", [fired("aaa"), decided("aaa", "escalated", ts=NOW - minutes * 60, reason="stop sleep")
+                              | {"to": "lead"}])
+
+    def test_a_lead_told_less_than_the_grace_ago_is_not_fired_again(self):
+        self.told(29)
+        self.tick()
+        self.assertEqual((self.claude_runs(), len(self.records())), ([], 2))
+
+    def test_a_lead_told_longer_than_the_grace_ago_is_fired_again_with_the_marker(self):
+        self.told(31)
+        self.tick()
+        [argv] = self.claude_runs()
+        records = self.records()
+        self.assertEqual([r.get("cleared") for r in records[2:3]], [True])
+        new = records[3]
+        self.assertTrue(new["detail"].endswith(f"; lead told at {iso(NOW - 31 * 60)}: stop sleep"), new["detail"])
+        self.assertNotEqual(new["id"], "aaa")
+        self.assertNotIn("lead_told", new)
+        [sent] = json.loads(argv[-1].partition("\n\n")[2])
+        self.assertEqual((sent["id"], sent["lead_told"]), (new["id"], True))
 
     def test_a_condition_that_ended_is_cleared_and_fires_anew_under_a_new_id(self):
         self.tick()
@@ -1080,6 +1101,7 @@ class RoutingTests(Home):
         live = lead("x")
         for label, sent, session, slug in (
                 ("an always firing", {"escalate": "always"}, live, "x"),
+                ("a firing whose lead was told before", {"lead_told": True}, live, "x"),
                 ("no task slug", {}, live, None),
                 ("a slug that is no task", {}, live, "y"),
                 ("no session", {}, None, "x"),
@@ -1095,7 +1117,12 @@ class RoutingTests(Home):
         self.assertEqual(self.logged({"escalate": "always"}, choice("aaa", "suppressed")), [])
         self.assertEqual(len(self.logged({"escalate": "always"}, choice("aaa"))), 1)
 
+    def test_a_firing_whose_lead_was_told_can_still_go_to_the_dispatcher(self):
+        [rec] = self.logged({"lead_told": True}, choice("aaa"), session=lead("x"))
+        self.assertEqual(rec["to"], "dispatcher")
+
     def test_base_merged_is_a_judgment_so_a_suppression_is_recorded(self):
+        self.assertEqual({c["name"]: c["escalate"] for c in factory.load_criteria()}["base-merged"], "judgment")
         [rec] = self.logged({"criterion": "base-merged"}, choice("aaa", "suppressed", "lead was told"))
         self.assertEqual((rec["decision"], rec["reason"]), ("suppressed", "lead was told"))
 
@@ -1136,7 +1163,7 @@ class FiringsTests(Harness):
         self.assertEqual(lines[3], f"s1  {iso(NOW - 2 * HOUR)}  past-limit  x  suppressed  -  open  noise")
         self.assertEqual(lines[4], f"u1  {iso(NOW - HOUR)}  past-limit  x  undecided  -  cleared  -")
         self.assertEqual(lines[5], f"miss  {iso(NOW)}  x  s1  late")
-        self.assertEqual(lines[-1], "escalated 3 (acted 1, ignored 1, no outcome 1); suppressed 1; "
+        self.assertEqual(lines[-1], "escalated 3 (acted 1, ignored 1, no outcome 1); to lead 0; suppressed 1; "
                                     "missed 3 (1 suppressed first, 2 never fired); precision 0.50; recall 0.25")
 
     def test_json(self):
@@ -1157,9 +1184,16 @@ class FiringsTests(Harness):
         [f] = json.loads(self.cli("firings", "--json")[1])["firings"]
         self.assertEqual((f["to"], f["looked"], f["run"]), ("lead", ["ps -ax"], "r1"))
 
+    def test_a_lead_message_is_counted_apart_from_the_dispatchers(self):
+        self.seed("firings", [fired("l1", escalate="judgment"), decided("l1", "escalated") | {"to": "lead"},
+                              fired("d1", escalate="judgment"), decided("d1", "escalated") | {"to": "dispatcher"}])
+        s = json.loads(self.cli("firings", "--json")[1])["summary"]
+        self.assertEqual((s["escalated"], s["no_outcome"]), (1, 1))
+        self.assertIn("escalated 1 (acted 0, ignored 0, no outcome 1); to lead 1; ", self.cli("firings")[1])
+
     def test_zero_denominators(self):
         code, out, _ = self.cli("firings")
-        self.assertEqual(out, "escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 0; "
+        self.assertEqual(out, "escalated 0 (acted 0, ignored 0, no outcome 0); to lead 0; suppressed 0; "
                               "missed 0 (0 suppressed first, 0 never fired); precision -; recall -\n")
         _, out, _ = self.cli("firings", "--json")
         self.assertEqual((json.loads(out)["summary"]["precision"], json.loads(out)["summary"]["recall"]), (None, None))
