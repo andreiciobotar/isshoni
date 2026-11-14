@@ -16,7 +16,7 @@ Done is fixed before choosing: outcome, interfaces, invariants, security boundar
 
 Take the first rung that is complete and go no further:
 1. Delete.
-2. Use the code that already owns the job.
+2. Use what already owns the job.
 3. Change data or configuration.
 4. Write one direct path.
 5. Pull a repetition into one small helper.
