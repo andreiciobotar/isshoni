@@ -82,6 +82,9 @@ func (m *model) factoryLines(p paint, w, h int) block {
 		case len(r.st.Rows) == 0:
 			lines = append(lines, p.sp(2)+p.t("no tasks", th.Faint))
 		default:
+			if l := m.prLine(r); l != "" {
+				lines = append(lines, p.sp(2)+p.t(trunc(l, w-3), th.Faint))
+			}
 			lines = append(lines, cols.header(p))
 			for _, t := range sortedTasks(r.st.Rows) {
 				lines = append(lines, m.taskRow(p, cols, t))
@@ -91,9 +94,30 @@ func (m *model) factoryLines(p paint, w, h int) block {
 	return lines
 }
 
+// prLine dates a repository's pull request data when it is older than prStale or the
+// fetch pass failed; it is empty otherwise.
+func (m *model) prLine(r factoryRepo) string {
+	asOf := r.st.PRs.AsOf
+	if asOf == nil && r.fetchErr == "" {
+		return ""
+	}
+	line := "pull requests not fetched yet"
+	if asOf != nil {
+		age := m.now().Sub(time.Unix(0, int64(*asOf*1e9)))
+		if age <= prStale && r.fetchErr == "" {
+			return ""
+		}
+		line = "pull requests as of " + ago(age) + " ago"
+	}
+	if r.fetchErr != "" {
+		line += " · GitHub slow: " + r.fetchErr
+	}
+	return line
+}
+
 // ---- what waits on the human ------------------------------------------------------
 
-// waitItem is a task that waits on the human: in review, or blocked.
+// waitItem is a task that waits on the human: in review (its pull request ready, not a draft), or blocked.
 type waitItem struct {
 	repo string
 	task data.FactoryTask
@@ -108,7 +132,7 @@ func (m *model) waiting() []waitItem {
 			continue
 		}
 		for _, t := range r.st.Rows {
-			if t.Phase == "review" || t.Phase == "blocked" {
+			if (t.Phase == "review" && !t.PRDraft) || t.Phase == "blocked" {
 				items = append(items, waitItem{r.name, t})
 			}
 		}
@@ -266,7 +290,11 @@ func (m *model) settingsLine(p paint, w int) string {
 	case f.cap == 0:
 		left += p.t("…", th.Faint) + p.t("  per repo", th.Muted)
 	default:
-		left += p.b(strconv.Itoa(f.cap), th.Text) + p.t("  per repo", th.Muted) + p.sp(3) + key("c", "edit")
+		left += p.b(strconv.Itoa(f.cap), th.Text) + p.t("  per repo", th.Muted)
+		if f.reserve > 0 {
+			left += p.t(fmt.Sprintf(", %d in reserve", f.reserve), th.Muted)
+		}
+		left += p.sp(3) + key("c", "edit")
 	}
 	if right := p.t(data.ShortPath(data.FactorySettingsPath()), th.Faint); width(left)+width(right)+3 <= w {
 		left += p.sp(w-width(left)-width(right)-1) + right
@@ -301,28 +329,35 @@ func (m *model) repoHeader(p paint, r factoryRepo, w int) string {
 }
 
 // meter shows tasks in motion against the cap: one cell per slot, a bar when there are
-// too many to count or no room for them within budget cells. Green below the cap, yellow
-// at it, red above it; the cells of blocked tasks keep the blocked phase's look.
+// too many to count or no room for them within budget cells. With a reserve the slots
+// are the ordinary limit L plus the reserve R, the label reads n/L+R, and free reserve
+// cells (◌) follow the free ordinary ones; filled cells past L run into the reserve.
+// Green below L (below the cap without a reserve), yellow from L up to the cap, red above
+// it; the cells of blocked tasks keep the blocked phase's look.
 func (m *model) meter(p paint, st *data.FactoryStatus, budget int) string {
 	th := m.th
-	n, limit := st.InMotion, st.Cap
+	n, limit := st.InMotion, st.Cap-st.Reserve
 	col := th.Green
 	switch {
-	case n > limit:
+	case n > st.Cap:
 		col = th.Red
-	case n == limit:
+	case n >= limit:
 		col = th.Yellow
 	case n == 0:
 		col = th.Muted
 	}
 	label := fmt.Sprintf("%d/%d", n, limit)
+	if st.Reserve > 0 {
+		label += fmt.Sprintf("+%d", st.Reserve)
+	}
 	room := min(meterCells, budget-len("in motion ")-1-len(label))
 	var cells string
-	if max(n, limit) > room {
-		cells = p.bar(max(4, room), float64(n)/float64(max(1, limit)), col, false)
+	if max(n, st.Cap) > room {
+		cells = p.bar(max(4, room), float64(n)/float64(max(1, st.Cap)), col, false)
 	} else {
 		blocked := min(st.Blocked, n)
-		cells = p.t(strings.Repeat("▲", blocked), th.Orange) + p.t(strings.Repeat("●", n-blocked), col) + p.t(strings.Repeat("○", max(0, limit-n)), th.Faint)
+		cells = p.t(strings.Repeat("▲", blocked), th.Orange) + p.t(strings.Repeat("●", n-blocked), col) +
+			p.t(strings.Repeat("○", max(0, limit-n)), th.Faint) + p.t(strings.Repeat("◌", max(0, st.Cap-max(n, limit))), th.Faint)
 	}
 	return p.t("in motion ", th.Faint) + cells + p.sp(1) + p.b(label, col)
 }

@@ -20,8 +20,15 @@ import (
 	"time"
 )
 
-// factoryTimeout bounds one `factory status` call when Runner.Timeout is unset.
-const factoryTimeout = 30 * time.Second
+const (
+	// cachedTimeout bounds `factory status --cached`, which never leaves the machine.
+	cachedTimeout = 10 * time.Second
+	// fetchTimeout bounds `factory status --max-age`, which may ask GitHub; the factory
+	// itself stops waiting on GitHub after 10 s per call.
+	fetchTimeout = 25 * time.Second
+	// PRFloor is the age of the cached pull request data that the fetch pass accepts.
+	PRFloor = 60 * time.Second
+)
 
 // DefaultWorktreeCap is the factory's default (load_settings in factory/bin/factory).
 const DefaultWorktreeCap = 5
@@ -36,6 +43,7 @@ type FactoryTask struct {
 	Stale    bool   `json:"stale"`
 	PRState  string `json:"pr_state"`
 	PRURL    string `json:"pr_url"`
+	PRDraft  bool   `json:"pr_draft"` // its pull request is a draft: still being worked on or checks not green
 	Session  string `json:"session"`
 
 	Deliverable string `json:"deliverable"` // a link or an absolute file path; empty when null
@@ -49,15 +57,28 @@ type FactoryTask struct {
 type FactoryStatus struct {
 	Rows     []FactoryTask `json:"rows"`
 	Cap      int           `json:"cap"`
+	Reserve  int           `json:"reserve"`   // slots of the cap held back for critical work; 0 when absent
 	InMotion int           `json:"in_motion"` // tasks holding a slot, the blocked included
 	Blocked  int           `json:"blocked"`
 	InReview int           `json:"in_review"`
 	Merged   int           `json:"merged"`
 	Settled  int           `json:"settled"`
+	PRs      FactoryPRs    `json:"prs"`
 }
 
-// FactoryStatus runs `factory status --json` in the repository at repoPath.
-func (r *Runner) FactoryStatus(ctx context.Context, repoPath string) (*FactoryStatus, error) {
+// FactoryPRs dates the pull request fields of the rows: AsOf is the epoch second of the
+// last successful fetch the rows use (nil when there is none), Error why this run could
+// not refresh them (nil when it could, and always nil with --cached).
+type FactoryPRs struct {
+	AsOf  *float64 `json:"as_of"`
+	Error *string  `json:"error"`
+}
+
+// FactoryStatus runs `factory status --json` in the repository at repoPath: with
+// fetch false as `--cached`, which reads the pull requests from the disk cache and
+// never asks GitHub; with fetch true as `--max-age`, which asks GitHub when that cache
+// is older than PRFloor.
+func (r *Runner) FactoryStatus(ctx context.Context, repoPath string, fetch bool) (*FactoryStatus, error) {
 	script, err := filepath.Abs(filepath.Join(r.Root, "factory", "bin", "factory"))
 	if err != nil {
 		return nil, err
@@ -65,8 +86,8 @@ func (r *Runner) FactoryStatus(ctx context.Context, repoPath string) (*FactorySt
 	if _, err := os.Stat(script); err != nil {
 		return nil, fmt.Errorf("factory command not found: %s", script)
 	}
-	b, err := r.shared(ctx, "factory\x00"+repoPath, false, func(ctx context.Context) ([]byte, error) {
-		return r.factoryOutput(ctx, script, repoPath)
+	b, err := r.shared(ctx, "factory\x00"+strconv.FormatBool(fetch)+"\x00"+repoPath, false, func(ctx context.Context) ([]byte, error) {
+		return r.factoryOutput(ctx, script, repoPath, fetch)
 	})
 	if err != nil {
 		return nil, err
@@ -79,15 +100,19 @@ func (r *Runner) FactoryStatus(ctx context.Context, repoPath string) (*FactorySt
 }
 
 // factoryOutput is one `factory status --json` process and what it printed.
-func (r *Runner) factoryOutput(ctx context.Context, script, repoPath string) ([]byte, error) {
+func (r *Runner) factoryOutput(ctx context.Context, script, repoPath string, fetch bool) ([]byte, error) {
 	if !r.begin() {
 		return nil, cmp.Or(ctx.Err(), context.Canceled)
 	}
 	defer r.calls.Done()
-	timeout := cmp.Or(r.Timeout, factoryTimeout)
+	timeout, flag := cachedTimeout, []string{"--cached"}
+	if fetch {
+		timeout, flag = fetchTimeout, []string{"--max-age", strconv.Itoa(int(PRFloor.Seconds()))}
+	}
+	timeout = cmp.Or(r.Timeout, timeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, r.python(), script, "status", "--json")
+	cmd := exec.CommandContext(ctx, r.python(), append([]string{script, "status", "--json"}, flag...)...)
 	cmd.Dir = repoPath
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }

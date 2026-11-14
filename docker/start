@@ -5,12 +5,63 @@ set -eu
 mkdir -p "$HOME" "$TMPDIR"
 touch "$HOME/.crontab"
 
-# Wanted: a key is in the file (docs/container.md) and the dashboard is built. The server is not
-# restarted if it ends; the container's restart brings it back.
+# Wanted: a key is in the file (docs/container.md) and the dashboard is built, checked once, here. The
+# server is restarted 2 s after it ends, however it ends. The container's life is supercronic's.
 keys="$HOME/.claude/factory/dashboard/authorized_keys"
-tui="$HOME/code/isshoni/bin/isshoni-tui"
-if [ -s "$keys" ] && [ -x "$tui" ]; then
-	"$tui" --serve 0.0.0.0:2222 &
+# The CI container job still builds it at ~/code/isshoni, so that is the fallback.
+tui="$HOME/.isshoni/bin/isshoni-tui"
+[ -x "$tui" ] || tui="$HOME/code/isshoni/bin/isshoni-tui"
+if ! { [ -s "$keys" ] && [ -x "$tui" ]; }; then
+	exec supercronic "$HOME/.crontab"
 fi
 
-exec supercronic "$HOME/.crontab"
+# reap waits for a child that a signal may have interrupted the wait for.
+reap() {
+	while kill -0 "$1" 2>/dev/null; do wait "$1" || :; done
+}
+
+# serve_loop runs in the background; on TERM it stops the current child and ends.
+serve_loop() {
+	child= stopping=
+	trap 'stopping=1; [ -z "$child" ] || kill -TERM "$child" 2>/dev/null || :' TERM INT
+	while [ -z "$stopping" ]; do
+		"$tui" --serve 0.0.0.0:2222 &
+		child=$!
+		[ -z "$stopping" ] || kill -TERM "$child" 2>/dev/null || :
+		status=0
+		wait "$child" || status=$?
+		reap "$child"
+		child=
+		[ -z "$stopping" ] || break
+		echo "dashboard server ended (status $status), restarting in 2 s" >&2
+		sleep 2 &
+		child=$!
+		wait "$child" || :
+		child=
+	done
+}
+
+stop() {
+	stopping=1
+	[ -z "$loop" ] || kill -TERM "$loop" 2>/dev/null || :
+	[ -z "$cron" ] || kill -TERM "$cron" 2>/dev/null || :
+}
+
+stopping= cron= loop=
+trap stop TERM INT
+supercronic "$HOME/.crontab" &
+cron=$!
+serve_loop &
+loop=$!
+[ -z "$stopping" ] || stop
+
+status=0
+wait "$cron" || status=$?
+if [ -n "$stopping" ]; then
+	reap "$cron"
+	status=0
+else
+	kill -TERM "$loop" 2>/dev/null || :
+fi
+reap "$loop"
+exit "$status"

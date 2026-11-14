@@ -1,4 +1,4 @@
-# The factory on an always-on Linux host: docs/container.md has the first-run steps.
+# The factory on an always-on Linux host: `isshoni host add` sets it up (docs/container.md).
 # Settings come from the environment or a .env file beside this one; only FACTORY_STATE is required.
 # A project name of its own: the default, this directory's name, is shared with every other `docker/` on the host.
 name: isshoni-factory

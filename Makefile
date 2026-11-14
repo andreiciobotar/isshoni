@@ -1,4 +1,4 @@
-.PHONY: install up build test fmt-check test-factory wizard snapshot screenshot strip clean FORCE
+.PHONY: install up build test fmt-check test-factory wizard uninstall snapshot screenshot strip pictures clean FORCE
 
 BIN := bin/isshoni-tui
 VIEW ?= dashboard
@@ -48,9 +48,13 @@ fmt-check:
 test-factory:
 	python3 -m unittest discover -s factory/tests
 
-# Create and install the factory's own GitHub App, or verify the stored one (optional), e.g. make wizard ARGS="--owner my-org"
+# Set everything up (dependencies, dashboard, plugin, settings, cost alerts, GitHub App) and rerun to repair, e.g. make wizard ARGS="--yes --owner my-org"
 wizard:
 	factory/bin/factory wizard $(ARGS)
+
+# Remove what the wizard and the factory put on this machine, e.g. make uninstall ARGS="--list"
+uninstall:
+	factory/bin/factory uninstall $(ARGS)
 
 # Render one frame to stdout without a TTY, e.g. make snapshot VIEW=session ARGS="--session 04ca0148 --no-color"
 snapshot: build $(FIXDIR)
@@ -71,6 +75,13 @@ strip: build
 	@[ -n "$(REPLAY)" ] || { echo "isshoni: set REPLAY=<events file>." >&2; exit 1; }
 	@[ -n "$(CHROME)" ] || { echo "isshoni: Chrome or Chromium is missing. Install one, or set CHROME=/path/to/chrome." >&2; exit 1; }
 	$(BIN) --snapshot hanami --replay $(REPLAY) --at $(AT) --frames $(FRAMES) --frame-step $(STEP) --size $(SIZE) $(ARGS) | python3 tools/strip.py --out shots/hanami-$(SCENE)-$(SIZE) --size $(SIZE) --chrome "$(CHROME)"
+
+# Record a looping animated WebP of every tab from this repository's own data into $(OUT), e.g. make pictures SCENES="hanami" OUT=/tmp/tabs SIZE=100x30 (see docs/isshoni.md)
+OUT ?= assets/tabs
+SCENES ?=
+pictures: build
+	@[ -n "$(CHROME)" ] || { echo "isshoni: Chrome or Chromium is missing. Install one, or set CHROME=/path/to/chrome." >&2; exit 1; }
+	python3 tools/record.py --out "$(OUT)" --scenes "$(SCENES)" --chrome "$(CHROME)"
 
 clean:
 	rm -rf $(BIN) shots

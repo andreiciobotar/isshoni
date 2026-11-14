@@ -101,7 +101,9 @@ func alpha() factoryRepo {
 	ask.Waited, ask.StopKind, ask.StopSummary = ptr(int64(2700)), "QUESTION", "Should the export keep the legacy column order?"
 	docs.PRState, docs.PRURL, docs.Stale = "closed", "https://github.com/o/alpha/pull/40", true
 	old.PRState, old.PRURL, old.Elapsed = "merged", "https://github.com/o/alpha/pull/31", ptr(int64(61))
-	return factoryRepo{name: "alpha", path: "/r/alpha", st: fstatus(5, stacked, old, docs, quiet, limits, login, ask, notes)}
+	st := fstatus(5, stacked, old, docs, quiet, limits, login, ask, notes)
+	st.Reserve = 1
+	return factoryRepo{name: "alpha", path: "/r/alpha", st: st}
 }
 
 func fakeFactoryRepos() []factoryRepo {
@@ -118,7 +120,7 @@ func setFactory(m *model, repos ...factoryRepo) {
 	m.fac.repos, m.fac.doneAt, m.fac.cap = repos, m.now(), 5
 	for _, r := range repos {
 		if r.st != nil {
-			m.fac.cap = r.st.Cap
+			m.fac.cap, m.fac.reserve = r.st.Cap, r.st.Reserve
 			break
 		}
 	}
@@ -202,6 +204,47 @@ func TestFactoryMeter(t *testing.T) {
 			t.Errorf("cap %d, %d in motion: want %q in\n%s", c.limit, c.n, c.want, out)
 		}
 	}
+	withReserve := func(limit, reserve, n int) *data.FactoryStatus {
+		st := fstatus(limit, manyTasks(n)...)
+		st.Reserve = reserve
+		return st
+	}
+	for _, c := range []struct {
+		limit, reserve, n int
+		want              string
+	}{
+		{10, 1, 0, "in motion ○○○○○○○○○◌ 0/9+1"},
+		{10, 1, 7, "in motion ●●●●●●●○○◌ 7/9+1"},
+		{10, 1, 9, "in motion ●●●●●●●●●◌ 9/9+1"},
+		{10, 1, 10, "in motion ●●●●●●●●●● 10/9+1"},
+		{10, 1, 12, "in motion ●●●●●●●●●●●● 12/9+1"},
+		{5, 2, 4, "in motion ●●●●◌ 4/3+2"},
+		{40, 4, 10, "in motion █████░░░░░░░░░░░░░░░ 10/36+4"},
+	} {
+		m := factoryModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: withReserve(c.limit, c.reserve, c.n)})
+		if out := plain(m); !strings.Contains(out, c.want) {
+			t.Errorf("cap %d, reserve %d, %d in motion: want %q in\n%s", c.limit, c.reserve, c.n, c.want, out)
+		}
+	}
+	for _, c := range []struct {
+		n   int
+		col func(th *Theme) color.Color
+	}{
+		{0, func(th *Theme) color.Color { return th.Muted }},
+		{8, func(th *Theme) color.Color { return th.Green }},
+		{9, func(th *Theme) color.Color { return th.Yellow }},
+		{10, func(th *Theme) color.Color { return th.Yellow }},
+		{11, func(th *Theme) color.Color { return th.Red }},
+	} {
+		m := factoryModel(false, 140, 40, factoryRepo{name: "r", path: "/r", st: withReserve(10, 1, c.n)})
+		p, out := m.th.on(m.th.Bg), m.Render()
+		if want := p.b(fmt.Sprintf("%d/9+1", c.n), c.col(m.th)); !strings.Contains(out, want) {
+			t.Errorf("reserve 1 of 10, %d in motion: the label is not painted as expected", c.n)
+		}
+		if want := p.t(strings.Repeat("●", c.n), c.col(m.th)); c.n > 0 && !strings.Contains(out, want) {
+			t.Errorf("reserve 1 of 10, %d in motion: filled cells are not painted as expected", c.n)
+		}
+	}
 	m := factoryModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: fstatus(40, manyTasks(10)...)})
 	if out := plain(m); !strings.Contains(out, "in motion █████░░░░░░░░░░░░░░░ 10/40") {
 		t.Errorf("a cap above %d is a %d-cell bar:\n%s", meterCells, meterCells, out)
@@ -235,6 +278,31 @@ func TestFactoryMeter(t *testing.T) {
 	nm = factoryModel(true, 60, 20, factoryRepo{name: "mid-size-name-long", path: "/r/mid", st: full})
 	if out := plain(nm); !strings.Contains(out, " mid-size-nam") || !strings.Contains(out, "in motion ▲●●●● 5/5") {
 		t.Errorf("at 60 columns the other counts go before the name or the meter cells:\n%s", out)
+	}
+}
+
+func TestFactorySettingsLineShowsTheReserve(t *testing.T) {
+	line := func(reserve int) string {
+		st := fstatus(10, manyTasks(2)...)
+		st.Reserve = reserve
+		for _, l := range strings.Split(plain(factoryModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: st})), "\n") {
+			if strings.Contains(l, "worktree cap") {
+				return l
+			}
+		}
+		t.Fatal("no settings line")
+		return ""
+	}
+	if got := line(1); !strings.Contains(got, "worktree cap  10  per repo, 1 in reserve   c edit") {
+		t.Errorf("with a reserve: %q", got)
+	}
+	if got := line(0); !strings.Contains(got, "worktree cap  10  per repo   c edit") || strings.Contains(got, "reserve") {
+		t.Errorf("without a reserve: %q", got)
+	}
+	m := factoryModel(true, 140, 40, alpha())
+	m.fac.editing, m.fac.field = true, "12"
+	if out := plain(m); strings.Contains(out, "in reserve") {
+		t.Errorf("the editing state has no reserve:\n%s", out)
 	}
 }
 
@@ -328,6 +396,19 @@ func TestFactoryWaitingOrder(t *testing.T) {
 	}
 	if len(factoryModel(true, 140, 40, factoryRepo{name: "m", st: fstatus(5, ftask("a", "motion"), ftask("b", "merged"), ftask("c", "settled"))}).waiting()) != 0 {
 		t.Fatal("only review and blocked tasks wait on the human")
+	}
+}
+
+func TestFactoryWaitingLeavesOutADraftInReview(t *testing.T) {
+	ready, draft, blocked := ftask("ready", "review"), ftask("draft", "review"), ftask("held", "blocked")
+	draft.PRDraft, blocked.PRDraft = true, true
+	m := factoryModel(true, 140, 40, factoryRepo{name: "m", st: fstatus(5, ready, draft, blocked)})
+	var got []string
+	for _, it := range m.waiting() {
+		got = append(got, it.task.Slug)
+	}
+	if want := "held ready"; strings.Join(got, " ") != want {
+		t.Fatalf("a review task whose pull request is a draft waits on checks, not the human: %q, want %q", strings.Join(got, " "), want)
 	}
 }
 
@@ -652,7 +733,7 @@ func TestFactoryHelpAndFooter(t *testing.T) {
 	}
 	m.fac.editing, m.help = false, true
 	out := plain(m)
-	for _, want := range []string{"1 2 3 4", "dashboard · agents · factory · kaizen", "←→/hl", "kaizen page", "c", "edit cap", "refreshes every 30 s while shown, every 2 min otherwise"} {
+	for _, want := range []string{"1 2 3 4", "dashboard · agents · factory · kaizen", "←→/hl", "kaizen page", "c", "edit cap", "every 30 s while shown, asking GitHub; every 2 min off it, not"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help lacks %q:\n%s", want, out)
 		}
@@ -674,6 +755,13 @@ func TestGoldenFactory(t *testing.T) {
 		{"factory-80x24", 80, 24, func(m *model) { setFactory(m, waitingRepos()...) }, true},
 		{"factory-quiet-80x24", 80, 24, func(m *model) {
 			setFactory(m, factoryRepo{name: "calm", path: "/r/calm", st: fstatus(5, manyTasks(2)...)})
+		}, true},
+		{"factory-prs-stale-100x30", 100, 30, func(m *model) {
+			repos := fakeFactoryRepos()
+			repos[0].st.PRs.AsOf = ptr(float64(m.now().Add(-12 * time.Minute).Unix()))
+			repos[0].fetchErr = "factory status timed out after 25s"
+			repos[1].st.PRs.AsOf = ptr(float64(m.now().Add(-3 * time.Minute).Unix()))
+			setFactory(m, repos...)
 		}, true},
 		{"factory-empty-80x24", 80, 24, func(m *model) { setFactory(m) }, true},
 		{"factory-edit-100x30", 100, 30, func(m *model) { setFactory(m, fakeFactoryRepos()...); m.fac.editing, m.fac.field = true, "12" }, false},
@@ -1110,7 +1198,10 @@ func TestSnapshotFactory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"proj", "stacked", "cost-in-money", "in motion ▲●○○○○○ 2/7", "write-up.md", "needs-an-answer", "worktree cap  7", "[3 Factory ▲2]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"} {
+	if n := fetchCount(t, dir); n != 1 {
+		t.Fatalf("the snapshot runs the fetch pass once, after the cached one: %d", n)
+	}
+	for _, want := range []string{"proj", "stacked", "cost-in-money", "in motion ▲●○○○○◌ 2/6+1", "write-up.md", "needs-an-answer", "worktree cap  7", "[3 Factory ▲2]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("snapshot lacks %q:\n%s", want, out)
 		}

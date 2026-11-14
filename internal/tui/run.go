@@ -116,7 +116,7 @@ func Snapshot(so SnapshotOptions) (string, error) {
 	case "kaizen", "kaizen-flow", "kaizen-anatomy", "kaizen-board":
 		m.view = viewKaizen
 		m.kz.page = map[string]kaizenPage{"kaizen": pagePulse, "kaizen-flow": pageFlow, "kaizen-anatomy": pageAnatomy, "kaizen-board": pageBoard}[so.View]
-		doc, err := m.runner.Kaizen(ctx, ranges[m.rangeIdx].since)
+		doc, err := m.runner.Kaizen(ctx, ranges[m.rangeIdx].since, false)
 		if err != nil {
 			return "", err
 		}
@@ -133,6 +133,9 @@ func Snapshot(so SnapshotOptions) (string, error) {
 		}
 	}
 	m.applyFactory(m.factoryJob()())
+	for _, job := range m.dueFetches() {
+		m.applyFetch(job())
+	}
 	m.normalizeSelection()
 	onTree := m.view == viewDashboard && !m.zoom
 	if onTree && so.Row > 0 && len(m.rows()) > 0 {

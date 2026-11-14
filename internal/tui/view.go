@@ -399,7 +399,7 @@ func (m *model) helpScreen(p paint) []string {
 		p.t("session full screen. The tiles total every session.", th.Faint),
 		p.t("While a row is selected the order is held; s or the all row re-sorts.", th.Faint),
 		p.t("A dot pulses on sessions written in the last 30 seconds.", th.Faint),
-		p.t("The factory view refreshes every 30 s while shown, every 2 min otherwise.", th.Faint))
+		p.t("Factory: every 30 s while shown, asking GitHub; every 2 min off it, not.", th.Faint))
 	bw := 0
 	for _, l := range lines {
 		bw = max(bw, width(l))
