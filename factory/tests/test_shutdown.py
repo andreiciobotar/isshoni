@@ -263,7 +263,7 @@ class BusyAfterHandoverTests(unittest.TestCase):
     def test_it_is_shipped_in_the_criteria_file(self):
         (c,) = [c for c in factory.load_criteria() if c["name"] == "busy-after-handover"]
         self.assertEqual((c["escalate"], c["threshold"], c.get("job", "watch")), ("judgment", 6, "watch"))
-        self.assertEqual(factory.EVERY_TICK, {"busy-after-handover"})
+        self.assertEqual(factory.EVERY_TICK, {"busy-after-handover", "churning"})
 
 
 class BusyEveryTickTests(Harness):

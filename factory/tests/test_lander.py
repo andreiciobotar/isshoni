@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -525,7 +526,7 @@ class TickTests(Loop):
         self.assertEqual(sorted(p.name for p in self.store.glob("lander-*")),
                          sorted(f"lander-repo-{factory.repo_state(ROOT, 'lander', 'json').name[-13:-5]}.{e}"
                                 for e in ("json", "lock")))
-        self.assertEqual(sorted(self.lander_json()), ["health", "stopped", "waiting"])
+        self.assertEqual(sorted(self.lander_json()), ["health", "prioritized", "stopped", "waiting"])
 
 
 class ScratchRepoBase(unittest.TestCase):
@@ -634,6 +635,206 @@ class RealLevelTests(ScratchRepoBase):
         self.git("push", "-q", "origin", "worktree-t1", cwd=other)
         self.assertEqual(self.level(), "its worktree and origin/worktree-t1 have diverged")
         self.assertEqual(self.git("status", "--porcelain", cwd=self.wt), "")
+
+
+class ChurnTests(ScratchRepoBase):
+    """Real git, three task worktrees: t1 conflicts with main in a.txt; t2 changes a.txt (and is open), t3 only b.txt."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.dict(os.environ, {"HOME": str(self.root.parent), "CLAUDE_CODE_SESSION_ID": "sid"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.task_commit("a.txt", "one\ntwo\ntask\n")
+        self.main_moves("a.txt", "one\ntwo\nmain\n")
+        self.trees = {"t1": self.wt}
+        for slug, name, text in (("t2", "a.txt", "ONE\ntwo\nthree\n"), ("t3", "b.txt", "b3\n")):
+            tree = self.root / ".claude" / "worktrees" / slug
+            self.git("worktree", "add", "-q", "-b", f"worktree-{slug}", str(tree), "main")
+            self.commit(tree, name, text, slug)
+            self.trees[slug] = tree
+        self.repo = SimpleNamespace(root=str(self.root), remote="origin", default="main", worktree_path=lambda slug: str(self.trees[slug]),
+                                    tasks=[{"path": str(t), "branch": f"worktree-{s}"} for s, t in self.trees.items()],
+                                    git=lambda *a, path=None: self.run_git(path or self.root, *a))
+        for slug in self.trees:
+            self.declare(slug, "working")
+        self.declare("t1", "handed-over")
+
+    def declare(self, slug, state, role="lead", **kw):
+        factory.declare(self.repo, slug, role, state, **kw)
+
+    def pr(self, slug="t1", number=1, approved=False):
+        head = self.git("rev-parse", f"worktree-{slug}")
+        return {"number": number, "headRefName": f"worktree-{slug}", "baseRefName": "main", "headRefOid": head, "url": f"u/{number}",
+                "latestReviews": [{"state": "APPROVED", "submittedAt": "2026-01-01T00:00:00Z"}] if approved else [], "comments": []}
+
+    def land(self, slug):
+        self.git("merge", "-q", "--no-edit", f"worktree-{slug}")
+        self.git("push", "-q", "origin", "main")
+
+    def lander(self):
+        return factory.read_lander(self.repo)
+
+    def events(self, kind):
+        return [e for e in factory.read_log("events") if e["event"] == kind]
+
+    def test_no_evidence_before_a_send_back_one_is_enough_and_the_others_are_named_with_their_files(self):
+        self.assertIsNone(factory.churn(self.repo, "t1", self.pr()))
+        self.declare("t1", "working", "lander")
+        evidence = factory.churn(self.repo, "t1", self.pr())
+        self.assertEqual((evidence["files"], evidence["others"], len(evidence["sent_back"])),
+                         (["a.txt"], [{"slug": "t2", "state": "working", "files": ["a.txt"]}], 1))
+
+    def test_no_evidence_without_a_conflict_or_without_an_open_task_on_the_same_files(self):
+        self.declare("t1", "working", "lander")
+        self.declare("t2", "dismissed")
+        self.assertIsNone(factory.churn(self.repo, "t1", self.pr()))  # t2 is not open; t3 changes b.txt only
+        self.declare("t2", "working")
+        self.land("t2")  # merged: not open any more
+        self.assertIsNone(factory.churn(self.repo, "t1", self.pr()))
+        self.declare("t3", "working", "lander")
+        self.assertIsNone(factory.churn(self.repo, "t3", self.pr("t3")))  # t3 does not conflict
+
+    def decision(self, decision, waits=None, ts=None, slug="t1"):
+        factory.log("firings", {"ts": ts or factory.now(), "repo": str(self.root), "id": "f1", "criterion": "churning",
+                                "escalate": "judgment", "slug": slug, "subject": "#1", "detail": "d"})
+        factory.log("firings", {"ts": ts or factory.now(), "repo": str(self.root), "id": "f1", "decision": decision, "reason": "r",
+                                "by": "site-manager", **({"waits_on": waits} if waits else {})})
+
+    def test_a_pause_decision_holds_while_a_waited_task_is_open_and_only_since_the_last_hand_over(self):
+        self.decision("paused", ["t2"])
+        self.assertEqual(factory.paused_for(self.repo, "t1"), ["t2"])
+        self.land("t2")
+        self.assertEqual(factory.paused_for(self.repo, "t1"), [])
+        self.declare("t2", "working")
+        self.assertEqual(factory.churning_decision(self.repo, "t1")["decision"], "paused")
+        time.sleep(1.1)
+        self.declare("t1", "handed-over")
+        self.assertIsNone(factory.churning_decision(self.repo, "t1"))
+
+    def settle_once(self, since_ago=0):
+        pr = self.pr("t1", 2)
+        told = []
+        if since_ago:
+            factory.write_lander(self.repo, {**self.lander(), "waiting": {"2": {"head": pr["headRefOid"], "kind": "conflict",
+                                                                               "since": time.time() - since_ago}}})
+        with mock.patch.object(factory, "report_stop", lambda *a: told.append(a)):
+            factory.settle(self.repo, None, {2: (pr, "conflict", "conflicts with main in a.txt")})
+        return told
+
+    def test_a_churning_conflict_waits_for_the_decision_up_to_the_patience_then_is_reported(self):
+        self.declare("t1", "working", "lander")
+        self.declare("t1", "handed-over")
+        self.assertEqual(self.settle_once(), [])
+        self.assertIn("2", self.lander()["waiting"])
+        self.assertEqual(self.settle_once(since_ago=factory.CHURN_PATIENCE - 20), [])
+        self.assertEqual(len(self.settle_once(since_ago=factory.CHURN_PATIENCE + 1)), 1)
+
+    def test_a_decision_a_first_send_back_or_no_overlap_reports_at_once(self):
+        self.assertEqual(len(self.settle_once()), 1)  # no earlier send-back
+        self.declare("t1", "working", "lander")
+        self.declare("t1", "handed-over")
+        self.decision("suppressed")
+        factory.write_lander(self.repo, {"stopped": {}, "waiting": {}, "health": 0, "prioritized": {}})
+        self.assertEqual(len(self.settle_once()), 1)
+
+    def test_a_conflict_that_other_tasks_do_not_share_is_not_held(self):
+        self.declare("t1", "working", "lander")
+        self.declare("t2", "dismissed")
+        self.assertEqual(len(self.settle_once()), 1)
+
+    def paused(self, waits=("t2",)):
+        self.declare("t1", "blocked", "tech-lead", waits_on=list(waits), paused=True)
+
+    def release(self, started=True):
+        told, starts = [], []
+        with mock.patch.object(factory, "snapshot", lambda repo: [self.pr()]), \
+                mock.patch.object(factory, "tech_lead_start", lambda *a: starts.append(a) or started), \
+                mock.patch.object(factory, "tell_lead", lambda *a: told.append(a)):
+            factory.release_paused(self.repo, "disp")
+        return starts, told
+
+    def test_a_pause_is_released_once_when_no_waited_task_is_open_and_not_before(self):
+        self.paused()
+        self.assertEqual(self.release(), ([], []))  # t2 is working
+        self.land("t2")
+        [start], told = self.release()
+        self.assertEqual((start[3], start[4]), ("t1", "the tasks it waited for (t2) have landed: merge origin/main in once and land"))
+        self.assertEqual(told, [])
+        self.assertEqual(self.release(), ([], []))  # once
+        self.assertIn("t1", self.lander()["prioritized"])
+        [e] = self.events("TaskPrioritized")
+        self.assertEqual((e["slug"], e["waited"]), ("t1", ["t2"]))
+
+    def test_without_a_tech_lead_the_lead_is_told_and_a_vanished_waited_task_counts_as_landed(self):
+        self.paused(["ghost"])
+        starts, [told] = self.release(started=False)
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(told[3:5], ("LANDER", "the way is clear: ghost have landed. Declare factory state working, merge origin/main in once, "
+                                              "re-review what the merge changed and hand over."))
+
+    def test_a_leads_own_block_is_not_released(self):
+        self.land("t2")
+        self.declare("t1", "blocked", waits_on="t2")
+        self.declare("t3", "blocked", waits_on=["t2"])
+        self.assertEqual(self.release(), ([], []))
+        self.assertEqual(self.lander()["prioritized"], {})
+
+    def prioritize(self, slug="t1", ago=60):
+        state = self.lander()
+        state["prioritized"][slug] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - ago))
+        factory.write_lander(self.repo, state)
+
+    def queue(self):
+        snap = [self.pr("t3", 1, approved=True), self.pr("t1", 2, approved=True)]
+        return [pr["number"] for pr, _ in factory.lander_queue(self.repo, snap, {"all": 0, "prs": {}})]
+
+    def test_the_queue_serves_only_the_prioritized_task_while_the_hold_lasts(self):
+        self.declare("t3", "handed-over")
+        self.declare("t1", "working")
+        self.assertEqual(self.queue(), [1])  # t1 is working: nothing of t1's, t3 first by number
+        self.declare("t1", "handed-over")
+        self.assertEqual(self.queue(), [1, 2])
+        self.prioritize()
+        self.assertEqual(self.queue(), [2])  # t3 handed over after the release, and waits
+        self.prioritize(ago=factory.RELEASE_HOLD_MINUTES * 60 + 5)
+        self.assertEqual(self.queue(), [1, 2])
+
+    def test_a_prioritized_task_not_handed_over_leaves_the_queue_empty(self):
+        self.declare("t3", "handed-over")
+        for state in ("working", "blocked"):  # a lead's pause ends when it declares working, which can take a while
+            with self.subTest(state):
+                self.declare("t1", state)
+                self.prioritize()
+                self.assertEqual(self.queue(), [])
+
+    def test_priority_ends_with_its_event_when_merged_gone_or_expired(self):
+        told = []
+        for slug, setup, reason in (("t3", lambda: self.land("t3"), "merged"), ("t2", lambda: self.declare("t2", "dismissed"), "gone"),
+                                    ("t1", lambda: None, "expired")):
+            with self.subTest(reason):
+                self.prioritize(slug, ago=factory.RELEASE_HOLD_MINUTES * 60 + 5 if reason == "expired" else 60)
+                setup()
+                with mock.patch.object(factory, "forward", lambda *a, **k: told.append(a)):
+                    factory.end_priorities(self.repo, "disp")
+                self.assertNotIn(slug, self.lander()["prioritized"])
+                self.assertEqual(self.events("TaskPrioritizedEnd")[-1]["reason"], reason)
+        self.assertEqual(len(told), 1)
+        self.assertEqual(told[0][4], "t1 (handed-over) was served first for 30 minutes and has not merged; the queue treats every pull request alike again")
+
+    def test_a_merge_and_a_send_back_for_another_stop_end_the_priority_but_a_conflict_does_not(self):
+        self.prioritize()
+        self.assertTrue(factory.end_priority(self.repo, "t1", "sent-back"))
+        self.assertFalse(factory.end_priority(self.repo, "t1", "sent-back"))
+        self.assertEqual([e["reason"] for e in self.events("TaskPrioritizedEnd")], ["sent-back"])
+        self.prioritize()
+        pr = self.pr()
+        with mock.patch.object(factory, "send_back", lambda *a: "lead"), redirect_stdout(io.StringIO()), mock.patch.object(factory, "fire", lambda r, f: {"id": "i"}), mock.patch.object(factory, "evidence", lambda *a: "e"), \
+                mock.patch.object(factory, "log_firing", lambda *a, **k: None):
+            factory.report_stop(self.repo, None, pr, "conflict", "conflicts with main in a.txt")
+            self.assertIn("t1", self.lander()["prioritized"])
+            factory.report_stop(self.repo, None, pr, "ci", "failed or cancelled checks: test")
+        self.assertNotIn("t1", self.lander()["prioritized"])
 
 
 class EnvTests(unittest.TestCase):

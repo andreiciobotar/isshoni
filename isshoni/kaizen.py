@@ -578,7 +578,8 @@ def _site_manager(records, cutoff):
     ratio = lambda n, d: round(n / d, 6) if d else None  # noqa: E731
     return {"escalated": len(escalated), "acted": acted, "ignored": ignored,
             "no_outcome": len(escalated) - acted - ignored,
-            "suppressed": sum(f["decision"] == "suppressed" for f in firings.values()), "missed": misses,
+            "suppressed": sum(f["decision"] == "suppressed" for f in firings.values()),
+            "paused": sum(f["decision"] == "paused" for f in firings.values()), "missed": misses,
             "missed_suppressed": suppressed_first, "missed_never_fired": misses - suppressed_first,
             "precision": ratio(acted, acted + ignored), "recall": ratio(acted, acted + misses)}
 

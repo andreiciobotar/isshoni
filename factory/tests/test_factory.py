@@ -297,6 +297,26 @@ class StateTests(unittest.TestCase):
                 self.assertEqual((code, out, fake.tasks), (2, "", []))
                 self.assertRegex(err, "human, dispatcher or the slug of another open task")
 
+    def state3(self, *args):
+        return invoke(["state", *args], repo_answers([task_entry("x"), task_entry("y"), task_entry("z")]), cwd=self.CWD)
+
+    def test_blocked_takes_a_comma_list_of_open_slugs_and_paused_is_recorded_with_its_event(self):
+        code, out, err, fake = self.state3("blocked", "y,z")
+        self.assertEqual((code, out, err), (0, "x: blocked\n", ""))
+        self.assertEqual((fake.tasks[0]["waits_on"], "paused" in fake.tasks[0]), (["y", "z"], False))
+        code, out, err, fake = self.state3("blocked", "y,z", "--paused")
+        self.assertEqual((code, out, err), (0, "x: blocked\n", ""))
+        self.assertEqual((fake.tasks[0]["waits_on"], fake.tasks[0]["paused"]), (["y", "z"], True))
+        code, out, err, fake = self.state3("blocked", "y", "--paused")
+        self.assertEqual((fake.tasks[0]["waits_on"], fake.tasks[0]["paused"]), (["y"], True))
+
+    def test_a_list_with_an_unknown_slug_or_a_human_in_it_and_a_stray_paused_write_nothing(self):
+        for args in (("blocked", "y,nobody"), ("blocked", "y,human"), ("blocked", "y,x"), ("blocked", "--paused"),
+                     ("working", "--paused")):
+            with self.subTest(args):
+                code, out, err, fake = self.state3(*args)
+                self.assertEqual((code, out, fake.tasks), (2, "", []))
+
     def test_working_and_blocked_put_the_pull_request_back_to_draft_even_when_gh_fails(self):
         for state in ("working", "blocked"):
             with self.subTest(state):

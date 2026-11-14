@@ -30,7 +30,7 @@ def register(sid):
 def row(slug, **kw):
     return {"slug": slug, "branch": f"worktree-{slug}", "path": f"{WT}/{slug}", "base": "main", "phase": "motion",
             "overtime": False, "nearing": False, "size": None, "limit": 2 * HOUR, "elapsed": None, "last_commit": None, "pr_url": "", "pr_state": "none", "state": None,
-            "deliverable": None, **kw}
+            "deliverable": None, "waits_on": None, "paused": None, **kw}
 
 
 def lead(slug, sid=SID, **kw):
@@ -336,7 +336,7 @@ class CriteriaTests(Home):
                                             criteria)
         self.assertEqual(firings, [])
         names = {s["criterion"] for s in skipped}
-        self.assertEqual(names, {c["name"] for c in criteria} - {"ci-red-default", "lgtm-blocked"})
+        self.assertEqual(names, {c["name"] for c in criteria} - {"ci-red-default", "lgtm-blocked", "churning"})
         why = {s["criterion"]: s["why"] for s in skipped}
         self.assertIn("sessions cannot be listed", why["past-limit"])
         self.assertIn("no pinned models", why["wrong-model"])
@@ -743,7 +743,7 @@ class WatchTests(Harness):
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["to"]["enum"],
                          ["dispatcher", "lead"])
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["decision"]["enum"],
-                         ["escalated", "suppressed"])
+                         ["escalated", "suppressed", "paused"])
         head, _, body = argv[-1].partition("\n\n")
         self.assertEqual(head, f"Job: watch. Repo: {ROOT}. The dispatcher's session name is dispatcher-repo.")
         [sent] = json.loads(body)
@@ -1106,6 +1106,132 @@ class MissTests(Harness):
         self.assertEqual([r for r in self.records() if "miss" in r], [])
 
 
+EVIDENCE = {"sent_back": [iso(NOW - HOUR)], "files": ["a.txt"], "pr": 7,
+            "others": [{"slug": "y", "state": "working", "files": ["a.txt"]}]}
+
+
+class ChurningTests(Harness):
+    def setUp(self):
+        super().setUp()
+        self.p = pic(declared={"x": {"state": "handed-over", "ts": iso(NOW - HOUR)}}, churn={"x": EVIDENCE})
+
+    def test_the_criterion_fires_for_each_task_with_evidence_and_names_what_it_needs(self):
+        [(slug, subject, detail)] = check("churning", self.p)
+        self.assertEqual((slug, subject), ("x", "#7"))
+        for text in (iso(NOW - HOUR), "a.txt", "y (working) on a.txt"):
+            self.assertIn(text, detail)
+        self.assertEqual(check("churning", pic(churn={})), [])
+
+    def test_it_is_shipped_judgment_and_every_tick(self):
+        [c] = [c for c in json.loads((factory.PLUGIN_ROOT / "criteria.json").read_text()) if c["name"] == "churning"]
+        self.assertEqual((c["escalate"], c["threshold"]), ("judgment", None))
+        self.assertIn("churning", factory.EVERY_TICK)
+
+    def test_no_pull_request_list_unless_a_handed_over_task_was_sent_back(self):
+        asked = []
+        declared = {"x": {"state": "handed-over", "ts": "t"}, "y": {"state": "working", "ts": "t"}}
+        p = pic(declared=declared)
+        with mock.patch.object(factory, "snapshot", lambda repo: asked.append(1) or []), \
+                mock.patch.object(factory, "sent_back", lambda repo, slug: [iso(NOW)] if slug == "y" else []):
+            self.assertEqual(check("churning", p), [])
+        self.assertEqual(asked, [])
+        with mock.patch.object(factory, "snapshot", lambda repo: asked.append(1) or [{"number": 7, "headRefName": "worktree-x"}]), \
+                mock.patch.object(factory, "sent_back", lambda repo, slug: [iso(NOW)]), \
+                mock.patch.object(factory, "task_slug", lambda repo, pr: "x"), \
+                mock.patch.object(factory, "churn", lambda repo, slug, pr: {"sent_back": [], "files": ["a"], "others": []}):
+            self.assertEqual(factory.churning(pic(declared=declared)), {"x": {"sent_back": [], "files": ["a"], "others": [], "pr": 7}})
+        self.assertEqual(asked, [1])
+
+    def record(self, *decisions, sent=True, criterion="churning"):
+        firing = {"id": "aaa", "criterion": criterion, "escalate": "judgment", "slug": "x", "subject": "#7", "detail": "d"}
+        self.seed("firings", [{"ts": iso(NOW), "repo": ROOT, **{k: v for k, v in firing.items()}}])
+        factory.record_decisions(self.p, [firing], {"sent": sent, "decisions": list(decisions)}, "run1")
+        return [r for r in self.records() if "decision" in r]
+
+    def paused(self, waits, reason="y lands soon"):
+        return {"id": "aaa", "decision": "paused", "reason": reason, "looked": [], "waits_on": waits}
+
+    def test_paused_is_recorded_with_its_waits_on(self):
+        [r] = self.record(self.paused(["y"]))
+        self.assertEqual((r["decision"], r["waits_on"], r["by"], r["reason"]), ("paused", ["y"], "site-manager", "y lands soon"))
+
+    def test_paused_needs_sent_true_a_churning_firing_and_waits_on_among_the_others(self):
+        for waits in (None, [], "y", ["z"], ["y", "z"], [1]):
+            with self.subTest(waits=waits):
+                self.assertEqual(self.record(self.paused(waits)), [])
+        self.assertEqual(self.record(self.paused(["y"]), sent=False), [])
+        self.assertEqual(self.record(self.paused(["y"]), criterion="past-limit"), [])
+
+    def test_paused_is_counted_apart_in_firings_and_takes_no_outcome(self):
+        self.seed("firings", [fired("ppp", criterion="churning", escalate="judgment", subject="#7"),
+                              decided("ppp", "paused") | {"waits_on": ["y"]}])
+        [f] = factory.fold(self.records())[0]
+        self.assertEqual((f["decision"], f["waits_on"]), ("paused", ["y"]))
+        s = json.loads(self.cli("firings", "--json")[1])["summary"]
+        self.assertEqual((s["paused"], s["escalated"], s["suppressed"], s["acted"], s["ignored"], s["precision"]), (1, 0, 0, 0, 0, None))
+        self.assertIn("suppressed 0; paused 1; missed 0", self.cli("firings")[1])
+        code, _, err = self.cli("firing", "ppp", "acted")
+        self.assertEqual(code, 2)
+        self.assertIn("was not escalated", err)
+
+    def test_a_pause_does_not_trip_past_limit_or_busy_after_handover_and_blocked_unanswered_names_the_wait(self):
+        late = row("x", state="blocked", phase="blocked", overtime=True, elapsed=NOW - 3 * HOUR, waits_on="y", paused={"since": "t", "waits_on": ["y"]})
+        self.assertEqual(check("past-limit", pic(rows=[late])), [])
+        self.assertEqual(len(check("past-limit", pic(rows=[{**late, "waits_on": "human", "paused": None}]))), 1)
+        declared = {"x": {"state": "blocked", "paused": True, "waits_on": ["y"], "ts": iso(NOW - 2 * HOUR)}}
+        self.assertEqual(check("busy-after-handover", pic(declared=declared, sessions=[lead("x")]), 6), [])
+        [(_, _, detail)] = check("blocked-unanswered", pic(rows=[late], declared=declared), 30)
+        self.assertEqual(detail, "blocked 2h ago, waiting for y (paused)")
+
+    def test_a_tick_between_health_passes_finds_the_dispatcher_and_sends_the_firing_to_the_site_manager(self):
+        real = json.loads((factory.PLUGIN_ROOT / "criteria.json").read_text())
+        self.criteria_path.write_text(json.dumps([c for c in real if c["name"] == "churning"]))
+        factory.write_lander(SimpleNamespace(root=ROOT), {"health": NOW})
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "handed-over", "ts": iso(NOW - HOUR)}])
+        with mock.patch.object(factory, "churning", lambda p: {"x": EVIDENCE}):
+            code, out, _ = self.cli("watch", entries=["x"], answers={("claude", "-p"): reply()})
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.claude_runs()), 1)
+        [fired_row] = [r for r in self.records() if r.get("criterion") == "churning"]
+        self.assertEqual((fired_row["slug"], fired_row["subject"]), ("x", "#7"))
+
+    def status_row(self, state, **declared):
+        real = json.loads((factory.PLUGIN_ROOT / "criteria.json").read_text())
+        self.criteria_path.write_text(json.dumps([c for c in real if c["name"] == "nearing-limit"]))
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": state, "ts": iso(NOW - 10 * 60), **declared}])
+        started = int((NOW - 100 * 60) * 1000)
+        _, out, _ = self.cli("status", "--json", sessions=[DISPATCHER | {"name": "dispatcher-repo"}, lead("x", startedAt=started)],
+                             entries=["x"])
+        return json.loads(out)["rows"][0]
+
+    def test_status_carries_both_flags_and_a_paused_task_is_not_nearing_its_limit(self):
+        working = self.status_row("working")
+        self.assertEqual((working["nearing"], working["paused"], working["prioritized"]), (True, None, None))
+
+    def test_status_shows_pause_and_priority(self):
+        factory.repo_state(ROOT, "lander", "json").write_text(json.dumps({"prioritized": {"x": iso(NOW - 3 * 60)}}))
+        r = self.status_row("blocked", waits_on=["y", "z"], paused=True)
+        self.assertEqual((r["nearing"], r["waits_on"], r["paused"], r["prioritized"]),
+                         (False, "y, z", {"since": iso(NOW - 10 * 60), "waits_on": ["y", "z"]}, {"since": iso(NOW - 3 * 60)}))
+        _, out, _ = self.cli("status", sessions=[DISPATCHER | {"name": "dispatcher-repo"}], entries=["x"])
+        self.assertIn("paused 10m: waits y, z", out)
+        self.assertIn("prioritized 3m", out)
+
+    def test_pauses_lists_each_pause_with_its_send_backs_and_totals(self):
+        sent = lambda ts: {"repo": ROOT, "slug": "x", "role": "lander", "state": "working", "ts": iso(ts)}
+        self.seed("tasks", [sent(NOW - 5 * HOUR), sent(NOW - 3 * HOUR), sent(NOW - HOUR)])
+        self.seed("events", [ev("x", "TaskPaused", ts=iso(NOW - 3 * HOUR + 60), waits_on=["y"]),
+                             ev("x", "TaskPrioritized", ts=iso(NOW - 2 * HOUR), waited=["y"], paused_minutes=59),
+                             ev("x", "TaskPrioritizedEnd", ts=iso(NOW - 90 * 60), reason="merged", minutes=30),
+                             ev("w", "TaskPaused", ts=iso(NOW - 600), waits_on=["y", "z"])])
+        code, out, _ = self.cli("pauses")
+        lines = out.splitlines()
+        self.assertEqual(code, 0)
+        self.assertEqual(lines[0], f"x  {iso(NOW - 3 * HOUR + 60)}  59 min  waited y  send-backs before 2, after 1; prioritized 30 min, ended merged")
+        self.assertEqual(lines[1], f"w  {iso(NOW - 600)}  still paused  waited y,z  send-backs before 0, after 0")
+        self.assertEqual(lines[2], "pauses 2; still paused 1; minutes paused 59; send-backs after a pause 1")
+
+
 class RoutingTests(Home):
     """Who the site manager's escalation goes to, as `watch` enforces it."""
 
@@ -1217,7 +1343,7 @@ class FiringsTests(Harness):
         self.assertEqual(lines[4], f"u1  {iso(NOW - HOUR)}  past-limit  x  undecided  -  cleared  -")
         self.assertEqual(lines[5], f"miss  {iso(NOW)}  x  s1  late")
         self.assertEqual(lines[-1], "escalated 3 (acted 1, ignored 1, no outcome 1); to lead 0; suppressed 1; "
-                                    "missed 3 (1 suppressed first, 2 never fired); precision 0.50; recall 0.25")
+                                    "paused 0; missed 3 (1 suppressed first, 2 never fired); precision 0.50; recall 0.25")
 
     def test_json(self):
         self.seed_log()
@@ -1226,7 +1352,7 @@ class FiringsTests(Harness):
         self.assertEqual([f["id"] for f in doc["firings"]], ["a1", "a2", "a3", "s1", "u1"])
         self.assertEqual(len(doc["misses"]), 3)
         self.assertEqual(doc["summary"], {"escalated": 3, "acted": 1, "ignored": 1, "no_outcome": 1, "suppressed": 1,
-                                          "missed": 3, "missed_suppressed": 1, "missed_never_fired": 2,
+                                          "paused": 0, "missed": 3, "missed_suppressed": 1, "missed_never_fired": 2,
                                           "precision": 0.5, "recall": 0.25})
 
     def test_a_lead_message_shows_in_the_table_and_everything_in_the_json(self):
@@ -1247,7 +1373,7 @@ class FiringsTests(Harness):
     def test_zero_denominators(self):
         code, out, _ = self.cli("firings")
         self.assertEqual(out, "escalated 0 (acted 0, ignored 0, no outcome 0); to lead 0; suppressed 0; "
-                              "missed 0 (0 suppressed first, 0 never fired); precision -; recall -\n")
+                              "paused 0; missed 0 (0 suppressed first, 0 never fired); precision -; recall -\n")
         _, out, _ = self.cli("firings", "--json")
         self.assertEqual((json.loads(out)["summary"]["precision"], json.loads(out)["summary"]["recall"]), (None, None))
         self.seed("firings", [{"ts": iso(NOW), "repo": ROOT, "miss": "m", "slug": None, "firing": None}])
