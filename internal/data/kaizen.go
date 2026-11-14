@@ -21,6 +21,75 @@ type Kaizen struct {
 	Outbox      KaizenOutbox  `json:"outbox"`
 	SiteManager SiteManager   `json:"site_manager"`
 	TechLead    TechLead      `json:"tech_lead"`
+	Pulse       *Pulse        `json:"pulse"` // nil from a producer that does not write it
+}
+
+// Pulse is today against yesterday: the day's figures over all tasks, whatever the range.
+// QueueSince is when the queue log starts, nil when there is none.
+type Pulse struct {
+	QueueSince *string  `json:"queue_since"`
+	Today      PulseDay `json:"today"`
+	Yesterday  PulseDay `json:"yesterday"`
+}
+
+// PulseDay is one calendar day: Merged pull requests, and the figures over them.
+type PulseDay struct {
+	Date      string         `json:"date"`
+	Merged    int            `json:"merged"`
+	Cost      PulseCost      `json:"cost"`
+	FirstPass PulseFirstPass `json:"first_pass"`
+	Handover  PulseHandover  `json:"handover"`
+	Conflicts PulseConflicts `json:"conflicts"`
+}
+
+// PulseCost is what the factory spent on the day, USD; PerMerged is nil when nothing merged.
+type PulseCost struct {
+	Tasks          float64  `json:"tasks"`
+	Dispatcher     float64  `json:"dispatcher"`
+	SiteManager    float64  `json:"site_manager"`
+	UnpricedTokens int64    `json:"unpriced_tokens"`
+	PerMerged      *float64 `json:"per_merged"`
+}
+
+// PulseRate is Yes of Of tasks.
+type PulseRate struct {
+	Yes int `json:"yes"`
+	Of  int `json:"of"`
+}
+
+// PulseFirstPass is the first-pass rate by the size a task stated.
+type PulseFirstPass struct {
+	Small    PulseRate `json:"small"`
+	Medium   PulseRate `json:"medium"`
+	Large    PulseRate `json:"large"`
+	Unstated PulseRate `json:"unstated"`
+}
+
+// PulseP90 is a 90th percentile in seconds over N tasks; nil when N is 0.
+type PulseP90 struct {
+	P90S *int `json:"p90_s"`
+	N    int  `json:"n"`
+}
+
+// PulseHandover is the time from hand-over to merge and its two halves. SentBack and
+// SentBackUnchanged are nil when the queue log did not cover the day.
+type PulseHandover struct {
+	ToMerge             PulseP90 `json:"to_merge"`
+	ToApproval          PulseP90 `json:"to_approval"`
+	ApprovalToMerge     PulseP90 `json:"approval_to_merge"`
+	ApprovalsBackfilled int      `json:"approvals_backfilled"`
+	SentBack            *int     `json:"sent_back"`
+	SentBackUnchanged   *int     `json:"sent_back_unchanged"`
+}
+
+// PulseConflicts counts the base merges of the day's merged pull requests that conflicted;
+// PerMerged is nil when Prs is 0, Error is git's failure, nil when it ran.
+type PulseConflicts struct {
+	Prs        int      `json:"prs"`
+	BaseMerges int      `json:"base_merges"`
+	Conflicted int      `json:"conflicted"`
+	PerMerged  *float64 `json:"per_merged"`
+	Error      *string  `json:"error"`
 }
 
 // SiteManager is the site manager's record as `factory firings` counts it, over every
@@ -102,6 +171,7 @@ type KaizenTask struct {
 	RepoPath  string        `json:"repo_path"`
 	Slug      string        `json:"slug"`
 	Version   string        `json:"version"`
+	Size      *string       `json:"size"` // small, medium or large as the brief stated; nil when it did not
 	Started   string        `json:"started"`
 	State     string        `json:"state"`
 	PR        *KaizenPR     `json:"pr"`
