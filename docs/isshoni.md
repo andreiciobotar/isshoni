@@ -253,7 +253,9 @@ VIEW=... SIZE=...` turns it into a PNG under `shots/` (needs Chrome).
   says so meanwhile), the list starts at its first dispatch, and a list cut short says
   how many there are in its title: `enter` shows them all. A group row has no pane
   content: **Now running** grows into the room. Now running is always there, in full
-  width: every running dispatch of every live session, whatever the cursor is on.
+  width: every running dispatch of every live session, whatever the cursor is on (on a
+  session row up to 2 lines in a terminal under 35 rows, 4 under 45, else 8; the last
+  line is `+N more running` when cut).
   **Zoom:** `enter` on a session row shows it full screen: cost by agent, the timeline
   with a lane per agent type (dispatches of one type that overlap stack on extra rows),
   the dispatch list and the selected dispatch in detail. Idle stretches of the timeline

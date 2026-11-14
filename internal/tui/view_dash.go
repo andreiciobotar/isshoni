@@ -44,7 +44,7 @@ func (m *model) dashLayout() dashLayout {
 	}
 	nowCap := 8
 	switch {
-	case m.h < 30:
+	case m.h < 35:
 		nowCap = 2
 	case m.h < 45:
 		nowCap = 4
@@ -53,12 +53,12 @@ func (m *model) dashLayout() dashLayout {
 	rest := m.h - 3 - l.tilesH - 1 - l.stripH - l.nowH
 	// the table and side column take what their content needs, up to what the pane leaves; the side column
 	// is sized from the whole range, so it does not jump as the cursor moves
-	need := max(len(m.rows())+3, 7)
+	need := max(len(m.rows())+3, 5)
 	if l.sideW > 0 {
 		t := m.totals()
 		need = max(need, len(roleUsage(t.byAgent))+2+len(t.byModel)+3)
 	}
-	l.contentH = max(rest/2, 8)
+	l.contentH = max(rest/2, 6)
 	l.treeH = max(min(need, rest-l.contentH), 5)
 	l.contentH = rest - l.treeH
 	if l.contentH < 4 {
@@ -172,7 +172,7 @@ func (m *model) paneContent(p paint, row treeRow, w, h int) block {
 		return p.boxed("Dispatches", []string{in.t(spin(m.spinFrame())+" ", th.Purple) + in.t("loading dispatches…", th.Muted)}, w, h, th.Pink)
 	}
 	var out block
-	if room := min(h-(3+min(len(d.Dispatches), 3))-3, 6); room >= 1 {
+	if room := min(h-(3+min(len(d.Dispatches), 5))-3, 6); room >= 1 && len(d.Dispatches) > 0 {
 		if pl := m.timelinePlan(s, d, w, room, -1); pl.hidden == 0 || len(pl.lanes) >= 2 {
 			out = m.timeline(p, s, d, pl, w, -1)
 		}
@@ -345,7 +345,6 @@ func (m *model) tiles(p paint, w int, compact bool) block {
 	th := m.th
 	c := func(k string) float64 { return m.counter[k].Value() }
 	t := m.totals()
-	count := m.counted
 	sp := p.on(th.Surface)
 	shareV := c("share") / 10
 	gauge := func(tw int) string {
@@ -356,9 +355,9 @@ func (m *model) tiles(p paint, w int, compact bool) block {
 	tiles = append(tiles, tile{"COST", m.money(t.cost, t.unpriced), tok, th.Blue})
 	tiles = append(tiles, tile{"SUBAGENT SHARE", fmt.Sprintf("%.1f%%", shareV), "\x00gauge", th.Purple})
 	tiles = append(tiles, tile{"DISPATCHES", fmt.Sprintf("%d", int(c("dispatches"))), avgDisp(t.dispatches, len(m.visible())), th.Teal})
-	rv, rc := count("repeats", th.Yellow)
-	lv, lc := count("loops", th.Yellow)
-	wv, wc := count("warns", th.Red)
+	rv, rc := m.counted("repeats", th.Yellow)
+	lv, lc := m.counted("loops", th.Yellow)
+	wv, wc := m.counted("warns", th.Red)
 	rate := "-"
 	rateCol := th.Muted
 	if rr := c("recheck"); rr >= 0 {

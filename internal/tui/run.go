@@ -124,7 +124,8 @@ func Snapshot(so SnapshotOptions) (string, error) {
 	}
 	m.applyFactory(m.factoryJob()())
 	m.normalizeSelection()
-	if m.view == viewDashboard && so.Row > 0 && len(m.rows()) > 0 {
+	onTree := m.view == viewDashboard && !m.zoom
+	if onTree && so.Row > 0 && len(m.rows()) > 0 {
 		rows := m.rows()
 		m.selID = rows[min(so.Row, len(rows)-1)].key
 		if s, d := m.paneSession(); s != nil && d == nil {
@@ -133,7 +134,7 @@ func Snapshot(so SnapshotOptions) (string, error) {
 			}
 		}
 	}
-	if so.Fold && m.view == viewDashboard {
+	if so.Fold && onTree {
 		m.fold(true)
 	}
 	return m.finishSnapshot(), nil

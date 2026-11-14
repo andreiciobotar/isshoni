@@ -258,4 +258,22 @@ func TestDetailFetchWaitsForTheCursorToRest(t *testing.T) {
 	if !strings.Contains(plain(m), "Brand new dispatch") {
 		t.Fatalf("the pane did not take the refresh:\n%s", plain(m))
 	}
+
+	// the cursor's session vanishes: the row the cursor is handed loads without a key press
+	gone := m.selID
+	left := map[string]time.Time{}
+	for id, at := range m.seen {
+		if id != gone {
+			left[id] = at
+		}
+	}
+	clear(m.details)
+	msgs := upd(m, scanMsg{seen: left})
+	s, _ := m.paneSession()
+	if s == nil || s.ID == gone {
+		t.Fatalf("the cursor should be handed a session row, selID %q", m.selID)
+	}
+	if got := only[detailMsg](msgs); len(got) != 1 || got[0].id != s.ID {
+		t.Fatalf("the handed row %q was not fetched: %v", s.ID, got)
+	}
 }

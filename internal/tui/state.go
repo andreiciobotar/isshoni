@@ -1014,6 +1014,10 @@ func (m *model) followTarget() tea.Cmd {
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	shown := ""
+	if s, _ := m.paneSession(); s != nil {
+		shown = s.ID
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
@@ -1036,8 +1040,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.normalizeSelection()
 		m.retarget(false)
 		cmds = append(cmds, m.followTarget())
-		if row, _ := m.scope(); row.s != nil {
-			cmds = append(cmds, m.ensureDetail(row.s.ID))
+		if s, _ := m.paneSession(); s != nil {
+			cmds = append(cmds, m.ensureDetail(s.ID))
 		}
 		cmds = append(cmds, m.fetchLive()...)
 		cmds = append(cmds, m.refreshFactory(0))
@@ -1117,10 +1121,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.refreshFactory(factoryEvery))
 
 	case tea.KeyPressMsg:
-		before := m.selID
 		cmds = append(cmds, m.handleKey(msg))
-		if m.selID != before {
+	}
+	// the pane never waits for a key to load: a walking cursor fetches once it rests, a row the cursor was
+	// handed (its own row vanished) fetches at once
+	if s, _ := m.paneSession(); s != nil && s.ID != shown {
+		if _, key := msg.(tea.KeyPressMsg); key {
 			cmds = append(cmds, m.debounceDetail())
+		} else {
+			cmds = append(cmds, m.ensureDetail(s.ID))
 		}
 	}
 	m.syncOrder(false)

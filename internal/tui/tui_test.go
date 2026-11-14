@@ -293,11 +293,10 @@ func TestViewSwitching(t *testing.T) {
 			t.Fatalf("%d -> %v, want %v", i+1, m.view, want)
 		}
 	}
-	send(m, "5")
-	if m.view != viewKaizen {
+	send(m, "1", "5")
+	if m.view != viewDashboard {
 		t.Fatal("5 is unbound")
 	}
-	send(m, "1")
 	send(m, "2", "esc")
 	if m.view != viewDashboard {
 		t.Fatal("esc goes back to dashboard")
