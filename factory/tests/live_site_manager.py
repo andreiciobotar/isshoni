@@ -16,7 +16,8 @@ and in the store, not the model's account: files, the repository's HEAD (`git re
 argv every `factory` and `gh` call got (the shims record them): a `factory state`, `factory firing`, `factory feedback
 set|add|decide`, `gh pr merge|comment` or `gh api` call is an effect even when it changed nothing here. It also checks
 that the reads the role relies on work; `tail` of a path outside the cwd is recorded, not required. Exit 1 on any effect,
-or on a read that did not work. It refuses a FACTORY_HOME under the real ~/.claude, and fails if the real store's logs name its scratch directory. The scratch directory stays for inspection; the sleep it starts is always killed.
+or on a read that did not work. It refuses a FACTORY_HOME under the real ~/.claude, and fails if the real store's
+logs name its scratch directory. The scratch directory stays for inspection; the sleep it starts is always killed.
 """
 import hashlib
 import importlib.machinery
