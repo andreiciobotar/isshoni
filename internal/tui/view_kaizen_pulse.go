@@ -2,8 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"strconv"
-	"strings"
 
 	"isshoni/internal/data"
 )
@@ -18,6 +18,8 @@ const (
 type pulseCol struct {
 	val, note string
 	bad       bool
+	val2      string // a second figure after " · ", with its own warning
+	bad2      bool
 }
 
 // pulseRow is a labelled figure for both days; short is the label at narrow widths.
@@ -35,11 +37,11 @@ func (m *model) dayLines(p paint, w int) block {
 	}
 	th := m.th
 	wide := w >= 100
-	lw := 24
+	lw := 26
 	if wide {
-		lw = 38
+		lw = 44
 	}
-	cw := min((w-lw)/2, 40)
+	cw := min((w-lw)/2, 36) // fixed, so yesterday starts a few cells after the widest today cell
 	days := [2]data.PulseDay{pl.Today, pl.Yesterday}
 	label := func(r pulseRow) string {
 		if wide {
@@ -48,26 +50,29 @@ func (m *model) dayLines(p paint, w int) block {
 		return r.short
 	}
 	rows := m.pulseRows(days, wide)
-	mw := 0 // the widest figure that has a count beside it, so the counts line up
-	for _, r := range rows {
-		for _, c := range r.days {
-			if c.note != "" {
-				mw = max(mw, width(c.val))
-			}
+	fg := func(bad bool) color.Color {
+		if bad {
+			return th.Orange
 		}
+		return th.Text
 	}
 	put := func(label string, c [2]pulseCol) string {
 		line := p.sp(1) + p.t(cell(label, lw-1, false), th.Muted)
 		for _, d := range c {
-			main, note := trunc(d.val, cw-1), ""
+			main, rest, note := trunc(d.val, cw-1), "", ""
+			used := width(main)
+			if d.val2 != "" {
+				rest = trunc(d.val2, max(0, cw-1-used-3))
+				used += 3 + width(rest)
+			}
 			if d.note != "" {
-				note = trunc(strings.Repeat(" ", mw-width(main))+"  "+d.note, max(0, cw-1-width(main)))
+				note = trunc("  "+d.note, max(0, cw-1-used))
 			}
-			fg := th.Text
-			if d.bad {
-				fg = th.Orange
+			line += p.b(main, fg(d.bad))
+			if d.val2 != "" {
+				line += p.t(" · ", th.Muted) + p.b(rest, fg(d.bad2))
 			}
-			line += p.b(main, fg) + p.t(note, th.Muted) + p.sp(cw-width(main)-width(note))
+			line += p.t(note, th.Muted) + p.sp(cw-used-width(note))
 		}
 		return fit(line, w, p)
 	}
@@ -84,7 +89,6 @@ func (m *model) dayLines(p paint, w int) block {
 	for _, r := range rows {
 		lines = append(lines, put(label(r), r.days))
 	}
-	lines = append(lines, p.sp(1)+p.t("  (from git history)", th.Faint))
 	if note := m.sendBackNote(days, pl.QueueSince); note != "" {
 		lines = append(lines, p.sp(1)+p.t(note, th.Faint))
 	}
@@ -111,26 +115,26 @@ func (m *model) pulseRows(days [2]data.PulseDay, wide bool) []pulseRow {
 		return
 	}
 	n := func(k int) string { return "n=" + strconv.Itoa(k) }
-	size := func(label string, rate func(data.PulseFirstPass) data.PulseRate) pulseRow {
-		short := label
-		if label == "no size stated" {
-			short = "unstated"
+	rate := func(r data.PulseRate) string {
+		if r.Of == 0 {
+			return "-"
 		}
-		return pulseRow{label, short, both(func(d data.PulseDay) pulseCol {
-			r := rate(d.FirstPass)
-			if r.Of == 0 {
-				return pulseCol{val: "-"}
-			}
-			return pulseCol{val: pct(float64(r.Yes) / float64(r.Of) * 100), note: fmt.Sprintf("%d/%d", r.Yes, r.Of)}
-		})}
+		return pct(float64(r.Yes)/float64(r.Of)*100) + fmt.Sprintf(" %d/%d", r.Yes, r.Of)
 	}
-	p90 := func(get func(data.PulseHandover) data.PulseP90, slowAbove int, note func(data.PulseHandover) string) func(data.PulseDay) pulseCol {
+	dur := func(q data.PulseP90, slow bool) (string, bool) {
+		if q.P90S == nil {
+			return "-", false
+		}
+		return kzSecs(float64(*q.P90S)), slow && *q.P90S > pulseSlowHandover
+	}
+	p90 := func(get func(data.PulseHandover) data.PulseP90, slow bool, note func(data.PulseHandover) string) func(data.PulseDay) pulseCol {
 		return func(d data.PulseDay) pulseCol {
 			q := get(d.Handover)
+			v, bad := dur(q, slow)
 			if q.P90S == nil {
-				return pulseCol{val: "-"}
+				return pulseCol{val: v}
 			}
-			return pulseCol{val: kzSecs(float64(*q.P90S)), note: n(q.N) + note(d.Handover), bad: *q.P90S > slowAbove}
+			return pulseCol{val: v, note: n(q.N) + note(d.Handover), bad: bad}
 		}
 	}
 	none := func(data.PulseHandover) string { return "" }
@@ -140,6 +144,8 @@ func (m *model) pulseRows(days [2]data.PulseDay, wide bool) []pulseRow {
 		}
 		return fmt.Sprintf(" (%d backfilled)", h.ApprovalsBackfilled)
 	}
+	toApproval := func(h data.PulseHandover) data.PulseP90 { return h.ToApproval }
+	approvalToMerge := func(h data.PulseHandover) data.PulseP90 { return h.ApprovalToMerge }
 	cost := func(d data.PulseDay) pulseCol {
 		if d.Cost.PerMerged == nil {
 			return pulseCol{val: "-"}
@@ -157,27 +163,24 @@ func (m *model) pulseRows(days [2]data.PulseDay, wide bool) []pulseRow {
 			return pulseCol{val: m.kzMoney(c.Tasks) + " + " + m.kzMoney(c.Dispatcher) + " + " + m.kzMoney(c.SiteManager)}
 		})})
 	}
-	first := "first pass "
-	if !wide {
-		first = "1st pass "
-	}
-	for i, r := range []pulseRow{
-		size("small", func(f data.PulseFirstPass) data.PulseRate { return f.Small }),
-		size("medium", func(f data.PulseFirstPass) data.PulseRate { return f.Medium }),
-		size("large", func(f data.PulseFirstPass) data.PulseRate { return f.Large }),
-		size("no size stated", func(f data.PulseFirstPass) data.PulseRate { return f.Unstated }),
-	} {
-		lead := strings.Repeat(" ", len(first))
-		if i == 0 {
-			lead = first
-		}
-		r.label, r.short = lead+r.label, lead+r.short
-		rows = append(rows, r)
+	rows = append(rows, firstPassRows(both, rate, wide)...)
+	rows = append(rows, pulseRow{"hand-over → merge p90", "hand-over → merge p90", both(p90(func(h data.PulseHandover) data.PulseP90 { return h.ToMerge }, true, none))})
+	if wide {
+		rows = append(rows, pulseRow{"  to approval · approval to merge", "", both(func(d data.PulseDay) pulseCol {
+			h := d.Handover
+			if h.ToApproval.P90S == nil {
+				return pulseCol{val: "-"}
+			}
+			a, _ := dur(h.ToApproval, false)
+			b, bad := dur(h.ApprovalToMerge, true)
+			return pulseCol{val: a, val2: b, bad2: bad, note: n(h.ToApproval.N) + backfilled(h)}
+		})})
+	} else {
+		rows = append(rows,
+			pulseRow{"", "  → approval p90", both(p90(toApproval, false, backfilled))},
+			pulseRow{"", "  approval → merge p90", both(p90(approvalToMerge, true, none))})
 	}
 	rows = append(rows,
-		pulseRow{"hand-over → merge p90", "hand-over → merge p90", both(p90(func(h data.PulseHandover) data.PulseP90 { return h.ToMerge }, pulseSlowHandover, none))},
-		pulseRow{"  hand-over → approval p90", "  → approval p90", both(p90(func(h data.PulseHandover) data.PulseP90 { return h.ToApproval }, 1<<30, backfilled))},
-		pulseRow{"  approval → merge p90", "  approval → merge p90", both(p90(func(h data.PulseHandover) data.PulseP90 { return h.ApprovalToMerge }, pulseSlowHandover, none))},
 		pulseRow{"  send-backs that changed nothing", "  sent back unchanged", both(func(d data.PulseDay) pulseCol {
 			h := d.Handover
 			if h.SentBack == nil || h.SentBackUnchanged == nil {
@@ -185,7 +188,7 @@ func (m *model) pulseRows(days [2]data.PulseDay, wide bool) []pulseRow {
 			}
 			return pulseCol{val: fmt.Sprintf("%d of %d", *h.SentBackUnchanged, *h.SentBack), bad: *h.SentBackUnchanged > 0}
 		})},
-		pulseRow{"conflicted base merges / merged PR", "conflicts / merged PR", both(func(d data.PulseDay) pulseCol {
+		pulseRow{"conflicted base merges / PR (git history)", "conflicts (git history)", both(func(d data.PulseDay) pulseCol {
 			c := d.Conflicts
 			if c.PerMerged == nil {
 				return pulseCol{val: "-"}
@@ -208,4 +211,38 @@ func (m *model) sendBackNote(days [2]data.PulseDay, since *string) string {
 		return "send-backs: the queue log starts " + kzTime(*since)
 	}
 	return ""
+}
+
+// firstPassRows are the first-pass rate by stated size: two sizes a row when wide, one at narrow widths.
+func firstPassRows(both func(func(data.PulseDay) pulseCol) [2]pulseCol, rate func(data.PulseRate) string, wide bool) []pulseRow {
+	type size struct {
+		label, short string
+		get          func(data.PulseFirstPass) data.PulseRate
+	}
+	sizes := []size{
+		{"small", "small", func(f data.PulseFirstPass) data.PulseRate { return f.Small }},
+		{"medium", "medium", func(f data.PulseFirstPass) data.PulseRate { return f.Medium }},
+		{"large", "large", func(f data.PulseFirstPass) data.PulseRate { return f.Large }},
+		{"no size stated", "unstated", func(f data.PulseFirstPass) data.PulseRate { return f.Unstated }},
+	}
+	var rows []pulseRow
+	if wide {
+		for i, lead := range []string{"first pass  ", "            "} {
+			a, b := sizes[2*i], sizes[2*i+1]
+			rows = append(rows, pulseRow{label: lead + a.label + " · " + b.label, days: both(func(d data.PulseDay) pulseCol {
+				return pulseCol{val: rate(a.get(d.FirstPass)), val2: rate(b.get(d.FirstPass))}
+			})})
+		}
+		return rows
+	}
+	for i, sz := range sizes {
+		lead := "         "
+		if i == 0 {
+			lead = "1st pass "
+		}
+		rows = append(rows, pulseRow{short: lead + sz.short, days: both(func(d data.PulseDay) pulseCol {
+			return pulseCol{val: rate(sz.get(d.FirstPass))}
+		})})
+	}
+	return rows
 }
