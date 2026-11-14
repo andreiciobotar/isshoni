@@ -143,6 +143,13 @@ class SendBackTests(Case):
         self.assertTrue(self.machine.ran("gh", "pr", "ready", "--undo"))
         self.assertEqual(self.records("techlead"), [])
 
+    def test_without_a_dispatcher_name_the_run_gets_no_dispatcher_flag(self):
+        self.use(Machine(self.root))
+        with mock.patch.object(factory, "spawn") as spawn:
+            factory.send_back(factory.Repo(), None, self.pr(), SLUG, CONFLICT)
+        spawn.assert_called_once_with([sys.executable, str(BIN), "tech-lead", SLUG, str(N), CONFLICT], self.root,
+                                      self.store / "tech-lead.log")
+
     def test_without_a_spec_the_lead_is_told_as_before_and_an_unstarted_record_says_why(self):
         self.spec.unlink()
         with mock.patch.object(factory, "spawn") as spawn:
