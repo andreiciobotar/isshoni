@@ -41,6 +41,7 @@ type FactoryTask struct {
 	Stale    bool   `json:"stale"`
 	PRState  string `json:"pr_state"`
 	PRURL    string `json:"pr_url"`
+	PRDraft  bool   `json:"pr_draft"` // its pull request is a draft: still being worked on or checks not green
 	Session  string `json:"session"`
 
 	Deliverable string `json:"deliverable"` // a link or an absolute file path; empty when null

@@ -127,11 +127,17 @@ def invoke(argv, answers, settings=None, env=None, tasks=(), cwd=None, events=No
     return code, out.getvalue(), err.getvalue(), fake
 
 
+PLUGINS = [{"id": "zeta@m", "enabled": True}, {"id": "factory@factory", "enabled": True},
+           {"id": "alpha@m", "enabled": False}, {"id": "factory@inline", "enabled": True}]
+LEAN_SETTINGS = {"disableBundledSkills": True, "enabledPlugins": {"alpha@m": False, "zeta@m": False}}
+
+
 def repo_answers(entries, sessions=(), *extras):
     answers = {
         ("git", "worktree", "list"): (0, porcelain((ROOT, "main", False), *entries), ""),
         ("git", "symbolic-ref"): (0, "refs/remotes/origin/main\n", ""),
         ("claude", "agents"): (0, json.dumps(list(sessions)), ""),
+        ("claude", "plugin", "list"): (0, json.dumps(PLUGINS), ""),
     }
     for extra in extras:
         answers.update(extra)
@@ -239,6 +245,18 @@ class StateTests(unittest.TestCase):
                 self.assertEqual(rec["session"], "sid-d")
                 self.assertNotIn("deliverable", rec)
 
+    def test_working_and_blocked_put_the_pull_request_back_to_draft_even_when_gh_fails(self):
+        for state in ("working", "blocked"):
+            with self.subTest(state):
+                code, out, err, fake = invoke(["state", state], repo_answers(
+                    [task_entry("x")], (), {("gh", "pr", "ready"): (1, "", "no pull request")}), cwd=self.CWD)
+                self.assertEqual((code, out, err), (0, f"x: {state}\n", ""))
+                self.assertIn(["gh", "pr", "ready", "--undo", "worktree-x"], fake.calls)
+
+    def test_handed_over_does_not_touch_the_draft_flag(self):
+        *_, fake = self.state("handed-over", "https://github.com/o/r/pull/9")
+        self.assertFalse(fake.ran("gh", "pr", "ready"))
+
     def test_handed_over_stores_a_link_as_given(self):
         code, out, _, fake = self.state("handed-over", "https://github.com/o/r/pull/9")
         self.assertEqual((code, out), (0, "x: handed-over\n"))
@@ -311,7 +329,8 @@ class SettingsTests(unittest.TestCase):
 
     def test_defaults(self):
         want = {"worktree_cap": 5, "lead_model": "fable", "lead_permission_mode": "auto",
-                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "reserve_percent": 10}
+                "task_time_limit_hours": 2, "monitor": None, "lgtm_from_author": True, "reserve_percent": 10,
+                "lean_start": True}
         self.assertEqual(self.load(), want)
         self.assertEqual(self.load("{}"), want)
 
@@ -322,10 +341,11 @@ class SettingsTests(unittest.TestCase):
 
     def test_overrides(self):
         got = self.load('{"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan", '
-                        '"task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": false, "reserve_percent": 25}')
+                        '"task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": false, '
+                        '"reserve_percent": 25, "lean_start": false}')
         self.assertEqual(got, {"worktree_cap": 2, "lead_model": "opus", "lead_permission_mode": "plan",
                                "task_time_limit_hours": 0.5, "monitor": "/bin/isshoni", "lgtm_from_author": False,
-                               "reserve_percent": 25})
+                               "reserve_percent": 25, "lean_start": False})
         for percent in (0, 100):
             self.assertEqual(self.load('{"reserve_percent": %d}' % percent)["reserve_percent"], percent)
         self.assertEqual(self.load('{"worktree_cap": 9}')["lead_model"], "fable")
@@ -343,6 +363,7 @@ class SettingsTests(unittest.TestCase):
                           ('{"reserve_percent": true}', "reserve_percent"), ('{"reserve_percent": -1}', "reserve_percent"),
                           ('{"reserve_percent": 101}', "reserve_percent"), ('{"reserve_percent": 2.5}', "reserve_percent"),
                           ('{"reserve_percent": "10"}', "reserve_percent"),
+                          ('{"lean_start": "yes"}', "lean_start"), ('{"lean_start": 1}', "lean_start"),
                           ('{"monitor": ""}', "monitor"), ('{"monitor": 3}', "monitor"), ('{"monitor": null}', "monitor")):
             with self.assertRaisesRegex(factory.Fail, key):
                 self.load(text)
@@ -373,11 +394,44 @@ class NewTests(unittest.TestCase):
         plugin = str(BIN.resolve().parent.parent)
         lead = (BIN.resolve().parent.parent / "roles" / "lead.md").read_text()
         want = ["claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
-                "--permission-mode", "auto", "--plugin-dir", plugin, "--append-system-prompt", lead,
+                "--permission-mode", "auto", "--plugin-dir", plugin, "--strict-mcp-config",
+                "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}", "--append-system-prompt", lead,
                 "Your task slug is demo-task. The dispatcher's session name is d1. "
                 "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
                 "Your time limit is 2 hours. Your brief follows.\n\ndo it"]
         self.assertEqual(fake.calls[-1], want)
+
+    def test_lean_start_off_launches_the_old_argv_without_listing_plugins(self):
+        with mock.patch.object(factory.time, "time", return_value=1794610677):
+            _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), '{"lean_start": false}')
+        plugin = str(BIN.resolve().parent.parent)
+        lead = (BIN.resolve().parent.parent / "roles" / "lead.md").read_text()
+        self.assertEqual(fake.calls[-1], [
+            "claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
+            "--permission-mode", "auto", "--plugin-dir", plugin, "--append-system-prompt", lead,
+            "Your task slug is demo-task. The dispatcher's session name is d1. "
+            "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
+            "Your time limit is 2 hours. Your brief follows.\n\ndo it"])
+        self.assertFalse(fake.ran("claude", "plugin"))
+
+    def test_a_failing_plugin_list_still_launches_without_enabled_plugins(self):
+        answers = self.answers([], (), self.OK)
+        for listing in ((1, "", "boom"), (0, "not json", ""), (0, '{"a": 1}', ""), (0, "[1]", ""), (124, "", "timed out")):
+            answers[("claude", "plugin", "list")] = listing
+            with self.subTest(listing=listing):
+                code, _, err, fake = invoke(self.ARGS, answers)
+                argv = fake.calls[-1]
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(argv[argv.index("--settings") + 1]), {"disableBundledSkills": True})
+                self.assertIn("plugin list", err)
+                self.assertTrue(argv[-1].endswith("do it"))
+
+    def test_the_lean_settings_never_name_the_factory(self):
+        _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK))
+        argv = fake.calls[-1]
+        off = json.loads(argv[argv.index("--settings") + 1])["enabledPlugins"]
+        self.assertEqual(list(off), ["alpha@m", "zeta@m"])
+        self.assertNotIn("factory", "".join(off))
 
     def test_launch_argv_uses_settings(self):
         settings = '{"lead_model": "opus", "lead_permission_mode": "plan"}'
@@ -773,6 +827,22 @@ class StatusTests(unittest.TestCase):
             "in motion 2/4, reserve 1, cap 5 (1 blocked); waiting for review 2; merged, not cleaned 0; settled, not cleaned 0; "
             "leftover agent worktrees 0; worktrees outside .claude/worktrees 0", "acting on GitHub with your gh login (no App identity: factory wizard)",
             "waiting on the human: handed /out/video.mp4", "waiting on the human: pr-only http://pr/7"])
+
+    def test_a_draft_pull_request_in_review_waits_on_checks_and_is_flagged(self):
+        self.assertIn("isDraft", factory.STATUS_PR_FIELDS.split(","))  # the fake gh answers whatever is asked
+        for draft, line in ((True, "waiting on checks: handed http://pr/7"), (False, "waiting on the human: handed http://pr/7")):
+            with self.subTest(draft=draft):
+                pr = [{"state": "OPEN", "url": "http://pr/7", "headRefOid": "sha-x", "isDraft": draft}]
+                answers = repo_answers([task_entry("handed")], (), git_task_answers("x", time.time(), pr=pr))
+                tasks = [task_rec("handed", "handed-over")]
+                _, out, _, _ = invoke(["status"], answers, tasks=tasks)
+                self.assertEqual(out.splitlines()[-1], line)
+                _, out, _, _ = invoke(["status", "--json"], answers, tasks=tasks)
+                self.assertEqual(json.loads(out)["rows"][0]["pr_draft"], draft)
+
+    def test_no_pull_request_is_not_a_draft(self):
+        doc, _ = self.status([task_entry("alpha")])
+        self.assertIs(doc["rows"][0]["pr_draft"], False)
 
     def test_a_review_task_without_deliverable_or_pull_request_waits_with_a_dash(self):
         answers = repo_answers([task_entry("handed")], (), git_task_answers("x", time.time()))
@@ -1307,6 +1377,8 @@ class EndToEndTests(unittest.TestCase):
 import json, os, sys
 if sys.argv[1:2] == ["agents"]:
     print(os.environ["FAKE_AGENTS"])
+elif sys.argv[1:3] == ["plugin", "list"]:
+    print("[]")
 elif sys.argv[1:2] == ["--bg"]:
     json.dump(sys.argv, open(os.environ["FAKE_ARGV"], "w"))
     print("backgrounded · 96dc4869 · " + sys.argv[sys.argv.index("-n") + 1])
@@ -1520,6 +1592,15 @@ class PullRequestBatchTests(unittest.TestCase):
         self.gh = listed(a="MERGED", b="MERGED", c="CLOSED")
         doc, fake = self.status("--json", "--max-age", "60")
         self.assertEqual((len(self.asked(fake)), doc["rows"][0]["pr_state"]), (1, "merged"))
+
+    def test_a_cache_written_before_the_draft_flag_is_discarded_and_read_again(self):
+        self.status("--json")
+        (path,) = (self.home / ".claude/factory/cache").glob("prs-*.json")
+        stored = json.loads(path.read_text())
+        stored["prs"] = {b: v[:4] for b, v in stored["prs"].items()}
+        path.write_text(json.dumps(stored))
+        doc, fake = self.status("--json", "--max-age", "3600")
+        self.assertEqual((len(self.asked(fake)), doc["rows"][0]["pr_state"]), (1, "open"))
 
     def test_max_age_asks_when_the_cache_lacks_a_branch(self):
         self.status("--json", slugs="ab")

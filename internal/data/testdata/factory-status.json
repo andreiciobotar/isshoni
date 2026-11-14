@@ -6,7 +6,7 @@
       "state": null, "deliverable": null,
       "waited": null, "stop_kind": null, "stop_summary": null,
       "elapsed": null, "overtime": false, "dirty": null, "behind": null, "ahead": null,
-      "head": "abc", "last_commit": null, "pr_state": "unknown", "pr_url": "", "pr_head": "", "pr_base": "",
+      "head": "abc", "last_commit": null, "pr_state": "unknown", "pr_url": "", "pr_head": "", "pr_base": "", "pr_draft": true,
       "phase": "motion", "stale": false
     },
     {
@@ -15,7 +15,7 @@
       "state": "handed-over", "deliverable": "https://github.com/o/r/pull/12",
       "waited": 5400, "stop_kind": null, "stop_summary": null,
       "elapsed": 252, "overtime": true, "dirty": false, "behind": 0, "ahead": 2,
-      "head": "def", "last_commit": 1794647916, "pr_state": "open", "pr_url": "https://github.com/o/r/pull/12", "pr_head": "h", "pr_base": "b",
+      "head": "def", "last_commit": 1794647916, "pr_state": "open", "pr_url": "https://github.com/o/r/pull/12", "pr_head": "h", "pr_base": "b", "pr_draft": false,
       "phase": "review", "stale": true
     },
     {
