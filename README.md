@@ -103,6 +103,8 @@ On day one, agents reported the same shell friction eleven times and counting. I
 
 Cost is the API list price, from [isshoni/prices.toml](isshoni/prices.toml). `isshoni-tui` is the same data live, plus the factory's tasks and whether it is getting better. Its fifth view, [Hanami (花見)](docs/isshoni.md#hanami-花見-the-work-as-something-to-watch), draws the work as motion: something to leave on a second screen.
 
+![Hanami: the work as motion over water, a merge as fireworks](docs/hanami.gif)
+
 <!-- screenshot: isshoni-tui session timeline -->
 
 ## More
