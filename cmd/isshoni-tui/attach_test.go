@@ -115,14 +115,13 @@ func TestAttachFollowsEveryWindowChangeAndTheDashboardComesBackAtTheLastSize(t *
 
 	wide := e.view(addr, viewOpts{signer: s, w: 160, h: 45})
 	wide.waitFor("zebrafish")
-	wantRule := rule(wide.out.String())
-
 	v := e.view(addr, viewOpts{signer: s, w: 100, h: 30})
 	v.waitFor("zebrafish")
-	narrowRule := rule(v.out.String())
-	if narrowRule >= wantRule {
-		t.Fatalf("rules %d and %d do not tell the widths apart", narrowRule, wantRule)
-	}
+	// the word can arrive before the rest of its frame: wait for the widths, do not sample them
+	waitFor(t, "rules of growing width at 100 and 160 columns", func() bool {
+		narrow, wider := rule(v.out.String()), rule(wide.out.String())
+		return 0 < narrow && narrow < wider
+	})
 	v.send("d")
 	v.waitFor("STUB ATTACHED dispatcher-a tty=yes opost=yes size=30 100")
 	if err := v.sess.WindowChange(40, 130); err != nil {
@@ -135,7 +134,7 @@ func TestAttachFollowsEveryWindowChangeAndTheDashboardComesBackAtTheLastSize(t *
 	v.waitFor("STUB WINCH 45 160")
 	mark := v.out.Len()
 	v.send("detach\r")
-	waitFor(t, "the dashboard at the last width", func() bool { return rule(v.out.String()[mark:]) == wantRule })
+	waitFor(t, "the dashboard at the last width", func() bool { return rule(v.out.String()[mark:]) == rule(wide.out.String()) })
 }
 
 func TestAttachEndsWithItsConnection(t *testing.T) {
