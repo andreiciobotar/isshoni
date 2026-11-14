@@ -31,7 +31,7 @@ Isshoni is two tools for people who run [Claude Code](https://claude.com/claude-
 
 ## Setup
 
-Needs `git` and Python 3.11+; the factory also needs Claude Code and an authenticated [`gh`](https://cli.github.com), on macOS or Linux.
+Needs `git`, Python 3.11+, [Go 1.27+](https://go.dev/dl) for the dashboard, and, for the factory, Claude Code and an authenticated [`gh`](https://cli.github.com), on macOS or Linux.
 
 Monitor:
 
@@ -41,11 +41,9 @@ bin/isshoni sessions --since 7d    # where the money went
 make install && make up            # live dashboard; needs Go 1.27+
 ```
 
-Factory, in Claude Code, in the repository you want work done in:
+Factory: `make wizard` in the clone checks the tools, builds the dashboard, installs the plugin, writes the settings and offers the factory its own GitHub App ([what each step does](docs/factory.md#setup-and-uninstall)). Then, in Claude Code, in the repository you want work done in:
 
 ```
-/plugin marketplace add andreiciobotar/isshoni
-/plugin install factory@factory
 /rename dispatcher-<repository directory name>
 /factory:dispatch
 ```
@@ -54,9 +52,9 @@ Describe a task; ask for progress whenever you like. By default leads run unatte
 
 Optional:
 
-- [Its own GitHub identity](docs/factory.md#identity): `make wizard ARGS="--owner <owner of your repositories>"` in the clone. Pull requests then come from a bot, so you can approve them.
 - [Always on](docs/container.md): the factory in a container on a Linux host.
-- [Cost alerts and a daily digest](docs/factory.md#site-manager): set `"monitor": "<clone>/bin/isshoni"` in `~/.claude/factory/settings.json`.
+
+`make uninstall` removes what the wizard put on the machine.
 
 ## Factory
 
