@@ -91,6 +91,9 @@ GROUPS = set()  # process groups of the live `group=True` children
 
 
 def kill_group(pgid):
+    """SIGKILL a child's process group; never this script's own group, nor a system one."""
+    if pgid <= 1 or pgid == os.getpgrp():
+        return
     with contextlib.suppress(ProcessLookupError, PermissionError):  # macOS: PermissionError when all members are zombies
         os.killpg(pgid, signal.SIGKILL)
 
@@ -1279,6 +1282,7 @@ SITE_MANAGER_MODEL = "sonnet"
 RESURFACE_MINUTES = 120
 WATCH_INTERVAL = 120
 HEALTH_SECONDS = 1800 - 60
+EVERY_TICK = {"busy-after-handover"}  # criteria the watch evaluates on every tick, not only on the health pass
 WATCH_TIMEOUT = 600
 MONITOR_TIMEOUT = 120
 MIN_LANDED = 5
@@ -1506,20 +1510,32 @@ def etime_seconds(text):
     return secs + 86400 * int(days or 0)
 
 
+def handed_over_before(p, threshold):
+    """(slug, worktree path, declared ts) of the tasks whose worktree is there and whose hand-over, still not
+    acknowledged or dismissed, is older than `threshold` minutes. Reads no process and no session."""
+    here = {os.path.basename(t["path"]): t["path"] for t in p["repo"].tasks}
+    return [(slug, here[slug], ts) for slug, r in p["declared"].items()
+            if slug in here and r["state"] == "handed-over" and (ts := epoch(r.get("ts"))) and p["now"] - ts > threshold * 60]
+
+
 def c_busy_after_handover(p, threshold):
-    held, table = [], None
-    for r in unfinished(phased(p)):
-        s = task_session(p, r["path"])
-        ts = r["state"] == "handed-over" and declared_before(p, r, threshold * 60)
-        if ts and s and not finished(s):
-            held.append((r, s, ts))
-    found = []
-    for r, s, ts in held:
+    """Needs only `declared`, `repo.tasks` and `sessions`, so the watch can run it on every tick."""
+    due, held, table, found = handed_over_before(p, threshold), [], None, []
+    if due and (p["sessions"] is None or unplaced_block(p["sessions"])):
+        raise NotEvaluated("sessions cannot be listed with `claude agents --json --all`, or one has no working directory")
+    for slug, path, ts in due:
+        s = task_session(p, path)
+        if s and not finished(s):
+            held.append((slug, s, ts))
+    for slug, s, ts in held:
         if table is None:
             table = run(["ps", "-axo", "pid=,ppid=,etime=,command="])[1]
         kids = descendants(table, s["pid"]) if isinstance(s.get("pid"), int) else []
-        what = "; ".join(f"{pid} up {etime}: {command[:80]}" for _, pid, etime, command in kids[:3]) or "no child process"
-        found.append((r["slug"], r["slug"], f"handed over {age(ts, p['now'])} ago, lead session still busy: {what}"))
+        what = "; ".join(f"{pid} up {etime}: {command[:120]}" for _, pid, etime, command in kids[:5])
+        if len(kids) > 5:
+            what += f"; +{len(kids) - 5} more"
+        what = what or "no child process (a subagent waiting without a process cannot be seen from outside)"
+        found.append((slug, slug, f"handed over {age(ts, p['now'])} ago, lead session {s.get('status')}/{s.get('state')}: {what}"))
     return found
 
 
@@ -2152,23 +2168,37 @@ def cmd_watch(args):
         return watch_tick(args, repo)
 
 
+def tick_picture(repo, name, criteria):
+    """The picture for the criteria of EVERY_TICK: no pull requests, no git, and the session list only when a
+    task qualifies, so a tick with nothing handed over for long runs nothing."""
+    p = {"now": time.time(), "repo": repo, "dispatcher": name, "sessions": None, "rows": None,
+         "declared": read_tasks(repo.root)}
+    if any(handed_over_before(p, c["threshold"]) for c in criteria):
+        p["sessions"], p["lean_start"] = list_sessions(), load_settings()["lean_start"]
+    return p
+
+
 def watch_tick(args, repo):
-    """The cheap part every time (comments, draft flags, approvals), and every HEALTH_SECONDS the health run."""
+    """The cheap part every time (comments, draft flags, approvals), the criteria of EVERY_TICK, and every
+    HEALTH_SECONDS the health run."""
     every = load_criteria()
     criteria = job_criteria(every, "watch")
     print(f"{now()} watch {os.path.basename(repo.root)}")
     name = dispatcher_name(args, repo)
     cheap_tick(repo, name)
     state = read_lander(repo)
-    if time.time() - state["health"] < HEALTH_SECONDS:
-        return 0
-    write_lander(repo, {**state, "health": time.time()})
-    p = gather(repo, name)
-    orphaned = p["sessions"] is not None and not live_dispatchers(p["sessions"], repo.root, p["dispatcher"])
+    full = time.time() - state["health"] >= HEALTH_SECONDS
+    if full:
+        write_lander(repo, {**state, "health": time.time()})
+        p = gather(repo, name)
+    else:
+        criteria = [c for c in criteria if c["name"] in EVERY_TICK]
+        p = tick_picture(repo, name, criteria)
+    orphaned = full and p["sessions"] is not None and not live_dispatchers(p["sessions"], repo.root, p["dispatcher"])
     current, skipped = evaluate(p, criteria)
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
-    evaluated = {c["name"] for c in every} - {s["criterion"] for s in skipped}
+    evaluated = {c["name"] for c in (every if full else criteria)} - {s["criterion"] for s in skipped}
     opened = {(f["criterion"], f["subject"]): f
               for f in fold(repo_log("firings", repo.root) or [])[0] if not f["cleared"]}
     for key, f in opened.items():
@@ -2193,6 +2223,8 @@ def watch_tick(args, repo):
         report(repo, send)
     else:
         run_site_manager(p, send)
+    if not full:
+        return 0
     if orphaned and "dispatcher-missing" not in {s["criterion"] for s in skipped} and not handed_over(repo):
         print(f"no dispatcher session for {repo.root}: removing the schedule", flush=True)  # launchd kills this process in remove
         schedule_remove(repo, scheduler())
@@ -4255,6 +4287,14 @@ def approved_at(pr):
     return max((t for t in times if t), default=None)
 
 
+def lead_state(repo, sessions, pr):
+    """`busy` while the lead session of the task of `pr` is not finished, else `free` (also with no session): the last
+    part of a `noticed` key, so a pull request noticed while its lead was busy is run once more when it is free."""
+    slug = task_slug(repo, pr)
+    s = slug and sessions and task_session({"sessions": sessions, "repo": repo}, repo.worktree_path(slug))
+    return "busy" if s and not finished(s) else "free"
+
+
 def candidates(repo, snap):
     """The pull requests of `snap` that carry an approval and belong to a task declared handed-over."""
     declared = read_tasks(repo.root)
@@ -4322,11 +4362,11 @@ def run_lander(repo, snap, given, word, name):
                 results[n] = ("other", "the lander said merged but it is still open")
             elif kind != "merged" and n not in shown and rc:
                 results[n] = ("merged", pr["url"])
-    state, heads = read_lander(repo), {pr["number"]: pr["headRefOid"] for pr in snap}
+    state, heads, sessions = read_lander(repo), {pr["number"]: pr["headRefOid"] for pr in snap}, list_sessions()
     # Only this run's pull requests get a new key, with the stamp read before the run: an approval that came
-    # during it, or on another pull request, starts the next run.
+    # during it, or on another pull request, starts the next run. Its last part says whether the lead is busy.
     state["noticed"] = {**{n: k for n, k in state["noticed"].items() if int(n) in heads},
-                        **{str(pr["number"]): f"{heads[pr['number']]}:{at}" for pr in given
+                        **{str(pr["number"]): f"{heads[pr['number']]}:{at}:{lead_state(repo, sessions, pr)}" for pr in given
                            if (at := approved_at(pr)) and pr["number"] in heads}}
     state["stopped"] = {n: s for n, s in state["stopped"].items() if int(n) in heads}
     for n, (kind, text) in results.items():
@@ -4389,8 +4429,15 @@ def cheap_tick(repo, name):
 
 def notice(repo, name, snap):
     """Pull requests of `snap` approved since last noticed start one lander run."""
-    noticed = read_lander(repo)["noticed"]
-    new = [pr for pr in candidates(repo, snap) if noticed.get(str(pr["number"])) != f"{pr['headRefOid']}:{approved_at(pr)}"]
+    noticed, sessions, new = read_lander(repo)["noticed"], False, []
+    for pr in candidates(repo, snap):
+        head, stored = f"{pr['headRefOid']}:{approved_at(pr)}", noticed.get(str(pr["number"]))
+        if stored is None or not (stored == head or stored.startswith(f"{head}:")):  # a new head or approval
+            new.append(pr)
+        elif stored.endswith(":busy"):  # a stored two-part key counts as noticed: no burst after an upgrade
+            sessions = list_sessions() if sessions is False else sessions
+            if lead_state(repo, sessions, pr) == "free":
+                new.append(pr)
     if new:
         with repo_lock(repo, "lander") as free:
             if free:

@@ -7,7 +7,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import ROOT, factory
-from test_health import NOW, SchedHarness, iso
+from test_factory import DISPATCHER
+from test_health import NOW, SchedHarness, iso, lead
 from test_merge import SESSION, SHA, World, pr
 
 LIST = ("gh", "pr", "list", "--state", "open")
@@ -254,7 +255,7 @@ class StarterTests(World):
         state = lander_state()
         self.assertEqual(sorted(state["stopped"]), ["1"])
         self.assertEqual(state["stopped"]["1"]["head"], SHA)
-        self.assertEqual(state["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}"})
+        self.assertEqual(state["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:free"})
 
     def test_the_file_is_written_whole_and_leaves_no_temporary(self):
         self.lander("1", prs=[plain(1)], answer=reply("#1 merged u"))
@@ -318,6 +319,37 @@ class TickTests(SchedHarness, World):
         self.tick([reviewed(1)], at=NOW + 120)
         self.assertEqual(self.landers(), [])
 
+    def busy_lead(self):
+        return [DISPATCHER | {"name": SESSION}, lead("t1", status="busy")]
+
+    def test_a_pull_request_noticed_while_its_lead_was_busy_is_run_once_more_when_it_is_free(self):
+        self.tick([reviewed(1)], answer=reply("#1 stopped handover: the lead session is busy"), sessions=self.busy_lead())
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:busy"})
+        self.assertEqual(len(self.landers()), 1)
+        self.tick([reviewed(1)], at=NOW + 120, sessions=self.busy_lead())
+        self.assertEqual(self.landers(), [])  # still busy
+        self.tick([reviewed(1)], at=NOW + 240, answer=reply("#1 stopped ci: red"))  # free now (the world's finished lead)
+        self.assertEqual(len(self.landers()), 1)
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:free"})
+        self.tick([reviewed(1)], at=NOW + 360)
+        self.assertEqual(self.landers(), [])
+
+    def test_a_free_pull_request_with_an_unchanged_key_starts_no_run(self):
+        self.tick([reviewed(1)], answer=reply("#1 stopped ci: red"))
+        self.assertEqual(lander_state()["noticed"], {"1": f"{SHA}:{iso(NOW - 60)}:free"})
+        self.tick([reviewed(1)], at=NOW + 120)
+        self.tick([reviewed(1)], at=NOW + 240)
+        self.assertEqual(self.landers(), [])
+
+    def test_a_stored_two_part_key_starts_no_run_whatever_the_lead_does(self):
+        repo = SimpleNamespace(root=ROOT)
+        state = factory.read_lander(repo)
+        state["noticed"] = {"1": f"{SHA}:{iso(NOW - 60)}"}
+        factory.write_lander(repo, state)
+        self.tick([reviewed(1)], sessions=self.busy_lead())
+        self.tick([reviewed(1)], at=NOW + 120)
+        self.assertEqual(self.landers(), [])
+
     def test_a_changed_head_or_a_newer_approval_does_start_one(self):
         self.tick([reviewed(1)], answer=reply("#1 stopped ci: red"))
         self.tick([reviewed(1, sha="moved")], at=NOW + 120, answer=reply("#1 stopped ci: red"))
@@ -331,7 +363,7 @@ class TickTests(SchedHarness, World):
         answers[LIST] = [(0, json.dumps(before), ""), (0, json.dumps(after), "")]
         answers[("claude", "-p")] = reply("#1 stopped ci: red")
         self.cli("watch", answers=answers, sessions=listed, entries=slugs)
-        self.assertEqual(lander_state()["noticed"], {"1": f"pushed-by-the-lander:{iso(NOW - 60)}"})
+        self.assertEqual(lander_state()["noticed"], {"1": f"pushed-by-the-lander:{iso(NOW - 60)}:free"})
         self.assertEqual(lander_state()["stopped"]["1"]["head"], "pushed-by-the-lander")
         self.tick(after, at=NOW + 120)
         self.assertEqual(self.landers(), [])
@@ -343,7 +375,7 @@ class TickTests(SchedHarness, World):
         answers[LIST] = [(0, json.dumps(before), ""), (0, json.dumps(after), "")]
         answers[("claude", "-p")] = reply("#1 stopped ci: red")
         self.cli("watch", answers=answers, sessions=listed, entries=slugs)
-        self.assertEqual(lander_state()["noticed"], {"1": f"pushed-by-the-lander:{iso(NOW - 60)}"})
+        self.assertEqual(lander_state()["noticed"], {"1": f"pushed-by-the-lander:{iso(NOW - 60)}:free"})
         self.tick(after, at=NOW + 120, answer=reply("#2 stopped ci: red"))
         [argv] = self.landers()
         self.assertIn("- #2:", argv[-1])

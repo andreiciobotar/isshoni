@@ -14,7 +14,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import BIN, ROOT, WT, FakeRun, factory, porcelain
-from test_health import HOUR, NOW, SID, Harness, check, iso, lead, pic, row
+from test_factory import DISPATCHER
+from test_health import HOUR, NOW, SID, Harness, check, choice, fired, iso, lead, pic, reply
 
 FAKE_CLAUDE = """#!/bin/sh
 case "$1" in
@@ -113,6 +114,14 @@ class RunLifetimeTests(Fakes):
         self.assertTrue(gone(self.started()))
         self.assertEqual(factory.GROUPS, set())
 
+    def test_kill_group_never_signals_the_own_group_or_a_system_group(self):
+        with mock.patch.object(factory.os, "killpg") as killpg:
+            for pgid in (0, 1, -5, os.getpgrp()):
+                factory.kill_group(pgid)
+            killpg.assert_not_called()
+            factory.kill_group(2**31 - 2)
+            killpg.assert_called_once_with(2**31 - 2, signal.SIGKILL)
+
     def test_a_call_without_a_timeout_that_hangs_gets_the_default(self):
         with mock.patch.object(factory, "RUN_TIMEOUT", 0.3):
             self.assertEqual(factory.run(["sleep", "60"]), (124, "", "timed out"))
@@ -196,61 +205,128 @@ class BusyAfterHandoverTests(unittest.TestCase):
   103   100       05:00 node server.js
   104   103       00:10 {long}
   105   100       00:05 sh
+  106   100       00:01 ls
   200     1       30:00 unrelated child
 """
 
-    def picture(self, minutes=11, sessions=None, **kw):
-        r = row("x", phase="review", state="handed-over", deliverable="u")
-        return pic(rows=[r], declared={"x": {"ts": iso(NOW - minutes * 60)}},
+    def picture(self, minutes=7, sessions=None, state="handed-over", **kw):
+        repo = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"{WT}/x"}])
+        return pic(repo=repo, declared={"x": {"state": state, "ts": iso(NOW - minutes * 60)}},
                    sessions=sessions or [lead("x", pid=100)], **kw)
 
     def ps(self):
-        return FakeRun({("ps",): (0, self.PS.format(long="c" * 100), "")})
+        return FakeRun({("ps",): (0, self.PS.format(long="c" * 150), "")})
 
-    def test_it_names_the_three_oldest_descendants_of_the_leads_pid(self):
+    def test_it_names_the_five_oldest_descendants_of_the_leads_pid_and_counts_the_rest(self):
         fake = self.ps()
         with mock.patch.object(factory, "run", fake):
-            ((slug, subject, detail),) = check("busy-after-handover", self.picture(), 10)
+            ((slug, subject, detail),) = check("busy-after-handover", self.picture(), 6)
         self.assertEqual((slug, subject), ("x", "x"))
-        self.assertEqual(detail, "handed over 11m ago, lead session still busy: "
-                                 "101 up 19:00: zsh -c sleep 600; 102 up 18:30: sleep 600; 103 up 05:00: node server.js")
+        self.assertEqual(detail, "handed over 7m ago, lead session busy/working: "
+                                 "101 up 19:00: zsh -c sleep 600; 102 up 18:30: sleep 600; 103 up 05:00: node server.js; "
+                                 f"104 up 00:10: {'c' * 120}; 105 up 00:05: sh; +1 more")
         self.assertEqual(fake.calls, [["ps", "-axo", "pid=,ppid=,etime=,command="]])
 
-    def test_a_long_command_is_cut_to_80_characters(self):
-        fake = FakeRun({("ps",): (0, "100 1 10:00 lead\n104 100 00:10 " + "c" * 100 + "\n", "")})
-        with mock.patch.object(factory, "run", fake):
-            ((_, _, detail),) = check("busy-after-handover", self.picture(), 10)
-        self.assertTrue(detail.endswith("104 up 00:10: " + "c" * 80), detail)
-
-    def test_no_child_is_said(self):
+    def test_no_child_is_said_with_what_cannot_be_seen(self):
         with mock.patch.object(factory, "run", FakeRun({("ps",): (0, "100 1 10:00 lead\n", "")})):
-            ((_, _, detail),) = check("busy-after-handover", self.picture(), 10)
-        self.assertTrue(detail.endswith("still busy: no child process"))
+            ((_, _, detail),) = check("busy-after-handover", self.picture(), 6)
+        self.assertTrue(detail.endswith("busy/working: no child process (a subagent waiting without a process "
+                                        "cannot be seen from outside)"), detail)
 
     def test_it_waits_for_the_threshold_and_for_a_busy_session(self):
         done = lead("x", pid=100, status="idle")
-        for label, p in (("too early", self.picture(minutes=9)), ("finished", self.picture(sessions=[done])),
-                         ("working", pic(rows=[row("x", phase="motion")], sessions=[lead("x", pid=100)]))):
+        for label, p in (("too early", self.picture(minutes=5)), ("finished", self.picture(sessions=[done])),
+                         ("working", self.picture(state="working"))):
             with self.subTest(label):
                 fake = self.ps()
                 with mock.patch.object(factory, "run", fake):
-                    self.assertEqual(check("busy-after-handover", p, 10), [])
+                    self.assertEqual(check("busy-after-handover", p, 6), [])
                 self.assertEqual(fake.calls, [])  # no ps call when no task qualifies
 
     def test_two_tasks_cost_one_ps_call(self):
-        a = row("x", phase="review", state="handed-over", deliverable="u")
-        b = row("y", phase="review", state="handed-over", deliverable="u")
-        p = pic(rows=[a, b], declared={s: {"ts": iso(NOW - HOUR)} for s in "xy"},
+        repo = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"{WT}/{s}"} for s in "xy"])
+        p = pic(repo=repo, declared={s: {"state": "handed-over", "ts": iso(NOW - HOUR)} for s in "xy"},
                 sessions=[lead("x", pid=100), lead("y", sid="22222222-bbbb", pid=105)])
         fake = self.ps()
         with mock.patch.object(factory, "run", fake):
-            found = check("busy-after-handover", p, 10)
+            found = check("busy-after-handover", p, 6)
         self.assertEqual([f[0] for f in found], ["x", "y"])
         self.assertEqual(len(fake.calls), 1)
 
+    def test_sessions_that_cannot_be_listed_are_not_evaluated_only_when_a_task_qualifies(self):
+        self.assertEqual(check("busy-after-handover", self.picture(minutes=5, sessions=[lead("x")]), 6), [])
+        with self.assertRaises(factory.NotEvaluated):
+            check("busy-after-handover", {**self.picture(), "sessions": None}, 6)
+
     def test_it_is_shipped_in_the_criteria_file(self):
         (c,) = [c for c in factory.load_criteria() if c["name"] == "busy-after-handover"]
-        self.assertEqual((c["escalate"], c["threshold"], c.get("job", "watch")), ("judgment", 10, "watch"))
+        self.assertEqual((c["escalate"], c["threshold"], c.get("job", "watch")), ("judgment", 6, "watch"))
+        self.assertEqual(factory.EVERY_TICK, {"busy-after-handover"})
+
+
+class BusyEveryTickTests(Harness):
+    """The criterion on the ticks between two health passes, and what it costs there."""
+
+    CRITERIA = ["busy-after-handover", "past-limit"]
+    PS = "  100     1       20:00 claude --bg\n  101   100       19:00 sleep 600\n"
+
+    def setUp(self):
+        super().setUp()
+        factory.write_lander(SimpleNamespace(root=ROOT), {"noticed": {}, "stopped": {}, "health": NOW - 10})  # no health pass
+        self.busy = [DISPATCHER | {"name": "dispatcher-repo"}, lead("x", pid=100)]
+
+    def hand_over(self, minutes):
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "handed-over", "ts": iso(NOW - minutes * 60)}])
+
+    def tick(self, at=NOW, sessions=None, answers=None):
+        out = self.cli("watch", entries=["x"], sessions=sessions or self.busy, at=at,
+                       answers={("ps",): (0, self.PS, ""), **(answers or {})})
+        return out[1]
+
+    def count(self, *prefix):
+        return sum(c[:len(prefix)] == list(prefix) for c in self.fake.calls)
+
+    def test_a_task_not_yet_past_the_threshold_costs_nothing_extra(self):
+        self.hand_over(5)
+        self.assertIn("nothing new", self.tick())
+        # the one listing is the draft sync's, which runs with any handed-over task
+        self.assertEqual((self.count("claude", "agents"), self.count("ps"), self.count("claude", "-p")), (1, 0, 0))
+
+    def test_no_handed_over_task_runs_no_session_listing_and_no_ps(self):
+        self.assertIn("nothing new", self.tick())
+        self.assertEqual([c for c in self.fake.calls if c[0] in ("claude", "ps", "gh")], [])
+
+    def test_a_new_finding_reaches_the_site_manager_within_a_tick_and_costs_one_listing_and_one_ps(self):
+        self.hand_over(7)
+        self.tick()
+        [record] = self.records()
+        self.assertEqual((record["criterion"], record["subject"]), ("busy-after-handover", "x"))
+        self.assertIn("101 up 19:00: sleep 600", record["detail"])
+        # two listings: the draft sync's and the criterion's
+        self.assertEqual((self.count("claude", "agents"), self.count("ps"), len(self.claude_runs())), (2, 1, 1))
+
+    def test_an_undecided_finding_is_sent_again_and_a_decided_one_is_not(self):
+        self.hand_over(7)
+        self.tick()
+        fid = self.records()[0]["id"]
+        self.tick(at=NOW + 120, answers={("claude", "-p"): reply([choice(fid)])})
+        self.assertEqual(len(self.claude_runs()), 1)  # undecided: sent again
+        self.tick(at=NOW + 240)
+        self.assertEqual(self.claude_runs(), [])
+        self.assertEqual(len([r for r in self.records() if r.get("criterion")]), 1)
+
+    def test_a_finding_whose_session_finished_is_cleared_on_the_next_tick(self):
+        self.hand_over(7)
+        self.tick()
+        fid = self.records()[0]["id"]
+        self.tick(at=NOW + 120, sessions=[self.busy[0], lead("x", pid=100, status="idle")])
+        self.assertTrue(any(r.get("id") == fid and r.get("cleared") for r in self.records()))
+
+    def test_the_other_criteria_are_left_alone_between_health_passes(self):
+        self.seed("firings", [fired("a", criterion="past-limit")])  # open, and not evaluated on this tick
+        self.hand_over(5)
+        self.tick()
+        self.assertFalse(any(r.get("cleared") for r in self.records()))
 
 
 class StaleLinesTests(unittest.TestCase):

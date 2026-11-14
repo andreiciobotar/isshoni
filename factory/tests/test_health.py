@@ -38,7 +38,7 @@ FINISHED = {"status": "idle", "state": "done"}
 
 def pic(**kw):
     sessions = kw.pop("sessions", [DISPATCHER | {"name": "dispatcher-repo"}])
-    return {"now": NOW, "repo": SimpleNamespace(root=ROOT, default="main"), "dispatcher": "dispatcher-repo",
+    return {"now": NOW, "repo": SimpleNamespace(root=ROOT, default="main", tasks=[]), "dispatcher": "dispatcher-repo",
             "sessions": sessions, "rows": [], "declared": {}, "events": [],
             "models": {"coder": "sonnet", "explorer": "haiku", "reviewer": "opus"},
             "gh": lambda *a: [], "monitor": None, "lgtm_from_author": True, **kw}
@@ -312,7 +312,10 @@ class CriteriaTests(Home):
 
     def test_what_cannot_be_read_is_not_evaluated(self):
         criteria = factory.load_criteria()
-        firings, skipped = factory.evaluate(pic(sessions=None, rows=None, events=None, models={}), criteria)
+        handed = {"x": {"state": "handed-over", "ts": iso(NOW - HOUR)}}  # busy-after-handover reads sessions only for one
+        repo = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"{WT}/x"}])
+        firings, skipped = factory.evaluate(pic(sessions=None, rows=None, events=None, models={}, declared=handed, repo=repo),
+                                            criteria)
         self.assertEqual(firings, [])
         names = {s["criterion"] for s in skipped}
         self.assertEqual(names, {c["name"] for c in criteria} - {"ci-red-default", "lgtm-blocked"})
