@@ -83,7 +83,7 @@ The fifth view (`5`) draws the same work as motion, for a second screen: the mar
 | you see | it is |
 |---|---|
 | the disc, a solid body that swells, brightens and takes a returning agent's colour | all the work; the rate of events; a return |
-| a branch growing out of the disc, its tip glowing; dimmer | a session; a call; at rest (3 minutes of silence). The tree holds twelve: a new session takes the place of the one at rest longest, and a session that bore no blossom goes when it rests |
+| a branch growing out of the disc, its tip glowing; dimmer | a session; a call; at rest (3 minutes of silence). The tree has twelve places: a new session takes the place of the one at rest longest, sessions at work beyond twelve share places, and a session that bore no blossom goes when it rests |
 | a blossom opening on a branch (`✿` coder, `❀` reviewer, `✾` explorer, `✽` other, in the role's colour), growing | a subagent dispatched; its work so far (tool calls, output tokens) |
 | petals flying to the disc, the blossom closing to an outline | a subagent returned; what it did stays on the tree for 2 hours. An outline without petals: its session went silent for 3 minutes before it returned. It opens again if the agent is resumed |
 | petals turned back at the disc in red, with a red ring | a reviewer asked for changes |

@@ -448,6 +448,46 @@ func TestHanamiSettledEventsDoNotMove(t *testing.T) {
 	if closed != 10 || grown < 8 || len(s.stars) != 1 {
 		t.Fatalf("settled history left %d closed blossoms (%d grown) and %d stars", closed, grown, len(s.stars))
 	}
+}
+
+// The history of a long day leaves branches that are already over (their place went to a newer session, or
+// they bore nothing and rest). Arriving removes them at once: the first frame is the scene as it stands, and
+// nothing withdraws in the first seconds with no event behind it.
+func TestHanamiArrivesAsItStands(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	at := func(i int) float64 { return float64(i) * 240 } // a session every four minutes for two hours
+	for i := 0; i < 30; i++ {
+		who := func(e *data.Event) { e.Session, e.Agent, e.Tool = fmt.Sprint("s", i), "a", "shell" }
+		if i%3 == 0 { // a third dispatch nobody: they only leave a bare branch
+			who = func(e *data.Event) { e.Session, e.Tool = fmt.Sprint("s", i), "shell" }
+		} else {
+			s.Apply(ev("spawn", at(i), who), true)
+			s.Apply(ev("return", at(i)+60, who), true)
+		}
+		s.Apply(ev("tool", at(i)+30, who), true)
+	}
+	now := goldenNow.Add(time.Duration(at(29)+70) * time.Second)
+	if len(s.branches) <= hanamiSlots {
+		t.Fatalf("the history should leave more branches than places for this test: %d", len(s.branches))
+	}
+	s.Arrive(now)
+	n := len(s.branches)
+	if n == 0 || n > hanamiSlots {
+		t.Fatalf("arrived with %d branches", n)
+	}
+	for _, b := range s.branches {
+		if b.leaving || b.grow.x != 1 || len(b.blossoms) == 0 && b.session != "s27" {
+			t.Fatalf("branch %s arrives leaving, ungrown or bare", b.session)
+		}
+	}
+	for f := 0; f < 3*hanamiFPS; f++ {
+		s.Step(now)
+		for _, b := range s.branches {
+			if len(s.branches) != n || b.grow.x < 0.99 {
+				t.Fatalf("frame %d: a branch withdraws with no event behind it (%d of %d left)", f, len(s.branches), n)
+			}
+		}
+	}
 	// a session that was working is there at full length, and stays while its last event is recent
 	last := hanamiFixture(t)[len(hanamiFixture(t))-1].TS
 	if len(s.branches) == 0 || s.branches[0].grow.x != 1 {

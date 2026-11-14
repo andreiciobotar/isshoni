@@ -150,6 +150,7 @@ func (m *model) hanamiUpdate(msg tea.Msg) tea.Cmd {
 		for _, e := range msg.evs {
 			if e.Kind == "live" {
 				hn.live = true
+				hn.scene.Arrive(m.now())
 				continue
 			}
 			hn.scene.Apply(e, !hn.live)

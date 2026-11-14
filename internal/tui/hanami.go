@@ -582,7 +582,7 @@ func (s *hanamiScene) star(g hGeo, x, y float64, at time.Time) {
 		s.stars = s.stars[1:]
 	}
 	// lanterns reuse their places, so stars would pile up: each sits a little further round its lantern's place
-	k := float64(s.starred)
+	k := float64(s.starred % maxStars) // a new star takes the place of the one it puts out
 	s.starred++
 	x, y = x+(3+1.6*math.Sqrt(k)*4)*math.Cos(2.4*k), y+(2+1.1*math.Sqrt(k)*4)*math.Sin(2.4*k)
 	s.stars = append(s.stars, hStar{u: math.Max(0.02, math.Min(0.98, x/g.W)), v: math.Max(0.04, math.Min(0.9, y/g.H)), at: at})
@@ -678,8 +678,8 @@ func (s *hanamiScene) Step(now time.Time) {
 		b := s.branches[i]
 		quiet := s.now.Sub(b.last)
 		target := 1.0
-		if b.leaving || quiet > hanamiKeep || (quiet > hanamiQuiet && len(b.blossoms) == 0) {
-			target = 0 // nothing left to show: a session that bore no blossom goes when it rests
+		if s.withdrawn(b) {
+			target = 0
 		}
 		b.grow.to(springGrow, target)
 		b.heat *= 1 - dt/0.7
@@ -838,6 +838,30 @@ func (s *hanamiScene) Step(now time.Time) {
 		}
 	}
 	s.ripples = ripples
+}
+
+// withdrawn says a branch has nothing left to show: its place went to a newer session, what it bore has faded,
+// or it bore no blossom and its session is at rest.
+func (s *hanamiScene) withdrawn(b *hBranch) bool {
+	quiet := s.now.Sub(b.last)
+	return b.leaving || quiet > hanamiKeep || (quiet > hanamiQuiet && len(b.blossoms) == 0)
+}
+
+// Arrive ends the history: what it left that is already over is removed at once, so the scene the viewer
+// first sees is the scene as it stands, and nothing withdraws without an event behind it.
+func (s *hanamiScene) Arrive(now time.Time) {
+	if now.After(s.now) {
+		s.now = now
+	}
+	s.branches = slices.DeleteFunc(s.branches, func(b *hBranch) bool {
+		b.blossoms = slices.DeleteFunc(b.blossoms, func(bl *hBlossom) bool {
+			return !bl.closed.IsZero() && s.now.Sub(bl.closed) >= hanamiKeep
+		})
+		return s.withdrawn(b)
+	})
+	for len(s.stars) > 0 && s.now.Sub(s.stars[0].at) > 3*hanamiKeep {
+		s.stars = s.stars[1:]
+	}
 }
 
 func (s *hanamiScene) cacheLevel() float64 { return 1 - math.Exp(-s.cacheRate/60000) }
@@ -1099,8 +1123,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 	for _, st := range s.stars {
 		age := math.Min(1, s.now.Sub(st.at).Seconds()/(3*hanamiKeep.Seconds()))
 		x, y := st.u*g.W, st.v*g.H
-		cv.glow(x, y, 8, gold, 0.07*(1-age))
-		cv.glyph(int(x/2), int(y/4), '✶', bg.mix(gold, 0.9-0.6*age), false)
+		cv.glyph(int(x/2), int(y/4), '✶', bg.mix(gold, 0.6-0.4*age), false) // faint: a record, behind the work
 	}
 
 	// the tree: branches, the canopy of closed blossoms, then the open ones
