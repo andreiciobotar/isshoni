@@ -27,6 +27,9 @@ die() { echo "walk: FAILED: $*" >&2; exit 1; }
 status() { (cd "$repo" && "$factory" schedule status); }
 cleanup() { (cd "$repo" 2>/dev/null && "$factory" schedule remove >/dev/null 2>&1) || true; rm -rf "$work"; }
 trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 say "platform facts"
 uname -sr

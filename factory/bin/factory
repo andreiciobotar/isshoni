@@ -16,6 +16,7 @@ import plistlib
 import queue
 import re
 import secrets
+import signal
 import shlex
 import shutil
 import statistics
@@ -41,6 +42,10 @@ SETTINGS_PATH = STORE / "settings.json"
 IDENTITY = STORE / "identity"
 CACHE = STORE / "cache"
 GH_TIMEOUT = 30
+RUN_TIMEOUT = 120
+NETWORK_TIMEOUT = 300
+JOBS_DIR = Path("~/.claude/jobs")
+STALE_HOURS = 24
 GH_SLOW = 2
 PR_TIMEOUT = 10
 PR_BUDGET = 20
@@ -82,12 +87,26 @@ def why(e):
     return str(e) or type(e).__name__ if isinstance(e, Fail) else f"{type(e).__name__}: {e}"
 
 
-def run(argv, cwd=None, timeout=None, input=None, env=None):
-    """The only place a subprocess starts. Returns (returncode, stdout, stderr). `gh` acts as the App when an identity
-    is installed, gets GH_TIMEOUT seconds unless told otherwise, and a call that is slow or fails is logged to gh-YYYY-MM.jsonl.
+GROUPS = set()  # process groups of the live `group=True` children
+
+
+def kill_group(pgid):
+    """SIGKILL a child's process group; never this script's own group, nor a system one."""
+    if pgid <= 1 or pgid == os.getpgrp():
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):  # macOS: PermissionError when all members are zombies
+        os.killpg(pgid, signal.SIGKILL)
+
+
+def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
+    """The only place a subprocess starts, and the owner of its lifetime. Returns (returncode, stdout, stderr).
+    Every call ends after `timeout` seconds (RUN_TIMEOUT unless told otherwise; `gh` gets GH_TIMEOUT). A `group=True`
+    child, one that starts children of its own, runs in a process group of its own, which a timeout or a signal to
+    this script kills whole; any other child stays in the script's group and only it is killed on a timeout.
+    `gh` acts as the App when an identity is installed, and a call that is slow or fails is logged to gh-YYYY-MM.jsonl.
     A `claude` child gets no `ANTHROPIC_LOG`: its debug logging would share the stdout that is read as JSON."""
+    timeout = timeout or (GH_TIMEOUT if argv[0] == "gh" else RUN_TIMEOUT)
     if argv[0] == "gh":
-        timeout = timeout or GH_TIMEOUT
         try:
             if found := acting_identity(cwd):
                 env = {**os.environ, "GH_TOKEN": app_token(*found)}
@@ -97,10 +116,24 @@ def run(argv, cwd=None, timeout=None, input=None, env=None):
         env = {k: v for k, v in (os.environ if env is None else env).items() if k != "ANTHROPIC_LOG"}
     started = time.monotonic()
     try:
-        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, input=input, env=env)
-        result = p.returncode, p.stdout, p.stderr
-    except subprocess.TimeoutExpired:
-        result = 124, "", "timed out"
+        with subprocess.Popen(argv, cwd=cwd, stdin=None if input is None else subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, env=env, start_new_session=group) as p:
+            try:
+                if group:
+                    GROUPS.add(p.pid)
+                out, err = p.communicate(input, timeout=timeout)
+                result = p.returncode, out, err
+                if group:
+                    kill_group(p.pid)  # a grandchild that let go of the pipes
+            except subprocess.TimeoutExpired:
+                kill_group(p.pid) if group else p.kill()
+                p.wait()
+                result = 124, "", "timed out"
+            except BaseException:  # a signal ends the script: the child goes with it
+                kill_group(p.pid) if group else p.kill()
+                raise
+            finally:
+                GROUPS.discard(p.pid)
     except OSError as e:
         result = 127, "", str(e)
     seconds = time.monotonic() - started
@@ -239,7 +272,8 @@ class Repo:
         live = [e for e in entries[1:] if not e["prunable"]]
         under = [e for e in live if os.path.dirname(e["path"]) == base]
         self.tasks = [e for e in under if not os.path.basename(e["path"]).startswith("agent-")]
-        self.leftover = len(under) - len(self.tasks)
+        self.agents = [e["path"] for e in under if os.path.basename(e["path"]).startswith("agent-")]
+        self.leftover = len(self.agents)
         self.outside = len(live) - len(under)
         rc, out, _ = run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=self.root)
         head = out.strip().removeprefix("refs/remotes/") if rc == 0 else ""
@@ -1296,6 +1330,7 @@ SITE_MANAGER_MODEL = "sonnet"
 RESURFACE_MINUTES = 120
 WATCH_INTERVAL = 120
 HEALTH_SECONDS = 1800 - 60
+EVERY_TICK = {"busy-after-handover"}  # criteria the watch evaluates on every tick, not only on the health pass
 WATCH_TIMEOUT = 600
 MONITOR_TIMEOUT = 120
 MIN_LANDED = 5
@@ -1498,6 +1533,59 @@ def c_handover_unacknowledged(p, threshold):
         ts = r["phase"] == "review" and r["state"] == "handed-over" and declared_before(p, r, threshold * 3600)
         if ts:
             found.append((r["slug"], r["slug"], f"handed over {age(ts, p['now'])} ago"))
+    return found
+
+
+def descendants(table, pid):
+    """The rows of `ps -axo pid=,ppid=,etime=,command=` output below `pid`, as (seconds running, pid, elapsed time, command), oldest first."""
+    kids = {}
+    for line in table.splitlines():
+        fields = line.split(None, 3)
+        if len(fields) == 4 and fields[0].isdigit() and fields[1].isdigit():
+            kids.setdefault(int(fields[1]), []).append((etime_seconds(fields[2]), int(fields[0]), fields[2], fields[3]))
+    found, todo = [], [pid]
+    while todo:
+        for kid in kids.get(todo.pop(), []):
+            found.append(kid)
+            todo.append(kid[1])
+    return sorted(found, reverse=True)
+
+
+def etime_seconds(text):
+    """`ps` elapsed time, [[dd-]hh:]mm:ss, in seconds."""
+    days, _, clock = text.rpartition("-")
+    secs = 0
+    for part in clock.split(":"):
+        secs = secs * 60 + int(part)
+    return secs + 86400 * int(days or 0)
+
+
+def handed_over_before(p, threshold):
+    """(slug, worktree path, declared ts) of the tasks whose worktree is there and whose hand-over, still not
+    acknowledged or dismissed, is older than `threshold` minutes. Reads no process and no session."""
+    here = {os.path.basename(t["path"]): t["path"] for t in p["repo"].tasks}
+    return [(slug, here[slug], ts) for slug, r in p["declared"].items()
+            if slug in here and r["state"] == "handed-over" and (ts := epoch(r.get("ts"))) and p["now"] - ts > threshold * 60]
+
+
+def c_busy_after_handover(p, threshold):
+    """Needs only `declared`, `repo.tasks` and `sessions`, so the watch can run it on every tick."""
+    due, held, table, found = handed_over_before(p, threshold), [], None, []
+    if due and (p["sessions"] is None or unplaced_block(p["sessions"])):
+        raise NotEvaluated("sessions cannot be listed with `claude agents --json --all`, or one has no working directory")
+    for slug, path, ts in due:
+        s = task_session(p, path)
+        if s and not finished(s):
+            held.append((slug, s, ts))
+    for slug, s, ts in held:
+        if table is None:
+            table = run(["ps", "-axo", "pid=,ppid=,etime=,command="])[1]
+        kids = descendants(table, s["pid"]) if isinstance(s.get("pid"), int) else []
+        what = "; ".join(f"{pid} up {etime}: {command[:120]}" for _, pid, etime, command in kids[:5])
+        if len(kids) > 5:
+            what += f"; +{len(kids) - 5} more"
+        what = what or "no child process (a subagent waiting without a process cannot be seen from outside)"
+        found.append((slug, slug, f"handed over {age(ts, p['now'])} ago, lead session {s.get('status')}/{s.get('state')}: {what}"))
     return found
 
 
@@ -1861,7 +1949,7 @@ CRITERIA = {  # name -> (function, whether it needs a threshold)
     "past-limit": (c_past_limit, False), "ci-red-default": (c_ci_red_default, False),
     "dispatcher-missing": (c_dispatcher_missing, False), "quiet": (c_quiet, True),
     "ended-undeclared": (c_ended_undeclared, True), "blocked-unanswered": (c_blocked_unanswered, True),
-    "handover-unacknowledged": (c_handover_unacknowledged, True), "review-loops": (c_review_loops, True),
+    "handover-unacknowledged": (c_handover_unacknowledged, True), "busy-after-handover": (c_busy_after_handover, True), "review-loops": (c_review_loops, True),
     "wrong-model": (c_wrong_model, False), "ci-red-handover": (c_ci_red_handover, False),
     "deep-stack": (c_deep_stack, True), "merged-not-cleaned": (c_merged_not_cleaned, True),
     "lgtm-blocked": (c_lgtm_blocked, False), "base-merged": (c_base_merged, False),
@@ -2001,6 +2089,7 @@ def firing_for_run(p, f):
     """A firing as the site manager is given it: its fields, and for a task its status row and transcript tail."""
     out = {k: f[k] for k in ("id", *FIRED_KEYS, "what")}
     row = next((r for r in p["rows"] or [] if r["slug"] == f["slug"]), None)
+    path = row["path"] if row else p["repo"].worktree_path(f["slug"]) if f.get("slug") and p.get("sessions") else None
     if row:
         n = p["now"]
         out["task"] = {"phase": row["phase"], "state": row["state"], "session": row["session"],
@@ -2008,7 +2097,8 @@ def firing_for_run(p, f):
                        "last_commit": age(row["last_commit"], n), "dirty": row["dirty"], "ahead": row["ahead"],
                        "behind": row["behind"], "pr_state": row["pr_state"], "pr_url": row["pr_url"],
                        "overtime": row["overtime"]}
-        session = task_session(p, row["path"])
+    if path:
+        session = task_session(p, path)
         sid = session.get("sessionId") if session else None
         main = next((t for t in transcripts(session) if t.name == f"{sid}.jsonl"), None)
         tail = transcript_tail(main) if main else None
@@ -2081,38 +2171,92 @@ def cmd_health(args):
         print("nothing fired")
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
+    for line in stale_lines(repo):
+        print(line)
     return 0
 
 
+def stale_lines(repo):
+    """Leftovers Claude Code does not remove, older than STALE_HOURS: subagent worktrees and finished job directories. Read-only."""
+    limit = time.time() - STALE_HOURS * 3600
+    def older(path):
+        try:
+            return path.stat().st_mtime < limit
+        except OSError:
+            return False
+    lines = []
+    agents = [Path(a) for a in repo.agents if older(Path(a))]
+    if agents:
+        lines.append(f"{len(agents)} subagent worktrees (agent-*) older than {STALE_HOURS} h: "
+                     f"{', '.join(a.name for a in agents[:5])}")
+    jobs = []
+    for d in sorted(JOBS_DIR.expanduser().glob("*/")):
+        try:
+            state = json.loads((d / "state.json").read_text()).get("state")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if state in ("done", "stopped") and older(d):
+            jobs.append(d)
+    if jobs:
+        size = 0
+        for f in (f for d in jobs for f in d.rglob("*")):
+            with contextlib.suppress(OSError):
+                size += f.lstat().st_size if f.is_file() else 0
+        lines.append(f"{len(jobs)} finished job directories older than {STALE_HOURS} h under ~/.claude/jobs ({size / 1e6:.1f} MB)")
+    return lines
+
+
 def cmd_watch(args):
-    """The scheduled tick: the cheap part every time (comments, draft flags), every HEALTH_SECONDS the health run, and
-    last, while a task is handed over or the human's word stands, the lander's loop until health is next due."""
+    """One scheduled tick at a time per repository: cron starts one every two minutes, whatever the last one still does.
+    The lander's loop runs last, while a task is handed over or the human's word stands."""
     repo = Repo()
+    with repo_lock(repo, "watch") as free:
+        if not free:
+            print("watch: a tick is already running")
+            return 0
+        watch_tick(args, repo)
+        word = read_word(repo)
+        if handed_over(repo) or word["all"] or word["prs"]:  # last: the loop runs until health is next due
+            with repo_lock(repo, "lander") as free:
+                if free:
+                    drain(repo, args.dispatcher, tick=True, deadline=read_lander(repo)["health"] + HEALTH_SECONDS)
+        return 0
+
+
+def tick_picture(repo, fallback, criteria):
+    """The picture for the criteria of EVERY_TICK: no pull requests, no git, and the session list only when a
+    task qualifies, so a tick with nothing handed over for long runs nothing. The dispatcher is found as in
+    `gather` whenever the sessions are listed."""
+    p = {"now": time.time(), "repo": repo, "dispatcher": None, "dispatcher_why": "sessions not listed",
+         "sessions": None, "rows": None, "declared": read_tasks(repo.root)}
+    if any(handed_over_before(p, c["threshold"]) for c in criteria):
+        p["sessions"], p["lean_start"] = list_sessions(), load_settings()["lean_start"]
+        found, p["dispatcher_why"] = ((None, "cannot list sessions") if p["sessions"] is None
+                                      else find_dispatcher(p["sessions"], repo.root, fallback))
+        p["dispatcher"] = found and found["name"]
+    return p
+
+
+def watch_tick(args, repo):
+    """The cheap part every time (comments, draft flags, approvals), the criteria of EVERY_TICK, and every
+    HEALTH_SECONDS the health run."""
     every = load_criteria()
     criteria = job_criteria(every, "watch")
     print(f"{now()} watch {os.path.basename(repo.root)}")
     cheap_tick(repo, args.dispatcher)
     state = read_lander(repo)
-    if time.time() - state["health"] >= HEALTH_SECONDS:
-        state = {**state, "health": time.time()}
-        write_lander(repo, state)
-        watch_health(repo, args.dispatcher, every, criteria)
-    word = read_word(repo)
-    if handed_over(repo) or word["all"] or word["prs"]:
-        with lander_lock(repo) as free:
-            if free:
-                drain(repo, args.dispatcher, tick=True, deadline=state["health"] + HEALTH_SECONDS)
-    return 0
-
-
-def watch_health(repo, fallback, every, criteria):
-    """The health run of a tick: evaluate the criteria, log, send what is new to the site manager, and the digest."""
-    p = gather(repo, fallback)
+    full = time.time() - state["health"] >= HEALTH_SECONDS
+    if full:
+        write_lander(repo, {**state, "health": time.time()})
+        p = gather(repo, args.dispatcher)
+    else:
+        criteria = [c for c in criteria if c["name"] in EVERY_TICK]
+        p = tick_picture(repo, args.dispatcher, criteria)
     orphaned = str(p["dispatcher_why"]).startswith("no dispatcher session")  # not a shared or missing name
     current, skipped = evaluate(p, criteria)
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
-    evaluated = {c["name"] for c in every} - {s["criterion"] for s in skipped}
+    evaluated = {c["name"] for c in (every if full else criteria)} - {s["criterion"] for s in skipped}
     opened = {(f["criterion"], f["subject"]): f
               for f in fold(repo_log("firings", repo.root) or [])[0] if not f["cleared"]}
     for key, f in opened.items():
@@ -2126,7 +2270,7 @@ def watch_health(repo, fallback, every, criteria):
             f, old = {**f, "detail": f"{f['detail']}; suppressed earlier: {old['reason']}"}, None
         if old is None:
             send.append(fire(repo, f))
-        elif old["decision"] is None:
+        elif old["decision"] is None and full:  # between health passes only new findings are sent
             send.append({**f, "id": old["id"]})
     if not send:
         print("nothing new")
@@ -2137,6 +2281,8 @@ def watch_health(repo, fallback, every, criteria):
         report(repo, send)
     else:
         run_site_manager(p, send)
+    if not full:
+        return 0
     if orphaned and "dispatcher-missing" not in {s["criterion"] for s in skipped} and not handed_over(repo):
         print(f"no dispatcher session for {repo.root}: removing the schedule", flush=True)  # launchd kills this process in remove
         schedule_remove(repo, scheduler())
@@ -2190,7 +2336,7 @@ def cmd_digest(args):
 
 def run_site_manager(p, send, job="watch"):
     repo = p["repo"]
-    rc, out, err = run(site_manager_argv(p, send, job), cwd=repo.root, timeout=WATCH_TIMEOUT)
+    rc, out, err = run(site_manager_argv(p, send, job), cwd=repo.root, timeout=WATCH_TIMEOUT, group=True)
     try:
         doc = json.loads(out)
     except ValueError:
@@ -3013,7 +3159,7 @@ def courier(repo, name, line):
     """Whether a headless run sent `line` to the session `name`: the only way to put text into a live session."""
     argv = ["claude", "-p", "--model", COMMENT_MODEL, "--permission-mode", "dontAsk", "--allowedTools", "SendMessage",
             "ToolSearch", "--output-format", "json", COURIER.format(name=name, line=line)]
-    rc, out, _ = run(argv, cwd=repo.root, timeout=COMMENT_TIMEOUT)
+    rc, out, _ = run(argv, cwd=repo.root, timeout=COMMENT_TIMEOUT, group=True)
     try:
         reply = json.loads(out).get("result")
     except (ValueError, AttributeError):
@@ -3109,7 +3255,8 @@ REPO_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 GITHUB_REMOTE_RE = re.compile(r"(?:https://(?:[^/@\s]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)([^/\s:]+)/([^/\s]+?)(?:\.git)?/?", re.I)
 WIZARD_WAIT = 600
 INSTALL_POLL = 3
-PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read", "actions": "read"}
+PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read", "actions": "write"}
+PERMISSION_LEVELS = {"read": 1, "write": 2, "admin": 3}
 CALLBACK_DONE = "<!doctype html><meta charset=utf-8><p>Done. Go back to the terminal.</p>"
 
 
@@ -3290,7 +3437,8 @@ def act_git(path, *args, timeout=None):
     exports, error = identity_exports()
     if error:
         return 1, "", error
-    return run(["git", *args], cwd=path, timeout=timeout, env={**os.environ, **exports} if exports else None)
+    return run(["git", *args], cwd=path, timeout=timeout or NETWORK_TIMEOUT,
+               env={**os.environ, **exports} if exports else None)
 
 
 def cmd_env(args):
@@ -3416,9 +3564,13 @@ def create_app(owner, name):
     return identity
 
 
-def delete_url(identity):
+def settings_url(identity):
     where = f"organizations/{identity['owner']}/settings/apps" if identity["owner_type"] == "Organization" else "settings/apps"
-    return f"https://github.com/{where}/{identity['slug']}/advanced"
+    return f"https://github.com/{where}/{identity['slug']}"
+
+
+def delete_url(identity):
+    return f"{settings_url(identity)}/advanced"
 
 
 def undo_lines(identity):
@@ -3517,6 +3669,11 @@ def verify_app(identity):
         print(f"Acts as {bot}; reads and writes {len(repos)} repositories:")
         for name in repos:
             print(f"  {name}")
+    have = installation.get("permissions") or {}
+    for name, level in PERMISSIONS.items():
+        if PERMISSION_LEVELS.get(have.get(name), 0) < PERMISSION_LEVELS[level]:
+            print(f"WARNING: the installed App lacks {name}: {level} (it has {have.get(name, 'none')}). "
+                  f"Change it at {settings_url(identity)}/permissions, then accept the new permission at {installation['html_url']}.")
     print(f"Its private key is in {IDENTITY}. To remove it: `factory uninstall` (`make uninstall` in the clone)")
     return repaired or identity != stored
 
@@ -3603,7 +3760,7 @@ def dashboard_act(args, detail):
         raise Skip("Go 1.27+ is missing: https://go.dev/dl, then run the wizard again")
     if not ask("Build the dashboard (make build)?", args.yes):
         raise Skip("declined")
-    rc, out, err = run(["make", "build"], cwd=clone())
+    rc, out, err = run(["make", "build"], cwd=clone(), timeout=LAND_TEST_TIMEOUT)
     if rc != 0:
         raise Fail(f"make build failed: {((err or out).strip().splitlines() or ['no output'])[-1]}")
     return "built the dashboard (make build)"
@@ -3636,7 +3793,7 @@ def plugin_act(args, detail):
                    f"then run the wizard again")
     commands = [*([] if market else [["claude", "plugin", "marketplace", "add", SOURCE]]), ["claude", "plugin", "install", PLUGIN]]
     for argv in commands:
-        rc, out, err = run(argv)
+        rc, out, err = run(argv, timeout=NETWORK_TIMEOUT)
         if rc != 0:
             raise Fail(f"`{shlex.join(argv)}` failed: {(err or out).strip()}\n    By hand: "
                        + "; ".join(shlex.join(c) for c in commands))
@@ -3951,7 +4108,7 @@ def cmd_uninstall(args):
 LAND_TEST_TIMEOUT = 1800
 LAND_TIMEOUT = 1800
 LAND_TOOLS = ("Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
-              "Bash(gh pr edit *)", "Bash(factory state working)")
+              "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)")
 LAND_REASONS = ("dirty", "conflict", "golden", "tests", "denied", "other")
 LAND_RESULT_RE = re.compile(r"(LANDED, LOOK|LANDED|STOPPED)(?: (\S+))?")
 WORKFLOWS_REFUSAL = "without `workflows` permission"
@@ -3994,6 +4151,85 @@ def lander_sections(text):
         elif lines is not None and line.strip():
             lines.append(line)
     return sections
+
+
+PROSE_GAP = 10
+OVERLAP_QUOTE_LINES = 40
+
+
+def is_prose(path):
+    """Documentation by path alone: a .md, .rst or .txt file named README* or under a docs/ or doc/ directory."""
+    p = Path(path)
+    return p.suffix.lower() in (".md", ".rst", ".txt") and (p.name.startswith("README") or bool({"docs", "doc"} & set(p.parts[:-1])))
+
+
+def hunk_ranges(diff):
+    """The (first, last) old-side lines of each hunk of a `-U0` diff; a pure insertion after line a is (a+1, a)."""
+    ranges = []
+    for m in re.finditer(r"^@@ -(\d+)(?:,(\d+))? ", diff, re.M):
+        a, b = int(m[1]), 1 if m[2] is None else int(m[2])
+        ranges.append((a, a + b - 1) if b else (a + 1, a))
+    return ranges
+
+
+def hunk_gap(one, two):
+    """The unchanged old-side lines between two hunks, from the (first, last) ranges."""
+    return max(two[0] - one[1] - 1, one[0] - two[1] - 1)
+
+
+def checked_out(git):
+    """`out(*git_args)` for the overlap rule from `git(*args)` -> (rc, stdout, stderr): stdout with paths unquoted,
+    and a git that fails is a Fail, never an empty (safe) answer."""
+    def out(*args):
+        rc, stdout, err = git("-c", "core.quotePath=false", *args)
+        if rc != 0:
+            raise Fail(f"git {' '.join(args)} failed: {err.strip()}", 1)
+        return stdout.strip()
+    return out
+
+
+class Overlap:
+    """What the base and a task both changed, and whether anyone must look: the one owner of the rule in
+    factory/agents/lander.md. `out(*git_args)` (see `checked_out`) gives a git command's stdout. `summary` is the
+    Facts fragment, `look` the verdict, `quoted` the lines for the files that need a look."""
+
+    def __init__(self, out, old_base, old_head, target):
+        sides = {side: {path: status for status, path in (l.split("\t", 1) for l in
+                                                           out("diff", "--no-renames", "--name-status", old_base, ref).splitlines())}
+                 for side, ref in (("base", target), ("task", old_head))}
+        parts, self.quoted = [], []
+        for path in sorted(sides["base"].keys() & sides["task"].keys()):
+            reason, safe = self.judge(out, old_base, sides, path, target, old_head)
+            parts.append(f"{path} ({reason}{', not looked at' if safe else ''})")
+            if not safe:
+                self.quoted.append(f"{path}: {reason}")
+                for what, ref in (("base", target), ("task", old_head)):
+                    shown = out("diff", "--no-renames", old_base, ref, "--", path).splitlines()
+                    more = [f"... ({len(shown) - OVERLAP_QUOTE_LINES} more lines)"] if len(shown) > OVERLAP_QUOTE_LINES else []
+                    self.quoted += [f"the {what} changed:", *shown[:OVERLAP_QUOTE_LINES], *more]
+        self.summary = "; ".join(parts) or "none"
+        self.look = bool(self.quoted)
+
+    @staticmethod
+    def judge(out, old_base, sides, path, target, old_head):
+        """(reason, whether the file is safe) for one file both sides changed."""
+        if sides["base"][path] != "M" or sides["task"][path] != "M":
+            return "added, deleted or renamed on one side", False
+        if not is_prose(path):
+            return "code", False
+        ranges = [hunk_ranges(out("diff", "-U0", "--no-renames", old_base, ref, "--", path)) for ref in (target, old_head)]
+        if not all(ranges):
+            return "no line changes to compare", False
+        gap = max(0, min(hunk_gap(a, b) for a in ranges[0] for b in ranges[1]))
+        return f"prose, {gap} lines apart", gap >= PROSE_GAP
+
+    def text(self):
+        return "\n".join([f"overlap: {self.summary}", f"verdict: {'look' if self.look else 'safe'}", *self.quoted])
+
+
+def cmd_overlap(args):
+    print(Overlap(checked_out(lambda *a: run(["git", *a])), args.old_base, args.old_head, args.target).text())
+    return 0
 
 
 class Landing:
@@ -4076,7 +4312,7 @@ class Landing:
         if missing:
             return self.stop("tests", f"no test command: {missing}; the worktree is on the "
                              f"merge commit at {new_head}, unpushed", unpushed)
-        rc, out, err = run(["make", "test"], cwd=self.path, timeout=LAND_TEST_TIMEOUT)
+        rc, out, err = run(["make", "test"], cwd=self.path, timeout=LAND_TEST_TIMEOUT, group=True)
         if rc != 0:
             tail = "\n".join((out + err).splitlines()[-40:])
             return self.stop("tests", f"make test {'timed out' if rc == 124 else 'failed'}; the worktree is on the "
@@ -4153,7 +4389,7 @@ class Landing:
         lean = lean_flags() if self.lean else []
         argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", "sonnet",
                 "--permission-mode", "dontAsk", *lean, "--allowedTools", *LAND_TOOLS, "--output-format", "json", brief]
-        rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT)
+        rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT, group=True)
         try:
             text = json.loads(out).get("result")
         except (ValueError, AttributeError):
@@ -4243,6 +4479,120 @@ def cmd_land(args):
     return 0 if all(landed) else 1
 
 
+RUN_LINK_RE = re.compile(r"/actions/runs/(\d+)/")
+LOG_LINE_RE = re.compile(r"[^\t]*\t[^\t]*\t\ufeff?\S+Z (.*)")  # gh's prefix: job, step, timestamp
+FAILED_TEST_RES = (re.compile(r"\s*--- FAIL: (Test[^\s/]+)"), re.compile(r"(?:FAIL|ERROR): (test\w+) \("))
+
+
+def failing_tests(log):
+    """The Go and unittest tests a `gh run view --log-failed` log names as failed, in order."""
+    names = []
+    for line in log.splitlines():
+        text = LOG_LINE_RE.fullmatch(line)
+        for pattern in FAILED_TEST_RES:
+            found = pattern.match(text[1] if text else line)
+            if found and found[1] not in names:
+                names.append(found[1])
+    return names
+
+
+def rerun_line(repo, n):
+    """(whether a re-run started, the line to print after `#n `) for the failed checks of pull request `n`, as
+    docs/factory.md defines it. NotEvaluated when GitHub cannot be read."""
+    gh = lambda *args: gh_json(repo, *args)
+    git = lambda *args: repo.git("-c", "core.quotePath=false", *args)
+    no = lambda why: (False, f"no rerun: {why}")
+    listed = gh(list, "pr", "checks", n, "--json", "name,bucket,link")
+    if any(c.get("bucket") == "pending" for c in listed):
+        return no("checks are still running")
+    pr = gh(dict, "pr", "view", n, "--json", "state,headRefName,baseRefName")
+    if pr.get("state") != "OPEN":
+        return no("the pull request is not open")
+    runs = {}  # run id -> names of its failed checks
+    for c in listed:
+        if c.get("bucket") == "fail":
+            link = RUN_LINK_RE.search(str(c.get("link")))
+            if not link:
+                return no(f"{c.get('name')} is not an Actions run")
+            runs.setdefault(link[1], []).append(str(c.get("name")))
+    if not runs:
+        return no("no failed check")
+    tests = {}  # run id -> names of its failing tests
+    for run_id, names in runs.items():
+        rc, log, err = run(["gh", "run", "view", run_id, "--log-failed"], cwd=repo.root)
+        if rc != 0:
+            return no(f"gh run view failed: {err.strip() or rc}")
+        tests[run_id] = failing_tests(log)
+        if not tests[run_id]:
+            return no(f"no failing test could be named in {', '.join(names)}'s log")
+    base, head = pr["baseRefName"], f"{repo.remote}/{pr['headRefName']}"
+    if act_git(repo.root, "fetch", repo.remote)[0] != 0:
+        return no(f"git fetch {repo.remote} failed")
+    rc, fork, err = git("merge-base", f"{repo.remote}/{base}", head)
+    if rc != 0:
+        return no(f"git merge-base failed: {err.strip() or rc}")
+    rc, diff, err = git("diff", "--name-only", fork.strip(), head)
+    if rc != 0:
+        return no(f"git diff failed: {err.strip() or rc}")
+    changed = diff.splitlines()
+    where, own = {}, []
+    for name in sorted({t for names in tests.values() for t in names}):
+        rc, found, err = git("grep", "-l", "-E", rf"func {name}\(|def {name}\(", head)
+        files = [l.partition(":")[2] for l in found.splitlines()]
+        if rc > 1:
+            return no(f"git grep failed: {err.strip() or rc}")
+        if not files:
+            return no(f"{name} was not found in the branch")
+        touched = [f for f in files if any(os.path.dirname(c) == os.path.dirname(f) for c in changed)]
+        where[name] = f"{name} ({(touched or files)[0]})"
+        if touched:
+            own.append(where[name])
+    if own:
+        return no(f"{', '.join(own)} is in what the branch changes")
+    rc, tip, err = repo.git("rev-parse", f"{repo.remote}/{base}")
+    if rc != 0:
+        return no(f"git rev-parse failed: {err.strip() or rc}")
+    tip = tip.strip()
+    green = {c["name"] for c in gh(dict, "api", f"repos/{{owner}}/{{repo}}/commits/{tip}/check-runs?per_page=100").get("check_runs", [])
+             if c.get("conclusion") == "success"}
+    for check in (c for checks in runs.values() for c in checks):
+        if check not in green:
+            return no(f"{check} is not green on {base}")
+    for run_id, names in tests.items():
+        attempt = gh(dict, "run", "view", run_id, "--json", "attempt").get("attempt")
+        if not isinstance(attempt, int):
+            return no("gh run view failed: no attempt in its answer")
+        if attempt > 1:
+            return no(f"already re-run once; looks like a flake: {', '.join(where[t] for t in names)}")
+    started, refusal = [], None
+    for run_id, names in tests.items():
+        rc, out, err = run(["gh", "run", "rerun", run_id, "--failed"], cwd=repo.root)
+        if rc != 0:
+            refusal = (f"the App may not re-run checks; looks like a flake: {', '.join(where[t] for t in names)}. "
+                       f"From your own terminal: gh run rerun {run_id} --failed ({(err or out).strip() or rc})")
+            break
+        started.append(run_id)
+    if not started:
+        return no(refusal)
+    checks, flake = ", ".join(c for r in started for c in runs[r]), ", ".join(where[t] for r in started for t in tests[r])
+    with tempfile.NamedTemporaryFile("w", suffix=".md") as f:
+        f.write(f"Re-ran the failed jobs of {checks} once (by factory rerun): {flake} is outside what this branch changes, "
+                f"and {checks} is green on {base} at {tip[:7]}.")
+        f.flush()
+        stop = gh_step(repo, "pr", "comment", n, "--body-file", f.name)
+    return True, (f"rerun: {checks}: {flake} is outside what the branch changes and {checks} is green on {base}; attempt 2 started"
+                  + (f" ({stop[1]})" if stop else "") + (f"; {refusal}" if refusal else ""))
+
+
+def cmd_rerun(args):
+    try:
+        started, line = rerun_line(Repo(), str(args.pr))
+    except NotEvaluated as e:
+        started, line = False, f"no rerun: {e}"
+    print(f"#{args.pr} {line}")
+    return 0 if started else 1
+
+
 # ---- lander -----------------------------------------------------------------
 
 WORD_SECONDS = 3600
@@ -4298,9 +4648,9 @@ def write_word(repo, word):
 
 
 @contextlib.contextmanager
-def lander_lock(repo):
-    """Hold the lander lock of this repository; yields whether it was free."""
-    path = repo_state(repo.root, "lander", "lock")
+def repo_lock(repo, name):
+    """Hold the lock `name` ("lander" or "watch") of this repository; yields whether it was free."""
+    path = repo_state(repo.root, name, "lock")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         try:
@@ -4355,15 +4705,29 @@ def held(state, stops):
     return found
 
 
+def after_red(repo, pr, stop):
+    """A failed-checks stop first asks `rerun_line` (once, in process): the stop becomes the polling `pending` when a re-run
+    started, else it carries the `no rerun: <why>` text after a `; `."""
+    if stop[0] != "ci" or not stop[1].startswith("failed or cancelled checks"):
+        return stop
+    try:
+        started, line = rerun_line(repo, str(pr["number"]))
+    except NotEvaluated as e:
+        started, line = False, f"no rerun: {e}"
+    return ("pending", line) if started else (stop[0], f"{stop[1]}; {line}")
+
+
 def evidence(repo, n, kind, line):
-    """One line of why pull request `n` goes back to its lead: the conflict, or the failed checks with their links."""
+    """One line of why pull request `n` goes back to its lead: the conflict, or the failed checks with their links (and
+    why they were not re-run)."""
     if kind == "conflict":
         return f"it {line}"
     try:
         checks = gh_json(repo, list, "pr", "checks", str(n), "--json", "name,bucket,link")
     except NotEvaluated as e:
         return f"red checks that could not be read: {e}"
-    return "red checks: " + ", ".join(f"{c.get('name')} {c.get('link')}" for c in checks if c.get("bucket") in ("fail", "cancel"))
+    return "red checks: " + ", ".join(f"{c.get('name')} {c.get('link')}" for c in checks if c.get("bucket") in ("fail", "cancel")) \
+        + (f"; {why}" if (why := line.partition("; ")[2]) else "")
 
 
 def send_back(repo, fallback, pr, slug, evidence):
@@ -4497,7 +4861,7 @@ def lander_pass(repo, fallback, p, snap, line, updated):
         if stop[0] in ("behind", "conflict"):
             behind.append((pr, stop[0]))
         else:
-            stops[pr["number"]] = (pr, *stop)
+            stops[pr["number"]] = (pr, *after_red(repo, pr, stop))
     queued, declared = {pr["number"] for pr, _ in line}, read_tasks(repo.root)
     for pr in snap:
         if pr["number"] not in queued and pr["baseRefName"] == repo.default \
@@ -4626,7 +4990,7 @@ def cmd_lander(args):
             raise Fail(f"lander: #{unknown[0]} is not an open pull request; nothing done")
         word["prs"].update({str(n): time.time() + WORD_SECONDS for n in args.prs})
         write_word(repo, word)
-    with lander_lock(repo) as free:
+    with repo_lock(repo, "lander") as free:
         if not free:
             joined = ", ".join(f"#{n}" for n in dict.fromkeys(args.prs))
             print("a lander run is already going: it takes everything that is ready"
@@ -4718,6 +5082,12 @@ def parse_args(argv):
     land = sub.add_parser("land", help="bring a handed-over task up to its base (a model takes part only on a conflict)")
     land.add_argument("slug", nargs="?")
     land.add_argument("--all", action="store_true", help="every handed-over task whose pull request conflicts or whose base merged")
+    overlap = sub.add_parser("overlap", help="what a base and a task both changed, and whether anyone must look (run in the task worktree)")
+    overlap.add_argument("old_base")
+    overlap.add_argument("old_head")
+    overlap.add_argument("target")
+    rerun = sub.add_parser("rerun", help="re-run the failed jobs of a pull request's red check once, when the failure looks like a flake")
+    rerun.add_argument("pr", type=int)
     schedule = sub.add_parser("schedule", help="install, remove or show the job that runs watch every 2 minutes")
     schedule.add_argument("action", choices=("install", "remove", "status"))
     dispatcher = sub.add_parser("dispatcher", help="print the current session name of this repository's dispatcher (exit 1 when none)")
@@ -4744,7 +5114,7 @@ def main(argv=None):
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "land": cmd_land, "lander": cmd_lander, "schedule": cmd_schedule, "dispatcher": cmd_dispatcher,
+                "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander, "schedule": cmd_schedule, "dispatcher": cmd_dispatcher,
                 "wizard": cmd_wizard, "uninstall": cmd_uninstall, "env": cmd_env}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)
@@ -4754,5 +5124,17 @@ def main(argv=None):
         return 1
 
 
+def stop_on_signal(signum, _frame):
+    """Kill the children that run in groups of their own, then leave with 128+signal; `finally` blocks and context
+    managers run, and the kernel releases the locks."""
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):  # a second signal must not cut the unwind short
+        signal.signal(sig, signal.SIG_IGN)
+    for pgid in list(GROUPS):
+        kill_group(pgid)
+    sys.exit(128 + signum)
+
+
 if __name__ == "__main__":
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, stop_on_signal)
     sys.exit(main())

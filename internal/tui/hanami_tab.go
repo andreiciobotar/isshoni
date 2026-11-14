@@ -316,5 +316,5 @@ func (m *model) hanamiSnapshot(so SnapshotOptions) string {
 		}
 		frames = append(frames, m.finishSnapshot())
 	}
-	return strings.Join(frames, "\n\f\n")
+	return strings.Join(frames, frameSep)
 }

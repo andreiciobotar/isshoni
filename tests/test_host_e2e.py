@@ -31,11 +31,11 @@ STUB_PATH = "/state/stub:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/s
 def docker_says_why_not():
     if not (os.environ.get("CI") or os.environ.get("ISSHONI_HOST_E2E")):
         return "set ISSHONI_HOST_E2E=1 (or CI) to run against Docker"
-    if shutil.which("docker") is None or subprocess.run(["docker", "info"], capture_output=True).returncode:
+    if shutil.which("docker") is None or subprocess.run(["docker", "info"], capture_output=True, timeout=60).returncode:
         return "docker does not work here"
-    if subprocess.run(["docker", "ps", "-aq", "--filter", "name=^isshoni-factory$"], capture_output=True, text=True).stdout.strip():
+    if subprocess.run(["docker", "ps", "-aq", "--filter", "name=^isshoni-factory$"], capture_output=True, text=True, timeout=60).stdout.strip():
         return "a container named isshoni-factory already exists"
-    if subprocess.run(["docker", "image", "inspect", "isshoni-factory"], capture_output=True).returncode == 0:
+    if subprocess.run(["docker", "image", "inspect", "isshoni-factory"], capture_output=True, timeout=60).returncode == 0:
         return "an image named isshoni-factory already exists"
     return None
 
@@ -55,7 +55,7 @@ class HostEndToEnd(unittest.TestCase):
         return rc, out.getvalue(), err.getvalue()
 
     def docker(self, *argv):
-        return subprocess.run(["docker", *argv], capture_output=True, text=True)
+        return subprocess.run(["docker", *argv], capture_output=True, text=True, timeout=300)
 
     def cleanup(self):
         self.docker("rm", "-f", host.CONTAINER)
@@ -82,8 +82,8 @@ class HostEndToEnd(unittest.TestCase):
         write_exe(bin_dir / "uname", "#!/bin/sh\nexec %s info -f '{{.Architecture}}'\n" % real_docker)
         write_exe(bin_dir / "docker", '#!/bin/sh\nif [ "$1" = exec ]; then shift; exec %s exec -e PATH=%s "$@"; fi\nexec %s "$@"\n'
                   % (real_docker, STUB_PATH, real_docker))
-        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(laptop / "id")], check=True)
-        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(laptop / "stranger")], check=True)
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(laptop / "id")], check=True, timeout=60)
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(laptop / "stranger")], check=True, timeout=60)
         port = free_port()
         env = {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"], "HOME": str(laptop), "FACTORY_HOME": str(fh),
                "CLAUDE_CODE_OAUTH_TOKEN": TOKEN, "DOCKER_CONFIG": os.environ.get("DOCKER_CONFIG") or os.path.expanduser("~/.docker")}
