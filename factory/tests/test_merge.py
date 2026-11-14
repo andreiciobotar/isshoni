@@ -23,6 +23,13 @@ def pr(n, base="main", draft=False, fork=False, sha=SHA, author=AUTHOR):
             "headRefOid": sha, "baseRefName": base, "isCrossRepository": fork, "author": author}
 
 
+def stacked_base(n=1):
+    """What GitHub says about the base pull request #n: open when the tasks are read, merged after that."""
+    def state(word):
+        return (0, json.dumps([{"state": word, "url": f"https://x/pull/{n}", "headRefOid": SHA, "baseRefName": "main"}]), "")
+    return {("gh", "pr", "list", "--head", f"worktree-t{n}"): [state("OPEN"), state("MERGED")]}
+
+
 def raw(x):
     return x if isinstance(x, tuple) else (0, json.dumps(x), "")
 
@@ -53,7 +60,7 @@ class World(Harness):
         self.seed("tasks", [{"repo": ROOT, "slug": s, "state": st, "ts": iso(NOW - 3600)} for s, st in states.items()])
         answers = {
             ("git", "status"): (0, "", ""), ("git", "rev-list"): (0, "0\t1\n", ""), ("git", "fetch"): (0, "", ""),
-            ("git", "merge-base", "--is-ancestor"): (0, "", ""),
+            ("git", "merge-base", "--is-ancestor"): lambda: (1, "", "") if self.fake.ran("gh", "pr", "merge") else (0, "", ""),
             ("git", "log"): (0, f"{NOW} {local}\n", ""),
             ("gh", "pr", "list", "--state", "open"): (0, json.dumps(prs), ""),
             ("gh", "pr", "edit"): (0, "", ""), ("gh", "pr", "ready"): (0, "", ""), ("gh", "pr", "merge"): (0, "", ""),
@@ -104,15 +111,13 @@ class MergeCommandTests(World):
         self.assertEqual(code, 0)
         self.assertEqual([c[:2] for c in self.pr_calls()][-2:], [["pr", "ready"], ["pr", "merge"]])
 
-    def test_a_stack_named_in_reverse_merges_bottom_up_and_retargets(self):
-        code, out, _ = self.merge("2", "1", prs=[pr(1), pr(2, base="worktree-t1")])
-        self.assertEqual(code, 0)
+    def test_a_stack_named_in_reverse_merges_the_bottom_and_stops_the_next_behind(self):
+        code, out, _ = self.merge("2", "1", prs=[pr(1), pr(2, base="worktree-t1")], extra=stacked_base())
+        self.assertEqual(code, 1)
         self.assertEqual(self.pr_calls(), [
             ["pr", "checks", "1", "--json", "name,bucket"], ["pr", "view", "1", "--json", "mergeable"],
-            ["pr", "merge", "1", "--merge", "--match-head-commit", SHA],
-            ["pr", "checks", "2", "--json", "name,bucket"], ["pr", "edit", "2", "--base", "main"],
-            ["pr", "view", "2", "--json", "mergeable"], ["pr", "merge", "2", "--merge", "--match-head-commit", SHA]])
-        self.assertLess(out.index("#1 merged"), out.index("#2 merged"))
+            ["pr", "merge", "1", "--merge", "--match-head-commit", SHA]])
+        self.assertLess(out.index("#1 merged"), out.index(self.behind(2)))
 
     def test_a_base_merged_earlier_is_retargeted(self):
         merged = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
@@ -195,15 +200,37 @@ class MergeCommandTests(World):
         self.assertEqual(sleep.call_count, 1)
         self.assertIn("#1 merged", out)
 
+    def behind(self, n):
+        return f"#{n} stopped: its base has moved since its head: bring it up to date (factory land t{n}) so its checks run on the combination"
+
     def test_a_stop_ends_the_run(self):
-        prs = [pr(1), pr(2, base="worktree-t1"), pr(3, base="worktree-t2")]
-        code, out, _ = self.merge("1", "2", "3", prs=prs, checks={1: GREEN, 2: [{"name": "t", "bucket": "fail"}], 3: GREEN})
+        code, out, _ = self.merge("1", "2", "3", prs=[pr(1), pr(2), pr(3)])
         self.assertEqual(code, 1)
         self.assertIn("#1 merged", out)
-        self.assertIn("#2 stopped: failed or cancelled checks: t\n#3 not attempted\n", out)
+        self.assertIn(self.behind(2) + "\n#3 not attempted\n", out)
         self.assertEqual([c[1] for c in self.gh_mutations()], ["merge"])
         self.assertEqual(self.gh_mutations()[0][2], "1")
         self.assertIn("kept t1:", out)
+
+    def test_siblings_on_one_base_merge_the_first_and_stop_behind(self):
+        code, out, _ = self.merge("1", "2", "3", prs=[pr(1), pr(2, base="worktree-t1"), pr(3, base="worktree-t1")],
+                                  extra=stacked_base())
+        self.assertEqual(code, 1)
+        self.assertIn("#1 merged", out)
+        self.assertIn(self.behind(2) + "\n#3 not attempted\n", out)
+
+    def test_a_base_merged_in_an_earlier_command_and_main_moved_since_is_behind(self):
+        merged = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
+        code, out, _ = self.merge("5", prs=[pr(5, base="worktree-t9")],
+                                  extra={("gh", "pr", "list", "--head", "worktree-t9"): merged,
+                                         ("git", "merge-base", "--is-ancestor"): (1, "", "")})
+        self.assertEqual(code, 1)
+        self.assertIn(self.behind(5), out)
+        self.assertEqual(self.gh_mutations(), [])
+
+    def test_every_pull_request_gets_a_fresh_fetch(self):
+        self.merge("1", "2", prs=[pr(1), pr(2)])
+        self.assertEqual(sum(c[:2] == ["git", "fetch"] for c in self.fake.calls), 2)
 
     def test_nothing_merged_runs_no_clean(self):
         code, out, _ = self.merge("1", "2", prs=[pr(1), pr(2)], checks=[])
@@ -230,11 +257,11 @@ class MergeCommandTests(World):
         self.assertEqual([c[1] for c in self.gh_mutations()], ["merge"])
         self.assertNotIn("stopped", out)
 
-    def test_one_command_merges_one_pull_request_per_base_and_what_is_stacked_on_it(self):
+    def test_two_pull_requests_on_the_default_branch_merge_one_and_stop_the_other(self):
         code, out, _ = self.merge("1", "2", prs=[pr(1), pr(2)])
         self.assertEqual(code, 1)
         self.assertIn("#1 merged", out)
-        self.assertIn("#2 stopped: " + ("its base has moved since its head: bring it up to date (factory land t2) so its checks run on the combination"), out)
+        self.assertIn(self.behind(2), out)
         self.assertEqual([c[2] for c in self.gh_mutations() if c[1] == "merge"], ["1"])
         self.assertFalse(any(c[:4] == ["gh", "pr", "checks", "2"] for c in self.fake.calls))
 
@@ -264,18 +291,15 @@ class MergeCommandTests(World):
 
 
 class DryRunTests(World):
-    def test_dry_run_changes_nothing_and_continues_past_a_stop(self):
+    def test_dry_run_changes_nothing_and_every_pull_request_after_the_first_would_be_behind(self):
         prs = [pr(1, draft=True), pr(2, base="worktree-t1"), pr(3), pr(4)]
-        code, out, _ = self.merge("--dry-run", "--all", prs=prs,
-                                  checks={1: GREEN, 2: GREEN, 3: [{"name": "t", "bucket": "fail"}], 4: GREEN})
+        code, out, _ = self.merge("--dry-run", "--all", prs=prs)
         self.assertEqual(code, 1)
+        why = "its base has moved since its head: bring it up to date (factory land t{}) so its checks run on the combination"
         self.assertEqual(out.splitlines(), [
             "#1 would merge (draft: would be marked ready)",
-            "#2 would merge (retarget onto main first; mergeability is checked after that)",
-            "#3 would stop: its base has moved since its head: bring it up to date (factory land t3) so its checks run on the combination",
-            "#4 would stop: its base has moved since its head: bring it up to date (factory land t4) so its checks run on the combination"])
+            "#2 would stop: " + why.format(2), "#3 would stop: " + why.format(3), "#4 would stop: " + why.format(4)])
         self.assertEqual(self.gh_mutations(), [])
-        self.assertFalse(any(c[:3] == ["gh", "pr", "view"] and c[3] == "2" for c in self.fake.calls))
         self.assertFalse(self.fake.ran("claude", "rm"))
 
     def test_dry_run_exits_0_when_all_would_merge(self):
@@ -459,10 +483,12 @@ class ApprovedTests(World):
         self.assertIn("#1 stopped: gh api --paginate failed: boom", out)
         self.assertEqual(self.gh_mutations(), [])
 
-    def test_a_stack_merges_bottom_up(self):
-        self.approved([pr(2, base="worktree-t1"), pr(1)], {1: [comment()], 2: [comment(n=2)]})
-        self.assertEqual([c[:2] for c in self.pr_calls() if c[1] not in ("view", "checks")],
-                         [["pr", "merge"], ["pr", "edit"], ["pr", "merge"]])
+    def test_a_stack_merges_the_bottom_and_stops_the_next_behind(self):
+        code, out, _ = self.approved([pr(2, base="worktree-t1"), pr(1)], {1: [comment()], 2: [comment(n=2)]},
+                                     extra=stacked_base())
+        self.assertEqual(code, 1)
+        self.assertEqual(self.merges(), ["1"])
+        self.assertIn("#2 stopped: its base has moved", out)
 
     def test_all_skips_what_is_not_approved_and_merges_the_rest(self):
         code, out, _ = self.approved([pr(1), pr(2), pr(3)], {1: [comment()], 3: [comment(n=3)]}, "--all")
@@ -530,9 +556,9 @@ class ApprovedTests(World):
                 self.assertIn("#1 stopped: ", out)
                 self.assertEqual(self.gh_mutations(), [])
 
-    def test_one_fetch_serves_the_whole_command(self):
+    def test_every_pull_request_gets_its_own_fetch(self):
         self.approved([pr(1), pr(2)], {1: [comment()], 2: [comment(n=2)]})
-        self.assertEqual(sum(c[:2] == ["git", "fetch"] for c in self.fake.calls), 1)
+        self.assertEqual(sum(c[:2] == ["git", "fetch"] for c in self.fake.calls), 2)
 
     def test_all_skips_a_pull_request_stacked_on_a_skipped_one(self):
         code, out, _ = self.approved([pr(1), pr(2, base="worktree-t1"), pr(3)], {3: [comment(n=3)]}, "--all",

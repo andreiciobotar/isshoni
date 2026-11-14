@@ -69,7 +69,7 @@ class StarterTests(World):
         self.assertEqual((env["BASH_DEFAULT_TIMEOUT_MS"], env["BASH_MAX_TIMEOUT_MS"]), ("2400000", "2400000"))
         brief = argv[-1]
         self.assertTrue(brief.startswith("Merge run.\nRepository: /repo\n"))
-        self.assertIn("- #12: head worktree-t12, base main (its base has not moved), "
+        self.assertIn("- #12: head worktree-t12, base main, "
                       "task t12 (its lead is the session t12); on the human's word: merge with `factory merge 12`", brief)
         self.assertNotIn("#14", brief)
         self.assertTrue(brief.endswith("The dispatcher started this run: do not message it."))
@@ -100,16 +100,10 @@ class StarterTests(World):
         self.assertEqual(code, 0)
         self.assertIn("lander: ? turns, $?, ? s\n", out)
 
-    def test_the_brief_says_whether_the_base_has_moved(self):
-        self.lander(prs=[reviewed(1)], answer=reply("#1 merged u"),
-                    extra={("git", "merge-base", "--is-ancestor"): (1, "", "")})
-        self.assertIn("(its base has moved: bring it up to date first)", self.claude_runs()[0][-1])
-        self.setUp()
+    def test_the_brief_says_who_started_the_run(self):
         self.lander(prs=[reviewed(1)], answer=reply("#1 merged u"))
-        self.assertIn("(its base has not moved)", self.claude_runs()[0][-1])
-        self.assertIn(["git", "merge-base", "--is-ancestor", "origin/main", SHA], self.fake.calls)
-        self.assertTrue(self.fake.ran("git", "fetch", "origin"))
         self.assertTrue(self.claude_runs()[0][-1].endswith(f"The dispatcher's session name is {SESSION}."))
+        self.assertNotIn("moved", self.claude_runs()[0][-1])
 
     def test_the_merge_tools_cannot_merge_approve_comment_push_or_edit(self):
         tools = " ".join(factory.MERGE_TOOLS)

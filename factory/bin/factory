@@ -2278,9 +2278,10 @@ def mergeability(p, n):
 
 
 def merge_one(p, pr, merged, dry, permission=None):
-    """Merge `pr` (with `dry`, only check it as if `merged`, the head branches merged so far, were). None, or the
-    (kind, reason) of the first blocker. With `permission` (a dict of the permission of each login seen), GitHub's
-    own records must hold a valid approval of it."""
+    """Merge `pr` (with `dry`, only check it; `merged` holds what would have merged before it). None, or the
+    (kind, reason) of the first blocker. The invariant: a pull request is merged only when its head holds the
+    current tip of the default branch and its checks are green on that head. With `permission` (a dict of the
+    permission of each login seen), GitHub's own records must hold a valid approval of it."""
     repo, n, base = p["repo"], str(pr["number"]), pr["baseRefName"]
     if pr["isCrossRepository"]:
         return FORK
@@ -2290,16 +2291,16 @@ def merge_one(p, pr, merged, dry, permission=None):
     stop = permission is not None and approval_stop(p, pr, permission)
     if stop:
         return stop
-    if base != repo.default and base not in merged:
+    moved = "its base has moved since its head: bring it up to date (factory land {}) so its checks run on the combination"
+    if dry and merged:  # in a real run the merge before it has moved the default branch, which the tip check sees
+        return "behind", moved.format(task_of(p, pr)["slug"])
+    if base != repo.default:
         state, _, _, into = pull_request(repo, base)
         if state == "unknown":
             return "pending", f"cannot read the pull request of its base {base}"
         if (state, into) != ("merged", repo.default):
             return "base", f"its base {base} is not {repo.default} nor the head of a pull request merged into it"
-    moved = "its base has moved since its head: bring it up to date (factory land {}) so its checks run on the combination"
-    if base == repo.default and merged:  # something merged in this command moved the default branch
-        return "behind", moved.format(task_of(p, pr)["slug"])
-    if not fetched(p):
+    if not fetched(p, pr):
         return "pending", f"git fetch {repo.remote} failed: cannot tell whether its base has moved"
     ahead = repo.git("merge-base", "--is-ancestor", f"{repo.remote}/{repo.default}", pr["headRefOid"])[0]
     if ahead == 1:
@@ -2433,11 +2434,13 @@ def approver(p, pr, x, permission, author=False):
     return login if permission[login] in ("admin", "write") else None
 
 
-def fetched(p):
-    """Whether `git fetch` of the remote worked; asked once per command."""
-    if "fetched" not in p:
-        p["fetched"] = act_git(p["repo"].root, "fetch", p["repo"].remote)[0] == 0
-    return p["fetched"]
+def fetched(p, pr):
+    """Whether `git fetch` of the remote worked for `pr`: asked once per pull request, not once per command, since
+    a merge before it moves the default branch."""
+    done = p.setdefault("fetched", {})
+    if pr.get("number") not in done:
+        done[pr.get("number")] = act_git(p["repo"].root, "fetch", p["repo"].remote)[0] == 0
+    return done[pr.get("number")]
 
 
 def approved_heads(p, pr):
@@ -2445,7 +2448,7 @@ def approved_heads(p, pr):
     git would have made itself, the first parent of it. Any other commit on top makes an approval stale. If git
     cannot answer, just the head."""
     repo, heads = p["repo"], [pr["headRefOid"]]
-    if not fetched(p):
+    if not fetched(p, pr):
         return heads
     while True:
         parents = repo.git("rev-list", "--parents", "-n", "1", heads[-1])[1].split()
@@ -3227,7 +3230,7 @@ NOTICE_FIELDS = ("number,url,isDraft,headRefOid,headRefName,baseRefName,author,i
 MERGE_TOOLS = ("Read", "Grep", "Glob", "SendMessage", "ToolSearch", "Bash(factory merge --approved *)",
                "Bash(factory land *)", "Bash(factory status *)", "Bash(factory status)", "Bash(gh pr view *)", "Bash(gh pr checks *)",
                "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(sleep *)")
-MERGE_KINDS = ("unapproved", "stale", "ci", "pending", "conflict", "tests", "handover", "base", "other")
+MERGE_KINDS = ("unapproved", "stale", "behind", "ci", "pending", "conflict", "tests", "handover", "base", "other")
 MERGE_LINE_RE = re.compile(r"#(\d+) (?:merged (\S.*)|stopped (\w+): (\S.*))")
 
 
@@ -3306,15 +3309,12 @@ def task_slug(repo, pr):
 
 def merge_brief(repo, given, word, dispatcher):
     lines = ["Merge run.", f"Repository: {repo.root}", "Pull requests:"]
-    act_git(repo.root, "fetch", repo.remote)
     for pr in given:
         n = pr["number"]
         slug = task_slug(repo, pr)
         how = (f"on the human's word: merge with `factory merge {n}`" if n in word
                else f"approved on GitHub: merge with `factory merge --approved {n}`")
-        moved = repo.git("merge-base", "--is-ancestor", f"{repo.remote}/{pr['baseRefName']}", pr["headRefOid"])[0] != 0
-        lines.append(f"- #{n}: head {pr['headRefName']}, base {pr['baseRefName']} "
-                     f"({'its base has moved: bring it up to date first' if moved else 'its base has not moved'}), "
+        lines.append(f"- #{n}: head {pr['headRefName']}, base {pr['baseRefName']}, "
                      f"{f'task {slug} (its lead is the session {slug})' if slug else 'no task'}; {how}")
     return "\n".join([*lines, "No dispatcher session is alive." if not dispatcher
                       else "The dispatcher started this run: do not message it." if word
