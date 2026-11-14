@@ -495,7 +495,7 @@ class StaleLinesTests(unittest.TestCase):
             factory.log(name, {"ts": factory.now()})
         root = "/some/repo"
         for kind, ext in (("dispatcher", "json"), ("comments", "json"), ("lander", "json"), ("watch", "lock"),
-                          ("lander", "lock"), ("dispatcher", "json.tmp"), ("comments", "json.tmp"), ("lander", "json.tmp")):
+                          ("lander", "lock"), ("word", "json"), ("word", "json.tmp"), ("dispatcher", "json.tmp"), ("comments", "json.tmp"), ("lander", "json.tmp")):
             factory.repo_state(root, kind, ext).write_text("x")
         for name in ("tasks.jsonl", "events.jsonl", "settings.json", "watch.log", "hosts.json", "hosts.json.tmp",
                      ".settings-ab12.tmp"):

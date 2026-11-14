@@ -3876,7 +3876,7 @@ HOME_FILE_RE = re.compile(r"settings\.json|watch\.log|identity|specs|deliverable
 # written through `log` that HOME_FILE_RE does not list, and the per-repository files of `repo_state` with their
 # temporary files. `strangers` is what matches neither.
 STORE_WRITTEN_RE = re.compile(r"cache|comments|(gh|comments)-\d{4}-\d\d\.jsonl|(hosts|settings)\.json\.tmp"
-                              r"|(dispatcher|comments|lander)-.+-[0-9a-f]{8}\.json(\.tmp)?|(watch|lander)-.+-[0-9a-f]{8}\.lock")
+                              r"|[a-z]+-.+-[0-9a-f]{8}\.(json|lock)(\.tmp)?")  # the last is every name repo_state() makes
 Step = collections.namedtuple("Step", "name purpose optional state act recheck", defaults=(False,))
 
 
