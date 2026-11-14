@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os/exec"
 	"strings"
@@ -68,10 +69,47 @@ func TestDPicksAmongSeveral(t *testing.T) {
 	}
 }
 
+func TestThePickerShowsTheRealRangeAndFollowsTheCursor(t *testing.T) {
+	names := make([]string, 12)
+	for i := range names {
+		names[i] = fmt.Sprintf("dispatcher-%02d", i+1)
+	}
+	m, asked := attachModel(t, `{"dispatchers": ["`+strings.Join(names, `","`)+`"]}`)
+	m.w, m.h = 60, 16
+	send(m, "d")
+	out := plain(m)
+	if !strings.Contains(out, "1-9 or") || !strings.Contains(out, "↓ 4 more") || strings.Contains(out, "↑ 4 more") || strings.Contains(out, "dispatcher-12") {
+		t.Fatalf("the top of the list, a mark for what is below:\n%s", out)
+	}
+	send(m, "0")
+	if len(*asked) != 0 || m.pick == nil {
+		t.Fatal("0 does nothing")
+	}
+	for range 11 {
+		send(m, "j")
+	}
+	out = plain(m)
+	if !strings.Contains(out, "› ") || !strings.Contains(out, "dispatcher-12") || !strings.Contains(out, "↑ 4 more") || strings.Contains(out, "↓ 4 more") {
+		t.Fatalf("the window follows the cursor to the 12th:\n%s", out)
+	}
+	if lines := strings.Count(out, "\n") + 1; lines > m.h {
+		t.Fatalf("%d lines on a %d-row screen", lines, m.h)
+	}
+	send(m, "enter")
+	if len(*asked) != 1 || (*asked)[0] != "dispatcher-12" {
+		t.Fatalf("the 12th is reachable: %v", *asked)
+	}
+	m, _ = attachModel(t, `{"dispatchers": ["dispatcher-a", "dispatcher-b"]}`)
+	send(m, "d")
+	if out := plain(m); !strings.Contains(out, "1-2 or") {
+		t.Fatalf("the hint names the range:\n%s", out)
+	}
+}
+
 func TestDRefusesWithoutADispatcherOrWithoutWrite(t *testing.T) {
 	m, asked := attachModel(t, `{"worktree_cap": 5}`)
 	send(m, "d")
-	if !m.toast.err || !strings.Contains(m.toast.text, `no dispatcher: "dispatchers" in `) || len(*asked) != 0 {
+	if !m.toast.err || !strings.Contains(m.toast.text, `no dispatcher: "dispatchers" is `) || len(*asked) != 0 {
 		t.Fatalf("toast %q", m.toast.text)
 	}
 	m, asked = attachModel(t, `{"dispatchers": ["dispatcher-a"]}`)

@@ -192,7 +192,7 @@ func ReadDispatchers(path string) ([]string, error) {
 		return nil, err
 	}
 	no := func(why string) error {
-		return fmt.Errorf(`no dispatcher: "dispatchers" in %s %s`, ShortPath(path), why)
+		return fmt.Errorf(`no dispatcher: "dispatchers" %s (%s)`, why, ShortPath(path))
 	}
 	raw, ok := obj["dispatchers"]
 	if !ok {

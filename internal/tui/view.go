@@ -420,28 +420,40 @@ func (m *model) helpScreen(p paint) []string {
 	return m.fitScreen(p.center(p.boxed("help", lines, bw, bh, th.Pink), m.w, m.h), p)
 }
 
-// pickScreen lists the dispatchers to choose from: the first nine numbered, a window of the
-// list around the cursor when it is taller than the screen.
+// pickScreen lists the dispatchers to choose from, drawn like the help: the first nine numbered
+// in the key style. A list taller than the screen shows a window that follows the cursor, with
+// the count of names hidden above and below.
 func (m *model) pickScreen(p paint) []string {
 	th := m.th
+	n := len(m.pick)
 	room := max(1, m.h-6)
-	top := max(0, min(m.pickCur-room+1, len(m.pick)-room))
+	if n > room {
+		room = max(1, m.h-8) // two rows for the "n more" marks
+	}
+	top := max(0, min(m.pickCur-room+1, n-room))
 	var lines []string
-	bw := 0
-	for i := top; i < min(len(m.pick), top+room); i++ {
-		num := " "
+	more := func(arrow string, hidden int) {
+		if hidden > 0 {
+			lines = append(lines, p.t(fmt.Sprintf("  %s %d more", arrow, hidden), th.Faint))
+		}
+	}
+	more("↑", top)
+	for i := top; i < min(n, top+room); i++ {
+		num, mark, fg := " ", "  ", th.Text
 		if i < 9 {
 			num = strconv.Itoa(i + 1)
 		}
-		mark, fg := "  ", th.Text
 		if i == m.pickCur {
 			mark, fg = "› ", th.Purple
 		}
-		l := p.b(mark+num+"  "+m.pick[i], fg)
-		lines = append(lines, l)
+		lines = append(lines, p.t(mark, fg)+p.b(num, th.Purple)+p.t("  "+m.pick[i], fg))
+	}
+	more("↓", n-top-room)
+	hint := p.t(fmt.Sprintf("1-%d or ↑↓ enter · esc cancel", min(9, n)), th.Faint)
+	bw := 0
+	for _, l := range lines {
 		bw = max(bw, width(l))
 	}
-	hint := p.t("1-9 or ↑↓ enter · esc cancel", th.Faint)
 	lines = append(lines, "", hint)
 	bw = min(m.w-2, max(bw, width(hint))+4)
 	return m.fitScreen(p.center(p.boxed("dispatcher", lines, bw, len(lines)+2, th.Pink), m.w, m.h), p)

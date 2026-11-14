@@ -198,7 +198,7 @@ func TestAttachNeedsADispatcherInTheSettings(t *testing.T) {
 	v := e.view(addr, viewOpts{signer: s, w: 160, h: 36})
 	v.waitFor("zebrafish")
 	v.send("d")
-	v.waitFor(`no dispatcher: "dispatchers" in`)
+	v.waitFor(`no dispatcher: "dispatchers" is`)
 	if names := e.attachedNames(); len(names) != 0 {
 		t.Fatalf("the stub ran without a dispatcher: %v", names)
 	}
@@ -240,6 +240,26 @@ func TestAttachFailureComesBackWithAToast(t *testing.T) {
 	mark := v.out.Len()
 	v.send("fail\r")
 	v.waitAfter(mark, "dispatcher-a: not running?")
+	v.send("q")
+	var exit *gossh.ExitError
+	if err := v.waitExit(); errors.As(err, &exit) {
+		t.Fatalf("the dashboard is back, so q ends it cleanly: %v", err)
+	}
+}
+
+func TestAttachWithoutClaudeOnThePathComesBackWithAToast(t *testing.T) {
+	e := newTestEnv(t)
+	s := newSigner(t)
+	e.allow(keyLine(s, "write"))
+	e.withDispatchers([]string{"dispatcher-a"})
+	e.claude = "claude-is-missing"
+	addr, _ := e.start()
+
+	v := e.view(addr, viewOpts{signer: s, w: 160, h: 36})
+	v.waitFor("zebrafish")
+	mark := v.out.Len()
+	v.send("d")
+	v.waitAfter(mark, "dispatcher-a: exec:")
 	v.send("q")
 	var exit *gossh.ExitError
 	if err := v.waitExit(); errors.As(err, &exit) {

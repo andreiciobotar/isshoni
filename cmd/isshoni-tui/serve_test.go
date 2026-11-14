@@ -199,12 +199,13 @@ func dial(addr string, s gossh.Signer, hostKey func(gossh.PublicKey)) (*gossh.Cl
 
 // viewer is one client session on a terminal.
 type viewer struct {
-	t      *testing.T
-	client *gossh.Client
-	sess   *gossh.Session
-	in     io.WriteCloser
-	out    *syncBuf
-	exited chan error // the session's end
+	t       *testing.T
+	client  *gossh.Client
+	sess    *gossh.Session
+	in      io.WriteCloser
+	out     *syncBuf
+	exited  chan error    // the session's end
+	drained chan struct{} // closed when the client has read the session's output to the end
 }
 
 type viewOpts struct {
@@ -246,7 +247,7 @@ func (e *testEnv) view(addr string, o viewOpts) *viewer {
 			e.t.Fatal(err)
 		}
 	}
-	v := &viewer{t: e.t, client: c, sess: sess, out: &syncBuf{}, exited: make(chan error, 1)}
+	v := &viewer{t: e.t, client: c, sess: sess, out: &syncBuf{}, exited: make(chan error, 1), drained: make(chan struct{})}
 	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		e.t.Fatal(err)
@@ -254,7 +255,10 @@ func (e *testEnv) view(addr string, o viewOpts) *viewer {
 	if v.in, err = sess.StdinPipe(); err != nil {
 		e.t.Fatal(err)
 	}
-	go io.Copy(v.out, stdout)
+	go func() {
+		io.Copy(v.out, stdout)
+		close(v.drained)
+	}()
 	if err := sess.Shell(); err != nil {
 		e.t.Fatal(err)
 	}
@@ -586,6 +590,32 @@ func TestServeQuitEndsOnlyThatViewer(t *testing.T) {
 	case err := <-b.exited:
 		t.Fatalf("the other viewer ended too: %v", err)
 	default:
+	}
+}
+
+// The last bytes of a quit (leave the alternate screen, show the cursor) must reach the client:
+// a pty copy that is not joined loses them on about one quit in four.
+func TestServeQuitDeliversTheLastBytes(t *testing.T) {
+	e := newTestEnv(t)
+	s := newSigner(t)
+	e.allow(keyLine(s, ""))
+	addr, _ := e.start()
+
+	for i := range 40 {
+		v := e.view(addr, viewOpts{signer: s})
+		v.waitFor("zebrafish")
+		v.send("q")
+		if err := v.waitExit(); err != nil {
+			t.Fatalf("quit %d: %v", i, err)
+		}
+		select {
+		case <-v.drained:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("quit %d: the output did not end", i)
+		}
+		if !strings.Contains(v.out.String(), "\x1b[?1049l") {
+			t.Fatalf("quit %d lost the end of the output: ...%q", i, v.out.String()[max(0, v.out.Len()-80):])
+		}
 	}
 }
 

@@ -223,7 +223,7 @@ func TestReadDispatchers(t *testing.T) {
 	} {
 		path := settings(t, content)
 		_, err := ReadDispatchers(path)
-		if err == nil || !strings.Contains(err.Error(), `no dispatcher: "dispatchers" in `+path+" "+why) {
+		if err == nil || !strings.Contains(err.Error(), `no dispatcher: "dispatchers" `+why+" ("+path+")") {
 			t.Errorf("%q: want %q naming the file, got %v", content, why, err)
 		}
 	}
