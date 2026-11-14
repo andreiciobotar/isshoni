@@ -183,15 +183,15 @@ func (m *model) pulseLines(p paint, w int) block {
 	return append(lines, m.prWarnings(p, w)...)
 }
 
-// prWarnings names each repository whose pull requests could not be read: without them no
-// task counts as landed.
+// prWarnings names each repository whose pull requests could not be read or are stale: without
+// them no task counts as landed.
 func (m *model) prWarnings(p paint, w int) block {
 	var lines block
 	for _, r := range m.kz.doc.Repos {
-		if r.PRs == "ok" {
+		msg := m.prWarning(r)
+		if msg == "" {
 			continue
 		}
-		msg := fmt.Sprintf("pull requests unavailable for %s: %s; landed counts and times need gh", r.Repo, r.PRs)
 		for i, l := range wrapPlain(msg, w-5) {
 			lead := "  "
 			if i == 0 {
@@ -201,6 +201,27 @@ func (m *model) prWarnings(p paint, w int) block {
 		}
 	}
 	return lines
+}
+
+// prWarning says what is wrong with a repository's pull request data, or is empty when
+// nothing is: no data at all, data older than kaizenPRWarn, or a refresh that failed.
+func (m *model) prWarning(r data.KaizenRepo) string {
+	if r.PRs != "ok" {
+		return fmt.Sprintf("pull requests unavailable for %s: %s; landed counts and times need gh", r.Repo, r.PRs)
+	}
+	at, err := time.Parse(time.RFC3339, r.PRsAsOf)
+	old := err == nil && m.now().Sub(at) > kaizenPRWarn
+	if !old && r.PRsError == "" {
+		return ""
+	}
+	msg := "pull requests for " + r.Repo
+	if err == nil {
+		msg += " as of " + ago(m.now().Sub(at)) + " ago"
+	}
+	if r.PRsError != "" {
+		msg += ": " + r.PRsError
+	}
+	return msg
 }
 
 // trendSub is the line under a median tile: how the latest landed tasks compare with the

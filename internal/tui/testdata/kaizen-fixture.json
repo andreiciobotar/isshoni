@@ -19,12 +19,16 @@
   {
    "repo": "fixture-alpha",
    "repo_path": "/fixture/alpha",
-   "prs": "ok"
+   "prs": "ok",
+   "prs_as_of": null,
+   "prs_error": null
   },
   {
    "repo": "fixture-beta",
    "repo_path": "/fixture/beta",
-   "prs": "ok"
+   "prs": "ok",
+   "prs_as_of": null,
+   "prs_error": null
   }
  ],
  "versions": [

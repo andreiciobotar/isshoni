@@ -270,7 +270,7 @@ def cmd_kaizen(args):
 
     prices = price_file.load(args.prices)
     cutoff = parse_since(args.since) if args.since else None
-    doc = kaizen.build(args.factory_dir, lambda: load_all(args, prices), prices, cutoff)
+    doc = kaizen.build(args.factory_dir, lambda: load_all(args, prices), prices, cutoff, cached=args.cached)
     if args.json:
         emit_json(doc)
         return 0
@@ -287,6 +287,9 @@ def cmd_kaizen(args):
     for r in doc["repos"]:
         if r["prs"] != "ok":
             print("pull requests unavailable for %s: %s" % (r["repo"], r["prs"]))
+        elif r["prs_error"]:
+            age = datetime.now(timezone.utc) - datetime.strptime(r["prs_as_of"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            print("pull requests for %s as of %s ago: %s" % (r["repo"], fmt_duration(age.total_seconds() * 1000), r["prs_error"]))
     dur = lambda v: "-" if v is None else fmt_duration(v * 1000)  # noqa: E731
     rows = [[t["slug"], t["version"] or "-", "landed" if t["landed"] else t["state"] or "-", dur(t["brief_to_pr_s"]),
              dur(t["pr_to_merge_s"]), "-" if t["cost"] is None else money(t["cost"]["total"], cur, t["cost"]["unpriced_tokens"]),
@@ -382,6 +385,7 @@ def build_parser():
     s.set_defaults(func=cmd_agents)
     s = sub.add_parser("kaizen", parents=[_common(True), since], help="improvement measures of the factory")
     s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")
+    s.add_argument("--cached", action="store_true", help="pull requests from the disk cache only; never run gh")
     s.set_defaults(func=cmd_kaizen)
     s = sub.add_parser("anatomy", parents=[_common(True), since, scope], help="cost anatomy of each task per role")
     s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")
