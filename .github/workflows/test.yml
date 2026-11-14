@@ -154,7 +154,7 @@ jobs:
           fi
           grep -q 'Permission denied (publickey)' "$RUNNER_TEMP/stranger.err"
       - if: always() && steps.watch.outcome == 'skipped'
-        run: cat "$RUNNER_TEMP/walk.log"
+        run: test ! -e "$RUNNER_TEMP/walk.log" || cat "$RUNNER_TEMP/walk.log"
       - if: always()
         run: docker logs isshoni-factory
 
