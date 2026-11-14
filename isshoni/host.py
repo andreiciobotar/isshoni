@@ -528,12 +528,13 @@ def wizard_add(args):
     name = NAME_RE.sub("-", target)
     if name in reg:
         args.target, args.name, args.alias = reg[name]["target"], name, reg[name]["alias"] or ""
-        argv = ["add", args.target, *(["--name", name] if name != NAME_RE.sub("-", args.target) else [])]
+        argv = ["add", args.target, *(["--name", name] if name != NAME_RE.sub("-", args.target) else []),
+                *(["--alias", ""] if not args.alias else [])]
     else:
         args.target, args.state = target, ask("The state directory on the server (an absolute path, e.g. /srv/factory): ")
         args.repo = ask("Repositories to clone and start a dispatcher for, owner/name separated by spaces (empty for none): ").split()
         args.alias = ask("An ssh alias for this host in ~/.ssh/config (empty for none): ")
-        argv = ["add", target, "--state", args.state, *[a for r in args.repo for a in ("--repo", r)], *(["--alias", args.alias] if args.alias else [])]
+        argv = ["add", target, "--state", args.state, *[a for r in args.repo for a in ("--repo", r)], "--alias", args.alias]
     return confirm(argv, True)
 
 

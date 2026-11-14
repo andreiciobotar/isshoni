@@ -362,10 +362,10 @@ class WizardFlow(Setup):
         self.assertIn("needs a clone of the repository", self.out.splitlines()[-1])
         self.assertEqual(self.command("wizard", "--list"), 0, self.out)
         self.assertNotIn("A server:", self.out)
-        self.assertIn("hosts:\n  none\n  their live state: bin/isshoni host status", self.out)
+        self.assertEqual(self.out.splitlines()[-3:], ["hosts:", "  none", "  their live state: bin/isshoni host status"])
         self.add_host()
         self.assertEqual(self.command("wizard", "--list"), 0, self.out)
-        self.assertIn("hosts:\n  nas  me@nas  acme/widgets\n  their live state", self.out)
+        self.assertEqual(self.out.splitlines()[-3:], ["hosts:", "  nas  me@nas  acme/widgets", "  their live state: bin/isshoni host status"])
 
     def test_ask(self):
         for text, want in (("y\n", True), ("YES\n", True), ("n\n", False), ("\n", False), ("", False), ("sure\n", False)):

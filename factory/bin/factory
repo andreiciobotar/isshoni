@@ -832,10 +832,7 @@ def cmd_new(args):
         sys.stderr.write(f"factory: warning: cannot check for an existing pull request on {branch}; continuing\n")
     elif old_pr != "none":
         raise Fail(f"a {old_pr} pull request already exists for branch {branch}; pick another slug")
-    exports, error = identity_exports()  # as `gh` above acts as the App: a private remote needs it
-    rc, _, err = (1, "", error) if error else run(
-        ["git", "ls-remote", "--exit-code", "--heads", repo.remote, f"refs/heads/{branch}"], cwd=repo.root,
-        timeout=GH_TIMEOUT, env={**os.environ, **exports} if exports else None)
+    rc, _, err = git_as_app(["ls-remote", "--exit-code", "--heads", repo.remote, f"refs/heads/{branch}"], repo.root, GH_TIMEOUT)
     if rc == 0:
         raise Fail(f"branch {branch} already exists on {repo.remote} (another machine's task?); pick another slug")
     if rc != 2:
@@ -3053,6 +3050,15 @@ def installation_token(identity, repository=None):
     return body["token"], body["expires_at"]
 
 
+def git_as_app(args, cwd, timeout=None):
+    """`git` as the App when an identity is installed (as the session hook's `factory env` does), for what reaches the
+    remote or makes commits: the human's credentials and name are not used then."""
+    exports, error = identity_exports()
+    if error:
+        return 1, "", error
+    return run(["git", *args], cwd=cwd, timeout=timeout, env={**os.environ, **exports} if exports else None)
+
+
 def acting_identity(cwd=None):
     """(identity, repository name) once the wizard has installed the App (it writes bot_login last) and `cwd` is in a
     repository of the App's owner, else None."""
@@ -3851,10 +3857,7 @@ class Landing:
     def act(self, *args):
         """`git` as the App when an identity is installed (as the session hook's `factory env` does), for what
         reaches the remote or makes commits: the human's credentials and name are not used then."""
-        exports, error = identity_exports()
-        if error:
-            return 1, "", error
-        return run(["git", *args], cwd=self.path, env={**os.environ, **exports} if exports else None)
+        return git_as_app(args, self.path)
 
     def stop(self, reason, needs, facts=()):
         return f"STOPPED {reason}", list(facts), needs

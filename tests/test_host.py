@@ -428,6 +428,7 @@ class HostTests(unittest.TestCase):
     def test_an_empty_alias_answer_is_final_and_a_declined_run_does_nothing(self):
         rc, out, err = self.wizard("add", "nas", self.state, "", "", "")
         self.assertEqual((rc, err), (0, ""), out)
+        self.assertIn("--state %s --alias ''\n" % self.state, out)
         self.assertIn("Connect: ssh -J nas", out)
         self.assertIsNone(self.registry()["nas"]["alias"])
         self.assertEqual(self.registry()["nas"]["repos"], [])
@@ -443,12 +444,13 @@ class HostTests(unittest.TestCase):
         self.assertEqual(self.add("--name", "box")[0], 0)
         rc, out, err = self.wizard("add", "box", "")
         self.assertEqual((rc, err), (0, ""), out)
-        self.assertIn("bin/isshoni host add nas --name box\n", out)
+        self.assertIn("bin/isshoni host add nas --name box --alias ''\n", out)
 
     def test_an_empty_alias_removes_the_block_and_asks_nothing(self):
         self.assertEqual(self.add("--alias", "factory")[0], 0)
         self.assertIn("Host factory", self.ssh_config())
-        rc, out, err = self.add("--alias", "")
+        with mock.patch("builtins.input", side_effect=AssertionError("asked")):
+            rc, out, err = self.run_host("add", "nas", "--state", self.state, "--alias", "", tty=True)
         self.assertEqual((rc, err), (0, ""), out)
         self.assertNotIn("Host factory", self.ssh_config())
         self.assertIsNone(self.registry()["nas"]["alias"])
