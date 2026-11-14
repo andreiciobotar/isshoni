@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -72,17 +71,14 @@ func eachEvent(in io.Reader, fn func(Event)) error {
 	}
 }
 
-// eventsCmd is `python3 -m isshoni events <args>` in its own process group, killed as a whole on cancel.
+// eventsCmd is `python3 -m isshoni events <args>` as a groupCmd.
 func (r *Runner) eventsCmd(ctx context.Context, args ...string) *exec.Cmd {
 	full := append([]string{"-m", "isshoni", "events"}, args...)
 	if r.ProjectsDir != "" {
 		full = append(full, "--projects-dir", r.ProjectsDir)
 	}
-	cmd := exec.CommandContext(ctx, r.python(), full...)
+	cmd := groupCmd(ctx, r.python(), full...)
 	cmd.Dir = r.Root
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = time.Second
 	return cmd
 }
 

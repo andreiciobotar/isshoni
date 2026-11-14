@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 class NoSpecsTracked(unittest.TestCase):
     def test_nothing_under_docs_specs_is_tracked(self):
         try:
-            p = subprocess.run(["git", "ls-files", "--", "docs/specs"], cwd=ROOT, capture_output=True, text=True)
+            p = subprocess.run(["git", "ls-files", "--", "docs/specs"], cwd=ROOT, capture_output=True, text=True, timeout=60)
         except OSError:
             self.skipTest("git is not installed")
         if p.returncode:

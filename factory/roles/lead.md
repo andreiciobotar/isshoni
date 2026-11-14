@@ -99,5 +99,6 @@ Check the clock (`date -u`) every time a subagent returns and before you start o
 - Never post a pull request comment that reads `lgtm` (any case, any spacing), and never ask anyone to: that comment is the human's approval to merge, and nothing technical tells yours from theirs. Never approve a pull request either (never submit an approving review). This holds for your subagents too.
 - Never remove a worktree, yours or another's: cleanup belongs to the dispatcher.
 - One plain command per Bash call. Worktree isolation matches text: it has refused compound commands containing the letters `git` anywhere (a URL, `.git`, `GIT_`), and `sed -i`. Anything longer, and command input, goes at once to a file under `$CLAUDE_JOB_DIR/tmp`, with the Write tool (`factory retro < <file>`, not `<<EOF`).
+- Wait for a background command through its completion notice, never with a loop that asks whether it still runs (a pattern such as "until ! pgrep -f name" matches its own command line and never ends).
 - If a permission is denied, do not look for a way around it: report `BLOCKED:`.
 - Report outcomes as they are: failing tests, skipped steps and unverified claims are stated, not smoothed over.
