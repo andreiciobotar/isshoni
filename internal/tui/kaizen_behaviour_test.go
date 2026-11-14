@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"image/color"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -50,6 +51,10 @@ func TestKaizenPagesAndScroll(t *testing.T) {
 		t.Fatalf("→ -> %v", m.kz.page)
 	}
 	send(m, "l")
+	if m.kz.page != pageAnatomy {
+		t.Fatalf("l -> %v", m.kz.page)
+	}
+	send(m, "l")
 	if m.kz.page != pageBoard {
 		t.Fatalf("l -> %v", m.kz.page)
 	}
@@ -58,7 +63,7 @@ func TestKaizenPagesAndScroll(t *testing.T) {
 		t.Fatalf("pages wrap: %v", m.kz.page)
 	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
-	send(m, "h")
+	send(m, "h", "h")
 	if m.kz.page != pageFlow {
 		t.Fatalf("← and h go back: %v", m.kz.page)
 	}
@@ -68,7 +73,7 @@ func TestKaizenPagesAndScroll(t *testing.T) {
 	}
 	send(m, "l", "j")
 	send(m, "h")
-	if m.kz.top[pageFlow] != 3 || m.kz.top[pageBoard] != 1 {
+	if m.kz.top[pageFlow] != 3 || m.kz.top[pageAnatomy] != 1 {
 		t.Fatalf("each page keeps its place: %v", m.kz.top)
 	}
 	send(m, "G")
@@ -211,6 +216,7 @@ func TestKaizenFramesFitEverySize(t *testing.T) {
 	long.Stops[0].Why = strings.Repeat("why ", 60)
 	long.Outbox.Entries[0].Text = strings.Repeat("a-very-long-word-without-spaces", 8)
 	docs["long"] = long
+	docs["few anatomy"] = fewAnatomyDoc(t)
 	for name, doc := range docs {
 		for _, sz := range sizes {
 			for _, nc := range []bool{false, true} {
@@ -878,6 +884,85 @@ func TestSnapshotKaizen(t *testing.T) {
 		}
 		if !strings.Contains(out, "[4 Kaizen]") || !strings.Contains(out, want) {
 			t.Errorf("%s:\n%s", view, out)
+		}
+	}
+}
+
+func TestAnatomyChangeColumnNeedsTheMinimumOnBothSides(t *testing.T) {
+	out := plain(kaizenModel(t, true, 140, 100, pageAnatomy))
+	for _, want := range []string{"did v0.3.0 move the lead", "0.2.0 n=8", "0.3.0 n=5", "0.4.0 n=0", "change", "↓ 17 pts", "↓ 62%", "↑ 56%", "are on Pulse"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("%q is missing:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "too few tasks") {
+		t.Fatalf("both versions have the minimum:\n%s", out)
+	}
+	for name, c := range map[string]struct {
+		doc  *data.Kaizen
+		want string
+	}{
+		"latest is short": {fewAnatomyDoc(t), "too few tasks to compare: 0.4.0 has 2 of 5"},
+		"before is short": {func() *data.Kaizen {
+			d := kaizenDoc(t)
+			d.Summary.Anatomy.Versions[1].Roles["lead"].N = 4
+			return d
+		}(), "too few tasks to compare: 0.2.0 has 4 of 5"},
+	} {
+		m := fakeModel(true, 140, 100)
+		setKaizen(m, c.doc, pageAnatomy)
+		out := plain(m)
+		if !strings.Contains(out, c.want) || strings.Contains(out, "change") || strings.Contains(out, " pts") {
+			t.Fatalf("%s: the numbers show without a change column:\n%s", name, out)
+		}
+	}
+}
+
+func TestAnatomyOneVersionAndNone(t *testing.T) {
+	doc := kaizenDoc(t)
+	doc.Summary.Anatomy.Versions = doc.Summary.Anatomy.Versions[:1]
+	m := fakeModel(true, 140, 100)
+	setKaizen(m, doc, pageAnatomy)
+	out := plain(m)
+	if !strings.Contains(out, "nothing to compare yet: only 0.1.0 has landed tasks") || strings.Contains(out, "change") {
+		t.Fatalf("one version, nothing to compare:\n%s", out)
+	}
+	doc.Summary.Anatomy = data.KaizenAnatomy{Window: 5, Min: 5}
+	setKaizen(m, doc, pageAnatomy)
+	out = plain(m)
+	if !strings.Contains(out, "no landed task with a cost yet") || !strings.Contains(out, "the line starts at 6") {
+		t.Fatalf("no versions:\n%s", out)
+	}
+}
+
+func TestAnatomyRoleThatDidNotRunShowsDashes(t *testing.T) {
+	out := plain(kaizenModel(t, true, 140, 100, pageAnatomy))
+	if !strings.Contains(out, "lander    0 → 3     - → 6%") {
+		t.Fatalf("the lander did not run before: its row shows - and both ns:\n%s", out)
+	}
+}
+
+func TestLineChartLeavesAGapForNaN(t *testing.T) {
+	p := NewTheme(true).on(nil)
+	nan := math.NaN()
+	o := lineOpts{label: func(v float64) string { return fmt.Sprintf("%.0f", v) }, series: []lineSeries{
+		{name: "gap", color: p.th.Blue, vals: []float64{5, 5, nan, nan, nan, nan, nan, nan, 5, 5}},
+		{name: "never", color: p.th.Teal, vals: slices.Repeat([]float64{nan}, 10)},
+		{name: "late", color: p.th.Pink, vals: []float64{nan, nan, nan, nan, nan, nan, nan, nan, 3, 4}},
+	}}
+	out := p.lineChart(o, 60)
+	all := ansi.Strip(strings.Join(out.lines, "\n"))
+	if strings.Contains(all, "NaN") || strings.Contains(all, "never") {
+		t.Fatalf("a series without a value draws nothing:\n%s", all)
+	}
+	if !strings.Contains(all, "gap 5") || !strings.Contains(all, "late 4") {
+		t.Fatalf("the others keep their end labels:\n%s", all)
+	}
+	only := p.lineChart(lineOpts{label: o.label, series: o.series[:1]}, 60)
+	for _, l := range only.lines {
+		plot := strings.TrimSpace(string([]rune(ansi.Strip(l))[only.gutter : only.gutter+only.plot]))
+		if r := []rune(plot); len(r) > 2 && r[0] >= 0x2800 && r[len(r)-1] >= 0x2800 && !strings.Contains(plot, " ") {
+			t.Fatalf("a line crosses the gap in %q", plot)
 		}
 	}
 }

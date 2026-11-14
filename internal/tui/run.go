@@ -31,7 +31,7 @@ func runProgram(o Options, popts ...tea.ProgramOption) error {
 // SnapshotOptions selects what Snapshot renders.
 type SnapshotOptions struct {
 	Options
-	View    string // dashboard, session (the zoom), agents, factory, kaizen, kaizen-flow, kaizen-board, help
+	View    string // dashboard, session (the zoom), agents, factory, kaizen, kaizen-flow, kaizen-anatomy, kaizen-board, help
 	Session string // id prefix for the zoomed session
 	Row     int    // dashboard: cursor on this table row, 0 is the all row
 	Fold    bool   // dashboard: collapse the repository the cursor is in
@@ -103,9 +103,9 @@ func Snapshot(so SnapshotOptions) (string, error) {
 		m.view = viewAgents
 	case "factory":
 		m.view = viewFactory
-	case "kaizen", "kaizen-flow", "kaizen-board":
+	case "kaizen", "kaizen-flow", "kaizen-anatomy", "kaizen-board":
 		m.view = viewKaizen
-		m.kz.page = map[string]kaizenPage{"kaizen": pagePulse, "kaizen-flow": pageFlow, "kaizen-board": pageBoard}[so.View]
+		m.kz.page = map[string]kaizenPage{"kaizen": pagePulse, "kaizen-flow": pageFlow, "kaizen-anatomy": pageAnatomy, "kaizen-board": pageBoard}[so.View]
 		doc, err := m.runner.Kaizen(ctx, ranges[m.rangeIdx].since)
 		if err != nil {
 			return "", err

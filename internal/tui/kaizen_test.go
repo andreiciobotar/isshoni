@@ -41,6 +41,16 @@ func fewDoc(t testing.TB) *data.Kaizen {
 	return d
 }
 
+// fewAnatomyDoc is the fixture where the newest version has two landed tasks: too few to compare.
+func fewAnatomyDoc(t testing.TB) *data.Kaizen {
+	d := kaizenDoc(t)
+	vs := d.Summary.Anatomy.Versions
+	lead := *vs[len(vs)-2].Roles["lead"]
+	lead.N, lead.Share = 2, 0.1
+	vs[len(vs)-1].Tasks, vs[len(vs)-1].Roles["lead"] = 2, &lead
+	return d
+}
+
 // setKaizen puts the model on a page of the kaizen view holding doc as the last result.
 func setKaizen(m *model, doc *data.Kaizen, page kaizenPage) {
 	m.view = viewKaizen
@@ -74,6 +84,10 @@ func TestGoldenKaizen(t *testing.T) {
 		{"kaizen-flow-100x30", 100, 30, pageFlow, doc, true},
 		{"kaizen-flow-140x100", 140, 100, pageFlow, doc, true},
 		{"kaizen-board-140x100", 140, 100, pageBoard, doc, true},
+		{"kaizen-anatomy-140x40", 140, 40, pageAnatomy, doc, true},
+		{"kaizen-anatomy-140x62", 140, 62, pageAnatomy, doc, true},
+		{"kaizen-anatomy-80x24", 80, 24, pageAnatomy, doc, true},
+		{"kaizen-anatomy-few-100x30", 100, 30, pageAnatomy, func(t *testing.T) *data.Kaizen { return fewAnatomyDoc(t) }, true},
 		{"kaizen-flow-80x24", 80, 24, pageFlow, doc, true},
 		{"kaizen-board-140x40", 140, 40, pageBoard, doc, true},
 		{"kaizen-board-100x30", 100, 30, pageBoard, doc, false},

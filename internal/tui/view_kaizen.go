@@ -42,6 +42,8 @@ func (m *model) kaizenLines(p paint, w, h int) block {
 	switch k.page {
 	case pageFlow:
 		return append(lines, m.flowLines(p, w)...)
+	case pageAnatomy:
+		return append(lines, m.anatomyLines(p, w)...)
 	case pageBoard:
 		return append(lines, m.boardLines(p, w)...)
 	}
@@ -604,41 +606,44 @@ func (m *model) roleColor(role string) color.Color {
 // mixLines is the heading and chart of each role's share of task cost over time, the
 // plugin versions marked beneath it, or one line saying when the chart starts.
 func (m *model) mixLines(p paint, w int) block {
-	th := m.th
-	d := m.kz.doc
-	mix := d.Summary.Mix
-	note := fmt.Sprintf("role share of task cost · median of %d tasks", mix.Window)
-	if len(mix.Points) < 2 {
-		landed := len(mix.Points) + mix.Window - 1
-		if len(mix.Points) == 0 {
-			landed = 0
-			for _, t := range d.Tasks {
-				if t.Landed && t.Cost != nil && t.Cost.Total > 0 {
-					landed++
-				}
-			}
-		}
-		return block{m.heading(p, w, "the mix over time", note), p.sp(1) +
-			p.t(fmt.Sprintf("%s with a cost: the line starts at %d (each point is the median of %d tasks)", plural(landed, "landed task"), mix.Window+1, mix.Window), th.Faint)}
-	}
+	mix := m.kz.doc.Summary.Mix
 	o := lineOpts{label: func(v float64) string { return fmt.Sprintf("%.0f%%", v*100) }}
-	for _, role := range d.Roles {
+	vers := make([]string, len(mix.Points))
+	for _, role := range m.kz.doc.Roles {
 		s := lineSeries{name: role, color: m.roleColor(role)}
 		for _, pt := range mix.Points {
 			s.vals = append(s.vals, pt.Share[role])
 		}
 		o.series = append(o.series, s)
 	}
-	ch := p.lineChart(o, w-2)
-	if ch.first > 0 {
-		note += fmt.Sprintf(" · last %d/%d", len(mix.Points)-ch.first, len(mix.Points))
-	}
-	vers := make([]string, len(mix.Points))
 	for i, pt := range mix.Points {
 		vers[i] = pt.Version
 	}
+	return m.pointsChart(p, w, "the mix over time", fmt.Sprintf("role share of task cost · median of %d tasks", mix.Window), mix.Window, o, vers)
+}
+
+// pointsChart is a heading and the braille chart o with the plugin versions marked beneath it, or
+// one line saying when the chart starts: a point is the median of window tasks.
+func (m *model) pointsChart(p paint, w int, title, note string, window int, o lineOpts, vers []string) block {
+	if len(vers) < 2 {
+		landed := len(vers) + window - 1
+		if len(vers) == 0 {
+			landed = 0
+			for _, t := range m.kz.doc.Tasks {
+				if t.Landed && t.Cost != nil && t.Cost.Total > 0 {
+					landed++
+				}
+			}
+		}
+		return block{m.heading(p, w, title, note), p.sp(1) +
+			p.t(fmt.Sprintf("%s with a cost: the line starts at %d (each point is the median of %d tasks)", plural(landed, "landed task"), window+1, window), m.th.Faint)}
+	}
+	ch := p.lineChart(o, w-2)
+	if ch.first > 0 {
+		note += fmt.Sprintf(" · last %d/%d", len(vers)-ch.first, len(vers))
+	}
 	axis, labels := m.versionAxis(p, vers, ch.first, ch.gutter, ch.gutter+ch.plot, func(i int) int { return ch.gutter + (i-ch.first)*ch.step/2 })
-	out := block{m.heading(p, w, "the mix over time", note)}
+	out := block{m.heading(p, w, title, note)}
 	for _, l := range append(ch.lines, axis, labels) {
 		out = append(out, fit(p.sp(1)+l, w, p))
 	}
