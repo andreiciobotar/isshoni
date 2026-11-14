@@ -1,8 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 780" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 832" role="img">
   <!-- Preview: open this file in a browser. Narrow (this file, for phones) and factory-wide.svg show
        the same picture; change them together. Palette and roles: internal/tui/theme.go. -->
   <title>How a brief becomes a merged pull request, and how the factory improves</title>
-  <desc>You give the dispatcher a brief. It starts one lead per task, in its own worktree. The lead writes the spec and dispatches an explorer (Haiku), a coder (Sonnet) and a reviewer (Opus) until the reviewer approves. The lander (Sonnet) runs the tests and pushes a pull request, a draft until it is handed over with checks green. You approve with a review or a comment lgtm, and the lander merges it to main. A watcher script (every 2 minutes) forwards your comments to the lead, flips draft to ready and starts the lander on approval; a site manager (Sonnet, every 30 minutes) watches and escalates to the dispatcher. Kaizen: every task leaves feedback, decisions, a retrospective and its cost; the dispatcher proposes rule edits, you decide, and the rules apply to the next task.</desc>
+  <desc>You give the dispatcher a brief. It starts one lead per task, in its own worktree. The lead writes the spec and dispatches an explorer (Haiku), a coder (Sonnet) and a reviewer (Opus) until the reviewer approves. The lander (Sonnet) runs the tests and pushes a pull request, a draft until it is handed over with checks green. You approve with a review or a comment lgtm, and the lander merges it to main. A watcher script flips the pull request from draft to ready when it is handed over and green; a courier (Haiku) carries your pull request comments to the lead; a site manager (Sonnet, every 30 minutes) watches and escalates to the dispatcher. The lander merges within about two minutes of your approval. Models are defaults. Kaizen: every task leaves feedback, decisions, a retrospective and its cost; the dispatcher proposes rule edits, you decide, and the rules apply to the next task.</desc>
   <style>
     svg { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; }
     .bg { fill: #12111C; }
@@ -37,7 +37,7 @@
   </defs>
 
   <!-- card -->
-  <rect class="bg" width="400" height="780" rx="12"/>
+  <rect class="bg" width="400" height="832" rx="12"/>
 
   <!-- 1 you: brief -->
   <g class="human">
@@ -111,45 +111,52 @@
   <g class="lander">
     <rect class="box" x="20" y="344" width="170" height="56" rx="8"/>
     <text class="n" x="105" y="368" text-anchor="middle">main</text>
-    <text class="t" x="105" y="386" text-anchor="middle">lander merges</text>
+    <text class="t" x="105" y="382" text-anchor="middle">lander merges</text>
+    <text class="s" x="105" y="396" text-anchor="middle">in about 2 min</text>
   </g>
 
   <!-- side notes -->
   <g class="side muted">
     <rect class="box" x="20" y="424" width="360" height="42" rx="8"/>
-    <text class="n" x="200" y="441" text-anchor="middle">watcher · script · every 2 min</text>
-    <text class="s" x="200" y="457" text-anchor="middle">comments → lead · draft ↔ ready · starts lander</text>
+    <text class="n" x="200" y="441" text-anchor="middle">watcher · script</text>
+    <text class="s" x="200" y="457" text-anchor="middle">draft → ready when handed over, green</text>
   </g>
   <g class="side muted">
     <rect class="box" x="20" y="476" width="360" height="42" rx="8"/>
-    <text class="n" x="200" y="493" text-anchor="middle">site manager · Sonnet · every 30 min</text>
-    <text class="s" x="200" y="509" text-anchor="middle">watches, escalates → dispatcher</text>
+    <text class="n" x="200" y="493" text-anchor="middle">courier · Haiku</text>
+    <text class="s" x="200" y="509" text-anchor="middle">your comments: pull request → lead</text>
+  </g>
+  <g class="side muted">
+    <rect class="box" x="20" y="528" width="360" height="42" rx="8"/>
+    <text class="n" x="200" y="545" text-anchor="middle">site manager · Sonnet · every 30 min</text>
+    <text class="s" x="200" y="561" text-anchor="middle">watches, escalates → dispatcher</text>
   </g>
 
   <!-- kaizen lane, stacked -->
-  <text class="k" x="20" y="550">kaizen 改善</text>
+  <text class="k" x="20" y="602">kaizen 改善</text>
+  <text class="s" x="380" y="602" text-anchor="end">default models</text>
   <g class="muted">
-    <rect class="box" x="20" y="562" width="360" height="48" rx="8"/>
-    <text class="s" x="200" y="581" text-anchor="middle">every task leaves</text>
-    <text class="t" x="200" y="598" text-anchor="middle">feedback · decisions · retrospective · cost</text>
+    <rect class="box" x="20" y="614" width="360" height="48" rx="8"/>
+    <text class="s" x="200" y="633" text-anchor="middle">every task leaves</text>
+    <text class="t" x="200" y="650" text-anchor="middle">feedback · decisions · retrospective · cost</text>
   </g>
-  <path class="loop" d="M105 610V634"/>
+  <path class="loop" d="M105 662V686"/>
   <g class="dispatcher">
-    <rect class="box" x="20" y="636" width="170" height="52" rx="8"/>
-    <text class="n" x="105" y="658" text-anchor="middle">Dispatcher</text>
-    <text class="t" x="105" y="676" text-anchor="middle">proposes rule edits</text>
+    <rect class="box" x="20" y="688" width="170" height="52" rx="8"/>
+    <text class="n" x="105" y="710" text-anchor="middle">Dispatcher</text>
+    <text class="t" x="105" y="728" text-anchor="middle">proposes rule edits</text>
   </g>
-  <path class="loop" d="M190 662H208"/>
+  <path class="loop" d="M190 714H208"/>
   <g class="human">
-    <rect class="box" x="210" y="636" width="170" height="52" rx="8"/>
-    <text class="n" x="295" y="658" text-anchor="middle">You</text>
-    <text class="t" x="295" y="676" text-anchor="middle">decide</text>
+    <rect class="box" x="210" y="688" width="170" height="52" rx="8"/>
+    <text class="n" x="295" y="710" text-anchor="middle">You</text>
+    <text class="t" x="295" y="728" text-anchor="middle">decide</text>
   </g>
-  <path class="loop" d="M295 688V710"/>
+  <path class="loop" d="M295 740V762"/>
   <g class="muted">
-    <rect class="box" x="20" y="712" width="360" height="44" rx="8"/>
-    <text class="n" x="200" y="739" text-anchor="middle">rules for the next task</text>
+    <rect class="box" x="20" y="764" width="360" height="44" rx="8"/>
+    <text class="n" x="200" y="791" text-anchor="middle">rules for the next task</text>
   </g>
   <!-- the loop closes into the start of the flow -->
-  <path class="loop" d="M20 734H8V40H18"/>
+  <path class="loop" d="M20 786H8V40H18"/>
 </svg>

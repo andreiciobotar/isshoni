@@ -74,9 +74,11 @@ flowchart LR
     ex & co & rv --> lander[Lander · Sonnet]
     lander -- tests, pushes --> pr[Pull request<br>draft → ready]
     pr -- review or lgtm --> you2([You])
-    you2 -- lander merges --> main[main]
-    watcher[watcher · every 2 min] -. comments, draft ↔ ready, starts lander .-> pr
+    you2 -- lander merges in about 2 min --> main[main]
+    pr -. your comments .-> courier[courier · Haiku] -.-> lead
+    watcher[watcher · script<br>draft → ready when green] -.-> pr
     sm[site manager · Sonnet · every 30 min] -. escalates .-> disp
+    note[default models]
     classDef yellow stroke:#FFD34E,stroke-width:2px
     classDef teal stroke:#3FD8C4,stroke-width:2px
     classDef blue stroke:#5E9BFF,stroke-width:2px
@@ -88,7 +90,7 @@ flowchart LR
     class co blue
     class rv pink
     class lander,main lime
-    class watcher,sm muted
+    class watcher,sm,courier,note muted
 ```
 
 ```mermaid
@@ -106,7 +108,7 @@ flowchart LR
 <p align="center">
   <picture>
     <source media="(max-width: 600px)" srcset="assets/diagrams/factory-narrow.svg">
-    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief. It starts one lead per task, in its own worktree; the lead dispatches an explorer, a coder and a reviewer until the reviewer approves. The lander tests and pushes a pull request that stays a draft until checks are green. You approve with a review or a comment lgtm, and the lander merges it to main. Every task leaves feedback, decisions, a retrospective and its cost; the dispatcher proposes rule edits, you decide, and the rules apply to the next task.">
+    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief. It starts one lead per task, in its own worktree; the lead dispatches an explorer, a coder and a reviewer until the reviewer approves. The lander tests and pushes a pull request that stays a draft until checks are green. A courier carries your comments to the lead. You approve with a review or a comment lgtm, and the lander merges it to main within about two minutes. Models shown are defaults. Every task leaves feedback, decisions, a retrospective and its cost; the dispatcher proposes rule edits, you decide, and the rules apply to the next task.">
   </picture>
 </p>
 
