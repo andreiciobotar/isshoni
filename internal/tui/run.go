@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"os/signal"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -10,8 +12,8 @@ import (
 	"isshoni/internal/data"
 )
 
-// Run starts the interactive dashboard. Quitting cancels every python call and waits
-// for them to end, so none outlives the TUI.
+// Run starts the interactive dashboard. Quitting, or a closed terminal (SIGHUP), cancels every
+// python call and waits for them to end, so none outlives the TUI.
 func Run(o Options) error { return runProgram(o) }
 
 // runProgram is Run with extra program options, which tests use to drive it without a TTY.
@@ -24,7 +26,12 @@ func runProgram(o Options, popts ...tea.ProgramOption) error {
 			o.Runner.Wait()
 		}
 	}()
-	_, err := tea.NewProgram(New(o), popts...).Run()
+	hup, stop := signal.NotifyContext(ctx, syscall.SIGHUP)
+	defer stop()
+	_, err := tea.NewProgram(New(o), append(popts, tea.WithContext(hup))...).Run()
+	if hup.Err() != nil && ctx.Err() == nil { // hung up: the program ended on its own terms
+		return nil
+	}
 	return err
 }
 
