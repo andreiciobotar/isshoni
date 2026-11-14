@@ -66,6 +66,7 @@
     "merged": "2026-10-20T10:02:20+00:00"
    },
    "landed": true,
+   "mode": "team",
    "brief_to_pr_s": 2900,
    "pr_to_merge_s": 840,
    "cost": {
@@ -131,6 +132,7 @@
     "merged": "2026-10-21T17:26:40+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 3100,
    "pr_to_merge_s": 660,
    "cost": {
@@ -196,6 +198,7 @@
     "merged": "2026-10-22T17:35:00+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 2400,
    "pr_to_merge_s": 420,
    "cost": {
@@ -261,6 +264,7 @@
     "merged": "2026-10-23T18:12:00+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 2700,
    "pr_to_merge_s": 900,
    "cost": null,
@@ -313,6 +317,7 @@
     "merged": "2026-10-25T01:36:00+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 3300,
    "pr_to_merge_s": 300,
    "cost": {
@@ -366,6 +371,7 @@
    "pr": null,
    "brief_to_pr_s": null,
    "landed": false,
+   "mode": "team",
    "pr_to_merge_s": null,
    "cost": {
     "total": 9.9,
@@ -423,6 +429,7 @@
     "merged": "2026-10-27T02:08:40+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 2200,
    "pr_to_merge_s": 480,
    "cost": {
@@ -488,6 +495,7 @@
     "merged": "2026-10-28T02:46:40+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 2800,
    "pr_to_merge_s": 720,
    "cost": {
@@ -553,6 +561,7 @@
     "merged": "2026-10-29T09:46:20+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 1700,
    "pr_to_merge_s": 360,
    "cost": {
@@ -618,6 +627,7 @@
     "merged": "2026-10-30T10:09:00+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 1500,
    "pr_to_merge_s": 480,
    "cost": {
@@ -676,6 +686,7 @@
     "merged": "2026-10-31T10:24:00+00:00"
    },
    "landed": true,
+   "mode": "team",
    "brief_to_pr_s": 1200,
    "pr_to_merge_s": 240,
    "cost": {
@@ -741,6 +752,7 @@
     "merged": "2026-11-01T18:00:40+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 1600,
    "pr_to_merge_s": 600,
    "cost": {
@@ -806,6 +818,7 @@
     "merged": "2026-11-02T18:23:00+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 1800,
    "pr_to_merge_s": 300,
    "cost": {
@@ -871,6 +884,7 @@
     "merged": "2026-11-03T18:33:50+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 1100,
    "pr_to_merge_s": 210,
    "cost": {
@@ -936,6 +950,7 @@
     "merged": "2026-11-04T19:04:10+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 1300,
    "pr_to_merge_s": 390,
    "cost": {
@@ -994,6 +1009,7 @@
     "merged": "2026-11-06T02:22:00+00:00"
    },
    "landed": true,
+   "mode": "team",
    "brief_to_pr_s": 1050,
    "pr_to_merge_s": 270,
    "cost": {
@@ -1059,6 +1075,7 @@
     "merged": "2026-11-07T02:43:00+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 960,
    "pr_to_merge_s": 180,
    "cost": {
@@ -1124,6 +1141,7 @@
     "merged": "2026-11-08T03:08:10+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 880,
    "pr_to_merge_s": 330,
    "cost": {
@@ -1189,6 +1207,7 @@
     "merged": "2026-11-09T10:28:10+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 820,
    "pr_to_merge_s": 150,
    "cost": {
@@ -1254,6 +1273,7 @@
     "merged": "2026-11-10T10:53:10+00:00"
    },
    "landed": true,
+   "mode": "single",
    "brief_to_pr_s": 790,
    "pr_to_merge_s": 240,
    "cost": {
@@ -1312,6 +1332,7 @@
     "merged": "2026-11-11T11:14:00+00:00"
    },
    "landed": true,
+   "mode": "team",
    "brief_to_pr_s": 720,
    "pr_to_merge_s": 120,
    "cost": {
@@ -1378,6 +1399,7 @@
    },
    "brief_to_pr_s": 1500,
    "landed": false,
+   "mode": "single",
    "pr_to_merge_s": null,
    "cost": {
     "total": 1.4,
@@ -1436,6 +1458,7 @@
    },
    "brief_to_pr_s": 1500,
    "landed": false,
+   "mode": "single",
    "pr_to_merge_s": null,
    "cost": {
     "total": 2.0,
@@ -1488,6 +1511,7 @@
    "pr": null,
    "brief_to_pr_s": null,
    "landed": false,
+   "mode": "single",
    "pr_to_merge_s": null,
    "cost": {
     "total": 2.6,
@@ -3015,7 +3039,65 @@
    "unpriced_tokens": 0,
    "landed": 20,
    "per_landed": 2.055
-  }
+  },
+  "by_mode": [
+   {
+    "mode": "single",
+    "size": "small",
+    "n": 6,
+    "cost_median": 4.2,
+    "lead_share_median": 0.4,
+    "lead_calls_median": 22,
+    "handover_s_median": 900,
+    "first_pass": 4,
+    "review_rounds_median": 1,
+    "defects": {
+     "tests": 0,
+     "reviewer": 3,
+     "lead": 0,
+     "ci": 0,
+     "human": 0,
+     "other": 0
+    },
+    "lead_wakeups": 2,
+    "build_runs_median": null
+   },
+   {
+    "mode": "team",
+    "size": "small",
+    "n": 3,
+    "cost_median": 3.1,
+    "lead_share_median": 0.1,
+    "lead_calls_median": 12,
+    "handover_s_median": 1200,
+    "first_pass": 2,
+    "review_rounds_median": 1,
+    "defects": {
+     "tests": 0,
+     "reviewer": 4,
+     "lead": 1,
+     "ci": 0,
+     "human": 0,
+     "other": 0
+    },
+    "lead_wakeups": 1,
+    "build_runs_median": 1
+   },
+   {
+    "mode": "single",
+    "size": null,
+    "n": 2,
+    "cost_median": null,
+    "lead_share_median": null,
+    "lead_calls_median": null,
+    "handover_s_median": null,
+    "first_pass": 0,
+    "review_rounds_median": null,
+    "defects": null,
+    "lead_wakeups": 0,
+    "build_runs_median": null
+   }
+  ]
  },
  "stops": [
   {

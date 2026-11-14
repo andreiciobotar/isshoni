@@ -106,6 +106,7 @@ type KaizenTask struct {
 	State     string        `json:"state"`
 	PR        *KaizenPR     `json:"pr"`
 	Landed    bool          `json:"landed"`
+	Mode      string        `json:"mode"` // "single" or "team"
 	BriefToPR *float64      `json:"brief_to_pr_s"`
 	PRToMerge *float64      `json:"pr_to_merge_s"`
 	Cost      *KaizenCost   `json:"cost"`
@@ -263,6 +264,23 @@ type KaizenSummary struct {
 	Defects     Defects       `json:"defects"`
 	TrendMin    int           `json:"trend_min"`
 	Trend       *KaizenTrend  `json:"trend"`
+	ByMode      []ModeRow     `json:"by_mode"`
+}
+
+// ModeRow compares the landed tasks of one mode and stated size; a nil number is unknown, not zero.
+type ModeRow struct {
+	Mode               string   `json:"mode"`
+	Size               *string  `json:"size"`
+	N                  int      `json:"n"`
+	CostMedian         *float64 `json:"cost_median"`
+	LeadShareMedian    *float64 `json:"lead_share_median"`
+	LeadCallsMedian    *float64 `json:"lead_calls_median"`
+	HandoverSMedian    *float64 `json:"handover_s_median"`
+	FirstPass          int      `json:"first_pass"`
+	ReviewRoundsMedian *float64 `json:"review_rounds_median"`
+	Defects            *Defects `json:"defects"`
+	LeadWakeups        int      `json:"lead_wakeups"`
+	BuildRunsMedian    *float64 `json:"build_runs_median"`
 }
 
 // KaizenStop is a moment the line stopped for the human, or a permission was denied.
