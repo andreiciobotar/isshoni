@@ -60,20 +60,14 @@ Optional:
 
 ## The software factory
 
-```mermaid
-flowchart TD
-    you([You]) <-- tasks, questions --> disp[Dispatcher]
-    disp <-- brief, questions --> lead
-    subgraph task [One per task, in its own worktree]
-        lead[Lead · Fable] --> subs[explorer · Haiku<br>coder · Sonnet<br>reviewer · Opus<br>lander · Sonnet]
-    end
-    subs -- opens --> pr[Draft pull request]
-    you -- approves --> pr
-    sm[Site manager<br>every 30 min] -- alerts --> disp
-    lander[Lander · Sonnet] -- merges --> pr
-```
+<p align="center">
+  <picture>
+    <source media="(max-width: 600px)" srcset="assets/diagrams/factory-narrow.svg">
+    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief; it starts one lead per task in its own worktree. The lead has an explorer, a coder and a reviewer work until the reviewer approves. The lander tests and pushes a pull request, a draft until handed over and green; you approve and the lander merges to main. A courier carries your comments to the lead; a site manager watches and escalates to the dispatcher. Every task leaves feedback and a retrospective; the dispatcher proposes rule edits, you decide. Models are defaults.">
+  </picture>
+</p>
 
-A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the lander merges it within a few minutes once checks are green. Your other comments on a pull request reach its lead on the next watch tick.
+A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`.
 
 <p align="center">
   <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap">
@@ -93,13 +87,6 @@ The dispatcher reads it all and proposes edits to the factory's own rules; you d
 <p align="center">
   <img src="assets/tabs/kaizen.webp" alt="The Kaizen view, page by page: Pulse (cost, time and review rounds per task), Flow (where money and time went), Anatomy (each release compared) and Board (open issues by topic)">
 </p>
-
-```mermaid
-flowchart TD
-    tasks[Every task] -. feedback, decisions,<br>retrospectives, cost .-> disp[Dispatcher]
-    disp -. proposes edits .-> you([You])
-    you -. accepts .-> rules[Rules for the next task]
-```
 
 On day one, agents reported the same shell friction eleven times and counting. It became a rule that day ([#8](https://github.com/andreiciobotar/isshoni/pull/8)).
 
