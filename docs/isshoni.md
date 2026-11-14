@@ -498,9 +498,9 @@ The fifth view (`5`) draws the same work as motion, for a second screen: the mar
 | you see | it is |
 |---|---|
 | the disc, a solid body that swells, brightens and takes a returning agent's colour | all the work; the rate of events; a return |
-| a branch growing out of the disc, its tip glowing; dimmer | a session; a call; at rest (3 minutes of silence). The tree has twelve places: a new session takes the place of the one at rest longest, sessions at work beyond twelve share places, and a session that bore no blossom goes when it rests |
-| a blossom opening on a branch (`✿` coder, `❀` reviewer, `✾` explorer, `✽` other, in the role's colour), growing | a subagent dispatched; its work so far (tool calls, output tokens) |
-| petals flying to the disc, the blossom closing to an outline | a subagent returned; what it did stays on the tree for 2 hours. An outline without petals: its session went silent for 3 minutes before it returned. It opens again if the agent is resumed |
+| a branch growing out of the disc, its tip glowing; dimmer | a session; a call; at rest (3 minutes of silence). The tree has twelve places, their tips spread along the top and right edges of the stage so the first sessions are far apart: a new session takes the place of the one at rest longest, sessions at work beyond twelve share places, and a session that bore no blossom goes when it rests |
+| a blossom opening on a branch (`✿` coder, `❀` reviewer, `✾` explorer, `✽` other, in the role's colour), growing | a subagent dispatched; its work so far (tool calls, output tokens); open ones take places from the tip of the branch inward, and are the smaller the more are open and the less room the branch has |
+| petals flying to the disc, the blossom closing to an outline | a subagent returned; what it did stays on the tree as a small outline for up to 2 hours (at most 6 on a branch; the more outlines on the tree, the sooner they go: 48 last an hour). An outline without petals: its session went silent for 3 minutes before it returned. It opens again if the agent is resumed |
 | petals turned back at the disc in red, with a red ring | a reviewer asked for changes |
 | wind in two layers; bright streaks off an agent | cache reads; output tokens |
 | notes on the staff (`●` shell, `○` read, `◆` edit, `■` write, `▲` dispatch, `◇` message, `·` anything else), each with a tail | a tool call, in the caller's colour; the tail lasts until that agent's next call, 12 seconds at most (of event time, in a replay) |
