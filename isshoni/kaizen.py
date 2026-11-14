@@ -104,9 +104,9 @@ def _log_gh(factory_dir, argv, cwd, seconds, rc, error):
         pass
 
 
-def _gh_page(repo_path, factory_dir, page):
-    """One page of the repository's pull requests, newest update first; GhError when gh cannot."""
-    argv = ["gh", "api", "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=%d&page=%d" % (PAGE_SIZE, page)]
+def _gh_get(repo_path, factory_dir, endpoint):
+    """The JSON list `gh api <endpoint>` prints, run in the repository; GhError when gh cannot."""
+    argv = ["gh", "api", endpoint]
     start, rc, error = time.monotonic(), None, None
     try:
         p = subprocess.run(argv, cwd=repo_path, capture_output=True, text=True, timeout=PAGE_TIMEOUT)
@@ -143,7 +143,8 @@ def _refresh(repo_path, factory_dir, cache):
     prs, watermark = dict(cache["prs"]) if cache else {}, cache["watermark"] if cache else None
     newest = watermark
     for page in range(1, MAX_PAGES + 1):
-        rows = [r for r in _gh_page(repo_path, factory_dir, page) if isinstance(r, dict) and isinstance(r.get("number"), int)]
+        pulls = "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=%d&page=%d" % (PAGE_SIZE, page)
+        rows = [r for r in _gh_get(repo_path, factory_dir, pulls) if isinstance(r, dict) and isinstance(r.get("number"), int)]
         for r in rows:
             prs[str(r["number"])] = _from_rest(r)
         stamps = [str(r.get("updated_at") or "") for r in rows]
@@ -163,9 +164,14 @@ def _read_cache(path):
     return c if ok and isinstance(c.get("watermark"), (str, type(None))) else None
 
 
-def _write_cache(path, cache):
+def cache_path(factory_dir, kind, repo_path):
+    """`cache/kaizen-<kind>-<key>.json`: one file per repository, keyed by its real path."""
+    return os.path.join(factory_dir, "cache", "kaizen-%s-%s.json" % (kind, hashlib.sha256(os.path.realpath(repo_path).encode()).hexdigest()[:16]))
+
+
+def _write_cache(path, cache, prefix=".kaizen-prs-"):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".kaizen-prs-")
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=prefix)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(cache, f)
@@ -181,7 +187,7 @@ def gh_prs(repo_path, factory_dir, cached=False):
     refreshed when older than PR_CACHE_TTL; GhError when there is no data at all."""
     if not os.path.isdir(repo_path):
         raise GhError("no such repository path")
-    path = os.path.join(factory_dir, "cache", "kaizen-prs-%s.json" % hashlib.sha256(os.path.realpath(repo_path).encode()).hexdigest()[:16])
+    path = cache_path(factory_dir, "prs", repo_path)
     cache = _read_cache(path)
     if cached:
         if not cache:
@@ -325,6 +331,7 @@ def _task(key, recs, sessions, prices, tech_sessions):
         _str(earliest[1], "version") if earliest else None)
     states = [r["state"] for r in recs["tasks"] if _str(r, "state")]
     t = {"repo": _name(repo), "repo_path": repo, "slug": slug, "version": version, "started": started,
+         "size": _str(started_rec, "size") if started_rec else None,
          "state": states[-1] if states else None, "pr": None, "landed": False,
          "brief_to_pr_s": None, "pr_to_merge_s": None, "cost": None, "review_rounds": None, "first_pass": None,
          "_roles": _role_facts(sessions, prices, tech_sessions)}
@@ -475,6 +482,24 @@ def _summary(tasks, versions):
 _SITE_MANAGER = re.compile(r"Job: (watch|digest)\. Repo: ")
 
 
+def _spender(s, repos):
+    """Who a session without a task is: "dispatcher", "site_manager", or None (a person's own, or outside `repos`)."""
+    if s.task or s.repo_path not in repos:
+        return None
+    return ("dispatcher" if s.name == "dispatcher-" + _name(s.repo_path)
+            else "site_manager" if _SITE_MANAGER.match(s.first_prompt) else None)
+
+
+def _spend(s, prices, since=None):
+    """(ts, cost, unpriced tokens) of each call of a session's main thread and dispatches at or after `since` (all when None);
+    a call without a price costs 0.0 and its tokens are the third item."""
+    for run in [s.run] + [d.run for d in s.dispatches]:
+        for c in run.calls if run else ():
+            if since is None or (c.ts and c.ts >= since):
+                parts = prices.parts(c.model, c.raw)
+                yield c.ts, *((0.0, c.context + c.output) if parts is None else (sum(parts.values()), 0))
+
+
 def _overhead(sessions, tasks, landed, cutoff, prices):
     """What the dispatcher and the site manager spent in the period (the calls of their sessions at or after the cutoff),
     per task landed in it (`landed`). Only sessions without a task, in a repository of the document, count."""
@@ -482,22 +507,13 @@ def _overhead(sessions, tasks, landed, cutoff, prices):
     spent = {"dispatcher": 0.0, "site_manager": 0.0}
     unpriced = counted = 0
     for s in sessions:
-        if s.task or s.repo_path not in repos:
-            continue
-        who = ("dispatcher" if s.name == "dispatcher-" + _name(s.repo_path)
-               else "site_manager" if _SITE_MANAGER.match(s.first_prompt) else None)
+        who = _spender(s, repos)
         if who is None:
             continue
         counted += 1
-        for run in [s.run] + [d.run for d in s.dispatches]:
-            for c in run.calls if run else ():
-                if cutoff is not None and not (c.ts and c.ts >= cutoff):
-                    continue
-                parts = prices.parts(c.model, c.raw)
-                if parts is None:
-                    unpriced += c.context + c.output
-                else:
-                    spent[who] += sum(parts.values())
+        for _, cost, tokens in _spend(s, prices, cutoff):
+            spent[who] += cost
+            unpriced += tokens
     return {**{k: round(v, 6) for k, v in spent.items()}, "sessions": counted, "unpriced_tokens": unpriced, "landed": landed,
             "per_landed": round(sum(spent.values()) / landed, 6) if landed else None}
 
@@ -639,23 +655,26 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     tech = read_log(factory_dir, "techlead")
     tech_sessions = {r["session"] for r in tech if _str(r, "session")}
     tasks = [_task(k, recs, mine.get(k, []), prices, tech_sessions) for k, recs in by_task.items()]
-    if cutoff is not None:
-        tasks = [t for t in tasks if t["started"] and t["started"] >= cutoff]
     tasks.sort(key=lambda t: (t["started"] is not None, t["started"] or transcript.EPOCH, t["slug"], t["repo_path"]))
+    everyone = tasks  # the pulse ignores the cutoff
+    tasks = [t for t in tasks if cutoff is None or (t["started"] and t["started"] >= cutoff)]
     def load_prs(path):
         try:
             return gh_prs(path, factory_dir, cached)
         except GhError as e:
             return [], None, str(e)
 
-    paths = sorted({t["repo_path"] for t in tasks})
+    paths = sorted({t["repo_path"] for t in everyone})
+    shown = {t["repo_path"] for t in tasks}
     with ThreadPoolExecutor(max(len(paths), 1)) as pool:
         loaded = list(pool.map(load_prs, paths))
     repos = []
     for path, (prs, as_of, error) in zip(paths, loaded):
-        for t in tasks:
+        for t in everyone:
             if t["repo_path"] == path:
                 _apply_pr(t, _pr_for(prs, t["slug"]))
+        if path not in shown:
+            continue
         data = as_of is not None
         repos.append({"repo": _name(path), "repo_path": path, "prs": "ok" if data else error,
                       "prs_as_of": _iso(datetime.fromtimestamp(as_of, timezone.utc)) if data else None,
@@ -668,9 +687,12 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     ordered = [v for v, _ in sorted(versions.items(), key=lambda x: (x[1], x[0]))]
     summary = _summary(tasks, ordered)
     summary["overhead"] = _overhead(sessions, tasks, summary["landed"], cutoff, prices)
+    from . import pulse  # pulse imports this module's helpers
+    pulse_doc = pulse.build(factory_dir, everyone, by_task, sessions, prices, now, cached)
+    for t in everyone:
+        del t["_roles"]
     for t in tasks:
         t["started"] = _iso(t["started"])
-        del t["_roles"]
     return {
         "generated": _iso(now or datetime.now(timezone.utc)), "factory_dir": factory_dir,
         "store_found": os.path.isdir(factory_dir), "prices": prices.to_dict(), "roles": list(ROLES), "repos": repos,
@@ -680,5 +702,5 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
         "slowed": slowed, "rewards": _rewards([t for t in tasks if t["landed"]]),
         "outbox": _outbox(logs["feedback"], cutoff),
         "site_manager": _site_manager(read_log(factory_dir, "firings"), cutoff),
-        "tech_lead": _tech_lead(tech, cutoff, tasks, by_task),
+        "tech_lead": _tech_lead(tech, cutoff, tasks, by_task), "pulse": pulse_doc,
     }
