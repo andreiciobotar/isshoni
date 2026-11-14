@@ -67,7 +67,7 @@ Optional:
   </picture>
 </p>
 
-A lead asks you only what it cannot decide itself. Nothing merges without you.
+A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`.
 
 <p align="center">
   <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap">
