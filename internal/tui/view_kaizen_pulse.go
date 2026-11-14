@@ -39,7 +39,7 @@ func (m *model) dayLines(p paint, w int) block {
 	if wide {
 		lw = 38
 	}
-	cw := min((w-lw)/2, 40)
+	cw := min((w-lw)/2, 32) // fixed, so yesterday starts a few cells after the widest today cell
 	days := [2]data.PulseDay{pl.Today, pl.Yesterday}
 	label := func(r pulseRow) string {
 		if wide {
@@ -76,11 +76,11 @@ func (m *model) dayLines(p paint, w int) block {
 	if !wide {
 		title = "TODAY VS YESTERDAY"
 	}
-	head := p.sp(1) + p.b(cell(title, lw-1, false), th.Text)
+	head := p.sp(1) + p.sp(lw-1)
 	for i, name := range []string{"today ", "yesterday "} {
 		head += p.t(cell(name+days[i].Date[min(5, len(days[i].Date)):], cw, false), th.Faint)
 	}
-	lines := block{fit(head, w, p)}
+	lines := block{m.heading(p, w, title, ""), fit(head, w, p)}
 	for _, r := range rows {
 		lines = append(lines, put(label(r), r.days))
 	}
