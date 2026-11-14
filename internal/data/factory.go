@@ -38,6 +38,9 @@ type FactoryTask struct {
 	Base     string `json:"base"`
 	Elapsed  *int64 `json:"elapsed"` // seconds since the session started
 	Overtime bool   `json:"overtime"`
+	Nearing  bool   `json:"nearing"` // past the share of its limit the nearing-limit criterion names; false without that entry
+	Size     string `json:"size"`    // small, medium or large; empty when null
+	Limit    *int64 `json:"limit"`   // seconds; nil from a factory that does not send it
 	Stale    bool   `json:"stale"`
 	PRState  string `json:"pr_state"`
 	PRURL    string `json:"pr_url"`

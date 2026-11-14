@@ -394,8 +394,9 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 - **Factory:** for each repository seen in the range that has task worktrees, what
   `factory status --json` reports: the tasks holding a slot against the cap (the meter
   shows the ordinary limit plus the slots held in reserve for critical work, `7/9+1`),
-  and every task with its phase, elapsed time, pull request or deliverable, base, and
-  `overtime` or `stale`. At the top, a band lists everything that waits on you across
+  and every task with its phase, elapsed time (for a task in motion, against its limit,
+  yellow when nearing it and red past it), size (shown when any task has one), pull
+  request or deliverable, base, and `overtime` or `stale`. At the top, a band lists everything that waits on you across
   repositories, oldest first: tasks in review (the pull request or deliverable to look
   at) and tasks blocked on you (what they asked; a task blocked on the dispatcher or on
   another task says so in its row, with its reason beneath, and is not in the band), each

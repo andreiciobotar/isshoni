@@ -68,6 +68,31 @@ func TestFactoryStatusDecodesNulls(t *testing.T) {
 	}
 }
 
+func TestFactoryStatusDecodesSizeAndLimit(t *testing.T) {
+	r, dir := factoryStub(t)
+	doc := `{"rows": [
+		{"slug": "sized", "phase": "motion", "elapsed": 2460, "size": "small", "limit": 2700, "nearing": true, "overtime": false},
+		{"slug": "unsized", "phase": "motion", "elapsed": 60, "size": null, "limit": 7200, "nearing": false, "overtime": false},
+		{"slug": "older", "phase": "motion", "elapsed": 60, "overtime": false}]}`
+	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.FactoryStatus(context.Background(), t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b, c := st.Rows[0], st.Rows[1], st.Rows[2]
+	if a.Size != "small" || a.Limit == nil || *a.Limit != 2700 || !a.Nearing {
+		t.Fatalf("a sized row: %+v", a)
+	}
+	if b.Size != "" || b.Limit == nil || *b.Limit != 7200 || b.Nearing {
+		t.Fatalf("an unsized row: %+v", b)
+	}
+	if c.Size != "" || c.Limit != nil || c.Nearing {
+		t.Fatalf("a row from a factory without the fields: %+v", c)
+	}
+}
+
 func TestFactoryStatusErrors(t *testing.T) {
 	r, dir := factoryStub(t)
 	os.WriteFile(filepath.Join(dir, "fail"), nil, 0o644)
