@@ -373,7 +373,8 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 - **Agents:** per agent type: dispatches, models, tokens and cost, p50/p90 cost and
   durations, repeats, review loops, warnings.
 - **Factory:** for each repository seen in the range that has task worktrees, what
-  `factory status --json` reports: the tasks holding a slot against the cap, and every
+  `factory status --json` reports: the tasks holding a slot against the cap (the meter shows the ordinary limit plus the slots
+  held in reserve for critical work, `7/9+1`), and every
   task with its phase, elapsed time, pull request or deliverable, base, and `overtime`
   or `stale`. At the top, a band lists everything that waits on you across repositories,
   oldest first: tasks in review (the pull request or deliverable to look at) and blocked

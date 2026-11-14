@@ -45,8 +45,9 @@ type factoryState struct {
 	doneAt time.Time
 	top    int // first visible body line
 
-	cap    int    // worktree cap shown on the settings line; 0 until known
-	capErr string // the settings file cannot be used
+	cap     int    // worktree cap shown on the settings line; 0 until known
+	reserve int    // slots of the cap held in reserve, from status; 0 when unknown
+	capErr  string // the settings file cannot be used
 
 	editing  bool
 	field    string
@@ -197,10 +198,10 @@ func (m *model) applyFactory(msg factoryMsg) tea.Cmd {
 			f.repos[i].fetching, f.repos[i].fetchErr = old[j].fetching, old[j].fetchErr
 		}
 	}
-	f.cap, f.capErr = msg.cap, ""
+	f.cap, f.reserve, f.capErr = msg.cap, 0, ""
 	for _, r := range msg.repos {
 		if r.st != nil {
-			f.cap = r.st.Cap
+			f.cap, f.reserve = r.st.Cap, r.st.Reserve
 			break
 		}
 	}

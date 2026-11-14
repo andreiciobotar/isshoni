@@ -48,7 +48,7 @@ Factory: `make wizard` in the clone checks the tools, builds the dashboard, inst
 /factory:dispatch
 ```
 
-Describe a task; ask for progress whenever you like. By default leads run unattended on Fable in `auto` permission mode, five tasks at a time per repository ([settings](docs/factory.md#settings)).
+Describe a task; ask for progress whenever you like. By default leads run unattended on Fable in `auto` permission mode, five tasks at a time per repository, one of them held for emergencies ([settings](docs/factory.md#settings)).
 
 Optional:
 
