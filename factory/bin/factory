@@ -1674,6 +1674,9 @@ def cmd_state(args):
         if inside(deliverable, task["path"]):
             raise Fail(f"state: deliverable {deliverable} is inside the worktree, which clean removes")
     declare(repo, slug, "lead", args.state, deliverable, waits_on)
+    stated = args.state == "handed-over" and task["branch"] and config_value(repo, f"branch.{task['branch']}.factoryTest")
+    if stated and stated != "none":
+        repo.git("config", "factory.lastTest", stated)
     if args.state in ("working", "blocked"):
         to_draft(repo, task["branch"])
     print(f"{slug}: {args.state}")
@@ -4691,6 +4694,9 @@ LAND_TEST_TIMEOUT = 1800
 LAND_TIMEOUT = 1800
 LAND_TOOLS = ("Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
               "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)")
+ROLE_DENIED = ("Bash(gh pr merge*)", "Bash(gh pr review*)", "Bash(gh pr comment*)", "Bash(gh pr ready*)", "Bash(gh api*)",
+               "Bash(gh repo*)", "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)",
+               "Bash(git commit --amend*)", "Bash(git worktree*)")
 LAND_REASONS = ("dirty", "conflict", "golden", "tests", "denied", "other")
 LAND_RESULT_RE = re.compile(r"(LANDED, LOOK|LANDED|STOPPED)(?: (\S+))?")
 WORKFLOWS_REFUSAL = "without `workflows` permission"
@@ -4704,6 +4710,74 @@ def land_base(repo, branch):
     return recorded, not base_counts(repo, recorded, {})
 
 
+TEST_NOT_STATED = ("no test command stated for this task. Its lead finds how the repository runs its tests and states it: "
+                   "factory commands test '<command>' (or: factory commands test none, when the repository has none)")
+NO_TESTS = "NO TESTS WERE RUN: none found in this repository"
+
+
+def config_value(repo, key):
+    """The git config value of `key` in this repository ('' when unset); one config for all its worktrees."""
+    return repo.git("config", "--get", key)[1].strip()
+
+
+def test_command(repo, path, branch):
+    """(the test command or None, where it comes from) for the task on `branch` in the worktree `path`: stated for the
+    task, else the last one handed over here, else the Makefile's. `none` is a stated value."""
+    if stated := branch and config_value(repo, f"branch.{branch}.factoryTest"):
+        return stated, "stated for this task"
+    if last := config_value(repo, "factory.lastTest"):
+        return last, "last handed over in this repository"
+    return ("make test", "Makefile rule") if has_test_rule(path) else (None, "not stated")
+
+
+def golden_command(repo, branch):
+    """The golden command stated for the task on `branch`, or None."""
+    return (branch and config_value(repo, f"branch.{branch}.factoryGolden")) or None
+
+
+def commands_line(repo, path, branch):
+    """The line of a model role's brief that gives the commands of the task on `branch`."""
+    test, golden = test_command(repo, path, branch)[0], golden_command(repo, branch)
+    what = {None: "not stated: find how this repository runs its tests and run that",
+            "none": 'none: run no tests and report "NO TESTS WERE RUN: none found"'}.get(test, test)
+    return f"The test command is {what}. The golden command is {golden or 'none'}."
+
+
+def cmd_commands(args):
+    """State or print the test and golden commands of the task whose worktree this is (a lead runs it)."""
+    repo = Repo()
+    cwd = os.path.realpath(os.getcwd())
+    task = next((t for t in repo.tasks if inside(cwd, t["path"])), None)
+    path, branch = (task["path"], task["branch"]) if task else (repo.root, None)
+    if task and not branch and args.value is not None:
+        raise Fail(f"commands: the worktree is on a detached HEAD; check out worktree-{os.path.basename(path)}", 1)
+    test, source = test_command(repo, path, branch)
+    golden = golden_command(repo, branch)
+    if args.value is not None:
+        if not branch:
+            raise Fail("commands: run it from inside a task worktree", 1)
+        key = f"branch.{branch}.factory{args.which.capitalize()}"
+        if not args.value.strip():
+            raise Fail("commands: the command is empty", 1)
+        if args.value == "none" and args.which == "golden":
+            repo.git("config", "--unset", key)
+        else:
+            rc, _, err = repo.git("config", key, args.value)
+            if rc != 0:
+                raise Fail(f"git config {key} failed: {err.strip()}", 1)
+        print(f"{os.path.basename(path)}: {args.which} {args.value}")
+    elif args.which == "test":
+        if test is None:
+            raise Fail(TEST_NOT_STATED, 1)
+        print(test)
+    elif args.which == "golden":
+        print(golden or "none")
+    else:
+        print(f"test: {f'{test} ({source})' if test else 'not stated'}")
+        print(f"golden: {golden or 'none'}")
+    return 0
+
+
 def land_busy(repo, path):
     """Why the lead of the task at `path` may still be running, or None. Sessions that cannot be told count as busy."""
     sessions = list_sessions()
@@ -4712,16 +4786,13 @@ def land_busy(repo, path):
     return unplaced_block(sessions) or session_block(sessions_in(sessions, repo.root, path))
 
 
-def no_test_rule(path):
-    """Why `make test` is not known in `path`, or None: the first makefile make reads must have a `test:` rule.
-    Included files and rules naming several targets are not read."""
-    present = os.listdir(path)
+def has_test_rule(path):
+    """Whether the first makefile make reads in `path` has a `test:` rule. Included files and rules naming several
+    targets are not read."""
     for name in ("GNUmakefile", "makefile", "Makefile"):
-        if name not in present:
-            continue
-        text = (Path(path) / name).read_text()
-        return None if re.search(r"^test\s*:(?!:?=)", text, re.M) else f"no `test:` rule in {name}"
-    return "no Makefile"
+        if name in os.listdir(path):
+            return bool(re.search(r"^test\s*:(?!:?=)", (Path(path) / name).read_text(), re.M))
+    return False
 
 
 def lander_sections(text):
@@ -4818,10 +4889,10 @@ class Landing:
     """One handed-over task brought up to its base, as factory/agents/lander.md defines it. `run` gives
     (result, facts, needs): the result is LANDED, LANDED, LOOK or STOPPED <reason>."""
 
-    def __init__(self, repo, task, lean):
+    def __init__(self, repo, task, lean, mode):
         self.repo, self.path, self.branch, self.remote = repo, task["path"], task["branch"], repo.remote
         self.slug = os.path.basename(self.path)
-        self.lean = lean
+        self.lean, self.mode = lean, mode
         self.declared = False
 
     def mark_working(self):
@@ -4895,15 +4966,17 @@ class Landing:
         repo, branch = self.repo, self.branch
         new_head = self.out("rev-parse", "HEAD")
         unpushed = [f"head: `{self.old_head}` -> `{new_head}`, not pushed"]
-        missing = no_test_rule(self.path)
-        if missing:
-            return self.stop("tests", f"no test command: {missing}; the worktree is on the "
-                             f"merge commit at {new_head}, unpushed", unpushed)
-        rc, out, err = run(["make", "test"], cwd=self.path, timeout=LAND_TEST_TIMEOUT, group=True)
-        if rc != 0:
-            tail = "\n".join((out + err).splitlines()[-40:])
-            return self.stop("tests", f"make test {'timed out' if rc == 124 else 'failed'}; the worktree is on the "
-                             f"merge commit at {new_head}, unpushed. Last lines:\n{tail}", unpushed)
+        command = test_command(repo, self.path, branch)[0]
+        if command is None:
+            return self.stop("tests", f"{TEST_NOT_STATED}; the worktree is on the merge commit at {new_head}, unpushed",
+                             unpushed)
+        ran = NO_TESTS if command == "none" else f"`{command}` pass"
+        if command != "none":
+            rc, out, err = run(["sh", "-c", command], cwd=self.path, timeout=LAND_TEST_TIMEOUT, group=True)
+            if rc != 0:
+                tail = "\n".join((out + err).splitlines()[-40:])
+                return self.stop("tests", f"{command} {'timed out' if rc == 124 else 'failed'}; the worktree is on the "
+                                 f"merge commit at {new_head}, unpushed. Last lines:\n{tail}", unpushed)
         busy = land_busy(repo, self.path)
         if busy:
             self.mark_working()
@@ -4922,14 +4995,14 @@ class Landing:
             return self.stop("other", f"git push failed: {refusal}", unpushed)
         kind = "LANDED, LOOK" if look else "LANDED"
         details = [f"Overlap with the base: {', '.join(overlap) or 'none'}.", "Conflicts: none.",
-                   "Regenerated: nothing.", "Tests: `make test` pass."]
+                   "Regenerated: nothing.", f"Tests: {ran}."]
         retarget_error = self.retarget()
         error = "; ".join(e for e in (retarget_error, self.announce(new_head, kind, details, retarget_error)) if e)
         count = self.out("rev-list", "--count", f"{old_base}..{self.target}")
         facts = [f"base: `{self.target}` at `{self.out('rev-parse', self.target)}`, {count} commits since the old base; "
                  f"overlap: {', '.join(overlap) or 'none'}",
                  f"head: `{self.old_head}` -> `{new_head}` (merge of {self.target}), pushed; the reviewed commits are unchanged",
-                 "conflicts: none", "goldens: not run", "tests: `make test` pass",
+                 "conflicts: none", "goldens: not run", f"tests: {ran}",
                  self.pull_request_fact(retarget_error)]
         if error:
             return self.stop("other", f"pushed {new_head}, but {error}", facts)
@@ -4973,12 +5046,15 @@ class Landing:
         brief = "\n".join([
             f"Your task slug is {self.slug}.", base, f"The reviewed head is {self.old_head}.",
             "There is no pull request title, body file or retrospective file. Do not declare the hand-over.",
-            "Edit files with the Edit tool; shell commands that write files, and `gh` other than `pr view` and `pr edit`, are denied.",
+            "Edit files with the Edit tool. `gh` other than `pr view` and `pr edit` is not yours to run; merging, reviewing, "
+            "commenting, forced pushes, rebases, amends and `git worktree` are denied.",
             f"The golden files this task means to change: {', '.join(task_files) or 'none'}. A generated file on this "
-            "list may be regenerated with the repository's documented command; any other golden that changes is a stop."])
+            "list may be regenerated with the repository's documented command; any other golden that changes is a stop.",
+            commands_line(self.repo, self.path, self.branch)])
         lean = lean_flags() if self.lean else []
         argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", load_settings()["models"]["lander"],
-                "--permission-mode", "dontAsk", *lean, "--allowedTools", *LAND_TOOLS, "--output-format", "json", brief]
+                "--permission-mode", self.mode, *lean, "--allowedTools", *LAND_TOOLS,
+                "--disallowedTools", *ROLE_DENIED, "--output-format", "json", brief]
         rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT, group=True)
         try:
             text = json.loads(out).get("result")
@@ -5015,14 +5091,14 @@ class Landing:
                 f"{'some' if self.out('status', '--porcelain') else 'none'}, merge in progress: {'yes' if merging else 'no'}")
 
 
-def land_one(repo, slug, lean):
+def land_one(repo, slug, lean, mode):
     """Land one task and print its report; True when the result is LANDED."""
     task = next((t for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
     if task is None:
         raise Fail(f"land: {slug} is not a task worktree")
     if read_tasks(repo.root).get(slug, {}).get("state") != "handed-over":
         raise Fail(f"land: {slug} is not handed over")
-    landing = Landing(repo, task, lean)
+    landing = Landing(repo, task, lean, mode)
     result, facts, needs = landing.run()
     if result not in ("LANDED", "STOPPED busy"):
         landing.mark_working()
@@ -5056,7 +5132,8 @@ def land_candidates(repo):
 def cmd_land(args):
     if bool(args.slug) == args.all:
         raise Fail("land: name a task or give --all, not both")
-    lean = load_settings()["lean_start"]
+    settings = load_settings()
+    lean, mode = settings["lean_start"], settings["lead_permission_mode"]
     repo = Repo()
     slugs = [args.slug] if args.slug else land_candidates(repo)
     if not slugs:
@@ -5065,7 +5142,7 @@ def cmd_land(args):
     for slug in slugs:
         if args.all:
             print(f"# {slug}")
-        landed.append(land_one(repo, slug, lean))
+        landed.append(land_one(repo, slug, lean, mode))
     return 0 if all(landed) else 1
 
 
@@ -5356,7 +5433,7 @@ TECH_LEAD_ROLE = PLUGIN_ROOT / "roles" / "tech-lead.md"
 TECH_LEAD_KIT = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch"
 TECH_LEAD_TOOLS = ("Read", "Edit", "Write", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "Bash(git *)", "Bash(make *)",
                    "Bash(gh pr view *)", "Bash(gh pr diff *)", "Bash(gh pr checks *)", "Bash(gh run view *)")
-TECH_LEAD_DENIED = ("Bash(git push*)", "Bash(git rebase*)", "Bash(git commit --amend*)", "Bash(git worktree*)")
+TECH_LEAD_DENIED = (*ROLE_DENIED, "Bash(git push*)")
 TECH_LEAD_SCHEMA = {"type": "object", "properties": {"outcome": {"enum": ["resolved", "escalate"]},
                                                       "note": {"type": "string"}}, "required": ["outcome", "note"]}
 
@@ -5415,14 +5492,15 @@ def tech_lead_prompt(repo, slug, pr, evidence, spec):
                if r.get("pr") == pr["number"] and r.get("note")]
     return (f"Task slug: {slug}. Pull request: #{pr['number']} {pr['url']}. It came back from the merge queue: {evidence}. "
             f"The spec is {spec}. The default branch is {repo.default}, on remote {repo.remote}. "
-            f"The pull request came back at {pr['headRefOid']}.\n\nEarlier tech lead runs on this pull request:\n"
+            f"The pull request came back at {pr['headRefOid']}. "
+            f"{commands_line(repo, tech_lead_paths(repo, slug)[0], f'worktree-{slug}')}\n\nEarlier tech lead runs on this pull request:\n"
             + ("\n".join(earlier) or "none"))
 
 
 def tech_lead_argv(repo, slug, pr, evidence, spec, settings):
     """The tech lead's launch command, the one place another runner would plug in."""
     lean = lean_flags() if settings["lean_start"] else []
-    return ["claude", "-p", "--model", settings["models"]["tech_lead"], "--permission-mode", "dontAsk",
+    return ["claude", "-p", "--model", settings["models"]["tech_lead"], "--permission-mode", settings["lead_permission_mode"],
             "--plugin-dir", str(PLUGIN_ROOT), *lean, f"--tools={TECH_LEAD_KIT}",
             "--allowedTools", *TECH_LEAD_TOOLS, "--disallowedTools", *TECH_LEAD_DENIED,
             "--max-budget-usd", TECH_LEAD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(TECH_LEAD_SCHEMA),
@@ -5933,6 +6011,9 @@ def parse_args(argv):
     state.add_argument("deliverable", nargs="?", metavar="deliverable|whom",
                        help="with handed-over: a link, or a path outside the worktree; with blocked: whom it waits on, "
                             "human (default), dispatcher or the slug of another open task")
+    commands = sub.add_parser("commands", help="state or print the test and golden commands of a task (a lead runs it in its worktree)")
+    commands.add_argument("which", nargs="?", choices=("test", "golden"))
+    commands.add_argument("value", nargs="?", metavar="command|none", help="record it for this task; none: there is none")
     ack = sub.add_parser("ack", help="record the human's word on a task whose work was handed over")
     ack.add_argument("slug")
     ack.add_argument("state", choices=SETTLED)
@@ -6034,7 +6115,7 @@ def main(argv=None):
             if args.cmd == "hook":
                 return 0
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
-        return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
+        return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "commands": cmd_commands, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
                 "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander, "tech-lead": cmd_tech_lead, "build": cmd_build,
