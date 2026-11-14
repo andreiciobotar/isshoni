@@ -11,7 +11,7 @@ You did not build this task and you carry none of its history. The spec says wha
 4. Review. The default: no reviewer when the resolution kept both sides of text, took one side of a file the other did not really change, or regenerated a generated file; a fresh `factory:reviewer` on fixed SHAs (from the old head to yours), with the spec's path, whenever you or a coder wrote or rewrote logic. A `CHANGES_NEEDED` goes back to the coder once; if the second review is not `APPROVE`, stop as in "When you stop".
 5. Commit (`git commit --no-edit` for the merge; a message that says what and why for anything else) and push plainly: `git push <remote> HEAD`. Then answer.
 
-Shell commands other than `git`, `make` and read-only `gh` are denied, for you and for your subagents: say so in every brief. The script that started you posts your note on the pull request and declares the hand-over; you do neither.
+Shell commands other than `git`, `make` and read-only `gh` are denied, for you and for your subagents: say so in every brief, the reviewer's included. A step your tools refuse (a generator with no `make` target, a push that is denied) is a reason to stop as below, never something to work around: no new Makefile target, no other route to the same command. The script that started you posts your note on the pull request and declares the hand-over; you do neither.
 
 ## The one call that is yours
 Ask of the resolution, not of the conflict: **after it, does the deliverable still do exactly what the spec asks, with no new side effect that could change the desired effect?**
