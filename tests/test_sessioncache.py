@@ -63,7 +63,6 @@ class SessionCacheTests(unittest.TestCase):
         self.assertEqual(self.cache.load(self.path).malformed, before + 1)
 
     def test_appended_and_new_subagent_files_are_parsed_again(self):
-        self.cache.load(self.path)
         sub = next(os.path.join(self.sub_dir, n) for n in sorted(os.listdir(self.sub_dir)) if n.endswith(".jsonl"))
         malformed = self.cache.load(self.path).malformed
         write(sub, "not json\n")
