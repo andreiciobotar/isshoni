@@ -49,7 +49,7 @@ func TestFactoryStatusDecodesNulls(t *testing.T) {
 	if a := st.Rows[0]; a.Elapsed != nil || a.Waited != nil || a.StopKind != "" || a.StopSummary != "" || a.Slug != "cost-in-money" || a.PRState != "unknown" {
 		t.Fatalf("row with nulls: %+v", a)
 	}
-	if b := st.Rows[1]; b.Elapsed == nil || *b.Elapsed != 252 || !b.Overtime || !b.Stale || b.PRURL == "" {
+	if b := st.Rows[1]; b.Elapsed == nil || *b.Elapsed != 252 || !b.Overtime || !b.Stale || b.PRURL == "" || b.PRDraft || !st.Rows[0].PRDraft {
 		t.Fatalf("row: %+v", b)
 	}
 	if c := st.Rows[2]; c.Waited == nil || *c.Waited != 600 || c.StopKind != "QUESTION" || c.StopSummary != "Which database should it use?" {
