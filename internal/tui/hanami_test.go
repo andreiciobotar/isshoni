@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -731,39 +733,14 @@ func TestHanamiNothingBelowTheField(t *testing.T) {
 	}
 }
 
-func TestHanamiHorizonTellsTheHour(t *testing.T) {
-	at := func(h int) hHour {
+func TestHanamiNightFollowsTheHour(t *testing.T) {
+	at := func(h int) float64 {
 		s := newHanamiScene(NewTheme(false))
 		s.now = time.Date(2026, 11, 14, h, 0, 0, 0, time.Local)
-		return s.hour()
+		return s.night()
 	}
-	seen := map[hrgb]int{}
-	for _, h := range []int{3, 7, 12, 19} {
-		seen[at(h).c] = h
-	}
-	if len(seen) != 4 {
-		t.Fatalf("the band's colour is not different at 03:00, 07:00, 12:00 and 19:00: %v", seen)
-	}
-	if at(3).night != 1 || at(12).night != 0 || newHanamiScene(NewTheme(false)).hour().night != 1 {
-		t.Fatal("night is not night: 03:00, noon, and a scene with no events")
-	}
-	s := newHanamiScene(NewTheme(false))
-	s.w, s.h = 100, 30
-	g := s.geo()
-	cv := &hCanvas{w: s.w, h: s.h, maxY: int(g.H), cells: make([]hCell, s.w*s.h)}
-	s.horizon(cv, g, at(19))
-	for r := g.staffTop - horizonRows; r < g.staffTop; r++ {
-		for x := 1; x < s.w; x++ {
-			if cv.cells[r*s.w+x].light != cv.cells[r*s.w].light {
-				t.Fatalf("row %d is not one colour along its length", r)
-			}
-		}
-	}
-	if foot, top := cv.cells[(g.staffTop-1)*s.w].light[1].r, cv.cells[(g.staffTop-horizonRows)*s.w].light[0].r; foot <= top || top > foot/3 {
-		t.Fatal("the glow is not strongest at the foot, easing to almost nothing above")
-	}
-	if cv.cells[(g.staffTop-horizonRows-1)*s.w].light != [2]hrgb{} {
-		t.Fatal("the glow has an edge above its rows")
+	if at(3) != 1 || at(12) != 0 || at(22) != 1 || at(7) <= 0 || at(7) >= 1 || newHanamiScene(NewTheme(false)).night() != 1 {
+		t.Fatal("night is not night at 03:00 and 22:00, day at noon, between at dawn, and night with no events")
 	}
 }
 
@@ -1043,13 +1020,27 @@ func TestHanamiHalfBlocks(t *testing.T) {
 		}
 	}
 	// the upper half block's foreground is the top sample, its background the bottom
+	// row 1's top half is farther from the glow's centre than its bottom half: the foreground (top) is darker
 	row := lines[1]
 	i := strings.Index(row, "▀")
 	if i < 0 {
 		t.Fatal("no half block on the glow's upper row")
 	}
-	if !strings.Contains(row[:i], "\x1b[48;2;") || !strings.Contains(row[:i], "38;2;") {
-		t.Fatal("a half block without a foreground and a background")
+	var fg, bg int
+	for _, m := range regexp.MustCompile(`\x1b\[(?:1;|22;)?(38|48);2;(\d+);(\d+);(\d+)m`).FindAllStringSubmatch(row[:i], -1) {
+		sum := 0
+		for _, v := range m[2:] {
+			n, _ := strconv.Atoi(v)
+			sum += n
+		}
+		if m[1] == "38" {
+			fg = sum
+		} else {
+			bg = sum
+		}
+	}
+	if fg == 0 || bg == 0 || fg >= bg {
+		t.Fatalf("the half block's foreground (top) is not darker than its background (bottom): %d against %d", fg, bg)
 	}
 
 	plain := &hCanvas{w: 10, h: 8, maxY: 32, cells: make([]hCell, 80)}

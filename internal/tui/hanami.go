@@ -1074,39 +1074,23 @@ func (s *hanamiScene) Arrive(now time.Time) {
 	}
 }
 
-// The hours of the day, as the glow they put at the foot of the sky: additive colour, and how night it is.
-const horizonRows = 6
+// How night it is by the hour of the day: 1 in the dark, 0 in daylight, between at dawn and dusk.
+var hanamiNight = [][2]float64{{0, 1}, {5, 1}, {6.5, 0.5}, {8, 0.1}, {9.5, 0}, {16, 0}, {17.5, 0.1}, {19.5, 0.5}, {21, 1}, {24, 1}}
 
-var hanamiHours = []struct {
-	at    float64
-	c     hrgb
-	night float64
-}{
-	{0, hrgb{10, 10, 34}, 1}, {5, hrgb{12, 10, 38}, 1}, {6.5, hrgb{100, 44, 62}, 0.5}, {8, hrgb{84, 50, 62}, 0.1},
-	{9.5, hrgb{16, 30, 44}, 0}, {16, hrgb{18, 32, 46}, 0}, {17.5, hrgb{112, 72, 38}, 0.1}, {19.5, hrgb{92, 40, 62}, 0.5},
-	{21, hrgb{20, 14, 46}, 1}, {24, hrgb{10, 10, 34}, 1},
-}
-
-type hHour struct {
-	c     hrgb
-	night float64
-}
-
-// hour is the light of the hour of event time in the viewer's time zone; a scene with no events yet is at night.
-func (s *hanamiScene) hour() hHour {
-	h := 0.0
-	if !s.now.IsZero() {
-		t := s.now.Local()
-		h = float64(t.Hour()) + float64(t.Minute())/60
+// night is how night it is at event time, in the time zone of the machine running the scene; a scene with no
+// events yet is at night.
+func (s *hanamiScene) night() float64 {
+	if s.now.IsZero() {
+		return 1
 	}
-	for i := 1; i < len(hanamiHours); i++ {
-		a, b := hanamiHours[i-1], hanamiHours[i]
-		if h <= b.at {
-			f := (h - a.at) / (b.at - a.at)
-			return hHour{a.c.mix(b.c, f), a.night + (b.night-a.night)*f}
+	t := s.now.Local()
+	h := float64(t.Hour()) + float64(t.Minute())/60
+	for i := 1; i < len(hanamiNight); i++ {
+		if a, b := hanamiNight[i-1], hanamiNight[i]; h <= b[0] {
+			return a[1] + (b[1]-a[1])*(h-a[0])/(b[0]-a[0])
 		}
 	}
-	return hHour{hanamiHours[0].c, 1}
+	return 1
 }
 
 func (s *hanamiScene) cacheLevel() float64 { return 1 - math.Exp(-s.cacheRate/60000) }
@@ -1277,23 +1261,22 @@ func (cv *hCanvas) lines(th *Theme) []string {
 			// change a cell every few frames, not every frame, and the terminal has a fraction of the cells to repaint
 			var half [2]hrgb
 			for i := range half {
-				half[i] = base.lit(cell.light[i])
 				if cell.filled {
-					half[i] = cell.fill[i]
-				} else if l := cell.light[i]; l.r+l.g+l.b < 9 {
-					half[i] = base // too faint to see: not worth a colour change on the line
+					half[i] = cell.fill[i].stepped(6)
+					continue
 				}
-				step := 6.0
-				if !cell.filled {
-					step = 8 // light is soft: coarser steps repaint fewer cells
+				// light is stepped by its magnitude, not per channel, so a fading glow keeps its hue
+				l := cell.light[i]
+				half[i] = base
+				if m := math.Max(l.r, math.Max(l.g, l.b)); math.Round(m/8) > 0 {
+					half[i] = base.lit(l.times(math.Round(m/8) * 8 / m))
 				}
-				half[i] = half[i].stepped(step)
 			}
 			bg := half[1]
 			ch, c, bold := cell.ch, cell.c, cell.bold
 			switch {
 			case ch != 0 || cell.mask != 0: // a glyph or dots need the foreground: one colour behind them
-				bg = half[0].mix(half[1], 0.5).stepped(6)
+				bg = half[0].mix(half[1], 0.5)
 				if ch == 0 {
 					ch = rune(0x2800 + int(cell.mask))
 					c = bg.mix(c, cell.a).stepped(8)
@@ -1353,11 +1336,6 @@ func (s *hanamiScene) draw(legend bool) []string {
 		}
 	}
 
-	hour := s.hour()
-	if !th.NoColor {
-		s.horizon(cv, g, hour)
-	}
-
 	// wind: cache reads, behind everything; a far layer and a near one
 	c := s.cacheLevel()
 	windN := int(s.windN.x + 0.5)
@@ -1411,7 +1389,7 @@ func (s *hanamiScene) draw(legend bool) []string {
 	for _, st := range s.stars {
 		age := math.Min(1, s.now.Sub(st.at).Seconds()/(3*hanamiKeep.Seconds()))
 		x, y := st.u*g.W, st.v*g.H
-		cv.glyph(int(x/2), int(y/4), '✶', bg.mix(gold, (0.6-0.4*age)*(0.4+0.6*hour.night)), false) // faint: a record, behind the work; fainter by day
+		cv.glyph(int(x/2), int(y/4), '✶', bg.mix(gold, (0.6-0.4*age)*(0.4+0.6*s.night())), false) // faint: a record, behind the work; fainter by day
 	}
 
 	// the tree: branches, the canopy of closed blossoms, then the open ones
@@ -1742,23 +1720,6 @@ func (s *hanamiScene) draw(legend bool) []string {
 	return cv.lines(th)
 }
 
-// horizon is a glow rising from the bottom edge of the field, in the colour of the hour: the calm base of the
-// stage, the same along a row, easing to nothing over horizonRows rows (sampled at each half of a cell).
-func (s *hanamiScene) horizon(cv *hCanvas, g hGeo, hour hHour) {
-	for i := 0; i < horizonRows && i < g.staffTop; i++ {
-		row := g.staffTop - 1 - i
-		var band [2]hrgb
-		for half := range band {
-			fall := math.Max(0, 1-(g.H-float64(4*row+1+2*half))/(4*horizonRows))
-			band[half] = hour.c.times(0.375 * fall * fall)
-		}
-		for x := 0; x < cv.w; x++ {
-			c := &cv.cells[row*cv.w+x]
-			c.light[0], c.light[1] = c.light[0].lit(band[0]), c.light[1].lit(band[1])
-		}
-	}
-}
-
 // hanamiLegend says what every moving thing is; the scene's mapping in one place.
 var hanamiLegend = [][2]string{
 	{"●", "the disc: all the work. It swells and brightens with the rate of events"},
@@ -1776,7 +1737,6 @@ var hanamiLegend = [][2]string{
 	{"✧", "light along a branch: a brief out to a new agent; work rising"},
 	{"Aa", "words: a blossom's role, a lantern's number, a question's slug"},
 	{"◌", "a ripple from the disc: the site manager's tick"},
-	{"░", "the glow at the foot of the sky: the hour of day"},
 	{"◐", "the beat: tool-call rate; disc, staff, blossoms pulse"},
 	{"", "colour: the agent's role, on blossoms, notes, streaks and petals"},
 	{"", "ambient, not data: the breath, the lanterns' sway, the slowest breeze"},
