@@ -71,7 +71,7 @@ flowchart TD
     sm -- merges --> pr
 ```
 
-A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the site manager merges it once checks are green.
+A lead asks you only what it cannot decide itself. Nothing merges without you: approve a pull request with a review or a comment `lgtm`, and the site manager merges it once checks are green. Your other comments on a pull request reach its lead on the next watch tick.
 
 <!-- screenshot: factory status with several tasks -->
 
