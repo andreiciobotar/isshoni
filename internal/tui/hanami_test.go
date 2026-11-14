@@ -253,6 +253,11 @@ func TestHanamiSceneFollowsEvents(t *testing.T) {
 	}
 	s.Apply(ev("answer", 40, slug), false)
 	s.Apply(ev("watch", 40, nil), false)
+	stepFor(s, goldenNow, 100*time.Millisecond)
+	if len(s.bells) != 1 || s.bells[0].state != bellReturning {
+		t.Fatal("an answer sends its light home before the bell goes")
+	}
+	stepFor(s, goldenNow, time.Second)
 	if len(s.bells) != 0 || len(s.ripples) != 1 {
 		t.Fatalf("answered, and one ripple for the tick: %d bells, %d ripples", len(s.bells), len(s.ripples))
 	}
@@ -279,7 +284,7 @@ func TestHanamiSceneFollowsEvents(t *testing.T) {
 	if b := s.branches; len(b) != 1 || len(b[0].blossoms) != 2 || b[0].blossoms[0].closed.IsZero() || b[0].grow.x < 0.9 {
 		t.Fatalf("a session at rest keeps its branch with its blossoms closed: %d branches", len(b))
 	}
-	stepFor(s, rest.Add(hanamiKeep), 20*time.Second)
+	stepFor(s, rest.Add(hanamiKeep), 70*time.Second) // and the beat of the burst of calls has died away
 	if len(s.branches) != 0 || s.busy() {
 		t.Fatalf("after the keep time the branch is still there: %d branches", len(s.branches))
 	}
@@ -522,6 +527,14 @@ func TestHanamiSpritesAreCapped(t *testing.T) {
 	}
 	if len(s.petals) > maxPetals || len(s.ripples) > maxRipples {
 		t.Fatalf("unbounded: %d petals, %d ripples", len(s.petals), len(s.ripples))
+	}
+	if len(s.briefs) > maxBriefs || len(s.rings) > maxRings {
+		t.Fatalf("unbounded: %d briefs, %d rings", len(s.briefs), len(s.rings))
+	}
+	for _, br := range s.branches {
+		if len(br.beads) > maxBeads {
+			t.Fatalf("unbounded: %d beads on a branch", len(br.beads))
+		}
 	}
 	if len(s.notes) > maxNotes || len(s.sparks) > maxSparks || len(s.fire) > maxFire || len(s.lanterns) > maxLanterns {
 		t.Fatalf("unbounded: %d notes, %d sparks, %d fire, %d lanterns", len(s.notes), len(s.sparks), len(s.fire), len(s.lanterns))
@@ -868,5 +881,102 @@ func TestHanamiKeepsTime(t *testing.T) {
 	live.pulse = 0
 	if a == strings.Join(live.draw(false), "\n") {
 		t.Fatal("the pulse does not show in the disc")
+	}
+}
+
+// The flow is visible both ways: a brief runs out and the blossom opens when it arrives; work rises as beads;
+// a question's light goes to its bell and an answer's comes home.
+func TestHanamiCirculation(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	s.w, s.h = 100, 30
+	agent := func(e *data.Event) { e.Agent, e.Role = "a1", "coder" }
+	s.Apply(ev("spawn", 0, agent), false)
+	bl := s.branches[0].blossoms[0]
+	if len(s.briefs) != 1 || !bl.bud {
+		t.Fatal("a spawn sends a brief and leaves a bud")
+	}
+	for i := 0; i < int(0.8*hanamiFPS); i++ {
+		s.Step(goldenNow)
+	}
+	if bl.open.x > 0.01 || len(s.briefs) != 1 {
+		t.Fatalf("the blossom opened before its brief arrived: open %.2f", bl.open.x)
+	}
+	stepFor(s, goldenNow, 600*time.Millisecond)
+	if len(s.briefs) != 0 || bl.bud || bl.open.x <= 0.01 {
+		t.Fatalf("the brief arrived and the blossom did not open: %d briefs, open %.2f", len(s.briefs), bl.open.x)
+	}
+	stepFor(s, goldenNow, 2*time.Second)
+	if bl.open.x < 0.9 {
+		t.Fatal("the blossom does not open")
+	}
+
+	// back before the brief arrives: it opens at once, closes, and no light is left running
+	s.Apply(ev("spawn", 5, func(e *data.Event) { e.Agent, e.Role = "a2", "reviewer" }), false)
+	s.Apply(ev("return", 5, func(e *data.Event) { e.Agent, e.Role = "a2", "reviewer" }), false)
+	if len(s.briefs) != 0 || s.branches[0].blossoms[1].bud || s.branches[0].blossoms[1].closed.IsZero() {
+		t.Fatal("a return before the brief arrived leaves a stuck light or a bud")
+	}
+
+	// sap: a call sends a bead, six at most in flight, and they arrive
+	for i := 0; i < 40; i++ {
+		s.Apply(ev("tool", 6, func(e *data.Event) { e.Tool = "edit" }), false)
+		s.Apply(ev("tokens", 6, func(e *data.Event) { e.Out = 2000; e.Agent, e.Role = "a1", "coder" }), false)
+	}
+	if n := len(s.branches[0].beads); n != maxBeads {
+		t.Fatalf("%d beads in flight, want %d", n, maxBeads)
+	}
+	if b := s.branches[0].beads[0]; b.k >= 0.5 && b.bl != nil {
+		t.Fatalf("a bead of a bare call is as bright as one of output: %+v", b)
+	}
+	stepFor(s, goldenNow, 2*time.Second)
+	if len(s.branches[0].beads) != 0 {
+		t.Fatal("beads never arrive")
+	}
+	g := s.geo()
+	b := s.branches[0]
+	if x, y := b.run(g, nil, 1); x != func() float64 { x, _ := b.point(g, b.grow.x); return x }() || y >= g.waterY {
+		t.Fatal("sap does not end at the branch's tip")
+	}
+
+	// home: the rim takes the colour when the last petal reaches the disc
+	stepFor(s, goldenNow, 6*time.Second)
+	s.Apply(ev("return", 10, func(e *data.Event) { e.Agent, e.Role = "a1", "coder" }), false)
+	if s.home > 0.01 {
+		t.Fatal("the rim flashed before any petal came home")
+	}
+	flashed := false
+	for i := 0; i < 5*hanamiFPS && len(s.petals) > 0; i++ {
+		s.Step(goldenNow)
+		flashed = flashed || s.home > 0.5
+	}
+	if !flashed {
+		t.Fatal("the last petal's arrival did not flash the rim")
+	}
+
+	// a question: the bell appears when its light arrives, at once when it is history, and an answer removes it
+	q := func(e *data.Event) { e.Slug = "visualiser" }
+	s.Apply(ev("question", 20, q), false)
+	if b := s.bells[0]; b.state != bellGoing || b.p != 0 {
+		t.Fatal("the bell is there before its light")
+	}
+	stepFor(s, goldenNow, 500*time.Millisecond)
+	if s.bells[0].state != bellGoing {
+		t.Fatal("the bell is there before its light arrived")
+	}
+	stepFor(s, goldenNow, 600*time.Millisecond)
+	if s.bells[0].state != bellWaiting || len(s.ripples) == 0 {
+		t.Fatal("the light arrived and the bell did not ring")
+	}
+	s.Apply(ev("answer", 30, q), false)
+	stepFor(s, goldenNow, 2*time.Second)
+	if len(s.bells) != 0 {
+		t.Fatal("the answer did not remove the bell")
+	}
+	s.Apply(ev("question", 40, q), true)
+	if len(s.bells) != 1 || s.bells[0].state != bellWaiting {
+		t.Fatal("a question from history waits at its bell at once")
+	}
+	if x, y := bellAt(g, 0); x > 10 || y >= g.waterY {
+		t.Fatalf("the bell is not at the left edge of the sky: %.0f, %.0f", x, y)
 	}
 }
