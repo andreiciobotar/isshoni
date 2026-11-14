@@ -130,7 +130,10 @@ share of the lines written, 0 to 1), `lead_calls_median`, `handover_s_median` (`
 first `handed-over` state), `review_rounds_median`, and `build_runs_median` (`techlead` records of
 kind `build` per task; null for `single`), plus `first_pass` (tasks of the `n`), `defects` (the
 sums by `caught_by`, null when no task has a retro) and `lead_wakeups` (prompts to the lead after
-its first hand-over, summed). A median over tasks with no value is null. `isshoni kaizen --modes`
+its first hand-over, summed). A median over tasks with no value is null. `defects` is null
+when no task of the row has a retro, `lead_calls_median` ignores tasks with no lead transcript,
+`handover_s_median` ignores a hand-over earlier than `TaskStarted`, and a team task with no
+`build` record counts 0 build runs. `isshoni kaizen --modes`
 prints the rows as a table, `-` for null, after a line counting the landed tasks of each mode; the
 `tech_lead` counts of the merge queue (`came_back` and the rest) leave out `build` records.
 

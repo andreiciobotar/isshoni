@@ -368,7 +368,8 @@ def shapes(d):
     add("anatomy_point_role", [r for p in a["points"] for r in p["roles"].values()])
     add("anatomy_version_role", [r for v in a["versions"] for r in v["roles"].values()])
     add("anatomy_classes", [r["classes"] for v in a["versions"] for r in v["roles"].values() if r and r["classes"]])
-    add("defects", [t["defects"] for t in tasks] + [s["defects"]])
+    add("defects", [t["defects"] for t in tasks] + [s["defects"]] + [r["defects"] for r in s["by_mode"]])
+    add("by_mode", s["by_mode"])
     add("summary", [s]), add("time", [s["time"]]), add("first_pass", [s["first_pass"]]), add("trend", [s["trend"]])
     add("median", [s[m] for m in ("cost", "brief_to_pr_s", "pr_to_merge_s", "review_rounds")])
     add("stop", d["stops"]), add("slowed", d["slowed"]), add("reward", d["rewards"])
@@ -394,7 +395,7 @@ class DashboardFixtureTests(FixtureStore):
         self.assertLessEqual({"doc", "repo", "version", "task", "pr", "cost", "by_role", "defects", "summary", "time",
                               "first_pass", "median", "stop", "slowed", "outbox", "counts", "topic", "entry",
                               "site_manager", "tech_lead", "mix", "authoring", "authoring_roles", "pooled", "pooled_roles", "pooled_share",
-                              "overhead"}, set(ours))
+                              "overhead", "by_mode"}, set(ours))
         for name in ours:
             self.assertEqual(fixture[name], ours[name], name)
         landed = [t for t in fixture_doc["tasks"] if t["landed"]]
