@@ -19,6 +19,10 @@ def role(total=1.0, calls=10, median=100_000, peak=150_000, tools=10, mix=MIX):
             "tools": {"Read": tools} if tools else {}, "dispatches": 0}
 
 
+def written(product=0, tests=0, lines=10):
+    return {k: {"calls": n, "lines": n * lines} for k, n in (("product", product), ("tests", tests), ("docs", 3))}
+
+
 def task(slug, version="0.3.0", repo_path=ROOT, **roles):
     return {"repo": "repo", "repo_path": repo_path, "task": slug, "version": version, "start": None, "end": None,
             "cost": round(sum(r["cost"]["total"] for r in roles.values()), 6), "unpriced_tokens": 0, "roles": roles}
@@ -263,6 +267,34 @@ class Findings(unittest.TestCase):
         [(_, _, detail)] = check("version-shift", window_pic(cur, base), 20)
         self.assertNotIn("lead context", detail)
 
+    def authored(self, n_current, n_baseline, tests=False):
+        """5 current and 5 baseline tasks; the lead wrote code in the first n of each (as tests when `tests`)."""
+        def mk(prefix, n):
+            return [task(f"{prefix}{i}", lead={**role(), "written": written(**{"tests" if tests else "product": int(i <= n)})},
+                         coder={**role(), "written": written(product=2)}) for i in range(1, 6)]
+        return window_pic(mk("c", n_current), mk("b", n_baseline))
+
+    def test_lead_authoring(self):
+        self.assertEqual(check("lead-authoring", self.authored(3, 1), 50), [
+            (None, "lead", "the lead wrote product code or tests in 3 of the last 5 landed tasks (c1, c2, c3), "
+             "1 of the 5 before (60% against 20%); 30 lines of 130 written by all roles")])
+        self.assertEqual(check("lead-authoring", self.authored(3, 1, tests=True), 50)[0][1], "lead")
+
+    def test_lead_authoring_below_the_threshold_does_not_fire(self):
+        self.assertEqual(check("lead-authoring", self.authored(2, 0), 50), [])
+        self.assertEqual(check("lead-authoring", self.authored(0, 5), 50), [])
+
+    def test_lead_authoring_counts_a_task_without_a_lead_as_not_written(self):
+        base = [task(f"b{i}", coder={**role(), "written": written(product=2)}) for i in range(1, 6)]
+        cur = [task(f"c{i}", coder={**role(), "written": written(product=2)}) for i in range(1, 6)]
+        self.assertEqual(check("lead-authoring", window_pic(cur, base), 1), [])
+
+    def test_lead_authoring_with_an_older_monitor_is_not_evaluated(self):
+        old = flat("c", 5, lead=role())
+        with self.assertRaises(factory.NotEvaluated) as cm:
+            check("lead-authoring", window_pic(old, flat("b", 5, lead=role())), 50)
+        self.assertEqual(str(cm.exception), "the monitor reports no authoring: update isshoni")
+
 
 class CriteriaFile(unittest.TestCase):
     def load(self, **kw):
@@ -283,7 +315,8 @@ class CriteriaFile(unittest.TestCase):
     def test_the_shipped_digest_entries(self):
         shipped = {c["name"]: c for c in factory.load_criteria() if c.get("job") == "digest"}
         self.assertEqual({k: v["threshold"] for k, v in shipped.items()},
-                         {"mix-shift": 5, "dearest-task": 1.5, "role-growing": 20, "version-shift": 20})
+                         {"mix-shift": 5, "dearest-task": 1.5, "role-growing": 20, "version-shift": 20,
+                          "lead-authoring": 50})
         self.assertEqual({v["escalate"] for v in shipped.values()}, {"judgment"})
         self.assertEqual({c["name"] for c in factory.job_criteria(factory.load_criteria(), "watch")}
                          & set(shipped), set())
