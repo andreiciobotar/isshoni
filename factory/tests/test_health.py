@@ -543,7 +543,8 @@ class Harness(Home):
                         mock.patch.object(factory, "CRITERIA_PATH", self.criteria_path),
                         mock.patch.object(factory, "ROLE_PATH", self.role),
                         mock.patch.object(factory, "now", lambda: iso(self.clock)),
-                        mock.patch.object(factory.time, "time", lambda: self.clock)):
+                        mock.patch.object(factory.time, "time", lambda: self.clock),
+                        mock.patch.object(factory.time, "sleep", lambda seconds: setattr(self, "clock", self.clock + seconds))):
             patcher.start()
             self.addCleanup(patcher.stop)
 
