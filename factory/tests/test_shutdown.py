@@ -15,7 +15,7 @@ from unittest import mock
 
 from test_factory import BIN, ROOT, WT, FakeRun, factory, porcelain
 from test_factory import DISPATCHER
-from test_health import HOUR, NOW, SID, Harness, check, choice, fired, iso, lead, pic, register, reply
+from test_health import HOUR, NOW, SID, Harness, check, choice, decided, fired, iso, lead, pic, register, reply
 
 FAKE_CLAUDE = """#!/bin/sh
 case "$1" in
@@ -365,8 +365,19 @@ class BusyEveryTickTests(Harness):
         self.hand_over(7)
         self.tick()
         [sent] = json.loads(self.claude_runs()[0][-1].partition("\n\n")[2])
-        self.assertNotIn("task", sent)
+        self.assertEqual(sent["task"], {"worktree": f"{WT}/x", "lead": "x", "pid": 100})
         self.assertEqual(sent["transcript_tail"], ["T0 user: start"])
+
+    def test_a_lead_told_longer_than_the_grace_ago_is_fired_again_on_a_tick_between_health_passes(self):
+        self.hand_over(7)
+        told = NOW + 120 - (factory.LEAD_GRACE_MINUTES + 1) * 60
+        self.seed("firings", [fired("aaa", "busy-after-handover", "judgment"),
+                              decided("aaa", "escalated", ts=told, reason="stop sleep") | {"to": "lead"}])
+        self.tick(at=NOW + 120)
+        [argv] = self.claude_runs()
+        [sent] = json.loads(argv[-1].partition("\n\n")[2])
+        self.assertNotEqual(sent["id"], "aaa")
+        self.assertTrue(sent["lead_told"])
 
     def test_the_other_criteria_are_left_alone_between_health_passes(self):
         self.seed("firings", [fired("a", criterion="past-limit")])  # open, and not evaluated on this tick
