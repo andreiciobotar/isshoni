@@ -407,7 +407,7 @@ class Feed:
     def history(self): return []
     def poll(self, discover): return []
     def poll_gh(self): return []
-events.follow(Feed(), lambda batch: None, threading.Event(), tick=0.1)
+events.follow(Feed(), lambda batch: print('started', flush=True), threading.Event(), tick=0.1)
 """
     # A parent that starts the follow and prints its pid, then waits to be killed.
     PARENT = "import subprocess, sys, time\n" \
@@ -428,8 +428,9 @@ events.follow(Feed(), lambda batch: None, threading.Event(), tick=0.1)
         parent = subprocess.Popen([sys.executable, "-c", self.PARENT, self.CHILD], cwd=ROOT, stdout=subprocess.PIPE, text=True,
                                   start_new_session=True)
         self.addCleanup(self.kill_group, parent)
-        child = int(parent.stdout.readline())
-        time.sleep(1)  # the child has started and is looping
+        lines = {parent.stdout.readline().strip(), parent.stdout.readline().strip()}  # the pid, and "started": the parent is recorded
+        child = int(next(l for l in lines if l.isdigit()))
+        self.assertIn("started", lines)
         os.kill(child, 0)
         parent.kill()
         parent.wait()

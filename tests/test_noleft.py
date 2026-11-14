@@ -13,7 +13,7 @@ NOLEFT = os.path.join(ROOT, "tools", "noleft.py")
 LEAK = ("import subprocess, sys, time\n"
         "p = subprocess.Popen(['sleep', '63.25'], start_new_session=True)\n"
         "open(sys.argv[1], 'w').write(str(p.pid))\n"
-        "time.sleep(0.5)\n")
+        "time.sleep(2)\n")
 
 
 def alive(pid):
@@ -57,6 +57,42 @@ class NoLeftTests(unittest.TestCase):
         for code in (0, 7):
             p = self.noleft("sh", "-c", "exit %d" % code)
             self.assertEqual((p.returncode, p.stdout), (code, "left behind: 0\n"))
+
+    def test_a_second_signal_during_the_grace_does_not_cut_the_run_short(self):
+        d = self.enterContext(tempfile.TemporaryDirectory())
+        pidfile = os.path.join(d, "pid")
+        # The shell ignores TERM, so the wrapper waits its grace; a sleep detaches from the shell and outlives it.
+        script = 'trap "" TERM; sleep 63.25 & echo $! > %s; sleep 4' % pidfile
+        out = open(os.path.join(d, "out"), "w+")
+        self.addCleanup(out.close)
+        wrapper = subprocess.Popen([sys.executable, NOLEFT, "sh", "-c", script], stdout=out, start_new_session=True)
+        self.addCleanup(self.kill_group, wrapper)
+        self.addCleanup(lambda: alive(self.pid(pidfile)) and os.kill(self.pid(pidfile), signal.SIGKILL))
+        while not self.pid(pidfile):
+            time.sleep(0.05)
+        for _ in range(2):
+            os.kill(wrapper.pid, signal.SIGTERM)
+            time.sleep(1)
+        self.assertEqual(wrapper.wait(timeout=10), 1)  # without the fix it polls `ps` for ever
+        out.seek(0)
+        self.assertIn("left behind: 1", out.read())
+        time.sleep(0.2)
+        self.assertFalse(alive(self.pid(pidfile)))
+
+    def test_a_signal_gives_exit_code_128_plus_its_number(self):
+        wrapper = subprocess.Popen([sys.executable, NOLEFT, "sleep", "30"], stdout=subprocess.DEVNULL, start_new_session=True)
+        self.addCleanup(self.kill_group, wrapper)
+        time.sleep(1)
+        os.kill(wrapper.pid, signal.SIGHUP)
+        self.assertEqual(wrapper.wait(timeout=10), 129)
+
+    @staticmethod
+    def kill_group(wrapper):
+        try:
+            os.killpg(wrapper.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        wrapper.wait()
 
 
 if __name__ == "__main__":

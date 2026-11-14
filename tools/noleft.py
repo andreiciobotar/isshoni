@@ -21,9 +21,17 @@ POLL = 0.1
 GRACE = 1.0  # a process just told to stop gets this long to be gone
 
 
+SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+class Stopped(Exception):
+    """The wrapper itself was told to stop."""
+
+
 def table():
     """{(pid, start time): (ppid, command)} of every process."""
-    out = subprocess.run(["ps", "-axo", "pid=,ppid=,lstart=,command="], capture_output=True, text=True, timeout=10).stdout
+    out = subprocess.run(["ps", "-axo", "pid=,ppid=,lstart=,command="], capture_output=True, text=True, timeout=10,
+                         env={**os.environ, "LC_ALL": "C"}).stdout  # the C locale keeps lstart at 5 tokens
     rows = (line.split(None, 7) for line in out.splitlines())
     return {(int(f[0]), " ".join(f[2:7])): (int(f[1]), f[7]) for f in rows if len(f) == 8}
 
@@ -41,37 +49,43 @@ def scan(mine, rows):
 def track(root, mine, stop):
     while not stop.is_set():
         rows = table()
-        for k, (_, cmd) in rows.items():
-            if k[0] == root and k not in mine:
-                mine[k] = cmd
+        if not mine:  # the root's key, taken once: a pid reused after the root is gone is not the root
+            mine.update({k: cmd for k, (_, cmd) in rows.items() if k[0] == root})
         scan(mine, rows)
         stop.wait(POLL)
 
 
+def on_signal(signum, frame):
+    for sig in SIGNALS:  # a second signal must not cut the wait and the sweep short
+        signal.signal(sig, signal.SIG_IGN)
+    raise Stopped(signum)
+
+
 def main(command):
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, signal.default_int_handler)
+    for sig in SIGNALS:
+        signal.signal(sig, on_signal)
     p = subprocess.Popen(command)
     mine, stop = {}, threading.Event()
     tracker = threading.Thread(target=track, args=(p.pid, mine, stop))
     tracker.start()
     try:
         rc = p.wait()
-    except KeyboardInterrupt:
-        rc = 130
+    except Stopped as s:
+        rc = 128 + s.args[0]
         p.terminate()
         try:
             p.wait(10)
         except subprocess.TimeoutExpired:
             p.kill()
             p.wait()
-    stop.set()
+    finally:
+        stop.set()
     tracker.join()
     deadline = time.monotonic() + GRACE
     while True:
         rows = table()
         scan(mine, rows)
-        left = {k: cmd for k, cmd in mine.items() if k in rows and k[0] != p.pid}
+        left = {k: cmd for k, cmd in mine.items() if k in rows}
         if not left or time.monotonic() > deadline:
             break
         time.sleep(POLL)
