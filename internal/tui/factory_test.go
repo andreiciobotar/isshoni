@@ -106,9 +106,14 @@ func waitingRepos() []factoryRepo { return append(fakeFactoryRepos(), delta()) }
 // request, and deliverables without a pull request (a link and a file).
 func alpha() factoryRepo {
 	quiet, login, stacked := ftask("quiet-refactor", "motion"), ftask("login-flow", "motion"), ftask("stacked-on-login", "motion")
-	quiet.Session, quiet.Elapsed = "working", ptr(int64(252))
+	quiet.Session, quiet.Elapsed, quiet.Size, quiet.Limit = "working", ptr(int64(252)), "small", ptr(int64(2700))
 	login.Session, login.Elapsed, login.Overtime = "working", ptr(int64(8100)), true
+	login.Size, login.Limit = "medium", ptr(int64(5400))
 	stacked.Base, stacked.Elapsed, stacked.PRState = "worktree-login-flow", ptr(int64(95)), "unknown"
+	stacked.Limit = ptr(int64(7200)) // no size: the setting's limit
+	nearing := ftask("slow-export", "motion")
+	nearing.Session, nearing.Elapsed, nearing.Nearing = "working", ptr(int64(2460)), true
+	nearing.Size, nearing.Limit = "small", ptr(int64(2700))
 	limits, docs, old := ftask("api-rate-limits", "review"), ftask("rate-limit-docs", "motion"), ftask("old-experiment", "merged")
 	ask, notes := ftask("needs-an-answer", "blocked"), ftask("release-notes", "settled")
 	ask.Session, ask.Elapsed, ask.Deliverable = "done", ptr(int64(640)), "https://example.com/design/doc"
@@ -117,7 +122,7 @@ func alpha() factoryRepo {
 	ask.Waited, ask.StopKind, ask.StopSummary = ptr(int64(2700)), "QUESTION", "Should the export keep the legacy column order?"
 	docs.PRState, docs.PRURL, docs.Stale = "closed", "https://github.com/o/alpha/pull/40", true
 	old.PRState, old.PRURL, old.Elapsed = "merged", "https://github.com/o/alpha/pull/31", ptr(int64(61))
-	st := fstatus(5, stacked, old, docs, quiet, limits, login, ask, notes)
+	st := fstatus(5, stacked, old, docs, quiet, nearing, limits, login, ask, notes)
 	st.Reserve = 1
 	return factoryRepo{name: "alpha", path: "/r/alpha", st: st}
 }
@@ -325,7 +330,7 @@ func TestFactorySettingsLineShowsTheReserve(t *testing.T) {
 func TestFactoryTableColumnsAndPhaseLabels(t *testing.T) {
 	out := plain(factoryModel(true, 140, 40, alpha()))
 	for _, want := range []string{"SLUG", "PHASE", "ELAPSED", "PR", "BASE", "FLAGS", "in motion", "waiting for review", "merged, not cleaned",
-		"#42", "#40 closed", "#31", "↳ login-flow", "[overtime]", "[stale]", "4m12s", "2h15m", "1h30m",
+		"#42", "#40 closed", "#31", "↳ login-flow", "[overtime]", "[stale]", "SIZE", "small", "medium", "4m / 45m", "41m / 45m", "2h15m / 1h30m", "1m / 2h", "1h30m",
 		"blocked, needs you", "settled, not cleaned", "▲ blocked", "example.com/design/doc", "release-notes.md"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("140 columns lack %q:\n%s", want, out)
@@ -338,7 +343,7 @@ func TestFactoryTableColumnsAndPhaseLabels(t *testing.T) {
 		t.Errorf("the origin/ prefix of a base is dropped:\n%s", out)
 	}
 	short := plain(factoryModel(true, 80, 24, alpha()))
-	if strings.Contains(short, "waiting for review") || !strings.Contains(short, "◆ review ") || !strings.Contains(short, "⠋ motion") || !strings.Contains(short, "Factory  5 motion (1 blocked) · 1 review · 1 merged · 1 settled") || !strings.Contains(short, "▲ blocked ") || strings.Contains(short, "blocked, needs you") {
+	if strings.Contains(short, "waiting for review") || !strings.Contains(short, "◆ review ") || !strings.Contains(short, "⠋ motion") || !strings.Contains(short, "Factory  6 motion (1 blocked) · 1 review · 1 merged · 1 settled") || !strings.Contains(short, "▲ blocked ") || strings.Contains(short, "blocked, needs you") {
 		t.Errorf("below 100 columns the labels are short:\n%s", short)
 	}
 	narrow := plain(factoryModel(true, 60, 20, alpha()))
@@ -350,6 +355,63 @@ func TestFactoryTableColumnsAndPhaseLabels(t *testing.T) {
 	for _, kept := range []string{"SLUG", "PHASE", "FLAGS", "[overtime]"} {
 		if !strings.Contains(narrow, kept) {
 			t.Errorf("60 columns lack %q:\n%s", kept, narrow)
+		}
+	}
+}
+
+func TestFactoryElapsedAgainstTheLimit(t *testing.T) {
+	inside, nearing, over, unsized, review := ftask("a", "motion"), ftask("b", "motion"), ftask("c", "motion"), ftask("d", "motion"), ftask("e", "review")
+	inside.Elapsed, inside.Size, inside.Limit = ptr(int64(1500)), "small", ptr(int64(2700))
+	nearing.Elapsed, nearing.Size, nearing.Limit, nearing.Nearing = ptr(int64(2460)), "small", ptr(int64(2700)), true
+	over.Elapsed, over.Size, over.Limit, over.Overtime = ptr(int64(8100)), "medium", ptr(int64(5400)), true
+	unsized.Elapsed, unsized.Limit = ptr(int64(30)), ptr(int64(7200))
+	review.Elapsed, review.Limit = ptr(int64(1500)), ptr(int64(2700))
+	m := factoryModel(false, 140, 40, factoryRepo{name: "m", st: fstatus(5, inside, nearing, over, unsized, review)})
+	p, th, rows := m.th.on(m.th.Bg), m.th, m.fac.repos[0].st.Rows
+	cols := m.factoryCols(p, 140, rows)
+	for i, want := range []struct {
+		text, size string
+		col        color.Color
+	}{{"25m / 45m", "small", th.Muted}, {"41m / 45m", "small", th.Yellow}, {"2h15m / 1h30m", "medium", th.Red},
+		{"0m / 2h", "-", th.Muted}, {"25m00s", "-", th.Muted}} {
+		line := m.taskRow(p, cols, rows[i], 140)[0]
+		if !strings.Contains(line, p.t(cell(want.text, cols.elapsed, true), want.col)) ||
+			!strings.Contains(line, p.t(cell(want.size, cols.size, false), th.Faint)) {
+			t.Errorf("row %d: want %q in %v and size %q:\n%s", i, want.text, want.col, want.size, line)
+		}
+	}
+}
+
+func TestFactoryColsDegradeInOrder(t *testing.T) {
+	m := factoryModel(true, 140, 40, alpha())
+	p, rows := m.th.on(m.th.Bg), m.fac.repos[0].st.Rows
+	seen := map[string]bool{}
+	for w := 40; w <= 160; w++ {
+		c := m.factoryCols(p, w, rows)
+		switch {
+		case c.size > 0:
+			if !c.span || c.base == 0 || c.pr == 0 || c.elapsed == 0 {
+				t.Fatalf("%d columns: SIZE shows only while everything else does: %+v", w, c)
+			}
+			seen["size"] = true
+		case c.span:
+			seen["span"] = true
+		case c.base > 0:
+			seen["reduced"] = c.elapsed == elapsedLeast
+		case c.pr > 0:
+			seen["base"] = true
+		case c.elapsed > 0:
+			seen["pr"] = true
+		default:
+			seen["elapsed"] = true
+		}
+		if c.span && (c.base == 0 || c.pr == 0 || c.elapsed == 0) || c.base > 0 && (c.pr == 0 || c.elapsed == 0) || c.pr > 0 && c.elapsed == 0 {
+			t.Fatalf("%d columns: SIZE, the span, BASE, PR and ELAPSED go in that order: %+v", w, c)
+		}
+	}
+	for _, step := range []string{"size", "span", "reduced", "base", "pr", "elapsed"} {
+		if !seen[step] {
+			t.Errorf("no width between 40 and 160 shows the step %q", step)
 		}
 	}
 }
@@ -521,14 +583,18 @@ func TestFactoryBlockedOnSomeoneElseIsLighter(t *testing.T) {
 func TestFactoryColsKeepTheTableWhenAWhomIsLong(t *testing.T) {
 	cols := func(w int, whom string) factoryCols {
 		x := onTask()
-		x.WaitsOn = whom
+		x.WaitsOn, x.Size = whom, "medium"
 		m := factoryModel(true, w, 40, factoryRepo{name: "m", st: fstatus(5, x, ftask("quiet-refactor", "motion"), ftask("api-rate-limits", "review"))})
 		return m.factoryCols(m.th.on(m.th.Bg), w, m.fac.repos[0].st.Rows)
 	}
 	long := strings.Repeat("x", 40)
+	if c := cols(100, long); c.phase != 53 {
+		t.Errorf("100 columns: PHASE is %d cells, it was clamped to make room for SIZE and the wider ELAPSED", c.phase)
+	}
 	for _, w := range []int{80, 100} {
 		got, want := cols(w, long), cols(w, "dispatcher")
 		got.phase, want.phase = 0, 0 // the label is cut to the cell
+		got.size, want.size = 0, 0   // SIZE is the first column to give way to a wider PHASE
 		if got != want || got.elapsed == 0 {
 			t.Errorf("%d columns: a 40-character WaitsOn gives %+v, a short one %+v", w, got, want)
 		}
@@ -541,6 +607,25 @@ func TestFactoryColsKeepTheTableWhenAWhomIsLong(t *testing.T) {
 	m := factoryModel(true, 130, 40, factoryRepo{name: "m", st: fstatus(5, wide)})
 	if c := m.factoryCols(m.th.on(m.th.Bg), 130, m.fac.repos[0].st.Rows); c.slug != 40 || c.phase != phaseMax {
 		t.Errorf("130 columns: a long whom may not cut a long slug: %+v", c)
+	}
+}
+
+func TestFactoryColsShowSizeOnlyWhenSomeTaskHasOne(t *testing.T) {
+	sized := ftask("sized", "motion")
+	sized.Size = "small"
+	for _, c := range []struct {
+		name  string
+		tasks []data.FactoryTask
+		size  int
+	}{
+		{"none", []data.FactoryTask{ftask("a", "motion"), ftask("b", "review")}, 0},
+		{"one", []data.FactoryTask{ftask("a", "motion"), sized}, 5},
+	} {
+		m := factoryModel(true, 140, 40, factoryRepo{name: "m", st: fstatus(5, c.tasks...)})
+		got := m.factoryCols(m.th.on(m.th.Bg), 140, c.tasks)
+		if got.size != c.size {
+			t.Errorf("%s sized: SIZE is %d cells, want %d", c.name, got.size, c.size)
+		}
 	}
 }
 
@@ -741,7 +826,7 @@ func TestFactoryEmptyAndFirstResult(t *testing.T) {
 func TestFactorySubheaderAndSettingsLine(t *testing.T) {
 	m := factoryModel(true, 140, 40, fakeFactoryRepos()...)
 	out := plain(m)
-	for _, want := range []string{"Factory  8 in motion (1 blocked) · 1 waiting for review · 1 merged, not cleaned · 1 settled  · as of 11:00:00", "worktree cap  5  per repo", "⚠ not inside a git repository", "in motion ●●● 3/2"} {
+	for _, want := range []string{"Factory  9 in motion (1 blocked) · 1 waiting for review · 1 merged, not cleaned · 1 settled  · as of 11:00:00", "worktree cap  5  per repo", "⚠ not inside a git repository", "in motion ●●● 3/2"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("lacks %q:\n%s", want, out)
 		}

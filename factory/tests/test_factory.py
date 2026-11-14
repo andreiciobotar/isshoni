@@ -450,7 +450,7 @@ class NewTests(unittest.TestCase):
                 "Your task slug is demo-task. Before each message to the dispatcher run `factory dispatcher`: "
                 "it prints its current session name (now d1). "
                 "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
-                "Your time limit is 2 hours. Your brief follows.\n\ndo it"]
+                "Your time limit is 120 minutes. Your brief follows.\n\ndo it"]
         self.assertEqual(fake.calls[-1], want)
 
     def test_lean_start_off_launches_the_old_argv_without_listing_plugins(self):
@@ -464,7 +464,7 @@ class NewTests(unittest.TestCase):
             "Your task slug is demo-task. Before each message to the dispatcher run `factory dispatcher`: "
                 "it prints its current session name (now d1). "
             "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
-            "Your time limit is 2 hours. Your brief follows.\n\ndo it"])
+            "Your time limit is 120 minutes. Your brief follows.\n\ndo it"])
         self.assertFalse(fake.ran("claude", "plugin"))
 
     def test_a_failing_plugin_list_still_launches_without_enabled_plugins(self):
@@ -670,6 +670,32 @@ class NewTests(unittest.TestCase):
         (rec,) = fake.tasks
         self.assertEqual((rec["repo"], rec["slug"], rec["state"], rec["role"]), (ROOT, "demo-task", "working", "dispatcher"))
 
+    def test_a_fractional_setting_is_told_in_whole_minutes(self):
+        _, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK), '{"task_time_limit_hours": 1.5}')
+        self.assertIn("Your time limit is 90 minutes.", next(c for c in fake.calls if c[:2] == ["claude", "--bg"])[-1], err)
+
+    def test_a_sized_brief_sets_the_limit_and_is_recorded(self):
+        args = ["new", "demo-task", "--brief", "go\nExpected size: Small", "--dispatcher", "d1"]
+        with mock.patch.object(factory, "task_event") as event:
+            code, _, err, fake = invoke(args, self.answers([], (), self.OK))
+        self.assertEqual(code, 0, err)
+        self.assertIn("Your time limit is 45 minutes.", next(c for c in fake.calls if c[:2] == ["claude", "--bg"])[-1])
+        self.assertTrue(fake.ran("git", "config", "branch.worktree-demo-task.factorySize", "small"))
+        self.assertEqual(event.call_args.kwargs["size"], "small")
+
+    def test_an_unsized_brief_records_nothing(self):
+        with mock.patch.object(factory, "task_event") as event:
+            _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK))
+        self.assertFalse(fake.ran("git", "config", "branch.worktree-demo-task.factorySize"))
+        self.assertNotIn("size", event.call_args.kwargs)
+
+    def test_a_failed_size_record_warns_and_the_task_starts(self):
+        args = ["new", "demo-task", "--brief", "Expected size: medium", "--dispatcher", "d1"]
+        answers = self.answers([], (), self.OK, {("git", "config", "branch.worktree-demo-task.factorySize"): (1, "", "locked")})
+        code, _, err, _ = invoke(args, answers)
+        self.assertEqual(code, 0)
+        self.assertIn("cannot record the size", err)
+
     def test_a_failed_launch_declares_nothing(self):
         _, _, _, fake = invoke(self.ARGS, self.answers([], (), {("claude", "--bg"): (1, "", "boom")}))
         self.assertEqual(fake.tasks, [])
@@ -853,6 +879,28 @@ def git_task_answers(slug, now, *, dirty="", counts="0\t2", commit_age=0, pr=Non
         ("git", "log"): (0, f"{int(now - commit_age)} sha-{slug}\n", ""),
         ("gh",): (0, json.dumps(pr if pr is not None else []), "") if pr != "missing" else (127, "", "no gh"),
     }
+
+
+NEARING = '[{"name": "nearing-limit", "threshold": 75}]'
+
+
+class LimitTests(unittest.TestCase):
+    def test_brief_size(self):
+        for brief, want in (("Expected size: small", "small"), ("expected SIZE: Medium\nmore", "medium"),
+                            ("x\nExpected size: about large, not small", "large"), ("no line", None),
+                            ("Expected size: tiny", None), ("Expected size: undersized", None),
+                            ("Expected size:\nsmall", None), ("a\nExpected size: large\nExpected size: small", "large")):
+            with self.subTest(brief=brief):
+                self.assertEqual(factory.brief_size(brief), want)
+
+    def test_task_limit(self):
+        self.assertEqual([factory.task_limit(s, 2) for s in ("small", "medium", "large", None, "huge")],
+                         [2700, 5400, 7200, 7200, 7200])
+        self.assertEqual([factory.task_limit(s, 1) for s in ("small", "medium", "large", None)], [2700, 3600, 3600, 3600])
+
+    def test_span(self):
+        self.assertEqual([factory.span(s) for s in (0, 59, 60, 2460, 3600, 5400, 7200, 7260)],
+                         ["0m", "0m", "1m", "41m", "1h", "1h30m", "2h", "2h1m"])
 
 
 class StatusTests(unittest.TestCase):
@@ -1167,6 +1215,75 @@ class StatusTests(unittest.TestCase):
         answers = repo_answers([task_entry("alpha")], [s], git_task_answers("x", time.time()))
         _, out, _, _ = invoke(["status", "--json"], answers, '{"task_time_limit_hours": 1}')
         self.assertTrue(json.loads(out)["rows"][0]["overtime"])
+
+    def rows_for(self, minutes, size=None, criteria=NEARING, state="working", hours=None):
+        """The row of a working task `minutes` into its run, with `criteria` as the criteria file's text."""
+        s = {"cwd": f"{WT}/alpha", "kind": "background", "status": "busy", "state": "working",
+             "startedAt": int(time.time() * 1000) - minutes * 60 * 1000}
+        extra = {("git", "config", "--get", "branch.worktree-alpha.factorySize"): (0, size + "\n", "")} if size else {}
+        answers = repo_answers([task_entry("alpha")], [s], git_task_answers("x", time.time()), extra)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d, "criteria.json")
+            if criteria is not None:
+                path.write_text(criteria)
+            with mock.patch.object(factory, "CRITERIA_PATH", path):
+                _, out, _, _ = invoke(["status", "--json"], answers, hours and json.dumps({"task_time_limit_hours": hours}),
+                                      tasks=[task_rec("alpha", state)] if state else ())
+        return json.loads(out)["rows"][0]
+
+    def test_limit_size_and_nearing_by_minutes(self):
+        for minutes, size, limit, nearing, overtime in (
+                (10, "small", 2700, False, False), (34, "small", 2700, True, False), (50, "small", 2700, False, True),
+                (50, "medium", 5400, False, False), (70, "medium", 5400, True, False), (100, "large", 7200, True, False),
+                (91, None, 7200, True, False), (95, "bogus", 7200, True, False), (80, None, 7200, False, False)):
+            with self.subTest(minutes=minutes, size=size):
+                row = self.rows_for(minutes, size)
+                self.assertEqual((row["limit"], row["nearing"], row["overtime"]), (limit, nearing, overtime))
+                self.assertEqual(row["size"], size if size in factory.SIZE_LIMIT_MINUTES else None)
+
+    def test_the_setting_is_the_ceiling(self):
+        row = self.rows_for(10, "large", hours=1)
+        self.assertEqual(row["limit"], 3600)
+
+    def test_a_fractional_setting_gives_whole_seconds(self):
+        row = self.rows_for(10, hours=1.5)
+        self.assertEqual(row["limit"], 5400)
+        self.assertIsInstance(row["limit"], int)
+        self.assertEqual(factory.span(row["limit"]), "1h30m")
+
+    def test_nothing_is_nearing_without_the_criteria_entry(self):
+        for criteria in (None, "not json", "{}", "[1]", "[]", "5", "null", '[{"name": "nearing-limit"}]',
+                         '[{"name": "nearing-limit", "threshold": true}]', '[{"name": "nearing-limit", "threshold": 0}]'):
+            with self.subTest(criteria=criteria):
+                self.assertFalse(self.rows_for(40, "small", criteria)["nearing"])
+
+    def test_only_a_working_task_is_nearing(self):
+        for state in ("handed-over", "blocked", None):
+            with self.subTest(state=state):
+                self.assertFalse(self.rows_for(40, "small", state=state)["nearing"])
+        self.assertTrue(self.rows_for(40, "small")["nearing"])
+
+    def test_nearing_is_past_the_threshold_not_at_it(self):
+        self.assertFalse(self.rows_for(30, "small")["nearing"])  # 67% of 45m
+        self.assertFalse(self.rows_for(40)["nearing"])  # 33% of the 2h ceiling
+        self.assertTrue(self.rows_for(91)["nearing"])  # 76% of the 2h ceiling
+
+    def test_table_cell_and_size_column(self):
+        s = {"cwd": f"{WT}/alpha", "kind": "background", "status": "busy", "state": "working",
+             "startedAt": int(time.time() * 1000) - 41 * 60 * 1000}
+        answers = repo_answers([task_entry("alpha")], [s], git_task_answers("x", time.time()),
+                               {("git", "config", "--get", "branch.worktree-alpha.factorySize"): (0, "small\n", "")})
+        _, out, _, _ = invoke(["status"], answers)
+        head, row = out.splitlines()[:2]
+        self.assertEqual(head.split()[7:9], ["ELAPSED", "SIZE"])
+        self.assertEqual(row.split()[7:11], ["41m", "/", "45m", "small"])
+
+    def test_the_cell_outside_motion_is_the_elapsed_alone(self):
+        s = {"cwd": f"{WT}/alpha", "kind": "background", "status": "idle", "state": "done",
+             "startedAt": int(time.time() * 1000) - 41 * 60 * 1000}
+        _, out, _, _ = invoke(["status"], repo_answers([task_entry("alpha")], [s], git_task_answers("x", time.time())),
+                              tasks=[task_rec("alpha", "handed-over", "http://d")])
+        self.assertEqual(out.splitlines()[1].split()[7:9], ["41m", "-"])
 
     def test_table_output(self):
         entries = [task_entry("alpha"), (f"{WT}/agent-1a2b", "b", False), ("/elsewhere", "c", False)]
