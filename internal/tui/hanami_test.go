@@ -2,8 +2,12 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -129,6 +133,7 @@ func stepFor(s *hanamiScene, now time.Time, d time.Duration) {
 // Every moving thing comes from an event, and goes when the event says so.
 func TestHanamiSceneFollowsEvents(t *testing.T) {
 	s := newHanamiScene(NewTheme(true))
+	s.w, s.h = 140, 40 // room enough for a blossom to grow
 	stepFor(s, goldenNow, 2*time.Second)
 	if s.busy() || len(s.branches)+len(s.lanterns)+len(s.bells) != 0 {
 		t.Fatal("an idle scene holds something that is not ambient")
@@ -154,7 +159,7 @@ func TestHanamiSceneFollowsEvents(t *testing.T) {
 		s.Apply(ev("tool", 3, func(e *data.Event) { e.Agent, e.Role, e.Tool = "a1", "coder", "edit" }), false)
 	}
 	stepFor(s, goldenNow, 3*time.Second)
-	if a1, r1 := s.branches[0].blossoms[0], s.branches[0].blossoms[1]; a1.size.x < 2*small || r1.size.x > 1.2*small {
+	if a1, r1 := s.branches[0].blossoms[0], s.branches[0].blossoms[1]; a1.size.x < 1.1*small || r1.size.x > 1.2*small {
 		t.Fatalf("thirty calls did not grow the caller's blossom, or grew the other: %.1f and %.1f from %.1f", a1.size.x, r1.size.x, small)
 	}
 	// its note is held until its agent's next call, 12 s at most
@@ -176,6 +181,7 @@ func TestHanamiSceneFollowsEvents(t *testing.T) {
 		s.draw(false)
 	}
 	twin := newHanamiScene(NewTheme(true))
+	twin.w, twin.h = 140, 40
 	stepFor(twin, goldenNow, 2*time.Second)
 	twin.Apply(ev("spawn", 0, agent("a1", "coder", "")), false)
 	twin.Apply(ev("spawn", 0, agent("r1", "reviewer", "")), false)
@@ -253,6 +259,11 @@ func TestHanamiSceneFollowsEvents(t *testing.T) {
 	}
 	s.Apply(ev("answer", 40, slug), false)
 	s.Apply(ev("watch", 40, nil), false)
+	stepFor(s, goldenNow, 100*time.Millisecond)
+	if len(s.bells) != 1 || s.bells[0].state != bellReturning {
+		t.Fatal("an answer sends its light home before the bell goes")
+	}
+	stepFor(s, goldenNow, time.Second)
 	if len(s.bells) != 0 || len(s.ripples) != 1 {
 		t.Fatalf("answered, and one ripple for the tick: %d bells, %d ripples", len(s.bells), len(s.ripples))
 	}
@@ -279,7 +290,7 @@ func TestHanamiSceneFollowsEvents(t *testing.T) {
 	if b := s.branches; len(b) != 1 || len(b[0].blossoms) != 2 || b[0].blossoms[0].closed.IsZero() || b[0].grow.x < 0.9 {
 		t.Fatalf("a session at rest keeps its branch with its blossoms closed: %d branches", len(b))
 	}
-	stepFor(s, rest.Add(hanamiKeep), 20*time.Second)
+	stepFor(s, rest.Add(hanamiKeep), 70*time.Second) // and the beat of the burst of calls has died away
 	if len(s.branches) != 0 || s.busy() {
 		t.Fatalf("after the keep time the branch is still there: %d branches", len(s.branches))
 	}
@@ -394,15 +405,38 @@ func TestHanamiTreeIsBounded(t *testing.T) {
 	agent := func(kind string, i int, sec float64) {
 		one.Apply(ev(kind, sec, func(e *data.Event) { e.Agent = fmt.Sprint("a", i) }), false)
 	}
-	for i := 0; i < maxCanopy+6; i++ {
+	for i := 0; i < maxOpen+6; i++ {
 		agent("spawn", i, float64(i))
 		if i < 3 {
 			agent("return", i, float64(i)+0.5)
 		}
 	}
 	bl := one.branches[0].blossoms
-	if len(bl) != maxCanopy || !bl[0].closed.IsZero() || bl[0].agent != "a6" { // three closed went first, then the three oldest open
-		t.Fatalf("a full branch drops its closed blossoms first, then the oldest: %d, first %s", len(bl), bl[0].agent)
+	open, closed := 0, 0
+	for _, x := range bl {
+		if x.closed.IsZero() {
+			open++
+		} else {
+			closed++
+		}
+	}
+	if open != maxOpen || closed != 3 || bl[0].agent != "a0" {
+		t.Fatalf("a full branch drops its oldest open blossoms: %d open, %d closed", open, closed)
+	}
+	for i := 0; i < 10; i++ { // ten outlines: six stay, the longest closed go first
+		agent("spawn", 100+i, 100+float64(i))
+		agent("return", 100+i, 100.5+float64(i))
+	}
+	closed, oldest := 0, ""
+	for _, x := range one.branches[0].blossoms {
+		if !x.closed.IsZero() {
+			if closed++; oldest == "" {
+				oldest = x.agent
+			}
+		}
+	}
+	if closed != maxClosed || oldest != "a104" {
+		t.Fatalf("a branch with ten closed keeps %d, the oldest %s", closed, oldest)
 	}
 	for i := 0; i < maxStars+10; i++ {
 		one.Apply(ev("pr", 100, func(e *data.Event) { e.PR = i }), true)
@@ -440,7 +474,7 @@ func TestHanamiSettledEventsDoNotMove(t *testing.T) {
 			if !bl.closed.IsZero() {
 				closed++
 			}
-			if bl.size.x > blossomSize(s.geo(), 0) {
+			if bl.size.x > blossomSize(0, blossomCap(s.geo(), 0))+0.01 {
 				grown++
 			}
 		}
@@ -456,6 +490,45 @@ func TestHanamiSettledEventsDoNotMove(t *testing.T) {
 	stepFor(s, last, time.Second)
 	if n := len(s.branches); n == 0 {
 		t.Fatal("a branch whose session worked a moment ago withdrew")
+	}
+
+	// a session that was already quiet when the viewer arrived: its blossoms are closed, placed and trimmed by
+	// Arrive, so the first Step moves nothing
+	q := newHanamiScene(NewTheme(true))
+	q.w, q.h = 140, 40
+	for k := 0; k < 9; k++ {
+		who := func(e *data.Event) { e.Session, e.Agent, e.Role = "quiet", fmt.Sprint("a", k), "coder" }
+		q.Apply(ev("spawn", float64(k), who), true)
+		q.Apply(ev("tool", float64(k)+0.5, who), true)
+		if k < 4 {
+			q.Apply(ev("return", float64(k)+0.7, who), true)
+		}
+	}
+	arrived := goldenNow.Add(20 * time.Minute)
+	q.Arrive(arrived)
+	where := func() (n int, at []float64) {
+		g := q.geo()
+		for _, b := range q.branches {
+			for _, bl := range b.blossoms {
+				x, y, _, _ := b.blossomAt(g, bl)
+				at = append(at, x, y, bl.size.x)
+				n++
+			}
+		}
+		return
+	}
+	n0, before := where()
+	q.Step(arrived)
+	n1, after := where()
+	if n0 == 0 || n0 != n1 || !slices.Equal(before, after) {
+		t.Fatalf("the first Step after Arrive moved a blossom or lost one: %d then %d", n0, n1)
+	}
+	for _, b := range q.branches {
+		for _, bl := range b.blossoms {
+			if bl.closed.IsZero() {
+				t.Fatal("a blossom of a session that was quiet is still open after Arrive")
+			}
+		}
 	}
 }
 
@@ -522,6 +595,14 @@ func TestHanamiSpritesAreCapped(t *testing.T) {
 	}
 	if len(s.petals) > maxPetals || len(s.ripples) > maxRipples {
 		t.Fatalf("unbounded: %d petals, %d ripples", len(s.petals), len(s.ripples))
+	}
+	if len(s.briefs) > maxBriefs {
+		t.Fatalf("unbounded: %d briefs", len(s.briefs))
+	}
+	for _, br := range s.branches {
+		if len(br.beads) > maxBeads {
+			t.Fatalf("unbounded: %d beads on a branch", len(br.beads))
+		}
 	}
 	if len(s.notes) > maxNotes || len(s.sparks) > maxSparks || len(s.fire) > maxFire || len(s.lanterns) > maxLanterns {
 		t.Fatalf("unbounded: %d notes, %d sparks, %d fire, %d lanterns", len(s.notes), len(s.sparks), len(s.fire), len(s.lanterns))
@@ -674,5 +755,537 @@ func TestHanamiReplayLoopsAndReturnsToLive(t *testing.T) {
 	m.Update(press("p"))
 	if m.hn.replay != nil {
 		t.Fatal("p does not leave the replay")
+	}
+}
+
+// Nothing of the scene's own hangs below the field, at any size: the sky is all the way down to the staff.
+func TestHanamiNothingBelowTheField(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {100, 30}, {140, 40}, {80, 12}} {
+		s := newHanamiScene(NewTheme(true))
+		s.w, s.h = sz[0], sz[1]
+		g := s.geo()
+		if g.cy+g.R > g.H-3+0.01 {
+			t.Fatalf("%v: the disc sits below the field: %+v", sz, g)
+		}
+		for slot := 0; slot < hanamiSlots; slot++ {
+			b := &hBranch{slot: slot}
+			for u := 0.0; u <= 1; u += 0.02 {
+				if _, y := b.point(g, u); y >= g.H {
+					t.Fatalf("%v: branch %d reaches the staff at %.2f", sz, slot, u)
+				}
+			}
+			if _, y := s.lanternTarget(g, &hLantern{slot: slot}); y >= g.H {
+				t.Fatalf("%v: lantern %d hangs below the field", sz, slot)
+			}
+			if _, y := bellAt(g, slot); y >= g.H {
+				t.Fatalf("%v: bell %d is below the field", sz, slot)
+			}
+		}
+		s.star(g, g.W, g.H+10, goldenNow)
+		if st := s.stars[0]; st.v*g.H >= g.H {
+			t.Fatalf("%v: a star below the field", sz)
+		}
+		lines := s.draw(false)
+		if len(lines) != sz[1] {
+			t.Fatalf("%v: %d lines", sz, len(lines))
+		}
+		for y := g.staffTop; y < len(lines); y++ {
+			for _, c := range ansi.Strip(lines[y]) {
+				if c >= 0x2800 && c <= 0x28ff {
+					t.Fatalf("%v: dots on the staff, row %d", sz, y)
+				}
+			}
+		}
+	}
+}
+
+func TestHanamiNightFollowsTheHour(t *testing.T) {
+	at := func(h int) float64 {
+		s := newHanamiScene(NewTheme(false))
+		s.now = time.Date(2026, 11, 14, h, 0, 0, 0, time.Local)
+		return s.night()
+	}
+	if at(3) != 1 || at(12) != 0 || at(22) != 1 || at(7) <= 0 || at(7) >= 1 || newHanamiScene(NewTheme(false)).night() != 1 {
+		t.Fatal("night is not night at 03:00 and 22:00, day at noon, between at dawn, and night with no events")
+	}
+}
+
+// The scene keeps time: with no tool calls there is no beat; a steady rate sets the tempo, a bar falls on
+// every fourth beat, and a replay of the same events keeps the same tempo.
+func TestHanamiKeepsTime(t *testing.T) {
+	idle := newHanamiScene(NewTheme(true))
+	for i := 0; i < 30*hanamiFPS; i++ {
+		idle.Step(goldenNow)
+		if idle.amp() != 0 || idle.pulse != 0 || idle.bar != 0 {
+			t.Fatalf("frame %d: a beat without tool calls", i)
+		}
+	}
+
+	live := newHanamiScene(NewTheme(true))
+	pulses, bars := 0, 0
+	was, wasBar := 0.0, 0.0
+	for f := 0; f < 90*hanamiFPS; f++ { // a tool call every 3.35 s: 0.3 a second
+		if f%67 == 0 {
+			live.Apply(ev("tool", float64(f)*0.05, func(e *data.Event) { e.Tool = "edit" }), false)
+		}
+		live.Step(goldenNow)
+		if live.pulse > was {
+			pulses++
+		}
+		if live.bar > wasBar {
+			bars++
+		}
+		was, wasBar = live.pulse, live.bar
+	}
+	if bpm := live.bpm(); bpm < 70 || bpm > 95 {
+		t.Fatalf("0.3 tool calls a second is %.0f bpm", bpm)
+	}
+	if pulses < 60 || bars != pulses/4 {
+		t.Fatalf("%d pulses and %d bars: a bar is every fourth pulse", pulses, bars)
+	}
+
+	replay := newHanamiScene(NewTheme(true))
+	replay.scale = 60 // the same events at a minute a second
+	for f, sent := 0, 0; f < 40*hanamiFPS; f++ {
+		for ; float64(sent) < 0.3*60*float64(f+1)*hanamiSecond; sent++ {
+			replay.Apply(ev("tool", float64(f), func(e *data.Event) { e.Tool = "edit" }), false)
+		}
+		replay.Step(goldenNow)
+	}
+	if d := replay.bpm() - live.bpm(); d < -8 || d > 8 {
+		t.Fatalf("a replay at x60 keeps %.0f bpm, live %.0f", replay.bpm(), live.bpm())
+	}
+	// the beat shows: the disc is larger on a pulse than between them
+	live.pulse, live.bar = 1, 0
+	a := strings.Join(live.draw(false), "\n")
+	live.pulse = 0
+	if a == strings.Join(live.draw(false), "\n") {
+		t.Fatal("the pulse does not show in the disc")
+	}
+}
+
+// The flow is visible both ways: a brief runs out and the blossom opens when it arrives; work rises as beads;
+// a question's light goes to its bell and an answer's comes home.
+func TestHanamiCirculation(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	s.w, s.h = 100, 30
+	agent := func(e *data.Event) { e.Agent, e.Role = "a1", "coder" }
+	s.Apply(ev("spawn", 0, agent), false)
+	bl := s.branches[0].blossoms[0]
+	if len(s.briefs) != 1 || !bl.bud {
+		t.Fatal("a spawn sends a brief and leaves a bud")
+	}
+	for i := 0; i < int(0.8*hanamiFPS); i++ {
+		s.Step(goldenNow)
+	}
+	if bl.open.x > 0.01 || len(s.briefs) != 1 {
+		t.Fatalf("the blossom opened before its brief arrived: open %.2f", bl.open.x)
+	}
+	stepFor(s, goldenNow, 600*time.Millisecond)
+	if len(s.briefs) != 0 || bl.bud || bl.open.x <= 0.01 {
+		t.Fatalf("the brief arrived and the blossom did not open: %d briefs, open %.2f", len(s.briefs), bl.open.x)
+	}
+	stepFor(s, goldenNow, 2*time.Second)
+	if bl.open.x < 0.9 {
+		t.Fatal("the blossom does not open")
+	}
+
+	// back before the brief arrives: it opens at once, closes, and no light is left running
+	s.Apply(ev("spawn", 5, func(e *data.Event) { e.Agent, e.Role = "a2", "reviewer" }), false)
+	s.Apply(ev("return", 5, func(e *data.Event) { e.Agent, e.Role = "a2", "reviewer" }), false)
+	if len(s.briefs) != 0 || s.branches[0].blossoms[1].bud || s.branches[0].blossoms[1].closed.IsZero() {
+		t.Fatal("a return before the brief arrived leaves a stuck light or a bud")
+	}
+
+	// sap: a call sends a bead, six at most in flight, and they arrive
+	for i := 0; i < 40; i++ {
+		s.Apply(ev("tool", 6, func(e *data.Event) { e.Tool = "edit" }), false)
+		s.Apply(ev("tokens", 6, func(e *data.Event) { e.Out = 2000; e.Agent, e.Role = "a1", "coder" }), false)
+	}
+	if n := len(s.branches[0].beads); n != maxBeads {
+		t.Fatalf("%d beads in flight, want %d", n, maxBeads)
+	}
+	bare, loud := newHanamiScene(NewTheme(true)), newHanamiScene(NewTheme(true))
+	bare.Apply(ev("tool", 0, func(e *data.Event) { e.Tool = "edit" }), false)
+	loud.Apply(ev("tokens", 0, func(e *data.Event) { e.Out = 2000 }), false)
+	if bk, lk := bare.branches[0].beads[0].k, loud.branches[0].beads[0].k; bk >= lk {
+		t.Fatalf("a bead of a bare call (%.2f) is as bright as one of output (%.2f)", bk, lk)
+	}
+	stepFor(s, goldenNow, 2*time.Second)
+	if len(s.branches[0].beads) != 0 {
+		t.Fatal("beads never arrive")
+	}
+	g := s.geo()
+	b := s.branches[0]
+	if x, y := b.run(g, nil, 1); x < 0 || x >= g.W || y < 0 || y >= g.H {
+		t.Fatalf("sap ends outside the sky, at %.0f,%.0f", x, y)
+	}
+
+	// home: the rim takes the colour when the last petal reaches the disc
+	stepFor(s, goldenNow, 6*time.Second)
+	s.Apply(ev("return", 10, func(e *data.Event) { e.Agent, e.Role = "a1", "coder" }), false)
+	if s.home > 0.01 {
+		t.Fatal("the rim flashed before any petal came home")
+	}
+	flashed := false
+	for i := 0; i < 5*hanamiFPS && len(s.petals) > 0; i++ {
+		s.Step(goldenNow)
+		flashed = flashed || s.home > 0.5
+	}
+	if !flashed {
+		t.Fatal("the last petal's arrival did not flash the rim")
+	}
+
+	// a question: the bell appears when its light arrives, at once when it is history, and an answer removes it
+	q := func(e *data.Event) { e.Slug = "visualiser" }
+	s.Apply(ev("question", 20, q), false)
+	if b := s.bells[0]; b.state != bellGoing || b.p != 0 {
+		t.Fatal("the bell is there before its light")
+	}
+	stepFor(s, goldenNow, 500*time.Millisecond)
+	if s.bells[0].state != bellGoing {
+		t.Fatal("the bell is there before its light arrived")
+	}
+	stepFor(s, goldenNow, 600*time.Millisecond)
+	if s.bells[0].state != bellWaiting || len(s.ripples) == 0 {
+		t.Fatal("the light arrived and the bell did not ring")
+	}
+	s.Apply(ev("answer", 30, q), false)
+	stepFor(s, goldenNow, 2*time.Second)
+	if len(s.bells) != 0 {
+		t.Fatal("the answer did not remove the bell")
+	}
+	s.Apply(ev("question", 40, q), true)
+	if len(s.bells) != 1 || s.bells[0].state != bellWaiting {
+		t.Fatal("a question from history waits at its bell at once")
+	}
+	if x, y := bellAt(g, 0); x > 10 || y >= g.H {
+		t.Fatalf("the bell is not at the left edge of the sky: %.0f, %.0f", x, y)
+	}
+}
+
+// Small words: a role when a blossom opens, a lantern's number and its merge, a waiting question's slug.
+func TestHanamiSmallWords(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	s.w, s.h = 100, 30
+	s.Apply(ev("spawn", 0, func(e *data.Event) { e.Agent, e.Role = "a1", "coder" }), true)
+	if len(s.words) != 0 {
+		t.Fatal("a settled blossom says its role")
+	}
+	s.Apply(ev("spawn", 0, func(e *data.Event) { e.Agent, e.Role = "a2", "reviewer" }), false)
+	stepFor(s, goldenNow, 500*time.Millisecond)
+	if len(s.words) != 0 {
+		t.Fatal("the role is said before the brief arrived")
+	}
+	stepFor(s, goldenNow, 700*time.Millisecond)
+	if len(s.words) != 1 || s.words[0].text != "reviewer" {
+		t.Fatalf("the role is not said when the blossom opens: %+v", s.words)
+	}
+	stepFor(s, goldenNow, 1500*time.Millisecond) // in the hold: shown even without colour
+	if !strings.Contains(strings.Join(s.draw(false), "\n"), "reviewer") {
+		t.Fatal("the role is not on screen")
+	}
+	stepFor(s, goldenNow, 6*time.Second)
+	if len(s.words) != 0 || strings.Contains(strings.Join(s.draw(false), "\n"), "reviewer") {
+		t.Fatal("the role is still there 6 s later")
+	}
+
+	pr := func(e *data.Event) { e.PR = 31 }
+	s.Apply(ev("pr", 0, pr), false)
+	if len(s.words) != 1 || s.words[0].text != "#31" {
+		t.Fatalf("a lantern's number: %+v", s.words)
+	}
+	s.Apply(ev("merge", 1, pr), false)
+	stepFor(s, goldenNow, 6*time.Second)
+	s.Apply(ev("pr", 2, func(e *data.Event) { e.PR = 32 }), true) // from history: no word
+	s.Apply(ev("merge", 2, func(e *data.Event) { e.PR = 33 }), true)
+	if len(s.words) > 1 {
+		t.Fatalf("history spoke: %+v", s.words)
+	}
+	for i := 0; i < 20; i++ {
+		s.say(hWord{text: "x", ttl: 4})
+	}
+	if len(s.words) != maxWords {
+		t.Fatalf("%d words on screen, at most %d", len(s.words), maxWords)
+	}
+
+	s.Apply(ev("question", 3, func(e *data.Event) { e.Slug = "quiet-lamps" }), true)
+	stepFor(s, goldenNow, 30*time.Second)
+	if !strings.Contains(strings.Join(s.draw(false), "\n"), "quiet-lamps") {
+		t.Fatal("a waiting question's slug is not beside its bell")
+	}
+	// a word does not overwrite the disc's mark
+	g := s.geo()
+	s.words = nil
+	s.say(hWord{text: strings.Repeat("w", 60), ttl: 100, x: g.cx + 90, y: g.cy})
+	stepFor(s, goldenNow, time.Second)
+	if row := ansi.Strip(s.draw(false)[int(g.cy/4)]); !strings.Contains(row, brandKanji) || !strings.Contains(row, "www") {
+		t.Fatalf("the word is missing, or it ate the disc's mark: %q", row)
+	}
+}
+
+// A question asked again while its old bell's light is still going home is not lost.
+func TestHanamiQuestionAskedAgain(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	q := func(e *data.Event) { e.Slug = "again" }
+	s.Apply(ev("question", 0, q), false)
+	stepFor(s, goldenNow, 2*time.Second)
+	s.Apply(ev("answer", 1, q), false)
+	stepFor(s, goldenNow, 200*time.Millisecond)
+	s.Apply(ev("question", 1.2, q), false)
+	stepFor(s, goldenNow, 5*time.Second)
+	if len(s.bells) != 1 || s.bells[0].state != bellWaiting {
+		t.Fatalf("the question asked again is gone: %d bells", len(s.bells))
+	}
+}
+
+// A word that cannot sit on free cells moves a row or is skipped.
+func TestHanamiWordsFindFreeCells(t *testing.T) {
+	cv := &hCanvas{w: 20, h: 6, maxY: 16, cells: make([]hCell, 120)}
+	cv.cells[2*20+5].ch = 'x' // the word's row is blocked: it goes one row up
+	cv.word(4, 2, "abc", hrgb{})
+	if cv.cells[1*20+4].ch != 'a' || cv.cells[2*20+4].ch != 0 {
+		t.Fatal("a blocked word did not move up a row")
+	}
+	for x := 3; x < 8; x++ {
+		cv.cells[0*20+x].ch, cv.cells[2*20+x].ch = 'y', 'y'
+	}
+	cv.cells[1*20+4].ch, cv.cells[1*20+5].ch, cv.cells[1*20+6].ch = 0, 'x', 0 // its own row, the one above and the one below are all blocked
+	cv.word(4, 1, "abc", hrgb{})
+	if cv.cells[1*20+4].ch != 0 || cv.cells[1*20+6].ch != 0 {
+		t.Fatal("a word with no free row was drawn anyway")
+	}
+}
+
+// Light and fill have two samples a cell: a glow centred on a cell boundary gives half blocks whose top and
+// bottom differ in the right direction; where a glyph or dots sit there is one colour; no colour has none.
+func TestHanamiHalfBlocks(t *testing.T) {
+	th := NewTheme(false)
+	cv := &hCanvas{w: 10, h: 8, maxY: 32, cells: make([]hCell, 80)}
+	cv.glow(10, 8, 6, hrgb{200, 100, 50}, 0.8) // the boundary between the cell rows 1 and 2
+	top, bottom := cv.cells[1*10+5].light, cv.cells[2*10+5].light
+	if top[0].r >= top[1].r || bottom[0].r <= bottom[1].r {
+		t.Fatalf("a glow centred between two cell rows is not brighter towards the centre: %v / %v", top, bottom)
+	}
+	cv.cells[3*10+5].ch, cv.cells[3*10+5].c = 'x', hrgb{255, 255, 255}
+	cv.cells[1*10+4].mask, cv.cells[1*10+4].a, cv.cells[1*10+4].c = 0x0f, 1, hrgb{255, 255, 255}
+	cv.glow(10, 14, 12, hrgb{200, 100, 50}, 0.9)
+	lines := cv.lines(th)
+	if !strings.Contains(strings.Join(lines, ""), "▀") {
+		t.Fatal("a glow gives no half blocks")
+	}
+	for y, l := range lines {
+		cells := []rune(ansi.Strip(l))
+		if len(cells) != 10 || ansi.StringWidth(l) != 10 {
+			t.Fatalf("row %d is not 10 cells wide", y)
+		}
+		for x, c := range cells {
+			if c == '▀' && (cv.cells[y*10+x].ch != 0 || cv.cells[y*10+x].mask != 0) {
+				t.Fatalf("a half block over a glyph or dots at %d,%d", x, y)
+			}
+		}
+	}
+	// the upper half block's foreground is the top sample, its background the bottom
+	// row 1's top half is farther from the glow's centre than its bottom half: the foreground (top) is darker
+	row := lines[1]
+	i := strings.Index(row, "▀")
+	if i < 0 {
+		t.Fatal("no half block on the glow's upper row")
+	}
+	var fg, bg int
+	for _, m := range regexp.MustCompile(`\x1b\[(?:1;|22;)?(38|48);2;(\d+);(\d+);(\d+)m`).FindAllStringSubmatch(row[:i], -1) {
+		sum := 0
+		for _, v := range m[2:] {
+			n, _ := strconv.Atoi(v)
+			sum += n
+		}
+		if m[1] == "38" {
+			fg = sum
+		} else {
+			bg = sum
+		}
+	}
+	if fg == 0 || bg == 0 || fg >= bg {
+		t.Fatalf("the half block's foreground (top) is not darker than its background (bottom): %d against %d", fg, bg)
+	}
+
+	plain := &hCanvas{w: 10, h: 8, maxY: 32, cells: make([]hCell, 80)}
+	plain.glow(10, 8, 6, hrgb{200, 100, 50}, 0.8)
+	for _, l := range plain.lines(NewTheme(true)) {
+		if strings.ContainsAny(l, "▀\x1b") {
+			t.Fatal("no-colour output has half blocks or escapes")
+		}
+	}
+	s := newHanamiScene(NewTheme(true))
+	stepFor(s, goldenNow, time.Second)
+	if strings.Contains(strings.Join(s.draw(false), ""), "▀") {
+		t.Fatal("a no-colour scene has half blocks")
+	}
+}
+
+// The tree fans over the whole stage and its blossoms keep apart, at any size.
+func TestHanamiLayoutSpreadsTheTree(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {140, 40}, {250, 70}} {
+		s := newHanamiScene(NewTheme(true))
+		s.w, s.h = sz[0], sz[1]
+		g := s.geo()
+		for i := 0; i < hanamiSlots; i++ { // every slot in use, five open blossoms on each
+			for k := 0; k < 5; k++ {
+				s.Apply(ev("spawn", float64(i), func(e *data.Event) { e.Session, e.Agent, e.Role = fmt.Sprint("s", i), fmt.Sprint("a", k), "coder" }), true)
+				for n := 0; n < 100; n++ { // heavy work: every blossom wants to be as large as it may
+					s.Apply(ev("tool", float64(i), func(e *data.Event) { e.Session, e.Agent, e.Tool = fmt.Sprint("s", i), fmt.Sprint("a", k), "edit" }), true)
+				}
+			}
+		}
+		stepFor(s, goldenNow.Add(11*time.Second), 3*time.Second)
+		if len(s.branches) != hanamiSlots {
+			t.Fatalf("%v: %d branches", sz, len(s.branches))
+		}
+		left, right, low, nearest := 0, 0, 0, math.Inf(1)
+		tips := [][2]float64{}
+		for _, b := range s.branches {
+			x, y := b.point(g, 1)
+			if x < 0 || x >= g.W || y < 0 || y >= g.H {
+				t.Fatalf("%v: a tip outside the field: %.0f, %.0f", sz, x, y)
+			}
+			if x < 0.45*g.W {
+				left++
+			}
+			if x > 0.7*g.W {
+				right++
+			}
+			if y > 0.35*g.H {
+				low++
+			}
+			for _, o := range tips {
+				nearest = math.Min(nearest, math.Hypot(x-o[0], y-o[1]))
+			}
+			tips = append(tips, [2]float64{x, y})
+			for _, bl := range b.blossoms {
+				if bl.size.x > math.Max(3.5, 0.16*g.spacing())+0.01 || (sz[0] == 250 && 2*bl.size.x > 16) {
+					t.Fatalf("%v: a blossom of radius %.1f (spacing %.0f)", sz, bl.size.x, g.spacing())
+				}
+			}
+		}
+		if sz[0] > 80 && (left < 3 || right < 3 || low < 2) || nearest < 0.5*g.spacing() {
+			t.Fatalf("%v: %d tips in the left 45%%, %d in the right 30%%, %d in the lower 65%%, nearest %.0f (spacing %.0f)", sz, left, right, low, nearest, g.spacing())
+		}
+	}
+}
+
+func TestHanamiOpenBlossomsKeepApart(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {140, 40}, {250, 70}} {
+		s := newHanamiScene(NewTheme(true))
+		s.w, s.h = sz[0], sz[1]
+		g := s.geo()
+		for i := 0; i < hanamiSlots; i++ { // every branch, the shortest included
+			for k := 0; k < 8; k++ {
+				s.Apply(ev("spawn", float64(i), func(e *data.Event) { e.Session, e.Agent, e.Role = fmt.Sprint("s", i), fmt.Sprint("a", k), "coder" }), true)
+				for n := 0; n < 20*k; n++ {
+					s.Apply(ev("tool", float64(i), func(e *data.Event) { e.Session, e.Agent, e.Tool = fmt.Sprint("s", i), fmt.Sprint("a", k), "edit" }), true)
+				}
+			}
+		}
+		stepFor(s, goldenNow.Add(15*time.Second), 3*time.Second)
+		for _, b := range s.branches {
+			for i, a := range b.blossoms {
+				ax, ay, _, _ := b.blossomAt(g, a)
+				if ax < 0 || ax >= g.W || ay < 0 || ay >= g.H {
+					t.Fatalf("%v: a blossom outside the field", sz)
+				}
+				for _, o := range b.blossoms[:i] {
+					ox, oy, _, _ := b.blossomAt(g, o)
+					if d := math.Hypot(ax-ox, ay-oy); d < a.size.x+o.size.x {
+						t.Fatalf("%v: slot %d: two blossoms overlap: %.1f apart, radii %.1f and %.1f", sz, b.slot, d, a.size.x, o.size.x)
+					}
+				}
+			}
+		}
+	}
+}
+
+// A blossom keeps the side of its branch it was first given: when the first of three returns, no blossom jumps.
+func TestHanamiReturnDoesNotFlipTheOthers(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	s.w, s.h = 140, 40
+	who := func(k int) func(*data.Event) {
+		return func(e *data.Event) { e.Agent, e.Role = fmt.Sprint("a", k), "coder" }
+	}
+	for k := 0; k < 3; k++ {
+		s.Apply(ev("spawn", float64(k), who(k)), true)
+	}
+	b := s.branches[0]
+	g := s.geo()
+	sides := []int{b.blossoms[0].side, b.blossoms[1].side, b.blossoms[2].side}
+	pos := func() (p [][2]float64) {
+		for _, bl := range b.blossoms {
+			x, y, _, _ := b.blossomAt(g, bl)
+			p = append(p, [2]float64{x, y})
+		}
+		return
+	}
+	prev := pos()
+	s.Apply(ev("return", 3, who(0)), false)
+	for f := 0; f < 3*hanamiFPS; f++ {
+		s.Step(goldenNow.Add(3 * time.Second))
+		for i, p := range pos() {
+			if d := math.Hypot(p[0]-prev[i][0], p[1]-prev[i][1]); d > 2 {
+				t.Fatalf("frame %d: blossom %d moved %.1f dots in one frame", f, i, d)
+			}
+			prev[i] = p
+		}
+	}
+	for i, bl := range b.blossoms {
+		if bl.side != sides[i] {
+			t.Fatalf("blossom %d changed sides", i)
+		}
+	}
+}
+
+// Memory is light: outlines are few and go sooner the more there are; a place that changes is reached on a spring.
+func TestHanamiOutlinesAndPlaces(t *testing.T) {
+	s := newHanamiScene(NewTheme(true))
+	s.w, s.h = 140, 40
+	outlines := func(branches int) {
+		s.branches = nil
+		for i := 0; i < branches; i++ {
+			for k := 0; k < 6; k++ {
+				who := func(e *data.Event) { e.Session, e.Agent, e.Role = fmt.Sprint("s", i), fmt.Sprint("a", k), "coder" }
+				s.Apply(ev("spawn", 0, who), true)
+				s.Apply(ev("return", 1, who), true)
+			}
+		}
+	}
+	outlines(8) // 48 outlines on the tree: an hour
+	stepFor(s, goldenNow.Add(61*time.Minute), time.Second)
+	for _, b := range s.branches {
+		if len(b.blossoms) != 0 {
+			t.Fatal("with 48 outlines on the tree one is still there after an hour")
+		}
+	}
+	outlines(2) // 12 outlines: two hours
+	stepFor(s, goldenNow.Add(61*time.Minute), time.Second)
+	if len(s.branches) == 0 || len(s.branches[0].blossoms) != 6 {
+		t.Fatal("with 12 outlines they are gone after an hour")
+	}
+
+	s = newHanamiScene(NewTheme(true))
+	s.w, s.h = 140, 40
+	who := func(k int) func(*data.Event) {
+		return func(e *data.Event) { e.Agent, e.Role = fmt.Sprint("a", k), "coder" }
+	}
+	for k := 0; k < 3; k++ {
+		s.Apply(ev("spawn", 0, who(k)), true)
+	}
+	b := s.branches[0]
+	s.Apply(ev("return", 1, who(0)), false) // the first closes: the others move outward
+	moved := b.blossoms[1]
+	s.Step(goldenNow.Add(time.Second))
+	if moved.u.x == moved.uT || moved.uT <= moved.u.x {
+		t.Fatalf("a blossom's place changed and it is already there: u %.3f, target %.3f", moved.u.x, moved.uT)
+	}
+	stepFor(s, goldenNow.Add(time.Second), 3*time.Second)
+	if math.Abs(moved.u.x-moved.uT) > 0.01 {
+		t.Fatalf("it did not arrive: u %.3f, target %.3f", moved.u.x, moved.uT)
 	}
 }

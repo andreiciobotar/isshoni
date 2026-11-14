@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -47,6 +48,8 @@ func (m *model) frame() []string {
 		return m.fatalScreen(p)
 	case m.help:
 		return m.helpScreen(p)
+	case m.pick != nil:
+		return m.pickScreen(p)
 	case m.view == viewHanami:
 		return m.hanamiFrame(p)
 	case m.loading && len(m.sessions) == 0 && m.refreshErr == "":
@@ -383,7 +386,7 @@ func (m *model) errorScreen(p paint) []string {
 func (m *model) helpScreen(p paint) []string {
 	th := m.th
 	lines := []string{p.gradient(brand, true) + p.t(" "+brandKanji+"  keys", th.Muted)}
-	for _, g := range helpGroups() {
+	for _, g := range m.helpGroups() {
 		lines = append(lines, "")
 		for _, b := range g {
 			lines = append(lines, p.b(cell(b.Help().Key, 14, false), th.Purple)+p.t(b.Help().Desc, th.Text))
@@ -415,6 +418,45 @@ func (m *model) helpScreen(p paint) []string {
 	bw = min(m.w-2, bw+4)
 	bh := min(m.h, len(lines)+2)
 	return m.fitScreen(p.center(p.boxed("help", lines, bw, bh, th.Pink), m.w, m.h), p)
+}
+
+// pickScreen lists the dispatchers to choose from, drawn like the help: the first nine numbered
+// in the key style. A list taller than the screen shows a window that follows the cursor, with
+// the count of names hidden above and below.
+func (m *model) pickScreen(p paint) []string {
+	th := m.th
+	n := len(m.pick)
+	room := max(1, m.h-6)
+	if n > room {
+		room = max(1, m.h-8) // two rows for the "n more" marks
+	}
+	top := max(0, min(m.pickCur-room+1, n-room))
+	var lines []string
+	more := func(arrow string, hidden int) {
+		if hidden > 0 {
+			lines = append(lines, p.t(fmt.Sprintf("  %s %d more", arrow, hidden), th.Faint))
+		}
+	}
+	more("↑", top)
+	for i := top; i < min(n, top+room); i++ {
+		num, mark, fg := " ", "  ", th.Text
+		if i < 9 {
+			num = strconv.Itoa(i + 1)
+		}
+		if i == m.pickCur {
+			mark, fg = "› ", th.Purple
+		}
+		lines = append(lines, p.t(mark, fg)+p.b(num, th.Purple)+p.t("  "+m.pick[i], fg))
+	}
+	more("↓", n-top-room)
+	hint := p.t(fmt.Sprintf("1-%d or ↑↓ enter · esc cancel", min(9, n)), th.Faint)
+	bw := 0
+	for _, l := range lines {
+		bw = max(bw, width(l))
+	}
+	lines = append(lines, "", hint)
+	bw = min(m.w-2, max(bw, width(hint))+4)
+	return m.fitScreen(p.center(p.boxed("dispatcher", lines, bw, len(lines)+2, th.Pink), m.w, m.h), p)
 }
 
 // wrapPlain word-wraps plain text to w cells.

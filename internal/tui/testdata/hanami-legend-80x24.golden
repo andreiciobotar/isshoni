@@ -1,24 +1,24 @@
  Isshoni 1 Dash 2 Agents 3 Factory 4 Kaizen [5 ✿]       24h [7d] 30d all ○ idle 
  Hanami 花見  replay ×3 · Nov 14 10:03 UTC                                      
-               ⠰⠐      ⠰⠐                  ⢠⠊⡙✿⠣⠈                               
-             ⠣⠈⠖✾⡒⢀⠆•⠣⢈⣖❀⡒⢀⠆               ⠈⠁ ⠈⡟⣉⣠⠤⠔•               ⠠⠤⠄         
 ╭─ legend ─────────────────────────────────────────────────────────────────────╮
 │ ●       the disc: all the work. It swells and brightens with the rate of ev… │
 │ ─•      a branch: one session. Its tip glows at each call; at rest it dims   │
 │ ✿❀✾✽    a blossom: an agent (coder, reviewer, explorer, other), as large as… │
-│ ⠶       petals: it returns to the disc. An outline, for 2 h: it returned, o… │
-│         session has been silent for 3 minutes                                │
+│ ⠶       petals: it returns to the disc. An outline stays (6 a branch,        │
+│         under 2 h): it returned, or its session was silent 3 minutes         │
 │ ⠶       petals turned back in red, with a red ring: a reviewer asked for ch… │
 │ ⠐⠂      wind: cache reads. Bright streaks off an agent: output tokens        │
 │ ●○◆■▲◇  notes: shell, read, edit, write, dispatch, message. Each sounds unt… │
 │ ━▃      agent's next call (12 s at most); the bars at the right: calls per … │
 │ ◉       a lantern: an open pull request. Flicker, green, red: its checks     │
 │ *✶      hanabi: a merge lights the stage, and leaves a star for 6 h          │
-│ ✦       a ringed star above the disc: a question waiting for the human       │
+│ ✦       a question: light runs to a bell at the edge and waits for you       │
+│ ✧       light along a branch: a brief out to a new agent; work rising        │
+│ Aa      words: a blossom's role, a lantern's number, a question's slug       │
 │ ◌       a ripple from the disc: the site manager's tick                      │
+│ ◐       the beat: tool-call rate; disc, staff, blossoms pulse                │
 │         colour: the agent's role, on blossoms, notes, streaks and petals     │
 │         ambient, not data: the breath, the lanterns' sway, the slowest bree… │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- ○ ──○━━━━────────────────────────○━━━━━━○━━━━━━━━━━━○━━━━○━━━━━━━━━━━━━━━━┃    
  ● ●━━━━━━━───●━━━━━━━━━━━━●●━━━━━●━━━━●━━━●━━━━━━━━●●━━━●━━━━━━━━━━━━━━━━━┃    
  l legend  ·  z full screen  ·  p replay 24h · live  ·  ? help  ·  q quit       

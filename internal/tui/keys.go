@@ -15,6 +15,7 @@ type keyMap struct {
 	FilterKeep, FilterClear, Erase, Wipe      key.Binding
 	CapEdit, CapSave, CapCancel               key.Binding
 	Hanami, Legend, Zen, Replay               key.Binding
+	Dispatcher                                key.Binding
 }
 
 var keys = keyMap{
@@ -56,6 +57,8 @@ var keys = keyMap{
 	Erase:       key.NewBinding(key.WithKeys("backspace")),
 	Wipe:        key.NewBinding(key.WithKeys("ctrl+u")),
 
+	Dispatcher: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "dispatcher")),
+
 	CapEdit:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "edit cap")),
 	CapSave:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "save")),
 	CapCancel: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
@@ -88,12 +91,17 @@ func (m *model) footerKeys() []key.Binding {
 	return []key.Binding{keys.Down, keys.Open, keys.Filter, keys.Fold, keys.Sort, keys.Range, keys.Follow, keys.Next, keys.Help, keys.Quit}
 }
 
-// helpGroups is the help overlay: every binding that has help text.
-func helpGroups() [][]key.Binding {
+// helpGroups is the help overlay: every binding that has help text, the dispatcher's only
+// where attaching is available.
+func (m *model) helpGroups() [][]key.Binding {
+	more := []key.Binding{keys.Follow, keys.CapEdit}
+	if m.opts.Attach != nil {
+		more = append(more, keys.Dispatcher)
+	}
 	return [][]key.Binding{
 		{keys.Down, keys.Top, keys.PageDown, keys.Fold, keys.Open, keys.Back},
 		{keys.Next, keys.Prev, keys.Dash, keys.PageLeft},
-		{keys.Range, keys.Sort, keys.Filter, keys.Follow, keys.CapEdit},
+		append([]key.Binding{keys.Range, keys.Sort, keys.Filter}, more...),
 		{keys.Help, keys.Quit},
 	}
 }
