@@ -17,7 +17,7 @@ import strip
 
 SIZE='110x32'
 CEILING=1_200_000  # bytes per file
-HANAMI_FRAMES=36
+HANAMI_FRAMES=32
 HANAMI_STEP='150ms'
 
 # name -> (ms per frame, the argument lists of bin/isshoni-tui, one snapshot each; {replay} and {at} are Hanami's)

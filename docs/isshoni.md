@@ -228,6 +228,16 @@ session when its transcript changes (checked every second). The only file it wri
 under `~/.claude` is the factory's settings, when you save the cap. It finds the
 Python package from `ISSHONI_ROOT`, else from the binary's own location. It needs a
 terminal of at least 60x16.
+
+The pictures here and in the README are recordings of this repository's own factory (`make pictures`, below); the checkout is in a directory named `ccmon`, which is why that name shows as the repository.
+
+<img src="../assets/tabs/dashboard.webp" alt="View 1, the dashboard: the cursor moves over the repository, its tasks and a session; the pane shows the selected row's agent and model mix, its dispatches and timeline; then the repository is folded">
+
+<img src="../assets/tabs/agents.webp" alt="View 2, Agents: per agent type the dispatches, tokens, cost and duration at the median and the 90th percentile, as the range goes from 24 hours to all time">
+
+<img src="../assets/tabs/factory.webp" alt="View 3, Factory: what waits for you, then each task's phase, elapsed time, pull request and base, against the worktree cap">
+
+<img src="../assets/tabs/kaizen.webp" alt="View 4, Kaizen, its four pages in turn: Pulse, Flow, Anatomy, Board">
 ```
 bin/isshoni-tui [--range 24h|7d|30d|all] [--follow] [--no-color]
                 [--projects-dir DIR] [--agents-dir DIR] [--prices PATH]
@@ -398,6 +408,8 @@ bin/isshoni-tui --serve ADDR [--authorized-keys FILE] [--host-key FILE]
 ## Hanami (花見), the work as something to watch
 
 The fifth view (`5`) draws the same work as motion, for a second screen: the mark come alive. Nothing in it is decoration posing as data: every moving thing is one event from `isshoni events`, and `l` shows the legend.
+
+<img src="../assets/tabs/hanami.webp" alt="View 5, Hanami: a stretch of the last day replayed at 60 times its speed, ending in a merge">
 
 | you see | it is |
 |---|---|
