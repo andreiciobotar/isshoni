@@ -238,6 +238,8 @@ func TestReadSettingRefusesWhatItCannotClassify(t *testing.T) {
 		"bare words":        "[limits]\nworktree_cap 9\n",
 		"unclosed header":   "[limits\nworktree_cap = 9\n",
 		"stray list line":   "[limits]\nworktree_cap = 9\n\"a\",\n",
+		"triple in a list":  "[x]\ny=[\"\"\"\n]\n[limits]\nworktree_cap = 9\n\"\"\"]\n",
+		"triple mid-value":  "[x]\ny = [1, \"\"\"a\n[limits]\nworktree_cap = 9\n\"\"\"]\n[limits]\nworktree_cap = 4\n",
 	} {
 		path := settings(t, content)
 		for _, read := range []func() error{func() error { _, err := ReadWorktreeCap(path); return err }, func() error { _, err := ReadDispatchers(path); return err }} {
@@ -247,7 +249,15 @@ func TestReadSettingRefusesWhatItCannotClassify(t *testing.T) {
 			}
 		}
 	}
-	got, err := ReadWorktreeCap(settings(t, "[a]\nxs = [\n  1, 2,\n  [3], # c ]\n  \"]\",\n]\n[limits]\nworktree_cap = 4\n"))
+	got, err := ReadWorktreeCap(settings(t, "[paths]\nmonitor='/a/[b'\n[limits]\nworktree_cap=9\n[sessions]\ndispatchers=['d]']\n"))
+	if err != nil || got != 9 {
+		t.Errorf("a literal string holds a bracket: %d, %v", got, err)
+	}
+	got, err = ReadWorktreeCap(settings(t, "[a]\nxs = ['x]', \"y[\"]\n[limits]\nworktree_cap = 6\n"))
+	if err != nil || got != 6 {
+		t.Errorf("brackets inside both kinds of string: %d, %v", got, err)
+	}
+	got, err = ReadWorktreeCap(settings(t, "[a]\nxs = [\n  1, 2,\n  [3], # c ]\n  \"]\",\n]\n[limits]\nworktree_cap = 4\n"))
 	if err != nil || got != 4 {
 		t.Errorf("another key's list over several lines is skipped whole: %d, %v", got, err)
 	}

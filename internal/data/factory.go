@@ -189,32 +189,40 @@ var (
 	bareKey   = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 )
 
-// bracketDelta is the number of `[` minus the number of `]` in a line outside its strings and comment.
-func bracketDelta(s string) int {
-	delta, inString := 0, false
+// scanLine is the number of `[` minus the number of `]` in a line outside its strings and comment (a basic string
+// has backslash escapes, a literal string none), and whether a `"""` or `”'` opens outside a string: a
+// multi-line string, which this reader does not follow.
+func scanLine(s string) (delta int, triple bool) {
+	var quote byte
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; {
-		case inString && c == '\\':
+		case quote == '"' && c == '\\':
 			i++
-		case c == '"':
-			inString = !inString
-		case inString:
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			if strings.HasPrefix(s[i:], strings.Repeat(string(c), 3)) {
+				return delta, true
+			}
+			quote = c
 		case c == '#':
-			return delta
+			return delta, false
 		case c == '[':
 			delta++
 		case c == ']':
 			delta--
 		}
 	}
-	return delta
+	return delta, false
 }
 
 // readSetting is the one reader of the settings file the dashboard has; the factory is the only writer. It finds
 // `key` inside `[table]` and returns its value: an int, a []string (an array of basic strings on one line or
 // over several, comments and a trailing comma allowed), or wrongType for any other single-line value. found is
 // false for no such key. It is not a TOML parser: a line it cannot classify (a header that is not [bare.name], a key
-// that is not a bare name, a value starting `{`, `"""` or `”'`, a list it cannot read) is an error naming the file and the line.
+// that is not a bare name, a value starting `{`, a `"""` or `”'` anywhere, a list it cannot read) is an error naming the file and the line.
 // A missing file reads the same key of a legacy settings.json beside it, if there is one.
 func readSetting(path, table, key string) (val any, found bool, err error) {
 	b, err := os.ReadFile(path)
@@ -246,17 +254,25 @@ func readSetting(path, table, key string) (val any, found bool, err error) {
 		switch {
 		case !ok || !bareKey.MatchString(name):
 			return nil, false, unreadable(i, "a line that is not a table header, a comment or a plain name = value")
-		case strings.HasPrefix(rest, "{") || strings.HasPrefix(rest, `"""`) || strings.HasPrefix(rest, "'''"):
-			return nil, false, unreadable(i, "an inline table or a multi-line string")
+		case strings.HasPrefix(rest, "{"):
+			return nil, false, unreadable(i, "an inline table")
+		}
+		if _, triple := scanLine(line); triple {
+			return nil, false, unreadable(i, "a multi-line string")
 		}
 		if current != table || name != key {
 			// another key: a list over several lines is skipped whole
 			start := i
-			for depth := bracketDelta(rest); depth > 0; {
+			depth, _ := scanLine(rest)
+			for depth > 0 {
 				if i++; i >= len(lines) {
 					return nil, false, unreadable(start, "the list is not closed")
 				}
-				depth += bracketDelta(lines[i])
+				d, triple := scanLine(lines[i])
+				if triple {
+					return nil, false, unreadable(i, "a multi-line string")
+				}
+				depth += d
 			}
 			continue
 		}

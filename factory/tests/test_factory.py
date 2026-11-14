@@ -722,17 +722,14 @@ class MigrationTests(InStore):
             self.assertIn("settings.json (read only by older versions) cannot be used: ", self.err)
             self.assertTrue(self.err.endswith("; delete it once no older version runs\n"), self.err)
 
-    def test_a_hook_is_silent(self):
+    def test_a_hook_run_with_differing_files_is_silent(self):
         self.legacy({"worktree_cap": 7})
         self.path.write_text("[limits]\nworktree_cap = 2\n")
-        with mock.patch.object(factory, "quiet", True):
-            self.load()
-            self.assertEqual(self.err, "")
-        out = io.StringIO()
-        with mock.patch.object(sys, "stdin", io.StringIO("{}")), redirect_stdout(out), redirect_stderr(io.StringIO()):
-            factory.main(["hook"])
-        self.assertTrue(factory.quiet)
-        factory.quiet = False
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home)
+        env = {**os.environ, "HOME": str(home), "FACTORY_HOME": str(self.dir)}
+        p = subprocess.run([sys.executable, str(BIN), "hook"], input="{}", capture_output=True, text=True, env=env)
+        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, "", ""))
 
     def test_when_both_files_exist_the_json_is_not_migrated_over_the_toml(self):
         self.legacy({"worktree_cap": 7})
@@ -759,6 +756,20 @@ class MigrationTests(InStore):
         with mock.patch.object(factory, "migrate_json", other_process):
             self.assertEqual(self.load()["worktree_cap"], 7)
         self.assertEqual(self.path.read_text(), factory.settings_text({("limits", "worktree_cap"): 7}))
+
+    def test_set_reports_the_difference_it_has_just_made(self):
+        self.legacy({"worktree_cap": 7})
+        self.path.write_text("[limits]\nworktree_cap = 7\n")
+        err = io.StringIO()
+        with redirect_stderr(err):
+            factory.set_setting("limits.worktree_cap", "9")
+        self.assertEqual(err.getvalue(), "factory: settings.json (read only by older versions) differs from settings.toml in "
+                                         "worktree_cap; delete settings.json once no older version runs\n")
+        factory.warned.clear()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            factory.set_setting("limits.worktree_cap", "7")
+        self.assertEqual(err.getvalue(), "")  # agreeing again
 
     def test_set_migrates_first_and_leaves_the_json(self):
         self.legacy({"worktree_cap": 7, "monitor": "/m"})

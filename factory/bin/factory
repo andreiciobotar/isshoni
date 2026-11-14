@@ -206,7 +206,6 @@ TABLES = tuple(dict.fromkeys(s.table for s in SETTINGS))
 SETTINGS_HEADER = ("# The factory's settings. Edit a line and save: no reinstall.\n"
                    "# A model is an alias (fable, opus, sonnet, haiku) or a full id (claude-...).")
 warned = set()
-quiet = False
 
 
 def flat_settings(values):
@@ -294,8 +293,8 @@ def write_text(path, content):
 
 
 def warn(message):
-    """One line on stderr, once per command, and none from a hook (it runs on every tool call)."""
-    if message not in warned and not quiet:
+    """One line on stderr, once per command."""
+    if message not in warned:
         warned.add(message)
         print(f"factory: {message}", file=sys.stderr)
 
@@ -421,7 +420,7 @@ def set_setting(dotted, raw):
     if problem := s.check(value):
         raise Fail(f"{dotted}{problem}")
     path = SETTINGS_PATH.expanduser()
-    old = read_settings(path)  # moves a settings.json over first; a wrong value elsewhere in the file is no obstacle
+    old = read_settings(path)  # writes the TOML from a settings.json first; a wrong value elsewhere in the file is no obstacle
     base = settings_text() if old is None else old
     new = edit_text(base, s.table, s.key, toml_value(value))
     try:
@@ -436,6 +435,8 @@ def set_setting(dotted, raw):
     if new == old:
         return "unchanged"
     write_text(path, new)
+    report_legacy_differences(path, {**DEFAULT_VALUES, **{(t, k): v for t, sub in tomllib.loads(new).items() if isinstance(sub, dict)
+                                                          for k, v in sub.items() if (t, k) in DEFAULT_VALUES}})
     return f"set {dotted} = {toml_value(value)}"
 
 
@@ -3828,7 +3829,7 @@ def settings_state():
 def settings_act(args, detail):
     if SETTINGS_PATH.expanduser().exists():
         raise Fail(detail)
-    load_settings()  # moves a settings.json over when there is one
+    load_settings()  # writes the TOML from a settings.json when only that exists
     if not SETTINGS_PATH.expanduser().exists():
         write_text(SETTINGS_PATH.expanduser(), settings_text())
     return f"wrote {SETTINGS_PATH.expanduser()}"
@@ -4697,8 +4698,6 @@ def parse_args(argv):
 
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    global quiet
-    quiet = args.cmd == "hook"
     try:
         if not STORE.expanduser().is_absolute():
             if args.cmd == "hook":

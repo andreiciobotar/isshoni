@@ -1058,11 +1058,12 @@ func TestHeaderBrand(t *testing.T) {
 var realHome, _ = os.UserHomeDir()
 
 // requireTempFactoryHome fails the test unless the factory script, started now, would use a settings file in a
-// temporary directory: FACTORY_HOME set, and not under the real home's .claude.
+// temporary directory: FACTORY_HOME set, and neither the real ~/.claude/factory nor inside it.
 func requireTempFactoryHome(t *testing.T) {
 	t.Helper()
-	fh := os.Getenv("FACTORY_HOME")
-	if fh == "" || realHome == "" || fh == realHome || strings.HasPrefix(fh, filepath.Join(realHome, ".claude")) {
-		t.Fatalf("FACTORY_HOME=%q would reach the real %s/.claude/factory", fh, realHome)
+	real := filepath.Join(realHome, ".claude", "factory")
+	fh := filepath.Clean(os.Getenv("FACTORY_HOME"))
+	if os.Getenv("FACTORY_HOME") == "" || realHome == "" || fh == real || strings.HasPrefix(fh, real+string(filepath.Separator)) {
+		t.Fatalf("FACTORY_HOME=%q would reach the real %s", os.Getenv("FACTORY_HOME"), real)
 	}
 }
