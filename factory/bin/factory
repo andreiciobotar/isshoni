@@ -71,13 +71,16 @@ def why(e):
 
 
 def run(argv, cwd=None, timeout=None, input=None, env=None):
-    """The only place a subprocess starts. Returns (returncode, stdout, stderr). `gh` acts as the App when an identity is installed."""
+    """The only place a subprocess starts. Returns (returncode, stdout, stderr). `gh` acts as the App when an identity is installed.
+    A `claude` child gets no `ANTHROPIC_LOG`: its debug logging would share the stdout that is read as JSON."""
     if argv[0] == "gh":
         try:
             if found := acting_identity(cwd):
                 env = {**os.environ, "GH_TOKEN": app_token(*found)}
         except Exception as e:  # fail closed: no token, and no `gh` run with the human's login
             return 1, "", why(e)
+    if argv[0] == "claude":
+        env = {k: v for k, v in (env or os.environ).items() if k != "ANTHROPIC_LOG"}
     try:
         p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, input=input, env=env)
     except subprocess.TimeoutExpired:
@@ -1017,6 +1020,8 @@ def cmd_retro(args):
 
 
 def cmd_feedback(args):
+    if args.since is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}Z)?", args.since):
+        raise Fail(f"feedback: --since is YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD, got {args.since!r}")
     if args.action == "add":
         tag = tags()
         tag["role"] = args.role
@@ -1038,7 +1043,7 @@ def cmd_feedback(args):
         log("feedback", {"id": found[0], "ts": now(), "status": args.status, **({"pr": args.pr} if args.pr else {})})
     else:
         entries = [e for e in read_feedback() if (not args.status or e["status"] == args.status)
-                   and (not args.kind or e["kind"] == args.kind)]
+                   and (not args.kind or e["kind"] == args.kind) and (args.since is None or str(e.get("ts", "")) > args.since)]
         if args.json:
             print(json.dumps(entries, indent=2))
         else:
@@ -2576,7 +2581,7 @@ def app_token(identity, name):
 
 
 def identity_exports():
-    """({name: value}, exit code, why): the exports that make git and gh act as the App; empty when no identity applies.
+    """({name: value}, why): the exports that make git and gh act as the App; empty when no identity applies.
     Whatever else happens the lock-down comes back (exit 1, with the reason): git must not reach the human's credentials."""
     values = {"GH_TOKEN": "unavailable", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "4"}
     credential, rewrite = "credential.https://github.com.helper", "url.https://github.com/.insteadOf"
@@ -2584,11 +2589,10 @@ def identity_exports():
     for i, (key, value) in enumerate(((credential, ""), (credential, helper), (rewrite, "git@github.com:"),
                                       (rewrite, "ssh://git@github.com/"))):
         values[f"GIT_CONFIG_KEY_{i}"], values[f"GIT_CONFIG_VALUE_{i}"] = key, value
-    code = 1
     try:
         found = acting_identity()
         if not found:
-            return {}, 0, None
+            return {}, None
         login, email = found[0]["bot_login"], found[0]["bot_email"]
         if not (isinstance(login, str) and isinstance(email, str) and login and email):
             raise Fail("the stored App's bot_login and bot_email must be non-empty strings", 1)
@@ -2597,20 +2601,20 @@ def identity_exports():
         token = app_token(*found)
         if not isinstance(token, str) or not token:
             raise Fail("the token is not a string", 1)
-        values["GH_TOKEN"], code = token, 0
+        values["GH_TOKEN"] = token
     except Exception as e:
-        return values, code, f"no App token: {why(e)}"
-    return values, code, None
+        return values, f"no App token: {why(e)}"
+    return values, None
 
 
 def cmd_env(args):
     """Print the exports that make git and gh act as the App; nothing when no identity applies."""
-    values, code, error = identity_exports()
+    values, error = identity_exports()
     if error:
         print(f"factory: {error}; git and gh will fail until one can be minted", file=sys.stderr)
     for name, value in values.items():
         print(f"export {name}={shlex.quote(value)}")
-    return code
+    return 1 if error else 0
 
 
 def remote_repo(cwd=None):
@@ -2916,8 +2920,8 @@ class Landing:
     def act(self, *args):
         """`git` as the App when an identity is installed (as the session hook's `factory env` does), for what
         reaches the remote or makes commits: the human's credentials and name are not used then."""
-        exports, code, error = identity_exports()
-        if code:
+        exports, error = identity_exports()
+        if error:
             return 1, "", error
         return run(["git", *args], cwd=self.path, env={**os.environ, **exports} if exports else None)
 
@@ -3170,6 +3174,7 @@ def parse_args(argv):
     feedback.add_argument("--json", action="store_true")
     feedback.add_argument("--status", choices=STATUSES)
     feedback.add_argument("--kind", choices=("issue", "decision"))
+    feedback.add_argument("--since", help="only entries filed after this ts (YYYY-MM-DDTHH:MM:SSZ) or from this day on (YYYY-MM-DD)")
     actions = feedback.add_subparsers(dest="action")
     decide = actions.add_parser("decide", help="file one key decision: what and why, one line")
     decide.add_argument("text")
