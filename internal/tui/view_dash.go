@@ -198,6 +198,9 @@ func (m *model) caption(p paint, w int) string {
 
 // label names a row for the mix panels: its kind, its text, its suffix.
 func (r treeRow) label() string {
+	if r.kind == kindShort {
+		return r.name + " · " + r.of
+	}
 	word := [...]string{kindRepo: "repo ", kindTask: "task ", kindSession: "session ", kindAll: ""}[r.kind]
 	if r.suffix == "" {
 		return word + r.name
