@@ -44,7 +44,7 @@ func TestFactoryStatusDecodesNulls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Cap != 7 || st.Reserve != 1 || st.InMotion != 2 || st.Blocked != 1 || st.InReview != 1 || st.Settled != 1 || len(st.Rows) != 4 {
+	if st.Cap != 7 || st.Reserve != 1 || st.InMotion != 3 || st.Blocked != 2 || st.InReview != 1 || st.Settled != 1 || len(st.Rows) != 5 {
 		t.Fatalf("status %+v", st)
 	}
 	if a := st.Rows[0]; a.Elapsed != nil || a.Waited != nil || a.StopKind != "" || a.StopSummary != "" || a.Slug != "cost-in-money" || a.PRState != "unknown" {
@@ -58,6 +58,9 @@ func TestFactoryStatusDecodesNulls(t *testing.T) {
 	}
 	if c, d := st.Rows[2], st.Rows[3]; c.Phase != "blocked" || c.Deliverable != "" || d.Phase != "settled" || d.Deliverable != "/r/docs/specs/write-up.md" {
 		t.Fatalf("blocked and settled rows: %+v %+v", c, d)
+	}
+	if c, e := st.Rows[2], st.Rows[4]; !c.WaitsOnHuman() || e.WaitsOnHuman() || e.WaitsOn != "needs-an-answer" || st.Rows[0].WaitsOn != "" {
+		t.Fatalf("who the blocked rows wait on: %+v %+v", c, e)
 	}
 	log, _ := os.ReadFile(filepath.Join(dir, "calls"))
 	if !strings.HasPrefix(string(log), "factory ") || !strings.HasSuffix(strings.TrimSpace(string(log)), repo[strings.Index(repo, "TestFactory"):]) {

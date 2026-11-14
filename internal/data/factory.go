@@ -50,6 +50,13 @@ type FactoryTask struct {
 	Waited      *int64 `json:"waited"`       // seconds since the last declared record; nil when undeclared
 	StopKind    string `json:"stop_kind"`    // QUESTION, BLOCKED or OVERTIME for a blocked task; empty when null
 	StopSummary string `json:"stop_summary"` // why it stopped; empty when null
+	WaitsOn     string `json:"waits_on"`     // a blocked task: human, dispatcher or a task's slug; empty when null
+}
+
+// WaitsOnHuman says whether a blocked task waits on the human; an empty WaitsOn is a
+// script from before the field.
+func (t FactoryTask) WaitsOnHuman() bool {
+	return t.Phase == "blocked" && (t.WaitsOn == "" || t.WaitsOn == "human")
 }
 
 // FactoryStatus is what `factory status --json` prints for one repository.

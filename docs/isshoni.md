@@ -311,12 +311,14 @@ The pictures here and in the README are recordings of this repository's own fact
 ```
 bin/isshoni-tui [--range 24h|7d|30d|all] [--follow] [--no-color]
                 [--projects-dir DIR] [--agents-dir DIR] [--prices PATH]
-bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-flow|kaizen-anatomy|kaizen-board|hanami|help [--size 140x40] [--session ID] [--row N] [--fold]
+bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-flow|kaizen-anatomy|kaizen-board|hanami|help [--size 140x40] [--session ID] [--row N] [--fold] [--frames N]
 ```
 `--range` defaults to `7d`. `NO_COLOR` gives the plain rendering too. `--snapshot`
 prints one settled frame and exits, non-zero when the load fails; `--row N` puts the
 dashboard cursor on table row N (0 is the `all` row) and `--fold` collapses the
-repository that row is in; `--snapshot session` is the full-screen session (the
+repository that row is in; `--frames N` prints N dashboard frames from one load,
+separated by a form-feed line, frame i with the cursor on row `--row`+i (so the rows
+keep one order across the frames); `--snapshot session` is the full-screen session (the
 dashboard's zoom, below) of `--session ID`, else of the most recent one; `make screenshot
 VIEW=... SIZE=...` turns it into a PNG under `shots/` (needs Chrome). Both make targets
 take `FIXTURE=<name>` (a directory of `tests/fixtures`, e.g. `grouping`): they render a copy
@@ -327,7 +329,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 |---|---|
 | `tab` `shift+tab`, `1` `2` `3` `4` | switch view: dashboard, agents, factory, kaizen |
 | `↑` `↓` `j` `k`, `g` `G`, `pgup` `pgdn` | move, first and last, page |
-| `←` `→` `h` `l` | dashboard: collapse the repository the cursor is in (the cursor moves to its row), expand it. A collapsed row (`▸`) keeps its totals, and the tiles and follow mode still count what is inside; a filter leaves it collapsed, counting the matches. Folding turns follow mode off and is forgotten on exit |
+| `←` `→` `h` `l` | dashboard: collapse the repository the cursor is in (the cursor moves to its row), expand it. A collapsed row (`▸`) keeps its totals, and the tiles and follow mode still count what is inside; a filter leaves it collapsed, counting the matches. Folding turns follow mode off and is forgotten on exit. On a short-runs row, `→` opens it and `←` closes it (also from one of its sessions); on a closed one `←` still folds the repository |
 | `enter`, `esc` | dashboard: open the session row under the cursor full screen (the zoom; in it `↑` `↓` `g` `G` `pgup` `pgdn` move over the dispatches and `enter` swaps the list for the selected dispatch); on `all`, a repository or a task, a message says to pick a session row and the cursor stays. Back: first the detail, then the zoom, then the dashboard from any other view |
 | `r` | range: 24h, 7d, 30d, all (on the error screen: retry) |
 | `s` | sort: recent, cost, subagent share; within a repository, tasks and sessions without a task are one list; also puts the held order right |
@@ -342,7 +344,12 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   tree of repository, task and session (with the agent and model mix beside it from 120
   columns), a pane about the row under the cursor, and every dispatch running now.
   A group row sums its sessions (rates from summed counts, never a mean of rates); a
-  group of one session is a single row. The cursor starts on the top row, `all`, which
+  group of one session is a single row. A **short run** is a finished session (not live)
+  under a minute long and under $0.25; two or more in one task, or two or more of a
+  repository's sessions without a task, fold into one `N short runs` row after the rest
+  of that task or repository (one alone stays a session row). The row is closed (`▸`) and
+  opens one step deeper with `→`; it sums its sessions, and short runs count in every
+  total, tile and `×N` as before. The cursor starts on the top row, `all`, which
   sums every session shown, and moves over every row. The tiles always total every
   session shown, and a line under them says so; under 30 rows one line stands for the
   tiles and that line. In the mix a plugin's agent counts with its role
@@ -388,14 +395,16 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   `factory status --json` reports: the tasks holding a slot against the cap (the meter
   shows the ordinary limit plus the slots held in reserve for critical work, `7/9+1`),
   and every task with its phase, elapsed time, pull request or deliverable, base, and
-  `overtime` or `stale`. At the top, a band lists everything that waits on you across repositories,
-  oldest first: tasks in review (the pull request or deliverable to look at) and blocked
-  tasks (what they asked), each with how long it has waited; when nothing waits it says
-  so. The `3 Factory` tab carries `▲N` for the number waiting on every view (in a narrow
-  header the live count then shows as `● N`, without the word). It refreshes every 30
-  seconds while shown, every 2 minutes otherwise, in two passes. The first, for every
-  repository, is `factory status --json --cached` (10 s limit): it never contacts
-  GitHub, so the rows show at once. The second, only while the view is shown, is
+  `overtime` or `stale`. At the top, a band lists everything that waits on you across
+  repositories, oldest first: tasks in review (the pull request or deliverable to look
+  at) and tasks blocked on you (what they asked; a task blocked on the dispatcher or on
+  another task says so in its row, with its reason beneath, and is not in the band), each
+  with how long it has waited; when nothing waits it says so. The `3 Factory` tab carries
+  `▲N` for the number waiting on every view (in a narrow header the live count then
+  shows as `● N`, without the word). It refreshes every 30 seconds while shown, every 2
+  minutes otherwise, in two passes. The first, for every repository, is
+  `factory status --json --cached` (10 s limit): it never contacts GitHub, so the rows
+  show at once. The second, only while the view is shown, is
   `factory status --json --max-age 60` (25 s limit) for each repository with tasks
   whose pull request data is missing or older than 60 seconds; it asks GitHub (at most
   10 s per call, see [factory.md](factory.md)). It runs per repository, one at a time
@@ -508,34 +517,46 @@ bin/isshoni-tui --serve ADDR [--authorized-keys FILE] [--host-key FILE]
 
 The fifth view (`5`) draws the same work as motion, for a second screen: the mark come alive. Nothing in it is decoration posing as data: every moving thing is one event from `isshoni events`, and `l` shows the legend.
 
-<img src="../assets/tabs/hanami.webp" alt="View 5, Hanami: a stretch of the last day replayed at 60 times its speed, ending in a merge">
+<img src="../assets/tabs/hanami.webp" alt="View 5, Hanami: a stretch of the last day replayed at 60 times its speed, with a merge in the middle">
 
 | you see | it is |
 |---|---|
 | the disc, a solid body that swells, brightens and takes a returning agent's colour | all the work; the rate of events; a return |
-| a branch growing out of the disc, its tip glowing; dimmer | a session; a call; at rest (3 minutes of silence). The tree has twelve places: a new session takes the place of the one at rest longest, sessions at work beyond twelve share places, and a session that bore no blossom goes when it rests |
-| a blossom opening on a branch (`✿` coder, `❀` reviewer, `✾` explorer, `✽` other, in the role's colour), growing | a subagent dispatched; its work so far (tool calls, output tokens) |
-| petals flying to the disc, the blossom closing to an outline | a subagent returned; what it did stays on the tree for 2 hours. An outline without petals: its session went silent for 3 minutes before it returned. It opens again if the agent is resumed |
+| a branch growing out of the disc, its tip glowing; dimmer | a session; a call; at rest (3 minutes of silence). The tree has twelve places, their tips spread along the top and right edges of the stage so the first sessions are far apart: a new session takes the place of the one at rest longest, sessions at work beyond twelve share places, and a session that bore no blossom goes when it rests |
+| a blossom opening on a branch (`✿` coder, `❀` reviewer, `✾` explorer, `✽` other, in the role's colour), growing | a subagent dispatched; its work so far (tool calls, output tokens); open ones take places from the tip of the branch inward, and are the smaller the more are open and the less room the branch has |
+| petals flying to the disc, the blossom closing to an outline | a subagent returned; what it did stays on the tree as a small outline for up to 2 hours (at most 6 on a branch; the more outlines on the tree, the sooner they go: 48 last an hour). An outline without petals: its session went silent for 3 minutes before it returned. It opens again if the agent is resumed |
 | petals turned back at the disc in red, with a red ring | a reviewer asked for changes |
 | wind in two layers; bright streaks off an agent | cache reads; output tokens |
 | notes on the staff (`●` shell, `○` read, `◆` edit, `■` write, `▲` dispatch, `◇` message, `·` anything else), each with a tail | a tool call, in the caller's colour; the tail lasts until that agent's next call, 12 seconds at most (of event time, in a replay) |
 | the bars at the right of the staff | calls per second on that voice |
 | a lantern rising to the sky; flickering; green; red; going out | an open pull request; checks running; passed; failed; closed without a merge |
 | a firework that lights the whole stage, then a star `✶` near where the lantern was | a merge; the star stays 6 hours (the 64 latest) |
-| a ripple, then a still ringed star above the disc | a task asked you a question; the star stays until it is answered |
+| a pale light from the disc to a bell at the left edge of the sky, with the task's slug beside it; the light returns and the bell goes | a task asked you a question, and waits until it is answered. Bells that do not fit above the disc overlap at the top |
+| fainter merge stars by day | the hour of day: the time zone of the machine running the dashboard (over `--serve`, the server's); in a replay, the replay's clock, while the clock in the sub-header is UTC |
+| the disc, the staff's playhead and working blossoms pulsing on a beat; the wind gusts every fourth beat | tempo is the rate of tool calls, from about 50 to 140 beats a minute; none without tool calls |
+| a light running out along a branch, then the blossom opening | a subagent dispatched: the brief goes out, and the blossom is a bud until it arrives |
+| beads of light rising along a branch (dim for a call, bright for output) | work: a tool call or output tokens from that session, six beads in flight at most on a branch |
+| the disc's rim taking a colour for a moment | the last petal of a return reached the disc |
+| small words: a role beside a blossom (4 s), `#31` under a lantern (6 s) and `#31 merged` at the burst (3 s) | history is not announced; a question's slug stays beside its bell |
 | a ripple from the disc across the field | the site manager's tick |
 
 Ambient, and not data: the disc's slow breath, the sway of lanterns, the slowest breeze. With nothing running, that is all there is: quiet looks quiet, and the tree at four in the afternoon looks like the afternoon's work.
 
 Colour is always the agent's role, as everywhere in the dashboard. Keys: `l` legend, `z` hides the header and footer, `p` replays the last 24 hours (again: back to live). A replay runs at a minute a second and skips stretches where nothing happened, so a day takes as many seconds as it had busy minutes; its clock is in the sub-header, and its rates (the disc, the wind, the bars) are per event second, so they read as they would have live. Below 110 columns the tab is a blossom, `5 ✿`.
 
-It runs at 20 frames a second and only while it is shown: the view starts `isshoni events --follow` when you open it and stops it when you leave. Measured on a 140x40 terminal it takes 6% of one core idle and 10 to 12% in a busy hour (the glow is a background colour per cell, which the terminal layer pays for; the scene itself draws in a millisecond), plus about 1% for the event stream. What had happened before you opened it sets the scene without animation: the last 2 hours of sessions and agents, every open pull request and every unanswered question. An agent whose transcript was last written more than 2 hours earlier and that is still running has no blossom until it next writes. Pull requests come from `gh`, polled once a minute, so a lantern or a firework can be up to a minute late; check states are known live only, so a replay's lanterns do not flicker. Without colour (`--no-color`) there is no glow: shapes and motion carry it; a terminal without truecolor gets the nearest colours it has.
+It runs at 20 frames a second and only while it is shown: the view starts `isshoni events --follow` when you open it and stops it when you leave. Measured on a 140x40 terminal (a pty, 30 s after start, CPU time of the process) it takes 7.5% of one core idle and 9.5% replaying a busy stretch, the same as before the beat and the light along the branches were added (the glow is a background colour per cell, two where a half block is drawn, which the terminal layer pays for; the scene itself draws in a millisecond), plus about 1% for the event stream. What had happened before you opened it sets the scene without animation: the last 2 hours of sessions and agents, every open pull request and every unanswered question. An agent whose transcript was last written more than 2 hours earlier and that is still running has no blossom until it next writes. Pull requests come from `gh`, polled once a minute, so a lantern or a firework can be up to a minute late; check states are known live only, so a replay's lanterns do not flicker. Without colour (`--no-color`) there is no glow: shapes and motion carry it; a terminal without truecolor gets the nearest colours it has.
+
+Finer pixels: glow and the disc's body are drawn with two samples a cell, a top and a bottom, so their pixels are square. A cell that holds only light is the upper half block `▀` (U+2580, Block Elements, Unicode 1.1) with the top sample as its foreground and the bottom as its background; a cell that holds a glyph or braille dots has one foreground, which the glyph or dots need, so its background is the mean of the two. Without colour there are no half blocks. On macOS `▀` is in Menlo and SF Mono (checked in the font files, 2026-11-14) but not in Monaco, which a terminal falls back from to another font for that one glyph; Linux fonts were not checked (DejaVu Sans Mono and Liberation Mono are expected to have it). Sextants (U+1FB00, Unicode 13) and octants (U+1CD00, Unicode 16) would be finer, but no macOS system font has them, so they are not used; quadrants add nothing, as a cell still has two colours. `tools/ansi2html.py` draws `▀` itself, as a top half over a bottom half, so screenshots have no seams.
 
 ```sh
 bin/isshoni-tui --replay events.jsonl              # replay a recording (python3 -m isshoni events --since 24h > events.jsonl), looping
 bin/isshoni-tui --replay events.jsonl --replay-speed 300  # event seconds per second; the default is 60
-make strip REPLAY=internal/tui/testdata/hanami-replay.jsonl SCENE=merge AT=89s FRAMES=12 STEP=200ms ARGS="--replay-speed 3"
+TZ=UTC make strip REPLAY=internal/tui/testdata/hanami-replay.jsonl SCENE=merge AT=88s FRAMES=14 STEP=250ms ARGS="--replay-speed 3"
+TZ=UTC make strip REPLAY=internal/tui/testdata/hanami-lead.jsonl SCENE=lead AT=30s FRAMES=12 STEP=400ms ARGS="--replay-speed 1"   # one lead, no subagents
+TZ=UTC make strip REPLAY=internal/tui/testdata/hanami-day.jsonl SCENE=replay AT=5s FRAMES=14 STEP=15s ARGS="--replay-speed 300"    # a synthetic day, 05:00 to 22:41 UTC: merge stars dim by day
 ```
+
+Pin `TZ=UTC` on every strip: merge stars dim by day in the machine's time zone, and the fixtures are written in UTC.
 
 `make strip` renders consecutive frames (`--snapshot hanami --replay FILE --at D --frames N --frame-step D`, add `--legend` for the legend) to `shots/hanami-<scene>-<size>.png`, a contact strip, and `.gif`, an animation (the GIF needs Pillow; the PNG needs Chrome, as `make screenshot` does). `make snapshot VIEW=hanami` without a replay is the idle scene.
 
