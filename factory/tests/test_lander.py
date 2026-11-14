@@ -151,7 +151,7 @@ class StarterTests(World):
         self.assertIn("gh pr list failed: boom", err)
 
     def test_a_run_that_is_going_blocks_a_second(self):
-        with factory.lander_lock(SimpleNamespace(root=ROOT)) as free:
+        with factory.repo_lock(SimpleNamespace(root=ROOT), "lander") as free:
             self.assertTrue(free)
             code, out, _ = self.lander("1", prs=[plain(1)])
         self.assertEqual((code, out), (1, "a lander run is already going; run it again when it ends\n"))
@@ -387,7 +387,7 @@ class TickTests(SchedHarness, World):
         self.assertNotIn("- #3:", argv[-1])
 
     def test_a_held_lock_skips_the_tick_silently_and_records_nothing(self):
-        with factory.lander_lock(SimpleNamespace(root=ROOT)):
+        with factory.repo_lock(SimpleNamespace(root=ROOT), "lander"):
             code, out, _ = self.tick([reviewed(1)], answer=reply("#1 merged u"))
         self.assertEqual(code, 0)
         self.assertEqual(self.landers(), [])

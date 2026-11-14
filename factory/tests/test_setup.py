@@ -35,7 +35,7 @@ class Machine:
     def which(self, tool):
         return f"/usr/bin/{tool}" if tool in self.tools else None
 
-    def __call__(self, argv, cwd=None, timeout=None, input=None, env=None):
+    def __call__(self, argv, cwd=None, timeout=None, input=None, env=None, group=False):
         self.calls.append(list(argv))
         a = list(argv)
         if a[:3] == ["gh", "auth", "status"]:

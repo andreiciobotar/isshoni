@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from test_factory import DISPATCHER, LEAN_SETTINGS, ROOT, WT, FakeRun, factory, repo_answers, task_entry
+from test_factory import DISPATCHER, LEAN_SETTINGS, ROOT, WT, FakeRun, factory, repo_answers, stub_popen, task_entry
 
 NOW = 1_800_000_000
 HOUR = 3600
@@ -597,7 +597,7 @@ class TimedRun(FakeRun):
         self.timeouts = []
         self.envs = []
 
-    def __call__(self, argv, cwd=None, timeout=None, input=None, env=None):
+    def __call__(self, argv, cwd=None, timeout=None, input=None, env=None, group=False):
         self.timeouts.append(timeout)
         self.envs.append(env)
         return super().__call__(argv, cwd, input)
@@ -789,7 +789,7 @@ class WatchTests(Harness):
             noisy = "ANTHROPIC_LOG" in (kw["env"] or os.environ)
             return subprocess.CompletedProcess(argv, 0, ("[log_1] sending request\n" if noisy else "") + reply()[1], "")
         p = {"repo": SimpleNamespace(root=ROOT)}
-        with mock.patch.dict(os.environ, {"ANTHROPIC_LOG": "debug"}), mock.patch.object(factory.subprocess, "run", claude), \
+        with mock.patch.dict(os.environ, {"ANTHROPIC_LOG": "debug"}), mock.patch.object(factory.subprocess, "Popen", stub_popen(claude)), \
                 mock.patch.object(factory, "site_manager_argv", return_value=["claude", "-p"]), \
                 mock.patch.object(factory, "record_decisions") as record, mock.patch.object(factory, "report"), \
                 redirect_stdout(io.StringIO()):

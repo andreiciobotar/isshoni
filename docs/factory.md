@@ -225,6 +225,7 @@ Criteria are `factory/criteria.json`, one entry per line: `name`, `escalate` (`a
 | `ended-undeclared` | judgment | 10 min | a lead's session ended with no hand-over or block declared |
 | `blocked-unanswered` | judgment | 30 min | a task has been `blocked` that long |
 | `handover-unacknowledged` | judgment | 24 h | a task was declared `handed-over` that long ago and is still in `review` |
+| `busy-after-handover` | judgment | 10 min | a task was declared `handed-over` that long ago and its lead session is still not finished; the finding lists up to three processes below the session's pid (pid, running time, command cut to 80 characters), oldest first, or `no child process` |
 | `review-loops` | judgment | 3 | a task had that many reviewer dispatches since it started |
 | `wrong-model` | judgment | | a lead or subagent ran on a model other than the one pinned for its role |
 | `ci-red-handover` | judgment | | a handed-over pull request has a failing check |
@@ -408,6 +409,36 @@ Undo: `factory uninstall` uninstalls the App and removes `identity/`; you delete
 
 ## In a container
 [container.md](container.md) runs the factory on an always-on Linux host: an image with Claude Code, `gh`, git, Python and Go (`docker/`), all state in one host directory, a non-root user, CPU and memory limits. The site manager's job uses the cron backend there, run by supercronic because a container has neither systemd nor a root cron; the rules above hold unchanged. `isshoni host add` sets it up from a laptop over SSH (the tooling lives in `~/.isshoni` in the container). The same page lists the command's steps, what a lead in `auto` mode could damage, and how the factory's GitHub identity gets into the container.
+
+## Shutdown and leftovers
+`run()` in `factory/bin/factory` is the only place a child starts, and it owns the child's lifetime.
+
+| Constant | Seconds | Applies to |
+|---|---|---|
+| `RUN_TIMEOUT` | 120 | every call that names no timeout (the other `claude plugin` calls, `git`, `claude agents`, `claude rm`, `launchctl`, `systemctl`, `crontab`, `openssl`, `ps`, the launch of a lead) |
+| `NETWORK_TIMEOUT` | 300 | `git` through the App (`pull`, `fetch`, `merge`, `push`) and `claude plugin marketplace add` and `install` |
+| `GH_TIMEOUT` | 30 | `gh`, unless the caller names one (`PR_TIMEOUT` 10, `NOTICE_TIMEOUT` 20, the head-branch lookups 10) |
+| `MONITOR_TIMEOUT` | 120 | the monitor's `isshoni` |
+| `COMMENT_TIMEOUT` | 120 | the courier run (`claude -p`) |
+| `WATCH_TIMEOUT` | 600 | the site manager run (`claude -p`) |
+| `LAND_TEST_TIMEOUT` | 1800 | `make test` before a push, and `make build` in the wizard |
+| `LAND_TIMEOUT` | 1800 | the lander of `factory land` (`claude -p`) |
+| `MERGE_TIMEOUT` | 3600 | the lander of `factory merge` runs (`claude -p`) |
+
+Nothing waits for a human through `run()`, so no call has "no limit". A timeout returns `(124, "", "timed out")`.
+
+- **Process groups.** The five long runs (the site manager, the courier, both landers, `make test`) pass `group=True`: the child starts in a process group of its own, and a timeout kills that group with SIGKILL, so a `claude -p` run's own children go with it. Every other child stays in the script's own group (the dashboard starts `factory status --json` in a group of its own and kills it as a whole), and only the child itself is killed on a timeout.
+- **Signals.** `factory` run as a command handles SIGTERM, SIGHUP and SIGINT: it kills the group of every live `group=True` child, then exits with 128 plus the signal (143, 129, 130). The exit is `sys.exit`, so `finally` blocks and context managers run, and the kernel releases the locks. SIGKILL cannot be handled: the long runs then end at their own timeout at the latest, or, for a `claude -p` that stays, are what `busy-after-handover` and `factory status` show.
+- **One tick at a time.** `watch` holds a non-blocking `flock` on `watch-<repository>-<8 hex>.lock` in the store for the whole tick. A tick that finds it held prints `watch: a tick is already running` and exits 0 (cron starts one every two minutes; launchd and systemd do not start a second instance of a running job). The kernel drops the lock when the holder dies, so there is no stale lock. The lander's lock (`lander-...lock`) is the same helper with another name.
+- **`busy-after-handover`** (see Criteria) reports a lead that declared its hand-over and still has a live session, with what keeps it busy.
+- **`health`** prints two more lines, only when the count is not zero, and removes nothing: `N subagent worktrees (agent-*) older than 24 h: <names, at most 5>` (age is the worktree directory's mtime) and `N finished job directories older than 24 h under ~/.claude/jobs (X MB)` (a directory whose `state.json` says `done` or `stopped` and whose mtime is older than 24 h).
+
+### What belongs to Claude Code
+The factory only reports these; removing them is by hand.
+- A background session holds a lock on its worktree (`git worktree list --porcelain` shows `locked claude session <name> (pid N ...)`); the lock stays when the process has exited. `factory status` then prints `if nothing uses it, run: git worktree unlock <path>`; `factory clean` keeps a locked worktree.
+- A session's state directory `~/.claude/jobs/<id>` (`state.json`, `timeline.jsonl`, `tmp/`) is removed by `claude rm`. While a process the session started still writes to `tmp/`, the removal fails with `ENOTEMPTY`; `factory clean` calls `claude rm <session>`, prints a failure and does not retry. `health` counts the finished directories older than 24 h.
+- A subagent started with worktree isolation gets `.claude/worktrees/agent-<id>`, which Claude Code removes only when it is unchanged. The factory does not list these as tasks, rejects task slugs that start `agent-`, and `health` counts those older than 24 h. Remove one with `git worktree remove <path>`, then `git branch -d <branch>`.
+- A session with a live background command counts as busy: `factory clean` and the lander's merge refuse it. `busy-after-handover` names the process.
 
 ## Known limits
 - Nothing caps what a lead spends; the time limit is checked by the lead between subagent runs.
