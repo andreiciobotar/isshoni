@@ -325,8 +325,6 @@ class DashboardFixtureTests(FixtureStore):
         with open(os.path.join(ROOT, "internal", "tui", "testdata", "kaizen-fixture.json")) as f:
             fixture_doc = json.load(f)
         fixture = shapes(fixture_doc)
-        # data written before the lander role has no lander key; the fixture keeps such rows
-        fixture["by_role"] = {frozenset(r | {"lander"}) for r in fixture["by_role"]}
         ours = shapes(self.doc)
         self.assertEqual({n for n, v in fixture.items() if len(v) != 1}, set())
         self.assertLessEqual({"doc", "repo", "version", "task", "pr", "cost", "by_role", "defects", "summary", "time",
@@ -335,9 +333,6 @@ class DashboardFixtureTests(FixtureStore):
         for name in ours:
             self.assertEqual(fixture[name], ours[name], name)
         landed = [t for t in fixture_doc["tasks"] if t["landed"]]
-        for t in landed:  # rows of versions before the lander have no lander key; the mix reads it as 0
-            if t["cost"]:
-                t["cost"]["by_role"] = {r: t["cost"]["by_role"].get(r, 0.0) for r in kaizen.ROLES}
         self.assertEqual((fixture_doc["roles"], fixture_doc["summary"]["mix"]), (list(kaizen.ROLES), kaizen._mix(landed)))
         self.assertEqual(fixture["point"], {frozenset(kaizen._mix(mixed([0.5] * 5))["points"][0])})
         self.assertEqual(fixture["trend"], {frozenset(kaizen._trend([task("t", "2026-11-01T00:00:00Z")] * 10))})

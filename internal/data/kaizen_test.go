@@ -49,9 +49,6 @@ func TestKaizenDecodesTheFixtureAndPassesSince(t *testing.T) {
 	if last.Slug != "fx-quiet-refactor" || !last.Landed || last.PR == nil || last.PR.Number != 120 || last.Cost == nil || last.Cost.Total != 2.31 || last.Cost.ByRole["lander"] != 0.2 || last.Rounds == nil || *last.Rounds != 1 {
 		t.Fatalf("task: %+v", last)
 	}
-	if doc.Tasks[0].Cost.ByRole["lander"] != 0 {
-		t.Fatal("a row without the lander key decodes as 0")
-	}
 	if doc.Tasks[3].Cost != nil || doc.Tasks[3].Rounds != nil || doc.Tasks[5].PR != nil || doc.Tasks[5].State != "dismissed" {
 		t.Fatal("nulls decode to nil")
 	}
