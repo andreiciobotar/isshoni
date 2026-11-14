@@ -23,6 +23,7 @@ factory log events|retros [--since <ts>] [--until <ts>]
 factory hook                                                             # run by the plugin's hooks
 factory health [--json] [--dispatcher <session-name>]
 factory watch [--dispatcher <session-name>]
+factory digest [--dispatcher <session-name>] [--dry-run]
 factory schedule install|remove|status [--dispatcher <session-name>]
 factory firing <id> acted|ignored                                        # id or a unique prefix
 factory miss <text> [--slug <slug>] [--firing <id>]
@@ -129,7 +130,7 @@ A job runs `factory watch` every 30 minutes, output appended to `~/.claude/facto
 
 `health` evaluates the criteria and prints what fires now; it writes nothing. `watch` does the same, logs each new firing, and only when there is something new to send starts one headless Sonnet run (no shell, no file tools, 10 minute timeout, about $0.15) under `factory/roles/site-manager.md`. The run gets the evidence in its prompt and either messages the dispatcher (first line `ESCALATION: <repository directory name>`) or suppresses the firing with a reason. `always` firings cannot be suppressed. Nothing is escalated twice while its condition lasts; a suppression is looked at again after two hours. `dispatcher-missing` becomes a desktop notification instead (`notify-send` on Linux; without a notification service, or when it fails, a `notify: ...` line in the watch log) and holds everything else back until a dispatcher exists. Either way the firing is recorded as escalated by `watch`, so the human hears once.
 
-Criteria are `factory/criteria.json`, one entry per line: `name`, `escalate` (`always` or `judgment`), `threshold`, `what`. Delete a line to turn one off; an unknown name or a bad value is an error (exit 2). A criterion whose inputs cannot be read fires nothing and is printed as `not evaluated: <name>: <why>`.
+Criteria are `factory/criteria.json`, one entry per line: `name`, `escalate` (`always` or `judgment`), `threshold`, `what` and optionally `job` (`watch`, the default, or `digest`: see Digest). `health` and `watch` evaluate the `watch` entries only. Delete a line to turn one off; an unknown name or a bad value is an error (exit 2). A criterion whose inputs cannot be read fires nothing and is printed as `not evaluated: <name>: <why>`.
 
 | Criterion | Escalate | Threshold | Fires when |
 |---|---|---|---|
@@ -156,7 +157,23 @@ The two cost criteria read the monitor, not the plugin: set `monitor` in the set
 
 The dispatcher closes the loop: `firing <id> acted|ignored` on each escalation, `miss` for a problem that was not escalated (`--firing` when it had fired and was suppressed). `firings` lists the log, then precision `acted/(acted+ignored)` and recall `acted/(acted+missed)`.
 
-`firings-YYYY-MM.jsonl` records carry only `ts`, `repo` and one of: a firing (`id`, `criterion`, `escalate`, `slug`, `subject`, `detail`); a decision (`id`, `decision`: `escalated` or `suppressed`, `reason`, `by`: `site-manager` or `watch`); an outcome (`id`, `outcome`); a clearing (`id`, `cleared: true`); a miss (`miss`, `slug`, `firing`).
+`firings-YYYY-MM.jsonl` records carry only `ts`, `repo` and one of: a firing (`id`, `criterion`, `escalate`, `slug`, `subject`, `detail`); a decision (`id`, `decision`: `escalated` or `suppressed`, `reason`, `by`: `site-manager` or `watch`); an outcome (`id`, `outcome`); a clearing (`id`, `cleared: true`); a miss (`miss`, `slug`, `firing`); a digest marker (`digest`: the slugs of the tasks the digest covered), which has no `id`.
+
+### Digest
+A digest answers where a task's money goes. It is a set of findings computed by a script from `isshoni anatomy --json` (the monitor's per-task cost anatomy), then worded and filtered by the same headless Sonnet run as `watch` (`Job: digest`), which messages the dispatcher (first line `DIGEST: <repository directory name>`, then a `Tasks:` line naming the tasks landed since the last digest, then one line per finding it kept) or sends nothing. A finding is a criterion with `"job": "digest"` in `criteria.json`: it is logged as an ordinary firing, decided by the site manager, closed by the dispatcher with `factory firing <id> acted|ignored` and counted by `firings`. A finding describes one window, not a lasting condition, so the digest marks its firings cleared when it ends, and then writes the marker.
+
+- **Window.** The tasks of this repository that have a merged pull request (`worktree-<slug>`) and a cost above 0, oldest merge first. The current ones merged after the last digest's marker (with no digest yet, the newest 5); the baseline is every one before them. With fewer than 5 in the baseline, or none current, a finding is `not evaluated`.
+- **Cadence.** `watch` makes a digest when the last marker is at least 24 hours old (or there is none), the repository has `digest` entries, and at least 5 tasks have landed since the last one. So: at most one a day, none until 5 more have landed. The anatomy only moves when tasks land, a median needs 5 of them (the number the cost criteria use), and the reader's attention is the cost being managed. A tick inside the 24 hours costs nothing; one past them runs `isshoni anatomy --json` once (about 10 seconds on the author's machine) to count what landed, and a digest that is sent costs one Sonnet run (about $0.15). It does nothing when the tick has no dispatcher or fired `dispatcher-missing`. Without `monitor` in the settings, or when the monitor fails, it prints one `digest skipped: <why>` line per due tick and records nothing. A marker is written when at least one finding was evaluated, even if none fired. If the run is unusable, no marker is written, the firings are cleared, the command exits 1 and the next due tick tries again.
+- **`factory digest`** makes one now whatever the cadence, and `--dry-run` prints the findings and the `not evaluated` list as `health --json` does, logging nothing and starting no model.
+
+| Finding | Threshold | Fires when |
+|---|---|---|
+| `mix-shift` | 5 (points) | the share of total cost of one token class (`input`, `output`, `cache_write_5m`, `cache_write_1h`, `cache_read`), current against baseline, moved by at least that many points; the class that moved most |
+| `dearest-task` | 1.5 (times) | the dearest current task cost more than that many times the baseline's median task; names the role that explains most of it |
+| `role-growing` | 20 (percent) | a role in at least 3 current and 3 baseline tasks has a median context per call, or median number of own tool calls per task, that much above the baseline's |
+| `version-shift` | 20 (percent) | at least 3 current tasks ran a plugin version no baseline task ran, and their median task cost, the lead's share of cost or the lead's median context moved by more than that, up or down |
+
+To turn the digest off, delete the four `"job": "digest"` lines of `criteria.json`, or one of them to drop that finding. Without `monitor` in the settings it is skipped. A fifth finding is one line in `criteria.json`, one function and one entry in `CRITERIA`.
 
 ## Merging
 `factory merge` merges pull requests with no model. It merges only what is mechanical and stops at the first thing that is not. Two things start it:
@@ -192,5 +209,5 @@ Then it retargets the pull request onto the default branch when its base is a me
 - A store nobody writes to is never pruned. A month file and `watch.log` have no size limit.
 - The monitor adds up the cost of a reused slug, so a task started under an old slug looks dearer than it is. A model the monitor has no price for understates the cost.
 - Merging: the `lgtm` trigger rests on a rule, not a mechanism (see Merging). Checks are not rerun after a retarget, and GitHub does not test the merge result: mergeable means no conflict. A pull request with no task worktree is a `handover` stop; the human merges it. At most 100 open pull requests are seen. An `lgtm` during a running check waits for the next tick. There is no lock: when a tick and the dispatcher merge at once, the second `gh pr merge` fails and is reported.
-- The site manager's thresholds are first guesses; `quiet` reads file times, so a lead waiting on a long command looks quiet; a run that dies after sending may escalate the same firing again next tick.
+- The site manager's thresholds are first guesses; `quiet` reads file times, so a lead waiting on a long command looks quiet; a run that dies after sending may escalate the same firing again next tick. A site manager run is read as one JSON document on `claude`'s standard output: with `ANTHROPIC_LOG=debug` in the environment `claude` logs there too, the message is still sent and the run is recorded as failed.
 - Two repositories whose directories share a name share a spec folder and a default dispatcher name.

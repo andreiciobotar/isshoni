@@ -1008,7 +1008,10 @@ WATCH_INTERVAL = 1800
 WATCH_TIMEOUT = 600
 MONITOR_TIMEOUT = 120
 MIN_LANDED = 5
+DIGEST_HOURS = 24
 ESCALATE = ("always", "judgment")
+JOBS = ("watch", "digest")
+CLASSES = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")
 RUN_SCHEMA = {"type": "object", "required": ["sent", "decisions"], "properties": {
     "sent": {"type": "boolean"},
     "decisions": {"type": "array", "items": {"type": "object", "required": ["id", "decision", "reason"], "properties": {
@@ -1264,15 +1267,23 @@ def monitor_failed(why):
     return NotEvaluated(f"the monitor failed: {why}")
 
 
-def monitor_costs(p):
-    """slug -> the monitor's cost block for this repository's tasks."""
+def monitor_json(p, *args):
+    """What the monitor command prints as JSON for `args`."""
     if not p["monitor"]:
         raise NotEvaluated('no monitor: set "monitor" in ~/.claude/factory/settings.json to the path of the isshoni command')
-    rc, out, err = run([p["monitor"], "sessions", "--json"], timeout=MONITOR_TIMEOUT)
+    rc, out, err = run([p["monitor"], *args], timeout=MONITOR_TIMEOUT)
     if rc:
         raise monitor_failed(err.strip().splitlines()[-1] if err.strip() else f"exit {rc}")
     try:
-        repos = json.loads(out)["repos"]
+        return json.loads(out)
+    except ValueError:
+        raise monitor_failed("unexpected output")
+
+
+def monitor_costs(p):
+    """slug -> the monitor's cost block for this repository's tasks."""
+    try:
+        repos = monitor_json(p, "sessions", "--json")["repos"]
         mine = [t for r in repos if r["repo_path"] and os.path.realpath(r["repo_path"]) == p["repo"].root
                 for t in r["tasks"]]
         return {t["task"]: {k: float(t["cost"][k]) for k in ("total", "main_pct")} for t in mine}
@@ -1280,16 +1291,20 @@ def monitor_costs(p):
         raise monitor_failed("unexpected output")
 
 
-def costs(p):
-    """monitor_costs, run once per picture; a failure is remembered too."""
-    if "costs" not in p:
+def cached(p, key, make):
+    """make(p), run once per picture; a failure is remembered too."""
+    if key not in p:
         try:
-            p["costs"] = monitor_costs(p)
+            p[key] = make(p)
         except NotEvaluated as e:
-            p["costs"] = e
-    if isinstance(p["costs"], NotEvaluated):
-        raise p["costs"]
-    return p["costs"]
+            p[key] = e
+    if isinstance(p[key], NotEvaluated):
+        raise p[key]
+    return p[key]
+
+
+def costs(p):
+    return cached(p, "costs", monitor_costs)
 
 
 def landed_median(p):
@@ -1370,6 +1385,164 @@ def c_base_merged(p, _):
     return found
 
 
+def last_digest(root):
+    """The newest digest marker of the repo at `root`, or None."""
+    return next((r for r in reversed(repo_log("firings", root) or []) if "digest" in r), None)
+
+
+def monitor_anatomy(p):
+    """This repository's landed tasks with a cost, each the monitor's anatomy plus `merged` (epoch), oldest merge first."""
+    doc = monitor_json(p, "anatomy", "--json", "--repo", os.path.basename(p["repo"].root))
+    try:
+        merged = {}
+        for pr in p["gh"](list, "pr", "list", "--state", "merged", "--limit", "1000", "--json", "headRefName,mergedAt"):
+            when = epoch(pr.get("mergedAt"))
+            slug = pr.get("headRefName", "").removeprefix("worktree-")
+            if when and when > merged.get(slug, 0):
+                merged[slug] = when
+        landed = [{**t, "merged": merged[t["task"]]} for t in doc["tasks"] if t["repo_path"]
+                  and os.path.realpath(t["repo_path"]) == p["repo"].root and t["cost"] > 0 and t["task"] in merged]
+        for t in landed:
+            t["version"], t["roles"]
+            for r in t["roles"].values():
+                [r["cost"][k] for k in (*CLASSES, "total")], r["calls"], r["context"]["median"], r["context"]["peak"]
+                sum(r["tools"].values())
+        return sorted(landed, key=lambda t: t["merged"])
+    except (KeyError, TypeError, AttributeError):
+        raise monitor_failed("unexpected output")
+
+
+def anatomy(p):
+    return cached(p, "anatomy", monitor_anatomy)
+
+
+def split_landed(p):
+    """(current, baseline, last marker): the landed tasks since the last digest, and those before them."""
+    landed, last = anatomy(p), last_digest(p["repo"].root)
+    since = last and epoch(last["ts"])
+    cut = max(0, len(landed) - MIN_LANDED) if since is None else sum(t["merged"] <= since for t in landed)
+    return landed[cut:], landed[:cut], last
+
+
+def window(p):
+    return cached(p, "window", split_landed)
+
+
+def compared(p):
+    """(current, baseline) when the digest has something to compare, else NotEvaluated."""
+    current, baseline, _ = window(p)
+    if len(baseline) < MIN_LANDED:
+        raise NotEvaluated(f"only {len(baseline)} landed tasks before this digest's; {MIN_LANDED} are needed to compare")
+    if not current:
+        raise NotEvaluated("nothing landed since the last digest")
+    return current, baseline
+
+
+def named(ts):
+    names = [t["task"] for t in ts]
+    return ", ".join(names[:6]) + (f" and {len(names) - 6} more" if len(names) > 6 else "")
+
+
+def shown(n, fmt):
+    return "?" if n is None else fmt(n)
+
+
+def kilo(n):
+    return shown(n, lambda n: f"{n / 1000:.0f}k")
+
+
+def blocks(ts, role):
+    return [t["roles"][role] for t in ts if role in t["roles"]]
+
+
+def stat(items, get):
+    return [v for v in map(get, items) if v is not None]
+
+
+def middle(values):
+    return statistics.median(values) if values else None
+
+
+def lead_share(t):
+    return 100 * t["roles"].get("lead", {"cost": {"total": 0}})["cost"]["total"] / t["cost"]
+
+
+def cost_shares(ts):
+    sums = {k: sum(r["cost"][k] for t in ts for r in t["roles"].values()) for k in CLASSES}
+    return {k: 100 * v / sum(sums.values()) for k, v in sums.items()}
+
+
+def c_mix_shift(p, threshold):
+    current, baseline = compared(p)
+    now_, before = cost_shares(current), cost_shares(baseline)
+    k = max(CLASSES, key=lambda k: abs(now_[k] - before[k]))
+    if abs(now_[k] - before[k]) < threshold:
+        return []
+    return [(None, k, f"{k} is {now_[k]:.0f}% of cost over the {len(current)} tasks landed since the last digest "
+             f"({named(current)}), {before[k]:.0f}% over the {len(baseline)} before")]
+
+
+def c_dearest_task(p, threshold):
+    current, baseline = compared(p)
+    top = max(current, key=lambda t: t["cost"])
+    median = statistics.median(t["cost"] for t in baseline)
+    if top["cost"] <= threshold * median:
+        return []
+
+    def excess(role):
+        return top["roles"][role]["cost"]["total"] - statistics.median(
+            t["roles"].get(role, {"cost": {"total": 0}})["cost"]["total"] for t in baseline)
+    role = max(top["roles"], key=excess)
+    mine, others = top["roles"][role], blocks(baseline, role)
+    return [(top["task"], top["task"],
+             f"cost {top['cost']:.2f}, {top['cost'] / median:.1f} times the median of the {len(baseline)} before "
+             f"({median:.2f}; threshold {threshold:g} times); mostly the {role}: {mine['cost']['total']:.2f} against a "
+             f"median {shown(middle(stat(others, lambda r: r['cost']['total'])), '{:.2f}'.format)}, {mine['calls']} "
+             f"calls against {shown(middle(stat(others, lambda r: r['calls'])), '{:.0f}'.format)}, peak context "
+             f"{kilo(mine['context']['peak'])} against {kilo(middle(stat(others, lambda r: r['context']['peak'])))}")]
+
+
+ROLE_MEASURES = (("context", "median context per call", lambda r: r["context"]["median"], kilo),
+                 ("own-calls", "median own tool calls per task", lambda r: sum(r["tools"].values()), "{:.0f}".format))
+
+
+def c_role_growing(p, threshold):
+    current, baseline = compared(p)
+    found = []
+    for role in sorted({r for t in current for r in t["roles"]}):
+        if min(len(blocks(current, role)), len(blocks(baseline, role))) < 3:
+            continue
+        for measure, phrase, get, fmt in ROLE_MEASURES:
+            now_, before = middle(stat(blocks(current, role), get)), middle(stat(blocks(baseline, role), get))
+            if now_ is not None and before and 100 * (now_ - before) / before > threshold:
+                found.append((None, f"{role}/{measure}",
+                              f"the {role}'s {phrase} is {fmt(now_)} over {len(blocks(current, role))} tasks "
+                              f"({named([t for t in current if role in t['roles']])}), {fmt(before)} over the "
+                              f"{len(blocks(baseline, role))} before: {100 * (now_ - before) / before:+.0f}%"))
+    return found
+
+
+VERSION_MEASURES = (("median task cost", "{:.2f}".format, lambda ts: ts, lambda t: t["cost"]),
+                    ("lead share", "{:.0f}%".format, lambda ts: ts, lead_share),
+                    ("median lead context", kilo, lambda ts: blocks(ts, "lead"), lambda r: r["context"]["median"]))
+
+
+def c_version_shift(p, threshold):
+    current, baseline = compared(p)
+    found = []
+    for version in sorted({t["version"] for t in current} - {t["version"] for t in baseline} - {None}):
+        mine = [t for t in current if t["version"] == version]
+        moved = []
+        for label, fmt, pick, get in VERSION_MEASURES:
+            now_, before = middle(stat(pick(mine), get)), middle(stat(pick(baseline), get))
+            if now_ is not None and before and abs(100 * (now_ - before) / before) > threshold:
+                over = "" if moved else f" over the {len(baseline)} before"
+                moved.append(f"{label} {fmt(now_)} against {fmt(before)}{over} ({100 * (now_ - before) / before:+.0f}%)")
+        if len(mine) >= 3 and moved:
+            found.append((None, version, f"since plugin {version} ({len(mine)} tasks: {named(mine)}): {'; '.join(moved)}"))
+    return found
+
+
 CRITERIA = {  # name -> (function, whether it needs a threshold)
     "past-limit": (c_past_limit, False), "ci-red-default": (c_ci_red_default, False),
     "dispatcher-missing": (c_dispatcher_missing, False), "quiet": (c_quiet, True),
@@ -1379,6 +1552,8 @@ CRITERIA = {  # name -> (function, whether it needs a threshold)
     "deep-stack": (c_deep_stack, True), "merged-not-cleaned": (c_merged_not_cleaned, True),
     "lgtm-blocked": (c_lgtm_blocked, False), "base-merged": (c_base_merged, False),
     "cost-outlier": (c_cost_outlier, True), "lead-heavy": (c_lead_heavy, True),
+    "mix-shift": (c_mix_shift, True), "dearest-task": (c_dearest_task, True),
+    "role-growing": (c_role_growing, True), "version-shift": (c_version_shift, True),
 }
 
 
@@ -1401,7 +1576,13 @@ def load_criteria():
             raise Fail(f"criteria: {name}: threshold must be a positive number")
         if not isinstance(c.get("what"), str) or not c["what"].strip():
             raise Fail(f"criteria: {name}: what must be a non-empty string")
+        if c.get("job", "watch") not in JOBS:
+            raise Fail(f"criteria: {name}: job must be one of {', '.join(JOBS)}")
     return data
+
+
+def job_criteria(criteria, job):
+    return [c for c in criteria if c.get("job", "watch") == job]
 
 
 def evaluate(p, criteria):
@@ -1521,10 +1702,15 @@ def firing_for_run(p, f):
     return out
 
 
-def site_manager_argv(p, firings):
+def site_manager_argv(p, firings, job="watch"):
     """The site manager's launch command, the one place another runner would plug in."""
-    prompt = (f"Job: watch. Repo: {p['repo'].root}. The dispatcher's session name is {p['dispatcher']}.\n\n"
-              f"{json.dumps([firing_for_run(p, f) for f in firings], indent=2)}")
+    body = [firing_for_run(p, f) for f in firings]
+    if job == "digest":
+        current, baseline, last = window(p)
+        body = {"window": {"current": [t["task"] for t in current], "baseline": len(baseline),
+                           "since": last and last["ts"]}, "findings": body}
+    prompt = (f"Job: {job}. Repo: {p['repo'].root}. The dispatcher's session name is {p['dispatcher']}.\n\n"
+              f"{json.dumps(body, indent=2)}")
     return ["claude", "-p", "--model", SITE_MANAGER_MODEL, "--permission-mode", "dontAsk",
             "--allowedTools", "SendMessage", "ToolSearch", "--output-format", "json",
             "--json-schema", json.dumps(RUN_SCHEMA), "--append-system-prompt", ROLE_PATH.read_text(), prompt]
@@ -1571,7 +1757,7 @@ def report(repo, sent):
 
 def cmd_health(args):
     repo = Repo()
-    criteria = load_criteria()
+    criteria = job_criteria(load_criteria(), "watch")
     p = gather(repo, dispatcher_name(args, repo))
     lgtm_step(p, dry=True)
     firings, skipped = evaluate(p, criteria)
@@ -1589,7 +1775,8 @@ def cmd_health(args):
 
 def cmd_watch(args):
     repo = Repo()
-    criteria = load_criteria()
+    every = load_criteria()
+    criteria = job_criteria(every, "watch")
     print(f"{now()} watch {os.path.basename(repo.root)}")
     p = gather(repo, dispatcher_name(args, repo))
     orphaned = p["sessions"] is not None and not live_dispatchers(p["sessions"], repo.root, p["dispatcher"])
@@ -1598,7 +1785,7 @@ def cmd_watch(args):
     current, skipped = evaluate(p, criteria)
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
-    evaluated = {c["name"] for c in criteria} - {s["criterion"] for s in skipped}
+    evaluated = {c["name"] for c in every} - {s["criterion"] for s in skipped}
     opened = {(f["criterion"], f["subject"]): f
               for f in fold(repo_log("firings", repo.root) or [])[0] if not f["cleared"]}
     for key, f in opened.items():
@@ -1626,12 +1813,56 @@ def cmd_watch(args):
     if orphaned and "dispatcher-missing" not in {s["criterion"] for s in skipped}:
         print(f"no dispatcher session for {repo.root}: removing the schedule", flush=True)  # launchd kills this process in remove
         schedule_remove(repo, scheduler())
+    last, digests = last_digest(repo.root), job_criteria(every, "digest")
+    due = p["now"] - (last and epoch(last["ts"]) or 0) >= DIGEST_HOURS * 3600
+    if due and digests and not orphaned and not any(f["criterion"] == "dispatcher-missing" for f in current):
+        digest(p, digests, by_hand=False)
     return 0
 
 
-def run_site_manager(p, send):
+def digest(p, criteria, by_hand):
+    """One digest: evaluate the digest criteria, have the site manager word what fired, and mark the window done.
+    From the watch (not by_hand) it is silent until MIN_LANDED tasks have landed since the last one."""
     repo = p["repo"]
-    rc, out, err = run(site_manager_argv(p, send), cwd=repo.root, timeout=WATCH_TIMEOUT)
+    if not by_hand:
+        try:
+            current = window(p)[0]
+        except NotEvaluated as e:
+            print(f"digest skipped: {e}")
+            return
+        if len(current) < MIN_LANDED:
+            return
+    firings, skipped = evaluate(p, criteria)
+    for s in skipped:
+        print(f"not evaluated: {s['criterion']}: {s['why']}")
+    sent = [fire(repo, f) for f in firings]
+    if not sent:
+        print("digest: nothing to report")
+    try:
+        if sent:
+            run_site_manager(p, sent, "digest")
+    finally:
+        for f in sent:
+            log_firing(repo, id=f["id"], cleared=True)
+    if len(skipped) < len(criteria):
+        log_firing(repo, digest=[t["task"] for t in window(p)[0]])
+
+
+def cmd_digest(args):
+    repo = Repo()
+    criteria = job_criteria(load_criteria(), "digest")
+    p = gather(repo, dispatcher_name(args, repo))
+    if args.dry_run:
+        firings, skipped = evaluate(p, criteria)
+        print(json.dumps({"firings": firings, "not_evaluated": skipped}, indent=2))
+    else:
+        digest(p, criteria, by_hand=True)
+    return 0
+
+
+def run_site_manager(p, send, job="watch"):
+    repo = p["repo"]
+    rc, out, err = run(site_manager_argv(p, send, job), cwd=repo.root, timeout=WATCH_TIMEOUT)
     try:
         doc = json.loads(out)
     except ValueError:
@@ -2162,6 +2393,9 @@ def parse_args(argv):
     health.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
     watch = sub.add_parser("watch", help="the scheduled tick: evaluate, log, and send what is new to the site manager")
     watch.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
+    digest = sub.add_parser("digest", help="the site manager's digest of where the money goes, now rather than when due")
+    digest.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
+    digest.add_argument("--dry-run", action="store_true", help="print the findings; log nothing, start no model")
     firing = sub.add_parser("firing", help="record the outcome of an escalated firing (the dispatcher runs it)")
     firing.add_argument("id")
     firing.add_argument("action", choices=("acted", "ignored"))
@@ -2186,7 +2420,7 @@ def main(argv=None):
     try:
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
-                "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
+                "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
                 "schedule": cmd_schedule}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)

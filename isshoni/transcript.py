@@ -90,6 +90,30 @@ def sum_usage(by_model):
     return u
 
 
+class Call:
+    """One priced model call: its usage, its context, and the characters that arrived since the previous call."""
+    __slots__ = ("model", "raw", "context", "output", "thinking", "inbound")
+
+    def __init__(self, model, raw, inbound):
+        self.model = model
+        self.raw = raw if isinstance(raw, dict) else {}
+        u = usage_from(self.raw)
+        self.context = u.input + u.cache_write + u.cache_read
+        self.output = u.output
+        det = self.raw.get("output_tokens_details")
+        self.thinking = _int(det.get("thinking_tokens")) if isinstance(det, dict) else 0
+        self.inbound = inbound  # {source: characters}
+
+
+class Run:
+    """What one transcript did: its calls, its own tool calls by kind, its Agent dispatches."""
+
+    def __init__(self):
+        self.calls = []
+        self.tools = {}
+        self.dispatches = 0
+
+
 class Dispatch:
     def __init__(self, tool_use_id, ts, agent_type, description, prompt, requested_model, depth, parent_agent_id):
         self.tool_use_id = tool_use_id
@@ -108,6 +132,7 @@ class Dispatch:
         self.duration_ms = None
         self.results = []  # [(ts, text)]
         self.resumes = 0
+        self.run = None  # Run of its transcript, None when it has none
         self.first_ts = None
         self.last_ts = None
         # filled by metrics
@@ -139,6 +164,7 @@ class Session:
         self.cwd = None
         self.dispatches = []
         self.main_usage_by_model = {}
+        self.run = None
         self.malformed = 0
         self.reads = []  # [(ts, file_path)] main-session Read calls
         self.sends = []  # [(ts, Dispatch)] SendMessage to a known agent
@@ -204,6 +230,9 @@ def attribute(states, cwd):
 class _Scan:
     def __init__(self):
         self.usage = {}
+        self.run = Run()
+        self.owned = set()  # message keys this scan added to `seen`
+        self.tool_names = {}  # tool_use id -> tool name
         self.dispatches = []
         self.sends = []
         self.reads = []
@@ -264,6 +293,7 @@ def _scan(path, seen, depth, agent_id, prices):
     sc = _Scan()
     pending = {}  # message id -> [ts, [texts], end_turn]
     order = []
+    inbound = {}  # source -> characters since the last recorded call
     for obj in iter_objects(path):
         if not isinstance(obj, dict) or not isinstance(obj.get("type"), str):
             sc.malformed += 1
@@ -276,13 +306,19 @@ def _scan(path, seen, depth, agent_id, prices):
             continue
         if typ == "attachment":
             att = obj.get("attachment")
-            if isinstance(att, dict) and att.get("type") == "queued_command":
+            if isinstance(att, dict):
                 pr = att.get("prompt")
-                if isinstance(pr, str) and pr.lstrip().startswith("<task-notification>"):
+                note = att.get("type") == "queued_command" and isinstance(pr, str) and pr.lstrip().startswith("<task-notification>")
+                if note:
                     n = parse_notification(pr)
                     if n and n["tool_use_id"] not in sc.queued_notifications:
                         n["ts"] = parse_ts(obj.get("timestamp"))
                         sc.queued_notifications[n["tool_use_id"]] = n
+                    _arrive(inbound, "handback", pr)
+                elif isinstance(obj.get("rendered"), list):
+                    kind = att.get("type") if isinstance(att.get("type"), str) else "?"
+                    for r in obj["rendered"]:
+                        _arrive(inbound, "attachment:" + kind, r.get("content") if isinstance(r, dict) else None)
             continue
         if typ not in ("assistant", "user"):
             continue
@@ -310,7 +346,11 @@ def _scan(path, seen, depth, agent_id, prices):
                 if not (isinstance(key, str) and key in seen):
                     if isinstance(key, str):
                         seen.add(key)
+                        sc.owned.add(key)
                     add_usage(sc.usage, model, usage_from(msg.get("usage"), model, prices))
+                    sc.run.calls.append(Call(model, msg.get("usage"), inbound))
+                    inbound = {}
+            own = not isinstance(key, str) or key in sc.owned  # a fork's copy of its parent's message is not its own
             texts = []
             if isinstance(content, list):
                 for b in content:
@@ -320,7 +360,7 @@ def _scan(path, seen, depth, agent_id, prices):
                     if bt == "text" and isinstance(b.get("text"), str):
                         texts.append(b["text"])
                     elif bt == "tool_use":
-                        _tool_use(sc, b, ts, depth, agent_id)
+                        _tool_use(sc, b, ts, depth, agent_id, own)
                         if b.get("name") == "SubagentHandback" and agent_id is not None:
                             hm = b.get("input")
                             hm = hm.get("message") if isinstance(hm, dict) else None
@@ -349,6 +389,7 @@ def _scan(path, seen, depth, agent_id, prices):
                               if isinstance(v, str) and v), "")
                 sc.handbacks.setdefault(origin["from"], []).append((ts, htext))
             if isinstance(content, str):
+                _arrive(inbound, _text_source(content), content)
                 if content.lstrip().startswith("<task-notification>"):
                     n = parse_notification(content)
                     if n:
@@ -358,10 +399,16 @@ def _scan(path, seen, depth, agent_id, prices):
                 tur = obj.get("toolUseResult")
                 aid = tur.get("agentId") if isinstance(tur, dict) else None
                 for b in content:
-                    if isinstance(b, dict) and b.get("type") == "tool_result" and isinstance(aid, str):
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "tool_result":
                         tid = b.get("tool_use_id")
-                        if isinstance(tid, str):
+                        name = sc.tool_names.get(tid, "?") if isinstance(tid, str) else "?"
+                        _arrive(inbound, "handback" if name == "Agent" else "result:" + name, _result_text(b.get("content")))
+                        if isinstance(tid, str) and isinstance(aid, str):
                             sc.tool_result_agent[aid] = tid
+                    elif b.get("type") == "text":
+                        _arrive(inbound, _text_source(b.get("text")), b.get("text"))
     for rk in order:
         ts, texts, end = pending[rk]
         if end and texts:
@@ -369,11 +416,45 @@ def _scan(path, seen, depth, agent_id, prices):
     return sc
 
 
-def _tool_use(sc, b, ts, depth, agent_id):
+def _arrive(inbound, source, text):
+    if isinstance(text, str) and text:
+        inbound[source] = inbound.get(source, 0) + len(text)
+
+
+def _text_source(text):
+    return "handback" if isinstance(text, str) and text.lstrip().startswith("<task-notification>") else "message"
+
+
+def _result_text(content):
+    if isinstance(content, list):
+        content = "".join(b.get("text", "") for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return content
+
+
+_CD = re.compile(r"^\s*cd\s+\S+\s*&&\s*")
+
+
+def _tool_kind(name, inp):
+    if name != "Bash":
+        return name
+    cmd = inp.get("command")
+    words = _CD.sub("", cmd, count=1).split() if isinstance(cmd, str) else []
+    return "Bash:" + os.path.basename(words[0]) if words else "Bash"
+
+
+def _tool_use(sc, b, ts, depth, agent_id, own):
     name = b.get("name")
     inp = b.get("input")
     if not isinstance(inp, dict):
         inp = {}
+    tid = b.get("id")
+    if own and isinstance(name, str) and isinstance(tid, str) and tid not in sc.tool_names:
+        sc.tool_names[tid] = name
+        if name == "Agent":
+            sc.run.dispatches += 1
+        else:
+            kind = _tool_kind(name, inp)
+            sc.run.tools[kind] = sc.run.tools.get(kind, 0) + 1
     if name == "Agent":
         tid = b.get("id")
         if not isinstance(tid, str):
@@ -415,15 +496,18 @@ def load_session(path, prices):
     s.cwd = main.cwd
     s.malformed = main.malformed
     s.main_usage_by_model = main.usage
+    s.run = main.run
     s.reads = main.reads
     scans = [main]
     agent_files = []  # (agent_id, meta, scan)
     sub_dir = os.path.splitext(path)[0] + os.sep + "subagents"
-    for ap in sorted(glob.glob(os.path.join(glob.escape(sub_dir), "agent-*.jsonl"))):
-        aid = os.path.basename(ap)[len("agent-"):-len(".jsonl")]
+    found = []  # (spawn depth, path, meta)
+    for ap in glob.glob(os.path.join(glob.escape(sub_dir), "agent-*.jsonl")):
         meta = _read_meta(ap[:-len(".jsonl")] + ".meta.json")
         sd = meta.get("spawnDepth")
-        sd = sd if isinstance(sd, int) and not isinstance(sd, bool) else 1
+        found.append((sd if isinstance(sd, int) and not isinstance(sd, bool) else 1, ap, meta))
+    for sd, ap, meta in sorted(found, key=lambda f: f[:2]):  # a fork copies its parent's messages: parents first
+        aid = os.path.basename(ap)[len("agent-"):-len(".jsonl")]
         sc = _scan(ap, seen, sd + 1, aid, prices)
         s.malformed += sc.malformed
         scans.append(sc)
@@ -476,6 +560,7 @@ def load_session(path, prices):
         d.agent_id = aid
         by_agent[aid] = d
         d.usage_by_model = sc.usage
+        d.run = sc.run
         d.first_ts, d.last_ts = sc.first_ts, sc.last_ts
         d.results = list(sc.results)
         hbs = sorted(handbacks.get(aid, []), key=lambda x: x[0] or EPOCH)

@@ -294,6 +294,34 @@ def cmd_kaizen(args):
     return 0
 
 
+def cmd_anatomy(args):
+    from . import anatomy  # anatomy imports kaizen, which imports this module
+
+    prices = price_file.load(args.prices)
+    doc = anatomy.build(load_all(args, prices), prices, args.factory_dir)
+    if args.json:
+        emit_json(doc)
+        return 0
+    if not doc["tasks"]:
+        print("no tasks")
+        return 0
+    share = lambda c, *ks: "-" if not c["total"] else "%d%%" % round(100 * sum(c[k] for k in ks) / c["total"])  # noqa: E731
+    rows = []
+    for t in doc["tasks"]:
+        for name, r in t["roles"].items():
+            c, x = r["cost"], r["context"]
+            rows.append([t["task"], t["version"] or "-", name, r["runs"], r["calls"], human(x["first"]), human(x["median"]),
+                         human(x["max"]), money(c["total"], prices.currency), share(c, "input"), share(c, "output"),
+                         share(c, "cache_write_5m", "cache_write_1h"), share(c, "cache_read"), sum(r["tools"].values()),
+                         r["dispatches"]])
+    print(table(["task", "version", "role", "runs", "calls", "ctx first", "ctx median", "ctx max", "cost", "in%", "out%",
+                 "cw%", "cr%", "tools", "disp"], rows, left=("task", "version", "role")))
+    unpriced = sum(t["unpriced_tokens"] for t in doc["tasks"])
+    models = {m for t in doc["tasks"] for r in t["roles"].values() for m in r["models"] if prices.parts(m, {}) is None}
+    footer(prices, sorted(models) if unpriced else [], unpriced)
+    return 0
+
+
 def emit_json(obj):
     json.dump(obj, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
@@ -331,6 +359,9 @@ def build_parser():
     s = sub.add_parser("kaizen", parents=[_common(True), since], help="improvement measures of the factory")
     s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")
     s.set_defaults(func=cmd_kaizen)
+    s = sub.add_parser("anatomy", parents=[_common(True), since, scope], help="cost anatomy of each task per role")
+    s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")
+    s.set_defaults(func=cmd_anatomy)
     return p
 
 
