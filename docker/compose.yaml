@@ -1,0 +1,32 @@
+# The factory on an always-on Linux host: docs/container.md has the first-run steps.
+# Settings come from the environment or a .env file beside this one; only FACTORY_STATE is required.
+# A project name of its own: the default, this directory's name, is shared with every other `docker/` on the host.
+name: isshoni-factory
+services:
+  factory:
+    build:
+      context: .
+      args:
+        UID: ${FACTORY_UID:-1000}
+        GID: ${FACTORY_GID:-1000}
+    image: isshoni-factory
+    container_name: isshoni-factory
+    init: true
+    restart: unless-stopped
+    # Everything that must survive lives here, and nothing else on the host is visible.
+    volumes:
+      - ${FACTORY_STATE:?set FACTORY_STATE to the host directory that holds the factory's state}:/state
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: ${FACTORY_CPUS:-2}
+    mem_limit: ${FACTORY_MEMORY:-4g}
+    memswap_limit: ${FACTORY_MEMORY:-4g}
+    pids_limit: 1024
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: "2"}
+    # Reserved for the dashboard served over SSH (not built yet):
+    # ports: ["2222:2222"]

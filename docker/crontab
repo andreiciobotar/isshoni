@@ -1,0 +1,12 @@
+#!/bin/sh
+# The two crontab calls `factory schedule` makes, on the file supercronic runs. No cron daemon here
+# runs as root, so there is no system crontab: this file in the state volume is the only one.
+file=$HOME/.crontab
+case "${1:-}" in
+    -l) exec cat "$file" ;;
+    -)  # Read everything before replacing the file (`crontab -l | ... | crontab -`), then tell
+        # supercronic to read it again: file watching does not work on every filesystem.
+        new=$(mktemp "$file.XXXXXX") && cat > "$new" && mv "$new" "$file" || exit 1
+        pkill -USR2 -x supercronic || { echo "crontab: supercronic is not running, so nothing will run the job" >&2; exit 1; } ;;
+    *) echo "crontab: only -l and - are supported in this container" >&2; exit 2 ;;
+esac
