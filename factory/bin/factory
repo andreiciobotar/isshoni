@@ -89,6 +89,7 @@ def why(e):
 
 
 GROUPS = set()  # process groups of the live `group=True` children
+HELD = None  # the signals that arrived while `run()` started a child, None when none is starting
 
 
 def kill_group(pgid):
@@ -99,11 +100,20 @@ def kill_group(pgid):
         os.killpg(pgid, signal.SIGKILL)
 
 
+def release_held():
+    """Close the hold on signals and act on the first one that arrived during it."""
+    global HELD
+    held, HELD = HELD, None
+    if held:
+        stop_on_signal(held[0], None)
+
+
 def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
     """The only place a subprocess is waited for (`spawn` starts one detached), and the owner of its lifetime. Returns (returncode, stdout, stderr).
     Every call ends after `timeout` seconds (RUN_TIMEOUT unless told otherwise; `gh` gets GH_TIMEOUT). A `group=True`
     child, one that starts children of its own, runs in a process group of its own, which a timeout or a signal to
     this script kills whole; any other child stays in the script's group and only it is killed on a timeout.
+    A signal that arrives while the child starts is held until the child is known, then ends it.
     `gh` acts as the App when an identity is installed, and a call that is slow or fails is logged to gh-YYYY-MM.jsonl.
     A `claude` child gets no `ANTHROPIC_LOG`: its debug logging would share the stdout that is read as JSON."""
     timeout = timeout or (GH_TIMEOUT if argv[0] == "gh" else RUN_TIMEOUT)
@@ -116,12 +126,15 @@ def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
     if argv[0] == "claude":
         env = {k: v for k, v in (os.environ if env is None else env).items() if k != "ANTHROPIC_LOG"}
     started = time.monotonic()
+    global HELD
+    HELD = []
     try:
         with subprocess.Popen(argv, cwd=cwd, stdin=None if input is None else subprocess.PIPE, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, env=env, start_new_session=group) as p:
             try:
                 if group:
                     GROUPS.add(p.pid)
+                release_held()
                 out, err = p.communicate(input, timeout=timeout)
                 result = p.returncode, out, err
                 if group:
@@ -137,6 +150,8 @@ def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
                 GROUPS.discard(p.pid)
     except OSError as e:
         result = 127, "", str(e)
+    finally:
+        release_held()
     seconds = time.monotonic() - started
     if argv[0] == "gh" and (seconds > GH_SLOW or result[0] != 0):
         try:
@@ -5872,7 +5887,10 @@ def main(argv=None):
 
 def stop_on_signal(signum, _frame):
     """Kill the children that run in groups of their own, then leave with 128+signal; `finally` blocks and context
-    managers run, and the kernel releases the locks."""
+    managers run, and the kernel releases the locks. While `run()` starts a child the signal is only noted."""
+    if HELD is not None:
+        HELD.append(signum)
+        return
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):  # a second signal must not cut the unwind short
         signal.signal(sig, signal.SIG_IGN)
     for pgid in list(GROUPS):
