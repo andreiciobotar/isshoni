@@ -126,7 +126,7 @@ class Feed:
             found[p] = (os.path.basename(p)[:-len(".jsonl")], "")
         for p in glob.glob(os.path.join(glob.escape(self.projects_dir), "*", "*", "subagents", "agent-*.jsonl")):
             found[p] = (os.path.basename(os.path.dirname(os.path.dirname(p))), os.path.basename(p)[len("agent-"):-len(".jsonl")])
-        for p, (session, agent) in found.items():
+        for p, (session, agent) in sorted(found.items()):  # by path: which file a duplicated line counts for must not depend on the filesystem's order
             if p not in self.transcripts:
                 try:
                     fresh = os.path.getmtime(p) >= self.cutoff.timestamp()
