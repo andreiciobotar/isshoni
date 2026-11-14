@@ -12,7 +12,8 @@ A session belongs to a task when its `cwd` is in the task's worktree, or when it
 
 ## Commands
 ```
-factory new <slug> (--brief <text> | --brief-file <path>) [--dispatcher <session-name>] [--base <slug>]
+factory new <slug> (--brief <text> | --brief-file <path>) [--dispatcher <session-name>] [--base <slug>] [--mode single|team]
+factory build <slug> [--note <text>] [--dispatcher <session-name>]      # team mode: start the tech lead on the build (run in the task's worktree)
 factory status [--json] [--cached] [--max-age SECONDS]
 factory clean [--dry-run]
 factory state working | blocked [human|dispatcher|<slug>] | handed-over <deliverable>
@@ -89,6 +90,7 @@ The cap (`limits.worktree_cap`) counts slots per repository. Only `new` checks i
 | `limits.task_time_limit_hours` | 2 | the ceiling of every task's time limit and the limit of a task without a size; a size sets a limit of 45 (`small`), 90 (`medium`) or 120 (`large`) minutes, never above this. After the limit `status` shows `overtime` while the lead's turn has not ended; the lead stops and reports |
 | `sessions.lead_permission_mode` | `auto` | `acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan` |
 | `sessions.lean_start` | `true` | `true` or `false`: whether the lead, the site manager run, the lander run and the tech lead run start with only what they use (see Lean start); `false` restores the plain command line for all four |
+| `sessions.mode` | `single` | `single` or `team`: the mode `factory new` starts a task in unless `--mode` says otherwise; takes effect at the next `factory new` (see Team mode) |
 | `sessions.dispatchers` | unset | a list of session names; `isshoni host add` sets it and the served dashboard's `d` key reads it; the factory script reads nothing from it |
 | `merging.lgtm_from_author` | `true` | `true` or `false`: whether an `lgtm` by the pull request's author counts; set `false` once the factory has its own account (see Merging) |
 | `paths.monitor` | unset | the path of the monitor's `isshoni` command; the cost criteria need it (see Criteria) |
@@ -103,7 +105,7 @@ The model of every role is a line of `[models]`: an alias (`fable`, `opus`, `son
 | `models.lander` | `sonnet` | the lead's lander as above, and the headless run of `factory land` at its next run (merging itself is a script and uses no model) |
 | `models.site_manager` | `sonnet` | the next `watch` tick or digest |
 | `models.courier` | `haiku` | the next tick that carries a comment |
-| `models.tech_lead` | `opus` | the tech lead's next run (see Tech lead); it is not one of the lead's subagents: no `--agents` entry, and not in `TaskStarted.models` |
+| `models.tech_lead` | `opus` | the tech lead's next run, and in team mode the build run (see Tech lead, Team mode); it is not one of the lead's subagents: no `--agents` entry, and not in `TaskStarted.models` |
 
 The `model:` line in each agent file stays as the fallback for a session the factory did not launch; a test keeps it equal to the default above. `wrong-model` compares what a subagent ran on with the models the task was started with (`TaskStarted.models`; a task started before that was recorded is compared with the current file), and the lead with `lead_model`. The monitor (`isshoni`'s warnings) has no task record and compares with the current file.
 
@@ -202,6 +204,18 @@ A handed-over pull request that the lander's loop cannot ship (it conflicts with
 - **Observing.** `~/.claude/factory/tech-lead.log` holds the output of every detached run; the `techlead` log (see Logs) has one record per come-back; the pull request carries the note; `events` give the session's role `tech-lead`, not `lead`, through `FACTORY_ROLE`.
 - **Turning it off.** There is no switch. Remove the three lines of `send_back` that start it, or leave a task without its spec file: it then always goes to its lead.
 
+## Team mode
+`factory new --mode team` (or the setting `sessions.mode`) starts the task with the lead and a tech lead sharing the work; `single`, the default, is the lead alone with its own subagents, unchanged. The mode is recorded on the task's `TaskStarted` event (`mode`, always written); `isshoni kaizen --modes` compares the two by stated size.
+
+- **Who does what.** The lead (Fable) writes the spec, decides, assesses and reports. A tech lead (Opus, headless, in the task's worktree) runs coders, reviewers, explorers and the lander, and hands the lead a written hand-over. In team mode the lead's system prompt is `roles/lead.md` followed by `roles/lead-team.md`, which replaces its "Who does what" and steps 2, 3 and 5; the build's is `roles/tech-lead-build.md`.
+- **The lead's tools.** The launch adds `--disallowedTools` for `Agent(factory:coder)`, `Agent(factory:reviewer)`, `Agent(factory:lander)`, `Agent(coder)`, `Agent(reviewer)`, `Agent(general-purpose)` and `Agent(claude)` (`LEAD_TEAM_DENIED`): the lead can dispatch only the explorer. A repository's own agent types are not named, so only the rules hold them back.
+- **`factory build <slug> [--note <text>]`.** Run by the lead in its worktree. It refuses without the spec or the worktree, or while a run holds the lock `tech-lead-<slug>`; else it starts a detached run (output in `~/.claude/factory/tech-lead.log`), prints `tech lead started for <slug>; ...` and returns. The lead ends its turn and is woken by `TECH LEAD: <slug>: build run <n> <outcome>[: <reason>]. Read <hand-over> (the last section).` The task stays `working`: the script declares no hand-over, nor does the tech lead.
+- **The run.** A fresh headless session (`claude -p`, model `models.tech_lead`, the subagents on the models of `[models]` as the lead's launch passes them (`--agents`), the lead's `sessions.lead_permission_mode`, the lead's tools, `FACTORY_ROLE=tech-lead`) whose prompt gives the slug, the spec's path, the base branch (the default branch, with a note, when the recorded base has merged) and remote, the hand-over file and whether it exists, the lead's `--note` and the task's stated size. `git push --force`/`-f`, rebase, `commit --amend` and `git worktree` are denied. Bounds: 90 minutes and 15 USD (`BUILD_TIMEOUT`, `BUILD_BUDGET`), constants, not settings. Time in a run counts against the lead's task limit. It answers `built`, `question` or `stopped` with a hand-over text.
+- **Checks.** For `built` the script checks that the worktree is clean, on the task's branch, the spec's hash unchanged and an open pull request; a failed check, or `reached 90 minutes`, `reached 15 USD`, `ended without an answer`, makes it `stopped` with that reason. Exit 0 for `built`, else 1. Any other failure after the lock is a `stopped` section, record and line, like these. When GitHub cannot say whether there is a pull request the reason is `cannot check for a pull request on <branch>`.
+- **The hand-over file.** `~/.claude/factory/specs/<repository>/<slug>.handover.md`, beside the spec; each run appends `## Run <n>: <outcome> (<UTC time>, <cost or unpriced> USD, <minutes> min, head <sha7>)`, a `Reason:` line when there is one, and the tech lead's text, or `No hand-over was written.` The text has the headings `### Result`, `### Rounds`, `### Defects` (`caught_by: what`, with `caught_by` one of `tests`, `reviewer`, `tech-lead`, `ci`), `### Ran`, `### Not verified`, `### Decisions`, `### Questions`, `### Frames` and `### For the lead's eye`. A later run reads it; no session is resumed.
+- **Records.** Each run writes a `techlead` record with `kind` `build` (see Logs). The merge-time tech lead above still resolves what comes back from the queue; whatever would have the lead build, review or land again (a moved base, a stop, a `LANDER:` line, a comment), before or after hand-over, goes through `factory build --note`, and after hand-over the lead declares only `factory state handed-over` on `built`. The tech lead gives the lander a title and body only for a branch with no pull request, so a later run leaves the lead's body alone.
+- **Comparing.** `isshoni kaizen --modes` prints, per stated size, the medians of cost, lead share, lead calls and time to hand-over, the first-pass count, review rounds and defects for each mode.
+
 ## Stacked tasks
 `new --base <slug>` branches the worktree from the base task's branch and records it in `git config branch.worktree-<slug>.factoryBase`; the pull request targets that branch. The record is never cleared: `status` stops showing a base once it has merged into the default branch, and `clean` stops treating a merged task as stacked. When a base merges, a lead still working on top of it has its lander merge the default branch in (the `base-merged` criterion flags it), and a task already handed over is landed by `factory land`; `merge` retargets a stacked pull request itself when its turn comes.
 
@@ -236,7 +250,7 @@ Unsuffixed `events.jsonl`, `retros.jsonl`, `feedback.jsonl`, `tasks.jsonl` and `
 | `PermissionRequest` | `tool_name` |
 | `PermissionDenied` | `tool_name`, `reason` |
 | `PostToolUse` (`SendMessage`, `SubagentHandback`) | `tool_name`, `agent_id`; for `SendMessage` also `to` and `kind` (`QUESTION`, `BLOCKED`, `OVERTIME`, `SPLIT`, `DONE` or null); for a `QUESTION`, `BLOCKED` or `OVERTIME` also `summary`: the message's first line after the `KIND: <slug>` prefix (the next line when the first is only the prefix), cut to 200 characters and left out when empty. Nothing else of a message is stored |
-| `TaskStarted` | `base`, `lead_model`, `models` (the agent roles' configured models at launch), `size` (only when the brief gave one) |
+| `TaskStarted` | `base`, `lead_model`, `models` (the agent roles' configured models at launch), `mode` (`single` or `team`; absent on older tasks, which were `single`), `size` (only when the brief gave one) |
 | `TaskRemoved` | |
 
 **Feedback** is the outbox: issues agents report about the factory, and key decisions leads took without asking. An entry line adds `id`, `text`, `status: "open"`; a status line is only `id`, `ts`, `status` and optionally `pr`, and the latest one wins. `--since <ts>` lists the entries filed strictly after `<ts>`, compared with the entry's `ts` (the filing time, which a later `set` does not change): `YYYY-MM-DDTHH:MM:SSZ`, as `--json` prints it, or a date `YYYY-MM-DD` for everything from that day on; anything else exits 2. The last `ts` of one round is the next round's `--since`. Entries are filed from the section headed `Factory feedback` at the end of a subagent's report or a lead's `DONE:` message, one per list item (`none` files nothing); the same item filed twice is one entry. An entry whose text starts with `DECISION:` is a decision, any other an issue. The dispatcher reads the outbox, the retrospectives and the monitor's cost per task, and brings the human findings with a proposed edit to the plugin's files (`roles/lead.md`, the agent files, the dispatch skill); the human decides.
@@ -267,7 +281,7 @@ What each answers, and what a bad value looks like:
 
 All of these, and the retro `cause`, start on the day this merges: nothing earlier is backfilled (the old queue logged nothing; the gh log keeps only slow or failed calls). Pauses and prioritized landings are not in this log.
 
-**Tech lead** (`techlead`, one record per come-back) adds `role` (`tech-lead`), `model`, `version`, `session` (the run's Claude session id, `null` when unstarted or unparsed), `pr`, `evidence`, `outcome` (`resolved`, `escalated`, `stopped` or `unstarted`), `reason` (why stopped or unstarted), `note` (the model's note), `noted` (whether the pull request comment was posted), `head_before`, `head_after` (full SHAs), `cost_usd` (`total_cost_usd` of the run, `null` when unpriced, never 0) and `seconds`.
+**Tech lead** (`techlead`, one record per come-back or build run) adds `kind` (`merge` for a come-back, `build` for a `factory build` run; a record without it is `merge`), `role` (`tech-lead`), `model`, `version`, `session` (the run's Claude session id, `null` when unstarted or unparsed), `pr`, `evidence`, `outcome` (`resolved`, `escalated`, `stopped` or `unstarted`; `built`, `question` or `stopped` for a build run, whose `pr` is `null` and `evidence` is `build`), `reason` (why stopped or unstarted), `note` (the model's note), `noted` (whether the pull request comment was posted), `head_before`, `head_after` (full SHAs), `cost_usd` (`total_cost_usd` of the run, `null` when unpriced, never 0) and `seconds`.
 
 **Task state** adds `state` and, from the hand-over on, `deliverable`. A task's state is its last record.
 

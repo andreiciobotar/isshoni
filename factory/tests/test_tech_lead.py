@@ -249,9 +249,9 @@ class RunTests(Case):
         self.assertEqual(m.lines, [])
         self.assertEqual(self.declared(), [("working", "tech-lead", None), ("handed-over", "tech-lead", URL)])
         [r] = self.records("techlead")
-        self.assertEqual({k: r[k] for k in ("repo", "slug", "role", "model", "session", "pr", "evidence", "outcome", "reason",
+        self.assertEqual({k: r[k] for k in ("kind", "repo", "slug", "role", "model", "session", "pr", "evidence", "outcome", "reason",
                                             "note", "noted", "head_before", "head_after", "cost_usd")},
-                         {"repo": self.root, "slug": SLUG, "role": "tech-lead", "model": "opus", "session": "sid-tl", "pr": N,
+                         {"kind": "merge", "repo": self.root, "slug": SLUG, "role": "tech-lead", "model": "opus", "session": "sid-tl", "pr": N,
                           "evidence": CONFLICT, "outcome": "resolved", "reason": None, "note": ANSWER["note"],
                           "noted": True, "head_before": OLD, "head_after": NEW, "cost_usd": 1.42})
         self.assertIsInstance(r["seconds"], int)
