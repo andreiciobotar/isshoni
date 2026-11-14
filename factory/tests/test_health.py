@@ -41,7 +41,8 @@ def pic(**kw):
     return {"now": NOW, "repo": SimpleNamespace(root=ROOT, default="main"), "dispatcher": "dispatcher-repo",
             "sessions": sessions, "rows": [], "declared": {}, "events": [],
             "models": {"coder": "sonnet", "explorer": "haiku", "reviewer": "opus"},
-            "gh": lambda *a: [], "monitor": None, "lgtm_from_author": True, **kw}
+            "gh": lambda *a: [], "monitor": None, "lgtm_from_author": True,
+            "limit_hours": 2, **kw}
 
 
 def check(name, p, threshold=None):
@@ -124,6 +125,16 @@ class CriteriaTests(Home):
         self.assertEqual(check("past-limit", pic(rows=[row("x", overtime=True, elapsed=3 * HOUR)])),
                          [("x", "x", "working for 3h")])
         self.assertEqual(check("past-limit", pic(rows=[row("x", elapsed=HOUR)])), [])
+
+    def test_nearing_limit(self):
+        def run(state="working", phase="motion", **kw):
+            return check("nearing-limit", pic(rows=[row("x", state=state, phase=phase, **kw)], sessions=[lead("x")]), 75)
+        at_76, at_74 = int(2 * HOUR * 0.76), int(2 * HOUR * 0.74)
+        self.assertEqual(run(elapsed=at_76), [("x", "x", "working for 1h, 76% of the 2h limit")])
+        self.assertEqual(run(elapsed=at_74), [])
+        self.assertEqual(run(elapsed=3 * HOUR, overtime=True), [])
+        self.assertEqual(run("handed-over", "review", elapsed=at_76), [])
+        self.assertEqual(run("blocked", "blocked", elapsed=at_76), [])
 
     def test_ci_red_default(self):
         def runs(*items):

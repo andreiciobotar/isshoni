@@ -1340,7 +1340,7 @@ def gather(repo, dispatcher):
     settings = load_settings()
     return {"now": time.time(), "repo": repo, "dispatcher": dispatcher, "sessions": sessions,
             "monitor": settings["monitor"], "lgtm_from_author": settings["lgtm_from_author"],
-            "lean_start": settings["lean_start"],
+            "lean_start": settings["lean_start"], "limit_hours": settings["task_time_limit_hours"],
             "rows": None if sessions is None else collect(repo, sessions, settings["task_time_limit_hours"]),
             "declared": read_tasks(repo.root), "events": repo_log("events", repo.root), "models": pinned_models(),
             "gh": lambda *args: gh_json(repo, *args)}
@@ -1413,6 +1413,17 @@ def since_start(evs, slug):
 def c_past_limit(p, _):
     return [(r["slug"], r["slug"], f"working for {age(p['now'] - r['elapsed'], p['now'])}")
             for r in tasks(p) if r["overtime"]]
+
+
+def c_nearing_limit(p, threshold):
+    found = []
+    for r in unfinished(phased(p)):
+        s = task_session(p, r["path"])
+        pct = 100 * (r["elapsed"] or 0) / (p["limit_hours"] * 3600)
+        if r["phase"] == "motion" and s and not finished(s) and not r["overtime"] and pct > threshold:
+            found.append((r["slug"], r["slug"], f"working for {age(p['now'] - r['elapsed'], p['now'])}, "
+                          f"{pct:.0f}% of the {p['limit_hours']}h limit"))
+    return found
 
 
 def c_ci_red_default(p, _):
@@ -1830,8 +1841,8 @@ def c_lead_authoring(p, threshold):
 
 
 CRITERIA = {  # name -> (function, whether it needs a threshold)
-    "past-limit": (c_past_limit, False), "ci-red-default": (c_ci_red_default, False),
-    "dispatcher-missing": (c_dispatcher_missing, False), "quiet": (c_quiet, True),
+    "past-limit": (c_past_limit, False), "nearing-limit": (c_nearing_limit, True),
+    "ci-red-default": (c_ci_red_default, False), "dispatcher-missing": (c_dispatcher_missing, False), "quiet": (c_quiet, True),
     "ended-undeclared": (c_ended_undeclared, True), "blocked-unanswered": (c_blocked_unanswered, True),
     "handover-unacknowledged": (c_handover_unacknowledged, True), "review-loops": (c_review_loops, True),
     "wrong-model": (c_wrong_model, False), "ci-red-handover": (c_ci_red_handover, False),

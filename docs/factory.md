@@ -219,6 +219,7 @@ Criteria are `factory/criteria.json`, one entry per line: `name`, `escalate` (`a
 | Criterion | Escalate | Threshold | Fires when |
 |---|---|---|---|
 | `past-limit` | always | | a lead is working past the time limit |
+| `nearing-limit` | judgment | 75 % | a working lead, not yet past the time limit, has used more than that share of it without handing over; `past-limit` takes over after |
 | `ci-red-default` | always | | a workflow's newest decisive run on the default branch did not succeed |
 | `dispatcher-missing` | always | | tasks are live and not exactly one unfinished session carries the dispatcher's name |
 | `quiet` | judgment | 20 min | a lead whose turn has not ended wrote nothing and committed nothing for that long |
