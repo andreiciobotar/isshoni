@@ -278,7 +278,9 @@ def session_block(mine):
         if not finished(s):
             return (f"background session {s.get('id')} is not finished "
                     f"(status {s.get('status', 'missing')}, state {s.get('state', 'missing')})")
-    if sum("pid" not in s and not WORKTREE_RE.match(s.get("cwd", "")) for s in mine) > 1:  # a session in a worktree belongs to it by its cwd; only pid-less ones at the main checkout, matched by name, can be ambiguous
+    # A session in a worktree belongs to it by its cwd; only pid-less ones at the main checkout, matched by name,
+    # can be ambiguous.
+    if sum("pid" not in s and not WORKTREE_RE.match(s.get("cwd", "")) for s in mine) > 1:
         return "more than one exited session could be its lead; cannot tell which owns the worktree"
     return None
 
