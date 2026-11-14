@@ -20,11 +20,11 @@
                                                                                                     
  who wrote the product code and tests  landed tasks only · share of lines ───────────────────────── 
                  lead   coder  others  lead wrote some in                                           
+ 0.1.0            68%     31%      1%  6 of 6 tasks                                                 
+ 0.2.0            18%     81%      1%  6 of 8 tasks                                                 
  0.3.0             0%     99%      1%  0 of 5 tasks                                                 
  0.4.0              -       -       -  0 of 0 tasks                                                 
                                                                                                     
  the lead's share in the last landed tasks: fx-session-ttl 0% · fx-feature-flags 0% ·               
- fx-email-digest 0% · fx-profile-edit 0% · fx-quiet-refactor 0%                                     
-                                                                                                    
- +55 more lines · ↓ to scroll                                                                       
+ +57 more lines · ↓ to scroll                                                                       
  ←→/hl kaizen page  ·  ↑↓/jk move  ·  r range  ·  tab next view  ·  ? help  ·  q quit               

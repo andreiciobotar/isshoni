@@ -3,7 +3,7 @@
 ▌ LANDED         ▌ COST / TASK    ▌ OVERHEAD       ▌ BRIEF → PR     ▌ PR → MERGE     ▌ FIRST PASS   
 ▌ 20             ▌ $6.20          ▌ $2.06          ▌ 25m50s         ▌ 5m45s          ▌ 7/19         
 ▌ 3 in flight    ▌ ↓ 44% vs 10    ▌ 20 landed      ▌ ↓ 61% vs 10    ▌ ↓ 47% vs 10    ▌ rework 9%    
- overhead per landed task: $38.40 dispatcher + $2.70 site manager over 20 landed                    
+ overhead: $38.40 dispatcher + $2.70 site manager over 20 landed tasks                              
                                                                                                     
  ✦ 4 landed first-pass in a row · fx-quiet-refactor   ✦ record low cost: $2.31 · fx-quiet-refactor  
                                                                                                     

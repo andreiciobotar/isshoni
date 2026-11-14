@@ -275,7 +275,7 @@ func (m *model) kaizenTiles(p paint, w int) block {
 	tiles := []tile{
 		{"LANDED", strconv.Itoa(int(c("kz-landed"))), flight, th.Green},
 		{label("COST / TASK", "COST"), cost, m.trendSub(sp, func(t *data.KaizenTrend) data.Pair { return t.Cost }, s.Cost.N, long, tiny), th.Blue},
-		{label("OVERHEAD", "OVERHEAD"), overhead, fmt.Sprintf("%d landed", oh.Landed), th.Yellow},
+		{"OVERHEAD", overhead, fmt.Sprintf("%d landed", oh.Landed), th.Yellow},
 		{label("BRIEF → PR", "BRIEF"), value(s.BriefToPR.Median, func() string { return kzSecs(c("kz-brief")) }), m.trendSub(sp, func(t *data.KaizenTrend) data.Pair { return t.BriefToPR }, s.BriefToPR.N, long, tiny), th.Purple},
 		{label("PR → MERGE", "MERGE"), value(s.PRToMerge.Median, func() string { return kzSecs(c("kz-merge")) }), m.trendSub(sp, func(t *data.KaizenTrend) data.Pair { return t.PRToMerge }, s.PRToMerge.N, long, tiny), th.Teal},
 		{label("FIRST PASS", "1ST PASS"), first, rework, th.Pink},
@@ -283,12 +283,12 @@ func (m *model) kaizenTiles(p paint, w int) block {
 	return m.tileRow(p, w, tiles, nil)
 }
 
-// overheadLine says what the overhead per landed task is made of.
+// overheadLine says what the totals behind the overhead per landed task are.
 func (m *model) overheadLine(p paint, w int) block {
 	oh := m.kz.doc.Summary.Overhead
-	text := "overhead per landed task: " + m.kzMoney(oh.Dispatcher) + " dispatcher + " + m.kzMoney(oh.SiteManager) + " site manager over " + strconv.Itoa(oh.Landed) + " landed"
+	text := "overhead: " + m.kzMoney(oh.Dispatcher) + " dispatcher + " + m.kzMoney(oh.SiteManager) + " site manager over " + strconv.Itoa(oh.Landed) + " landed tasks"
 	if oh.PerLanded == nil {
-		text = "overhead per landed task: - (no landed task); " + m.kzMoney(oh.Dispatcher) + " dispatcher + " + m.kzMoney(oh.SiteManager) + " site manager"
+		text = "overhead: - (no landed task); " + m.kzMoney(oh.Dispatcher) + " dispatcher + " + m.kzMoney(oh.SiteManager) + " site manager"
 	}
 	if oh.UnpricedTokens > 0 {
 		text += " · * excludes " + Human(float64(oh.UnpricedTokens)) + " unpriced tokens"

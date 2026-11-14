@@ -3,8 +3,7 @@
 ▌ LANDED      ▌ COST        ▌ OVERHEAD    ▌ BRIEF      ▌ MERGE      ▌ 1ST PASS  
 ▌ 20          ▌ $6.20       ▌ $2.06       ▌ 25m50s     ▌ 5m45s      ▌ 7/19      
 ▌ 3 open      ▌ ↓ 44%       ▌ 20 landed   ▌ ↓ 61%      ▌ ↓ 47%      ▌ ↺ 9%      
- overhead per landed task: $38.40 dispatcher + $2.70 site manager over 20       
- landed                                                                         
+ overhead: $38.40 dispatcher + $2.70 site manager over 20 landed tasks          
                                                                                 
  ✦ 4 landed first-pass in a row · fx-quiet-refactor   ✦ record low cost: $2.31 …
                                                                                 
@@ -20,5 +19,6 @@
 ╰──────────────────────────────────────╯ ╰─────────────────────────────────────╯
 ╭─ review rounds · last 17/19 ─────────╮ ╭─ pull request → merge · last 14/20 ─╮
 │ 3   █   █   █     █                  │ │ 12m00s █       ▁                    │
- +20 more lines · ↓ to scroll                                                   
+│ 2 ▃·█·▃·█·▃·█···▃·█···▃···▃········· │ │        █   ▃   █                    │
+ +19 more lines · ↓ to scroll                                                   
  ←→/hl kaizen page  ·  ↑↓/jk move  ·  r range  ·  ? help  ·  q quit             

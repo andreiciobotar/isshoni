@@ -381,9 +381,9 @@ def _summary(tasks, versions):
 _SITE_MANAGER = re.compile(r"Job: (watch|digest)\. Repo: ")
 
 
-def _overhead(sessions, tasks, cutoff, prices):
+def _overhead(sessions, tasks, landed, cutoff, prices):
     """What the dispatcher and the site manager spent in the period (the calls of their sessions at or after the cutoff),
-    per task landed in it. Only sessions without a task, in a repository of the document, count."""
+    per task landed in it (`landed`). Only sessions without a task, in a repository of the document, count."""
     repos = {t["repo_path"] for t in tasks}
     spent = {"dispatcher": 0.0, "site_manager": 0.0}
     unpriced = counted = 0
@@ -404,7 +404,6 @@ def _overhead(sessions, tasks, cutoff, prices):
                     unpriced += c.context + c.output
                 else:
                     spent[who] += sum(parts.values())
-    landed = sum(1 for t in tasks if t["landed"])
     return {**{k: round(v, 6) for k, v in spent.items()}, "sessions": counted, "unpriced_tokens": unpriced, "landed": landed,
             "per_landed": round(sum(spent.values()) / landed, 6) if landed else None}
 
@@ -538,7 +537,7 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None):
     slowed.sort(key=lambda s: s["ts"] or "", reverse=True)
     ordered = [v for v, _ in sorted(versions.items(), key=lambda x: (x[1], x[0]))]
     summary = _summary(tasks, ordered)
-    summary["overhead"] = _overhead(sessions, tasks, cutoff, prices)
+    summary["overhead"] = _overhead(sessions, tasks, summary["landed"], cutoff, prices)
     for t in tasks:
         t["started"] = _iso(t["started"])
         del t["_roles"]

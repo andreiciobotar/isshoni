@@ -76,12 +76,21 @@ def session(projects, repo, slug, start, lead_tokens, dispatches=(), written=Non
     write(path, lines)
 
 
-def loose(projects, name, repo, calls, title=None, prompt=None):
-    """A transcript outside any task, in `repo`; calls are (timestamp, model, tokens). Named by `title`, started by `prompt`."""
+def loose(projects, name, repo, calls, title=None, prompt=None, subagent=()):
+    """A transcript outside any task, in `repo`; calls are (timestamp, model, tokens). Named by `title`, started by `prompt`.
+    `subagent`: the calls (same triple) of one subagent the first call dispatches."""
     lines = [{"type": "custom-title", "customTitle": title}] if title else []
     lines += [{"type": "user", "timestamp": calls[0][0], "cwd": repo, "message": {"content": prompt}}] if prompt else []
     lines += [assistant(ts, "%s-%d" % (name, i), model, tokens, cwd=repo) for i, (ts, model, tokens) in enumerate(calls)]
-    write(os.path.join(projects, "p-" + name, name + ".jsonl"), lines)
+    base = os.path.join(projects, "p-" + name)
+    if subagent:
+        tool = [{"type": "tool_use", "id": "toolu-" + name, "name": "Agent", "input": {"description": "d", "prompt": "p", "subagent_type": "explorer"}}]
+        first = next(l for l in lines if l["type"] == "assistant")
+        first["message"]["content"] = first["message"]["content"] + tool
+        sub = os.path.join(base, name, "subagents", "agent-a0")
+        write(sub + ".jsonl", [assistant(ts, "%s-sub-%d" % (name, i), model, tokens, cwd=repo) for i, (ts, model, tokens) in enumerate(subagent)])
+        write(sub + ".meta.json", [{"agentType": "explorer", "toolUseId": "toolu-" + name, "spawnDepth": 1}])
+    write(os.path.join(base, name + ".jsonl"), lines)
 
 
 def pr(number, branch, opened, merged=None, state="MERGED"):
@@ -361,6 +370,11 @@ def shapes(d):
     add("stop", d["stops"]), add("slowed", d["slowed"]), add("reward", d["rewards"])
     add("outbox", [o]), add("counts", [o["issues"], o["decisions"]]), add("topic", o["topics"]), add("entry", o["entries"])
     add("site_manager", [d["site_manager"]])
+    add("authoring", [t["authoring"] for t in tasks]), add("authoring_roles", [t["authoring"][k] for t in tasks for k in ("lines", "calls")])
+    add("pooled", [x["authoring"] for x in a["points"] + a["versions"]])
+    add("pooled_roles", [x["authoring"]["lines"] for x in a["points"] + a["versions"]])
+    add("pooled_share", [x["authoring"]["share"] for x in a["points"] + a["versions"]])
+    add("overhead", [s["overhead"]])
     return out
 
 
@@ -375,7 +389,8 @@ class DashboardFixtureTests(FixtureStore):
         self.assertEqual({n for n, v in fixture.items() if len(v) != 1}, set())
         self.assertLessEqual({"doc", "repo", "version", "task", "pr", "cost", "by_role", "defects", "summary", "time",
                               "first_pass", "median", "stop", "slowed", "outbox", "counts", "topic", "entry",
-                              "site_manager", "mix"}, set(ours))
+                              "site_manager", "mix", "authoring", "authoring_roles", "pooled", "pooled_roles", "pooled_share",
+                              "overhead"}, set(ours))
         for name in ours:
             self.assertEqual(fixture[name], ours[name], name)
         landed = [t for t in fixture_doc["tasks"] if t["landed"]]
@@ -758,6 +773,14 @@ class OverheadTests(Store):
         cutoff = datetime(2026, 11, 10, 10, 0, 0, tzinfo=timezone.utc)
         self.assertEqual(self.overhead(cutoff)["dispatcher"], 3.0)  # the 10:00 and 11:00 calls, at the cutoff included
         self.assertEqual(self.overhead()["dispatcher"], 5.0)  # no cutoff: every call, one without a time too
+
+    def test_a_subagent_of_the_dispatcher_is_cut_at_the_cutoff_too(self):
+        fable = "claude-fable-5-2"
+        loose(self.projects, "disp", ALPHA, [(self.at("10:00"), fable, 100000)], title="dispatcher-alpha",
+              subagent=[("%sT09:00:00.000Z" % DAY, fable, 400000), (self.at("10:30"), fable, 200000)])
+        cutoff = datetime(2026, 11, 10, 10, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(self.overhead(cutoff)["dispatcher"], 3.0)  # its own 10:00 call and the subagent's 10:30 one, not the 09:00 one
+        self.assertEqual(self.overhead()["dispatcher"], 7.0)
 
     def test_nothing_landed_has_no_per_landed(self):
         loose(self.projects, "disp", ALPHA, [(self.at("10:00"), "claude-fable-5-2", 100000)], title="dispatcher-alpha")

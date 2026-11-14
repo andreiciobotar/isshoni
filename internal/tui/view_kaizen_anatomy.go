@@ -306,9 +306,10 @@ func authoringShares(au data.Authoring) [3]string {
 	return [3]string{pct(au.Share["lead"] * 100), pct(au.Share["coder"] * 100), pct(others * 100)}
 }
 
-// anatomyAuthoring is who wrote the product code and tests in the latest version with landed
-// tasks and the one before; the lead's change shows only when both wrote some in at least min
-// tasks, and a version under min is dimmed. Under it, the lead's share in the last landed tasks.
+// anatomyAuthoring is who wrote the product code and tests in every version with landed tasks,
+// oldest first; the lead's change (latest against before) shows only when both wrote some in at
+// least min tasks, and a version under min is dimmed. Under it, the lead's share in the last
+// landed tasks.
 func (m *model) anatomyAuthoring(p paint, w int) block {
 	th := m.th
 	a := m.kz.doc.Summary.Anatomy
@@ -316,15 +317,16 @@ func (m *model) anatomyAuthoring(p paint, w int) block {
 	if latestAt < 0 {
 		return nil
 	}
-	rows := []data.AnatomyVersion{a.Versions[latestAt]}
-	if beforeAt >= 0 {
-		rows = []data.AnatomyVersion{a.Versions[beforeAt], a.Versions[latestAt]}
+	var rows []data.AnatomyVersion
+	for _, v := range a.Versions {
+		if v.Tasks > 0 {
+			rows = append(rows, v)
+		}
 	}
-	first, last := rows[0].Authoring, rows[len(rows)-1].Authoring
-	enough := len(rows) == 2 && first.Tasks >= a.Min && last.Tasks >= a.Min
+	enough := beforeAt >= 0 && a.Versions[beforeAt].Authoring.Tasks >= a.Min && a.Versions[latestAt].Authoring.Tasks >= a.Min
 	change, changeCol := "-", th.Faint
-	if enough && first.Share != nil && last.Share != nil {
-		change, changeCol = m.pointsChange(last.Share["lead"], first.Share["lead"])
+	if enough && a.Versions[beforeAt].Authoring.Share != nil && a.Versions[latestAt].Authoring.Share != nil {
+		change, changeCol = m.pointsChange(a.Versions[latestAt].Authoring.Share["lead"], a.Versions[beforeAt].Authoring.Share["lead"])
 	}
 
 	lines := block{m.heading(p, w, "who wrote the product code and tests", "landed tasks only · share of lines")}
@@ -337,7 +339,7 @@ func (m *model) anatomyAuthoring(p paint, w int) block {
 		head += p.sp(2) + p.t("change", th.Faint)
 	}
 	lines = append(lines, fit(head, w, p))
-	for i, v := range rows {
+	for _, v := range rows {
 		au := v.Authoring
 		col := th.Text
 		if au.Tasks < a.Min {
@@ -348,7 +350,7 @@ func (m *model) anatomyAuthoring(p paint, w int) block {
 			line += p.sp(2) + p.t(cell(s, 6, true), col)
 		}
 		line += p.sp(2) + p.t(cell(fmt.Sprintf("%d of %d tasks", au.LeadTasks, au.Tasks), 22, false), col)
-		if enough && i == len(rows)-1 {
+		if enough && v.Version == a.Versions[latestAt].Version {
 			line += p.sp(2) + p.t(change, changeCol)
 		}
 		lines = append(lines, fit(line, w, p))

@@ -3,7 +3,7 @@
 ▌ LANDED         ▌ COST / TASK    ▌ OVERHEAD       ▌ BRIEF → PR     ▌ PR → MERGE     ▌ FIRST PASS   
 ▌ 2              ▌ $9.90          ▌ $2.06          ▌ 50m00s         ▌ 12m30s         ▌ 0/2          
 ▌ 0 in flight    ▌ 2 tasks        ▌ 20 landed      ▌ 2 tasks        ▌ 2 tasks        ▌ rework 9%    
- overhead per landed task: $38.40 dispatcher + $2.70 site manager over 20 landed                    
+ overhead: $38.40 dispatcher + $2.70 site manager over 20 landed tasks                              
                                                                                                     
  comparing latest with earlier starts at 10 landed tasks (have 2)                                   
                                                                                                     

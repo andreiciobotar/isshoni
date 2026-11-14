@@ -170,9 +170,11 @@ either its name (the last `customTitle` or `agentName` record of its transcript)
 `Job: watch. Repo: ` or `Job: digest. Repo: ` (a site manager run). Its cost is that of every call
 of the session and of its dispatches whose time is at or after the `--since` cutoff (every call
 without one; a call without a time counts only without one), priced as `isshoni anatomy` prices.
-The measure is the cost in the period over the tasks landed in the period. Two approximations:
-a task started before the period but served in it is not in the divisor, and a task-less session
-that is neither is not overhead.
+The measure is the cost in the period over the tasks landed in the period. Three approximations:
+a task started before the period but served in it is not in the divisor; a task-less session
+that is neither is not overhead; and a session counts whole when its last name is
+`dispatcher-<folder>`, including what it did before it was given that name and the subagents
+it dispatched itself.
 
 `stops`, oldest first: a lead's `QUESTION`, `BLOCKED` or `OVERTIME` message (`waited_s`
 runs to the next prompt from the human or the dispatcher in the same session, null while
@@ -378,8 +380,8 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   pull request, pull request to merge and first-pass rate, each with how the latest half
   of the landed tasks compares with the earlier half from 10 landed tasks; beside the cost,
   the overhead per landed task (`summary.overhead.per_landed`, `-` when no task landed,
-  starred when some tokens had no price) and under the tiles what it is made of,
-  `$x dispatcher + $y site manager over N landed`; the rewards;
+  starred when some tokens had no price) and under the tiles the totals behind it,
+  `overhead: $x dispatcher + $y site manager over N landed tasks`; the rewards;
   a column chart per measure, one column per landed task in start order, with the
   plugin versions marked under it; who caught the defects; the site manager's record:
   precision and recall, then what it escalated with the outcomes, suppressed and missed,
@@ -410,11 +412,10 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   table of the other roles, latest against before, `before → latest`, with how many landed
   tasks each ran in, dimmed under `min`, `-` where the role did not run; and between the
   verdict and the charts, who wrote the product code and tests (`authoring` of the
-  versions, landed tasks only): for the latest version with landed tasks and the one
-  before it, the lead's, the coder's and every other role's share of the lines written,
+  versions, landed tasks only): for every version with landed tasks, oldest first, the lead's, the coder's and every other role's share of the lines written,
   and in how many of the tasks that wrote some the lead did (`lead wrote some in N of M
-  tasks`); the lead's change in points, green down, only when both versions have at least
-  `min` such tasks; a version under `min` is dimmed; `-` where nobody wrote a line. Under it,
+  tasks`); the lead's change in points, latest version against the one before, green down,
+  only when both have at least `min` such tasks; a version under `min` is dimmed; `-` where nobody wrote a line. Under it,
   the lead's share in the last five landed tasks, and a line chart of each role's pooled
   share over the points, a gap where no one wrote a line) and **Board**
   (the factory's feedback outbox: open issues grouped by topic, what was acted on, the

@@ -19,6 +19,7 @@
                                                                                                                                             
  who wrote the product code and tests  landed tasks only · share of lines ───────────────────────────────────────────────────────────────── 
                  lead   coder  others  lead wrote some in      change                                                                       
+ 0.1.0            68%     31%      1%  6 of 6 tasks                                                                                         
  0.2.0            18%     81%      1%  6 of 8 tasks                                                                                         
  0.3.0             0%     99%      1%  0 of 5 tasks            ↓ 18 pts                                                                     
                                                                                                                                             
@@ -35,6 +36,5 @@
                                                      ⠉⠑⠒⠢⠤⠤⠤⠤⢄⣀⣀⣀⣀⣀⠤⠤⠤⠒⠒⠒⠉⠉⠉⠑⠒⠒⠒⠢⠤⠤⠤⠤⠤⠤⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀                          lander 1% 
    0% ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣉⣉⣉⣉⣉⣑⣒⣒⣢⣤⣤⣄⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀    lead 0%   
       ─────────────────▲───────────────────────────────────────────────────────────────────▲─────────────────────────────────────           
-      v0.1.0           v0.2.0                                                              v0.3.0                                           
- +44 more lines · ↓ to scroll                                                                                                               
+ +45 more lines · ↓ to scroll                                                                                                               
  ←→/hl kaizen page  ·  ↑↓/jk move  ·  r range  ·  tab next view  ·  ? help  ·  q quit                                                       

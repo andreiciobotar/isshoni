@@ -1034,7 +1034,7 @@ func authoringBlock(t *testing.T, m *model) string {
 func TestAnatomyAuthoringShowsTheShiftAndItsCounts(t *testing.T) {
 	m := kaizenModel(t, true, 140, 100, pageAnatomy)
 	out := authoringBlock(t, m)
-	for _, want := range []string{"landed tasks only", "0.2.0", "18%", "81%", "1%", "6 of 8 tasks", "0.3.0", "0 of 5 tasks", "↓ 18 pts",
+	for _, want := range []string{"landed tasks only", "0.1.0", "68%", "6 of 6 tasks", "0.2.0", "18%", "81%", "1%", "6 of 8 tasks", "0.3.0", "0 of 5 tasks", "↓ 18 pts",
 		"fx-session-ttl 0% · fx-feature-flags 0% · fx-email-digest 0%", "fx-quiet-refactor 0%"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("%q is missing:\n%s", want, out)
@@ -1106,7 +1106,7 @@ func TestAnatomyAuthoringNullShareShowsDashes(t *testing.T) {
 
 func TestPulseOverheadPerLandedTask(t *testing.T) {
 	out := plain(kaizenModel(t, true, 140, 40, pagePulse))
-	for _, want := range []string{"OVERHEAD", "$2.06", "20 landed", "overhead per landed task: $38.40 dispatcher + $2.70 site manager over 20 landed"} {
+	for _, want := range []string{"OVERHEAD", "$2.06", "20 landed", "overhead: $38.40 dispatcher + $2.70 site manager over 20 landed tasks"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("pulse lacks %q:\n%s", want, out)
 		}
@@ -1116,7 +1116,7 @@ func TestPulseOverheadPerLandedTask(t *testing.T) {
 	m := fakeModel(true, 140, 40)
 	setKaizen(m, doc, pagePulse)
 	out = plain(m)
-	if !strings.Contains(out, "overhead per landed task: - (no landed task); $38.40 dispatcher + $2.70 site manager") || strings.Contains(out, "$2.06") {
+	if !strings.Contains(out, "overhead: - (no landed task); $38.40 dispatcher + $2.70 site manager") || strings.Contains(out, "$2.06") {
 		t.Errorf("no landed task, no figure:\n%s", out)
 	}
 	doc.Summary.Overhead.PerLanded, doc.Summary.Overhead.Landed, doc.Summary.Overhead.UnpricedTokens = &doc.Summary.Overhead.Dispatcher, 20, 1500
