@@ -97,9 +97,9 @@ class Call:
     def __init__(self, model, raw, inbound):
         self.model = model
         self.raw = raw if isinstance(raw, dict) else {}
-        self.context = sum(_int(self.raw.get(k)) for k in ("input_tokens", "cache_creation_input_tokens",
-                                                            "cache_read_input_tokens"))
-        self.output = _int(self.raw.get("output_tokens"))
+        u = usage_from(self.raw)
+        self.context = u.input + u.cache_write + u.cache_read
+        self.output = u.output
         det = self.raw.get("output_tokens_details")
         self.thinking = _int(det.get("thinking_tokens")) if isinstance(det, dict) else 0
         self.inbound = inbound  # {source: characters}
@@ -231,6 +231,7 @@ class _Scan:
     def __init__(self):
         self.usage = {}
         self.run = Run()
+        self.owned = set()  # message keys this scan added to `seen`
         self.tool_names = {}  # tool_use id -> tool name
         self.dispatches = []
         self.sends = []
@@ -345,9 +346,11 @@ def _scan(path, seen, depth, agent_id, prices):
                 if not (isinstance(key, str) and key in seen):
                     if isinstance(key, str):
                         seen.add(key)
+                        sc.owned.add(key)
                     add_usage(sc.usage, model, usage_from(msg.get("usage"), model, prices))
                     sc.run.calls.append(Call(model, msg.get("usage"), inbound))
                     inbound = {}
+            own = not isinstance(key, str) or key in sc.owned  # a fork's copy of its parent's message is not its own
             texts = []
             if isinstance(content, list):
                 for b in content:
@@ -357,7 +360,7 @@ def _scan(path, seen, depth, agent_id, prices):
                     if bt == "text" and isinstance(b.get("text"), str):
                         texts.append(b["text"])
                     elif bt == "tool_use":
-                        _tool_use(sc, b, ts, depth, agent_id)
+                        _tool_use(sc, b, ts, depth, agent_id, own)
                         if b.get("name") == "SubagentHandback" and agent_id is not None:
                             hm = b.get("input")
                             hm = hm.get("message") if isinstance(hm, dict) else None
@@ -428,7 +431,7 @@ def _result_text(content):
     return content
 
 
-_CD = re.compile(r"\s*cd\s+\S+\s*&&\s*")
+_CD = re.compile(r"^\s*cd\s+\S+\s*&&\s*")
 
 
 def _tool_kind(name, inp):
@@ -439,13 +442,13 @@ def _tool_kind(name, inp):
     return "Bash:" + os.path.basename(words[0]) if words else "Bash"
 
 
-def _tool_use(sc, b, ts, depth, agent_id):
+def _tool_use(sc, b, ts, depth, agent_id, own):
     name = b.get("name")
     inp = b.get("input")
     if not isinstance(inp, dict):
         inp = {}
     tid = b.get("id")
-    if isinstance(name, str) and isinstance(tid, str) and tid not in sc.tool_names:
+    if own and isinstance(name, str) and isinstance(tid, str) and tid not in sc.tool_names:
         sc.tool_names[tid] = name
         if name == "Agent":
             sc.run.dispatches += 1

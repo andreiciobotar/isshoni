@@ -9,7 +9,7 @@ bin/isshoni agents --repo isshoni --task ci-workflow   # tokens by agent and mod
 bin/isshoni kaizen [--since 30d]      # the factory's improvement measures (see Kaizen measures)
 bin/isshoni anatomy [--since 30d]     # per task and role: calls, contexts, cost by token class (see Cost anatomy)
 ```
-`sessions` and `agents` accept `--repo NAME` and `--task NAME` (exact match).
+`sessions`, `agents` and `anatomy` accept `--repo NAME` and `--task NAME` (exact match).
 Global options: `--json` (one JSON document on stdout), `--projects-dir`,
 `--agents-dir` (agent definitions used for the model WARN), `--prices` (price file), `--repeat-threshold`
 (Jaccard, default 0.5). `--since` takes `Nd`, `Nh`, `Nw` or an ISO date.
@@ -159,7 +159,7 @@ without a task are left out. A role is `lead` for a session's own transcript, an
 subagent run the name of its agent type without the plugin prefix (`factory:lander` is
 `lander`). `--factory-dir` (default `~/.claude/factory`) is read only for each task's plugin
 version. Without `--json` it prints one row per task and role (`task`, `version`, `role`, `runs`,
-`calls`, `ctx first`, `ctx median`, `ctx peak`, `cost`, the shares of the role's cost by token
+`calls`, `ctx first`, `ctx median`, `ctx max`, `cost`, the shares of the role's cost by token
 class `in%` `out%` `cw%` `cr%`, own `tools`, `disp`atches) and the prices footer; no tasks prints `no tasks`.
 
 `--json` is `{generated, factory_dir, prices, tasks, versions}`; no tasks gives two empty lists.
@@ -191,7 +191,7 @@ what arrived in between. A shrinking context counts one in `compactions` and add
 (Agent results, `<task-notification>` texts); with no characters recorded it is all `unaccounted`.
 The shares are rounded, so they need not sum to `inbound`.
 
-Limits: images count no characters; a compacted run's fill is partial; a reused slug adds up
+Limits: images count no characters; a compacted run's fill is partial (the characters that arrived before the shrinking call are dropped); a reused slug adds up
 into one task; the version is the first one logged, not the one running.
 
 ## Dashboard (`isshoni-tui`)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 
 from . import metrics, transcript
@@ -111,6 +112,11 @@ def _versions(factory_dir):
     return {k: v for k, (_, v) in found.items()}
 
 
+def _version_key(v):
+    """Numeric parts compare as numbers, others as text; no version last."""
+    return (v is None, [(0, int(x), "") if x.isdigit() else (1, 0, x) for x in re.split(r"[.\-+]", v or "")])
+
+
 def _summary(roles):
     return {"cost": round(sum(sum(r.cost.values()) for r in roles.values()), 6),
             "unpriced_tokens": sum(r.unpriced for r in roles.values()),
@@ -136,7 +142,7 @@ def build(sessions, prices, factory_dir, now=None):
     for t in tasks:
         by_version.setdefault(t["version"], []).append(t)
     rolled = []
-    for v, ts in sorted(by_version.items(), key=lambda kv: (kv[0] is None, kv[0] or "")):
+    for v, ts in sorted(by_version.items(), key=lambda kv: _version_key(kv[0])):
         roles = _roles([r for t in ts for r in t["_runs"]], prices)
         rolled.append({"version": v, "tasks": len(ts), **_summary(roles)})
     for t in tasks:

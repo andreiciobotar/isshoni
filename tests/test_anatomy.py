@@ -128,13 +128,13 @@ class Anatomy(unittest.TestCase):
 
     def test_tool_kinds_and_dispatches(self):
         lines = [call("m1", usage(), [tool("x1", "Bash", command="cd /r/x && git status"), tool("x2", "Bash", command="/usr/bin/make test"),
-                                      tool("x3", "Bash", command="  "), tool("x4", "Bash", command="cd /r/x && ls | wc"),
+                                      tool("x3", "Bash", command="  "), tool("x4", "Bash", command="cd /r/x && ls | wc"), tool("y1", "Bash", command="abcd x && ls"),
                                       tool("x5", "Read", file_path="/a"), tool("x6", "Agent", subagent_type="coder")]),
                  call("m2", usage(), [tool("x5", "Read", file_path="/a"), tool("x7", "SendMessage", to="a0"),
                                       tool("x8", "Bash", command="git log"), tool("x9", "Agent", subagent_type="coder")])]
         doc = self.build(self.session("t1", lines))
         r = self.role(doc)
-        self.assertEqual(r["tools"], {"Bash:git": 2, "Bash": 1, "Bash:ls": 1, "Bash:make": 1, "Read": 1, "SendMessage": 1})
+        self.assertEqual(r["tools"], {"Bash:git": 2, "Bash": 1, "Bash:ls": 1, "Bash:abcd": 1, "Bash:make": 1, "Read": 1, "SendMessage": 1})
         self.assertEqual(r["dispatches"], 2)
 
     def fill(self, *lines):
@@ -160,7 +160,8 @@ class Anatomy(unittest.TestCase):
         self.assertEqual((f["own_output"], f["inbound"], f["inbound_estimate"]), (30, 0, {"message": 0}))
 
     def test_fill_survives_a_shrinking_context(self):
-        f = self.fill(call("m1", usage(i=500)), text("x"), call("m2", usage(i=100)), text("yy"), call("m3", usage(i=160, o=0)))
+        f = self.fill(call("m1", usage(i=500), [tool("x1", "Read", file_path="/a")]), result("x1", "x" * 9), text("x"),
+                      call("m2", usage(i=100)), text("yy"), call("m3", usage(i=160, o=0)))
         self.assertEqual((f["base"], f["compactions"], f["own_output"], f["inbound"], f["inbound_estimate"]),
                          (500, 1, 0, 60, {"message": 60}))
 
@@ -180,6 +181,13 @@ class Anatomy(unittest.TestCase):
         e, n = f["inbound_estimate"], len(note)
         chars = {"handback": 10 + 3 * n + 2, "message": 3, "attachment:deferred_tools_delta": 15, "result:Glob": 10, "result:?": 10}
         self.assertEqual(e, {k: round(400 * v / sum(chars.values())) for k, v in chars.items()})
+
+    def test_a_forks_copy_of_its_parents_message_is_not_its_own(self):
+        spawn = call("m1", usage(i=10), [tool("t1", "Agent", subagent_type="fork"), tool("r1", "Read", file_path="/a")])
+        doc = self.build(self.session("t1", [spawn], subs=[("fork", [dict(spawn), call("f1", usage(i=20))])]))
+        self.assertEqual((self.role(doc)["dispatches"], self.role(doc)["tools"]), (2, {"Read": 1}))
+        fork = self.role(doc, "fork")
+        self.assertEqual((fork["calls"], fork["dispatches"], fork["tools"]), (1, 0, {}))
 
     def test_a_plugin_agent_is_its_name(self):
         doc = self.build(self.session("t1", [], subs=[("factory:lander", [call("a1", usage(i=1))]), ("Explore", [call("b1", usage(i=1))])]))
@@ -213,6 +221,17 @@ class Anatomy(unittest.TestCase):
         doc = self.build(self.session("b", run("12")), self.session("a", run("12")), self.session("c", run("10")))
         self.assertEqual([t["task"] for t in doc["tasks"]], ["c", "a", "b"])
 
+    def test_a_null_start_sorts_first(self):
+        s = self.session("b", [dict(call("m1", usage(i=1)), timestamp="2026-11-10T10:00:00.000Z")])
+        n = self.session("a", [{"type": "assistant", "message": {"id": "m2", "model": "claude-fable-5-2", "usage": usage(i=1), "content": []}}])
+        self.assertEqual([t["task"] for t in self.build(s, n)["tasks"]], ["a", "b"])
+
+    def test_versions_sort_by_number(self):
+        self.store("tasks", *({"ts": "2026-11-10T09:00:00Z", "repo": REPO, "slug": t, "version": v}
+                              for t, v in (("a", "0.10.0"), ("b", "0.9.0"), ("c", "0.2.0"))))
+        doc = self.build(*(self.session(t, [call("m" + t, usage(i=1))]) for t in "abcd"))
+        self.assertEqual([v["version"] for v in doc["versions"]], ["0.2.0", "0.9.0", "0.10.0", None])
+
     def cli(self, *argv):
         self.write(os.path.join(self.tmp, "projects", "p0", "x.jsonl"), [])
         out = io.StringIO()
@@ -233,7 +252,7 @@ class Anatomy(unittest.TestCase):
         rc, out = self.cli()
         lines = out.splitlines()
         self.assertEqual(rc, 0)
-        self.assertEqual(lines[0].split(), ["task", "version", "role", "runs", "calls", "ctx", "first", "ctx", "median", "ctx", "peak",
+        self.assertEqual(lines[0].split(), ["task", "version", "role", "runs", "calls", "ctx", "first", "ctx", "median", "ctx", "max",
                                             "cost", "in%", "out%", "cw%", "cr%", "tools", "disp"])
         row = lines[1].split()
         self.assertEqual(row[:8] + row[9:], ["t1", "-", "lead", "1", "2", "950", "1.5k", "2.0k", "33%", "2%", "6%", "59%", "1", "0"])

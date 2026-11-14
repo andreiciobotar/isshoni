@@ -311,10 +311,10 @@ def cmd_anatomy(args):
         for name, r in t["roles"].items():
             c, x = r["cost"], r["context"]
             rows.append([t["task"], t["version"] or "-", name, r["runs"], r["calls"], human(x["first"]), human(x["median"]),
-                         human(x["peak"]), money(c["total"], prices.currency), share(c, "input"), share(c, "output"),
+                         human(x["max"]), money(c["total"], prices.currency), share(c, "input"), share(c, "output"),
                          share(c, "cache_write_5m", "cache_write_1h"), share(c, "cache_read"), sum(r["tools"].values()),
                          r["dispatches"]])
-    print(table(["task", "version", "role", "runs", "calls", "ctx first", "ctx median", "ctx peak", "cost", "in%", "out%",
+    print(table(["task", "version", "role", "runs", "calls", "ctx first", "ctx median", "ctx max", "cost", "in%", "out%",
                  "cw%", "cr%", "tools", "disp"], rows, left=("task", "version", "role")))
     unpriced = sum(t["unpriced_tokens"] for t in doc["tasks"])
     models = {m for t in doc["tasks"] for r in t["roles"].values() for m in r["models"] if prices.parts(m, {}) is None}
