@@ -5,9 +5,11 @@ set -eu
 mkdir -p "$HOME" "$TMPDIR"
 touch "$HOME/.crontab"
 
-# reap waits for a child that a signal may have interrupted the wait for.
-reap() {
-	while kill -0 "$1" 2>/dev/null; do wait "$1" || :; done
+# end stops a child and waits for it. A TERM that reaches a child the shell has just forked is lost (it still has
+# the shell's handler, not yet its own), so it is sent every 0.1 s until the child is gone.
+end() {
+	while kill -TERM "$1" 2>/dev/null; do sleep 0.1 || :; done
+	wait "$1" 2>/dev/null || :
 }
 
 # revive starts the dispatchers recorded in the factory's settings that a restart left out. It runs in the
@@ -18,16 +20,15 @@ revive() {
 	settings="$HOME/.claude/factory/settings.json"
 	[ -r "$settings" ] || return 0
 	child= stopping= out="$TMPDIR/revive.$$"
-	trap 'stopping=1; [ -z "$child" ] || kill -TERM "$child" 2>/dev/null || :' TERM INT
+	trap 'stopping=1; [ -z "$child" ] || end "$child"' TERM INT
 	trap 'rm -f "$out"' EXIT
 	# bg runs its command as the current child and returns its status; a TERM during it ends revive.
 	bg() {
 		"$@" &
 		child=$!
-		[ -z "$stopping" ] || kill -TERM "$child" 2>/dev/null || :
 		status=0
-		wait "$child" || status=$?
-		reap "$child"
+		[ -n "$stopping" ] || wait "$child" || status=$?
+		end "$child"
 		child=
 		[ -z "$stopping" ] || exit 0
 		return "$status"
@@ -71,20 +72,20 @@ fi
 # serve_loop runs in the background; on TERM it stops the current child and ends.
 serve_loop() {
 	child= stopping=
-	trap 'stopping=1; [ -z "$child" ] || kill -TERM "$child" 2>/dev/null || :' TERM INT
+	trap 'stopping=1; [ -z "$child" ] || end "$child"' TERM INT
 	while [ -z "$stopping" ]; do
 		"$tui" --serve 0.0.0.0:2222 &
 		child=$!
-		[ -z "$stopping" ] || kill -TERM "$child" 2>/dev/null || :
 		status=0
-		wait "$child" || status=$?
-		reap "$child"
+		[ -n "$stopping" ] || wait "$child" || status=$?
+		end "$child"
 		child=
 		[ -z "$stopping" ] || break
 		echo "dashboard server ended (status $status), restarting in 2 s" >&2
 		sleep 2 &
 		child=$!
-		wait "$child" || :
+		[ -n "$stopping" ] || wait "$child" || :
+		end "$child"
 		child=
 	done
 }
@@ -94,6 +95,9 @@ stop() {
 	[ -z "$loop" ] || kill -TERM "$loop" 2>/dev/null || :
 	[ -z "$cron" ] || kill -TERM "$cron" 2>/dev/null || :
 	[ -z "$revive_pid" ] || kill -TERM "$revive_pid" 2>/dev/null || :
+	[ -z "$loop" ] || end "$loop"
+	[ -z "$cron" ] || end "$cron"
+	[ -z "$revive_pid" ] || end "$revive_pid"
 }
 
 stopping= cron= loop=
@@ -105,13 +109,9 @@ loop=$!
 [ -z "$stopping" ] || stop
 
 status=0
-wait "$cron" || status=$?
-if [ -n "$stopping" ]; then
-	reap "$cron"
-	status=0
-else
-	kill -TERM "$loop" 2>/dev/null || :
-fi
-reap "$loop"
-[ -z "$revive_pid" ] || reap "$revive_pid"
+[ -n "$stopping" ] || wait "$cron" || status=$?
+[ -z "$stopping" ] || status=0
+end "$loop"
+# revive is not stopped when cron ends by itself: it is waited for (a stop during the wait ends it).
+[ -z "$revive_pid" ] || wait "$revive_pid" 2>/dev/null || :
 exit "$status"
