@@ -482,15 +482,15 @@ Three steps, in this order. Nothing here changes the exit code: a kept leftover 
    - its directory's mtime is older than 24 h (`younger than 24 h`);
    - it has a branch (`detached HEAD, no branch to judge`);
    - it is not locked (`locked (<reason>); if nothing uses it, run: git worktree unlock <path>`);
-   - no other worktree is registered inside it;
+   - no other worktree is registered inside it (`another worktree is registered inside it: <path>`);
    - `git status --porcelain` in it exits 0 and prints nothing (`uncommitted changes`, `cannot read git status`);
-   - its branch is merged by content: for the default base, then the branch of each live task, `git merge-tree --write-tree <target> <branch>` exits 0 and prints the tree the target already has, so merging would change nothing. That covers an ancestor, a cherry-pick, a squash and a merge through a lead's branch. Otherwise `branch <b> has work that is in neither <base> nor a live task branch` (or `cannot tell whether <b> is merged: <error>`);
+   - its branch is merged by content: for the default base, then the branch of each live task, `git merge-tree --write-tree <target> <branch>` exits 0 and prints the tree the target already has, so merging would change nothing. That covers an ancestor, a cherry-pick, a squash and a merge through a lead's branch, and also a branch that undid its own work. Files git ignores (`__pycache__/`, build output) are not content: they go with the worktree. Otherwise `branch <b> has work that is in neither <base> nor a live task branch` (or `cannot tell whether <b> is merged: <error>`);
    - no session of `claude agents` works in it (`session <id> works in it`);
    - no process has its working directory or an open file in it, from one `lsof -w -F pcn` per run (`pid <pid> (<command>) uses it`; `cannot list open files: <error>` when `lsof` is missing, times out or prints nothing).
 
    Removal is `git worktree remove <path>` (never `--force`; a refusal prints `kept <name>: git worktree remove: <error>`), then `git update-ref -d refs/heads/<branch> <commit>`, which deletes the branch only while it still points at the commit that was judged (`git branch -d` refuses a branch merged only by content; `-D` checks nothing). A branch that cannot be deleted prints `kept branch <branch>: <error>`. The output is `removed <name> (its work is in <target>)`, or `would remove ...` with `--dry-run`.
 2. **Finished job directories** older than 24 h are never deleted; they belong to Claude Code. Each prints `kept job <id>: belongs to Claude Code; ` and one of `pid <pid> (<command>) has files open in it`, `no process has files open in it, try: claude rm <id>` or `cannot list open files: <error>`.
-3. **Strangers in the store**: each entry directly under `~/.claude/factory` that is neither a name `uninstall` removes nor another name the factory writes (`cache/`, `comments/`, `gh-` and `comments-` month logs, the per-repository `dispatcher-`, `comments-`, `lander-` json files and `watch-`, `lander-` locks with their `.tmp` files) prints `kept <path>: not a file the factory writes`. Nothing in the store is removed.
+3. **Strangers in the store**: each entry directly under `~/.claude/factory` that is neither a name `uninstall` removes nor another name the factory writes (`cache/`, `comments/`, `gh-` and `comments-` month logs, the per-repository `dispatcher-`, `comments-`, `lander-` json files with their `.tmp` files, the `watch-` and `lander-` locks) prints `kept <path>: not a file the factory writes`. Nothing in the store is removed.
 
 ### What belongs to Claude Code
 `clean` removes dead subagent worktrees as above; the rest it only reports, and removing it is by hand.
