@@ -68,6 +68,35 @@ func TestKaizenDecodesTheFixtureAndPassesSince(t *testing.T) {
 	}
 }
 
+func TestKaizenDecodesThePulse(t *testing.T) {
+	r, _ := kaizenStubRunner(t)
+	doc, err := r.Kaizen(context.Background(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := doc.Pulse
+	if p == nil || p.QueueSince == nil || *p.QueueSince != "2026-11-14T09:00:00Z" {
+		t.Fatalf("pulse: %+v", p)
+	}
+	d, y := p.Today, p.Yesterday
+	if d.Date != "2026-11-14" || d.Merged != 12 || d.Cost.Tasks != 100.5 || d.Cost.PerMerged == nil || *d.Cost.PerMerged != 10.25 || d.FirstPass.Small != (PulseRate{3, 4}) || d.FirstPass.Unstated.Of != 4 {
+		t.Fatalf("today: %+v", d)
+	}
+	h := d.Handover
+	if h.ToMerge.P90S == nil || *h.ToMerge.P90S != 2204 || h.ToMerge.N != 11 || h.ApprovalsBackfilled != 2 || h.SentBack == nil || *h.SentBack != 3 || h.SentBackUnchanged == nil || *h.SentBackUnchanged != 1 {
+		t.Fatalf("handover: %+v", h)
+	}
+	if c := d.Conflicts; c.Prs != 11 || c.BaseMerges != 9 || c.Conflicted != 4 || c.PerMerged == nil || c.Error != nil {
+		t.Fatalf("conflicts: %+v", c)
+	}
+	if y.Cost.UnpricedTokens != 1200 || y.Handover.ToApproval.P90S != nil || y.Handover.SentBack != nil || y.Conflicts.PerMerged != nil {
+		t.Fatalf("nulls decode to nil: %+v", y)
+	}
+	if doc.Tasks[0].Size == nil || *doc.Tasks[0].Size != "small" || doc.Tasks[2].Size != nil {
+		t.Fatal("a task's stated size, nil when none")
+	}
+}
+
 func TestKaizenCachedFlagAndPRDates(t *testing.T) {
 	r, args := kaizenStubRunner(t)
 	if _, err := r.Kaizen(context.Background(), "7d", true); err != nil {

@@ -164,7 +164,7 @@ func unpriced(doc *data.Kaizen) int64 {
 
 func (m *model) pulseLines(p paint, w int) block {
 	d := m.kz.doc
-	lines := m.kaizenTiles(p, w)
+	lines := append(m.dayLines(p, w), m.kaizenTiles(p, w)...)
 	lines = append(lines, m.overheadLine(p, w)...)
 	lines = append(lines, "", m.rewardsLine(p, w), "")
 	lines = append(lines, m.pulseCharts(p, w)...)
