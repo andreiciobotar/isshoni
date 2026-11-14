@@ -327,7 +327,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 |---|---|
 | `tab` `shift+tab`, `1` `2` `3` `4` | switch view: dashboard, agents, factory, kaizen |
 | `↑` `↓` `j` `k`, `g` `G`, `pgup` `pgdn` | move, first and last, page |
-| `←` `→` `h` `l` | dashboard: collapse the repository the cursor is in (the cursor moves to its row), expand it. A collapsed row (`▸`) keeps its totals, and the tiles and follow mode still count what is inside; a filter leaves it collapsed, counting the matches. Folding turns follow mode off and is forgotten on exit |
+| `←` `→` `h` `l` | dashboard: collapse the repository the cursor is in (the cursor moves to its row), expand it. A collapsed row (`▸`) keeps its totals, and the tiles and follow mode still count what is inside; a filter leaves it collapsed, counting the matches. Folding turns follow mode off and is forgotten on exit. On a short-runs row, `→` opens it and `←` closes it (also from one of its sessions); on a closed one `←` still folds the repository |
 | `enter`, `esc` | dashboard: open the session row under the cursor full screen (the zoom; in it `↑` `↓` `g` `G` `pgup` `pgdn` move over the dispatches and `enter` swaps the list for the selected dispatch); on `all`, a repository or a task, a message says to pick a session row and the cursor stays. Back: first the detail, then the zoom, then the dashboard from any other view |
 | `r` | range: 24h, 7d, 30d, all (on the error screen: retry) |
 | `s` | sort: recent, cost, subagent share; within a repository, tasks and sessions without a task are one list; also puts the held order right |
@@ -342,7 +342,12 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   tree of repository, task and session (with the agent and model mix beside it from 120
   columns), a pane about the row under the cursor, and every dispatch running now.
   A group row sums its sessions (rates from summed counts, never a mean of rates); a
-  group of one session is a single row. The cursor starts on the top row, `all`, which
+  group of one session is a single row. A **short run** is a finished session (not live)
+  under a minute long and under $0.25; two or more in one task, or two or more of a
+  repository's sessions without a task, fold into one `N short runs` row after the rest
+  of that task or repository (one alone stays a session row). The row is closed (`▸`) and
+  opens one step deeper with `→`; it sums its sessions, and short runs count in every
+  total, tile and `×N` as before. The cursor starts on the top row, `all`, which
   sums every session shown, and moves over every row. The tiles always total every
   session shown, and a line under them says so; under 30 rows one line stands for the
   tiles and that line. In the mix a plugin's agent counts with its role
@@ -388,14 +393,16 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   `factory status --json` reports: the tasks holding a slot against the cap (the meter
   shows the ordinary limit plus the slots held in reserve for critical work, `7/9+1`),
   and every task with its phase, elapsed time, pull request or deliverable, base, and
-  `overtime` or `stale`. At the top, a band lists everything that waits on you across repositories,
-  oldest first: tasks in review (the pull request or deliverable to look at) and blocked
-  tasks (what they asked), each with how long it has waited; when nothing waits it says
-  so. The `3 Factory` tab carries `▲N` for the number waiting on every view (in a narrow
-  header the live count then shows as `● N`, without the word). It refreshes every 30
-  seconds while shown, every 2 minutes otherwise, in two passes. The first, for every
-  repository, is `factory status --json --cached` (10 s limit): it never contacts
-  GitHub, so the rows show at once. The second, only while the view is shown, is
+  `overtime` or `stale`. At the top, a band lists everything that waits on you across
+  repositories, oldest first: tasks in review (the pull request or deliverable to look
+  at) and tasks blocked on you (what they asked; a task blocked on the dispatcher or on
+  another task says so in its row, with its reason beneath, and is not in the band), each
+  with how long it has waited; when nothing waits it says so. The `3 Factory` tab carries
+  `▲N` for the number waiting on every view (in a narrow header the live count then
+  shows as `● N`, without the word). It refreshes every 30 seconds while shown, every 2
+  minutes otherwise, in two passes. The first, for every repository, is
+  `factory status --json --cached` (10 s limit): it never contacts GitHub, so the rows
+  show at once. The second, only while the view is shown, is
   `factory status --json --max-age 60` (25 s limit) for each repository with tasks
   whose pull request data is missing or older than 60 seconds; it asks GitHub (at most
   10 s per call, see [factory.md](factory.md)). It runs per repository, one at a time

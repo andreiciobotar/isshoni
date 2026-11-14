@@ -1,5 +1,5 @@
  Isshoni 1 Dash 2 Agents [3 Factory ▲7] 4 Kaizen 5 ✿    24h [7d] 30d all ○ idle 
- Factory  11 motion (4 blocked) · 3 review · 1 merged · 1 settled  · 11:00:00   
+ Factory  13 motion (6 blocked) · 3 review · 1 merged · 1 settled  · 11:00:00   
  ▲ Needs you  7                                                                 
  ◆ alpha       api-rate-limits  review PR          3h00m                        
                #42 https://github.com/o/alpha/pull/42                           
@@ -19,6 +19,6 @@
  worktree cap  5  per repo, 1 in reserve   c edit                               
                                                                                 
  alpha                  in motion ▲●●●● 5/4+1   review 1   merged 1   settled 1 
-  SLUG              PHASE      ELAPSED  PR                      FLAGS           
- +25 more lines · ↓ to scroll                                                   
+  SLUG               PHASE                     ELAPSED  FLAGS                   
+ +29 more lines · ↓ to scroll                                                   
  ↑↓/jk move  ·  c edit cap  ·  r range  ·  tab next view  ·  ? help  ·  q quit  
