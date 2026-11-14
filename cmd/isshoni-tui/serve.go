@@ -9,21 +9,26 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/ssh"
 	"charm.land/wish/v2"
-	"charm.land/wish/v2/activeterm"
-	"charm.land/wish/v2/bubbletea"
+	"github.com/charmbracelet/colorprofile"
+	xterm "github.com/charmbracelet/x/term"
+	"github.com/creack/pty"
 	gossh "golang.org/x/crypto/ssh"
 
 	"isshoni/internal/data"
@@ -34,7 +39,8 @@ import (
 // connection.
 const shutdownGrace = 5 * time.Second
 
-// writeOption is the authorized_keys option that lets a key change the worktree cap.
+// writeOption is the authorized_keys option that lets a key change the worktree cap and open
+// the dispatcher's conversation (a session that runs commands as this account).
 const writeOption = "write"
 
 // The bound on connections that have not authenticated yet, in total and from one remote
@@ -51,7 +57,8 @@ type serveOptions struct {
 	HostKey        string
 	Range          string
 	Follow         bool
-	NoColor        bool // the --no-color flag only: the server's own environment says nothing about a client's terminal
+	NoColor        bool   // the --no-color flag only: the server's own environment says nothing about a client's terminal
+	Claude         string // the claude binary key d attaches with; "claude" on PATH when empty
 	Log            *log.Logger
 
 	MaxUnauthenticated           int // zero means maxUnauthenticated
@@ -83,7 +90,7 @@ func serve(ctx context.Context, ln net.Listener, o serveOptions) error {
 	defer cancelShare()
 	o.Runner.Share = shareCtx
 	s := &server{o: o}
-	srv, err := wish.NewServer(ssh.HostKeyPEM(hostPEM), wish.WithPublicKeyAuth(s.auth))
+	srv, err := wish.NewServer(ssh.HostKeyPEM(hostPEM), wish.WithPublicKeyAuth(s.auth), func(srv *ssh.Server) error { srv.PtyHandler = recordPty; return nil })
 	if err != nil {
 		return err
 	}
@@ -318,35 +325,231 @@ func (s *server) session(sess ssh.Session) {
 	s.o.Log.Printf("session start %s", who)
 	defer s.o.Log.Printf("session end %s", who)
 
+	req, ok := sess.Context().Value(ptyRequest{sess}).(ssh.Pty)
+	if !ok {
+		wish.Println(sess, "Requires an active PTY")
+		_ = sess.Exit(1)
+		return
+	}
+	term, err := openTerminal(sess, ptySize(req))
+	if err != nil {
+		s.o.Log.Printf("no terminal for %s: %v", who, err)
+		wish.Fatalln(sess, "no terminal:", err)
+		return
+	}
+	defer term.close()
+
 	// the viewer's calls end with its program, not only with its connection
 	ctx, cancel := context.WithCancel(sess.Context())
 	defer cancel()
-	program := bubbletea.MiddlewareWithProgramHandler(func(sess ssh.Session) *tea.Program {
-		m := tui.New(tui.Options{Runner: s.o.Runner, Ctx: ctx, Range: s.o.Range, Follow: s.o.Follow, NoColor: s.o.NoColor, ReadOnly: !write})
-		return tea.NewProgram(m, programOptions(sess)...)
-	})
-	activeterm.Middleware()(program(func(ssh.Session) {}))(sess)
+	o := tui.Options{Runner: s.o.Runner, Ctx: ctx, Range: s.o.Range, Follow: s.o.Follow, NoColor: s.o.NoColor, ReadOnly: !write}
+	if write {
+		o.Attach = func(name string) tea.ExecCommand {
+			return attachCommand{func() error { return s.attach(sess, req.Term, term, name) }}
+		}
+	}
+	envs := append(sess.Environ(), "TERM="+req.Term)
+	p := tea.NewProgram(tui.New(o),
+		tea.WithInput(term.slave), tea.WithOutput(term.slave),
+		tea.WithEnvironment(envs), tea.WithColorProfile(colorprofile.Env(envs)),
+		// replaces wish's filter, which turns ctrl+z into a no-op instead of stopping the server's process
+		tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
+			if _, ok := msg.(tea.SuspendMsg); ok {
+				return tea.ResumeMsg{}
+			}
+			return msg
+		}))
+	_, window, _ := sess.Pty() // the channel comes back though the library holds no pty for this session
+	term.follow(ctx, window, p)
+	if _, err := p.Run(); err != nil {
+		s.o.Log.Printf("dashboard for %s: %v", who, err)
+	}
+	p.Kill() // restores the terminal if the dashboard crashed
 }
 
-// programOptions is what wish makes of the session, with two repairs. A client that has no
-// terminal size (ssh -tt without a local terminal reports 0x0) gets 80x24. And a 0x0 resize,
-// which wish also sends when the window channel closes at disconnect, is dropped: the
-// dashboard cannot lay out in no space.
-func programOptions(sess ssh.Session) []tea.ProgramOption {
-	opts := bubbletea.MakeOptions(sess)
-	if pty, _, _ := sess.Pty(); pty.Window.Width <= 0 || pty.Window.Height <= 0 {
-		opts = append(opts, tea.WithWindowSize(80, 24))
+// ptyRequest is the ssh context key of one session's pty request: a second channel on the same
+// connection shares the context, not the key.
+type ptyRequest struct{ ssh.Session }
+
+// recordPty is the server's PtyHandler: it keeps the request for the session and allocates
+// nothing, so the library neither emulates a pty (which would turn every \n the session writes
+// into \r\n, under a real terminal's own output processing) nor reads the window changes.
+func recordPty(ctx ssh.Context, sess ssh.Session, pty ssh.Pty) (func() error, error) {
+	ctx.SetValue(ptyRequest{sess}, pty)
+	return func() error { return nil }, nil
+}
+
+// terminal is the pseudo-terminal of one session: the dashboard and the attach client run on
+// its slave, and a copy carries what they write from its master to the client. The ssh
+// library's own pty copy (AllocatePty) is not joined and loses the last bytes of a quit, so
+// the session owns the pty and waits for its copy.
+type terminal struct {
+	master *os.File
+	slave  ttyFile
+	cooked *xterm.State  // the slave's modes before MakeRaw: what a line client finds under sshd
+	copied chan struct{} // closed when everything the slave wrote has reached the client
+	stop   chan struct{} // closed by close: the window goroutines end
+	window sync.WaitGroup
+}
+
+// ttyFile is the slave as Bubble Tea gets it. RestoreTerminal starts a goroutine that calls Fd
+// and that nothing joins, and os.File.Fd races with Close: so Fd is a plain number, and the
+// descriptor can be closed when the session ends. Such a late call asks the kernel for a window
+// size and finds nothing or something else's (a read-only question) and its answer goes to a
+// program that has ended.
+type ttyFile struct {
+	*os.File
+	fd uintptr
+}
+
+func (f ttyFile) Fd() uintptr { return f.fd }
+
+func openTerminal(sess ssh.Session, size ssh.Window) (*terminal, error) {
+	master, slave, err := pty.Open()
+	if err != nil {
+		return nil, err
 	}
-	// replaces wish's filter, which turns ctrl+z into a no-op instead of stopping the server's process
-	return append(opts, tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
-		switch msg := msg.(type) {
-		case tea.SuspendMsg:
-			return tea.ResumeMsg{}
-		case tea.WindowSizeMsg:
-			if msg.Width <= 0 || msg.Height <= 0 {
-				return nil
+	if err := pty.Setsize(master, &pty.Winsize{Rows: uint16(size.Height), Cols: uint16(size.Width)}); err != nil {
+		master.Close()
+		slave.Close()
+		return nil, err
+	}
+	// raw before the copies start, so nothing typed on connect is echoed or eaten by the line discipline
+	cooked, err := xterm.MakeRaw(slave.Fd())
+	if err != nil {
+		master.Close()
+		slave.Close()
+		return nil, err
+	}
+	t := &terminal{master: master, slave: ttyFile{slave, slave.Fd()}, cooked: cooked, copied: make(chan struct{}), stop: make(chan struct{})}
+	go io.Copy(master, sess) // ends with the connection
+	go func() {
+		defer close(t.copied)
+		io.Copy(sess, master)       // ends at the end of the slave's output, or when the connection fails
+		io.Copy(io.Discard, master) // a dead connection must not leave the program blocked on a full pty
+	}()
+	return t, nil
+}
+
+// follow resizes the pty whenever the client's window changes, so an attached client is signalled
+// at once, and tells the program the latest size. The program takes no message while it runs the
+// attach client, so a second goroutine delivers it, and the first never waits. It quits the
+// program when ctx ends, and both goroutines end with close.
+func (t *terminal) follow(ctx context.Context, window <-chan ssh.Window, p *tea.Program) {
+	latest := make(chan tea.WindowSizeMsg, 1) // a mailbox where the newest size replaces an unread one
+	t.window.Add(2)
+	go func() {
+		defer t.window.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.stop:
+				return
+			case w, ok := <-window:
+				if !ok {
+					return
+				}
+				if w.Width <= 0 || w.Height <= 0 { // a client without a window
+					continue
+				}
+				pty.Setsize(t.master, &pty.Winsize{Rows: uint16(w.Height), Cols: uint16(w.Width)})
+				select {
+				case <-latest:
+				default:
+				}
+				latest <- tea.WindowSizeMsg{Width: w.Width, Height: w.Height}
 			}
 		}
-		return msg
-	}))
+	}()
+	go func() {
+		defer t.window.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				p.Quit()
+				return
+			case <-t.stop:
+				return
+			case m := <-latest:
+				p.Send(m)
+			}
+		}
+	}()
+}
+
+// close ends the window goroutines, then the slave, and waits, up to 2 seconds, for the client to
+// get the last bytes.
+func (t *terminal) close() {
+	close(t.stop)
+	t.window.Wait()
+	t.slave.Close()
+	select {
+	case <-t.copied:
+	case <-time.After(2 * time.Second):
+	}
+	t.master.Close()
+}
+
+// attachCommand is a tea.ExecCommand that runs on the session's own pty, so it ignores the
+// streams tea.Exec hands it.
+type attachCommand struct{ run func() error }
+
+func (c attachCommand) Run() error        { return c.run() }
+func (attachCommand) SetStdin(io.Reader)  {}
+func (attachCommand) SetStdout(io.Writer) {}
+func (attachCommand) SetStderr(io.Writer) {}
+
+// attach runs `claude attach name` with the session's pty as its controlling terminal until it
+// exits, so the kernel signals it on every resize. It ends the attach client only: the
+// dispatcher's session belongs to its own supervisor. The client gets a SIGHUP when the
+// connection ends, and a kill 2 seconds later if it stays.
+func (s *server) attach(sess ssh.Session, termType string, term *terminal, name string) (err error) {
+	cmd := exec.CommandContext(sess.Context(), cmp.Or(s.o.Claude, "claude"), "attach", name)
+	cmd.Env = append(os.Environ(), "TERM="+termType)
+	for _, kv := range sess.Environ() {
+		if strings.HasPrefix(kv, "COLORTERM=") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGHUP) }
+	cmd.WaitDelay = 2 * time.Second
+	who := fmt.Sprintf("%s %s %s", sess.RemoteAddr(), gossh.FingerprintSHA256(sess.PublicKey()), name)
+	s.o.Log.Printf("attach start %s", who)
+	defer func() {
+		if err != nil {
+			who += ": " + err.Error()
+		}
+		s.o.Log.Printf("attach end %s", who)
+	}()
+	// its own open file description of the slave, so what exec does to the flags stays with it
+	client, err := os.OpenFile(term.slave.Name(), os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	// the modes belong to the pty, so this is the dashboard's raw mode too: Bubble Tea sets it again on return
+	if err := xterm.Restore(client.Fd(), term.cooked); err != nil {
+		return err
+	}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = client, client, client
+	// Its own session with the pty as controlling terminal, so the kernel signals it on a resize.
+	// macOS revokes the pty when that session's leader exits, which would end the dashboard's
+	// own terminal with it: there the client runs without one and sees no resize.
+	if runtime.GOOS != "darwin" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Wait()
+}
+
+// ptySize is the window the client asked for, 80x24 when it has none (ssh -tt without a local
+// terminal reports 0x0).
+func ptySize(req ssh.Pty) ssh.Window {
+	if req.Window.Width > 0 && req.Window.Height > 0 {
+		return req.Window
+	}
+	return ssh.Window{Width: 80, Height: 24}
 }

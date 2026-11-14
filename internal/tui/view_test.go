@@ -201,7 +201,7 @@ func TestHelpAndFooterComeFromKeys(t *testing.T) {
 	m := fakeModel(true, 140, 40)
 	m.help = true
 	out := plain(m)
-	for _, g := range helpGroups() {
+	for _, g := range m.helpGroups() {
 		for _, b := range g {
 			if !strings.Contains(out, b.Help().Key) || !strings.Contains(out, b.Help().Desc) {
 				t.Fatalf("help lacks %q %q", b.Help().Key, b.Help().Desc)

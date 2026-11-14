@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import ROOT, WT, DISPATCHER, FakeRun, factory
-from test_health import Harness, Home
+from test_health import NOW, Harness, Home, iso
 
 SENT = (0, json.dumps({"result": "sent"}), "")
 LEAD = {"sessionId": "sid-t1", "name": "t1", "cwd": f"{WT}/t1", "kind": "background", "status": "idle", "state": "done"}
@@ -50,7 +50,8 @@ class Comments(Home):
     def seed(self, state):
         (self.store / "tasks.jsonl").write_text(json.dumps({"repo": ROOT, "slug": "t1", "state": state}) + "\n")
 
-    def tick(self, prs, lines=(), sessions=(LEAD, DISPATCHER_SESSION), permission=None, courier=SENT, gh=None, app=False):
+    def tick(self, prs, lines=(), sessions=(LEAD, DISPATCHER_SESSION), permission=None, courier=SENT, gh=None, app=False,
+             whole=False):
         answers = {("gh", "pr", "list"): gh or (0, json.dumps(prs), ""),
                    ("gh", "api", "--paginate", "--slurp", LINES): (0, json.dumps([list(lines)]), ""),
                    ("claude", "agents"): (0, json.dumps(list(sessions)), ""), ("claude", "-p"): courier,
@@ -60,8 +61,10 @@ class Comments(Home):
         self.fake = FakeRun(answers)
         out = io.StringIO()
         with mock.patch.object(factory, "run", self.fake), redirect_stdout(out):
-            found = factory.find_dispatcher(list(sessions), ROOT)[0]
-            factory.watch_comments(self.repo, found and found["name"])
+            if whole:  # the tick's own gate and snapshot
+                factory.cheap_tick(self.repo, None)
+            else:
+                factory.watch_comments(self.repo, None, factory.snapshot(self.repo))
         return out.getvalue()
 
     def prime(self, prs=None):
@@ -199,7 +202,7 @@ class WatchCommentsTests(Comments):
 
     def test_no_task_in_motion_makes_no_call(self):
         self.seed("acknowledged")
-        self.assertEqual(self.tick([pr(comments=[comment("IC_1")])]), "")
+        self.assertEqual(self.tick([pr(comments=[comment("IC_1")])], whole=True), "")
         self.assertEqual(self.fake.calls, [])
 
     def test_pull_request_without_a_task_is_ignored(self):
@@ -212,7 +215,7 @@ class WatchCommentsTests(Comments):
         self.prime()
         state = factory.repo_state(self.repo.root, "comments", "json")
         before = state.read_text()
-        out = self.tick([], gh=(1, "", "boom"))
+        out = self.tick([], gh=(1, "", "boom"), whole=True)
         self.assertEqual((out, state.read_text()), ("comments: gh pr list failed: boom\n", before))
         self.tick([pr(comments=[comment("IC_1")])])
         self.assertEqual(self.decisions(), {"IC_1": "forward"})
@@ -266,6 +269,7 @@ class WatchCommentsTests(Comments):
 
 class WatchTickTests(Harness):
     def test_a_failing_comment_watch_prints_one_line_and_the_tick_goes_on(self):
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "working", "ts": iso(NOW - 3600)}])
         with mock.patch.object(factory, "watch_comments", side_effect=RuntimeError("boom")) as watched:
             code, out, _ = self.tick()
         watched.assert_called_once()

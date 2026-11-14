@@ -1,13 +1,13 @@
-import io
 import json
+import subprocess
+import tempfile
 import unittest
-from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import ROOT, WT, FakeRun, factory, invoke, repo_answers, task_entry
-from test_health import DISPATCHER, NOW, Harness, check, fired, iso, pic, row
+from test_health import DISPATCHER, NOW, Harness, check, iso, pic, row
 
 SHA = "sha-1"
 GREEN = [{"name": "test", "bucket": "pass"}]
@@ -21,6 +21,13 @@ AUTHOR = {"login": "andrei", "is_bot": False}
 def pr(n, base="main", draft=False, fork=False, sha=SHA, author=AUTHOR):
     return {"number": n, "url": f"https://x/pull/{n}", "isDraft": draft, "headRefName": f"worktree-t{n}",
             "headRefOid": sha, "baseRefName": base, "isCrossRepository": fork, "author": author}
+
+
+def stacked_base(n=1):
+    """What GitHub says about the base pull request #n: open when the tasks are read, merged after that."""
+    def state(word):
+        return (0, json.dumps([{"state": word, "url": f"https://x/pull/{n}", "headRefOid": SHA, "baseRefName": "main"}]), "")
+    return {("gh", "pr", "list", "--head", f"worktree-t{n}"): [state("OPEN"), state("MERGED")]}
 
 
 def raw(x):
@@ -52,7 +59,8 @@ class World(Harness):
         states = {s: (state[s] if isinstance(state, dict) else state) for s in slugs}
         self.seed("tasks", [{"repo": ROOT, "slug": s, "state": st, "ts": iso(NOW - 3600)} for s, st in states.items()])
         answers = {
-            ("git", "status"): (0, "", ""), ("git", "rev-list"): (0, "0\t1\n", ""),
+            ("git", "status"): (0, "", ""), ("git", "rev-list"): (0, "0\t1\n", ""), ("git", "fetch"): (0, "", ""),
+            ("git", "merge-base", "--is-ancestor"): lambda: (1, "", "") if self.tip_moved_in_last_fetch() else (0, "", ""),
             ("git", "log"): (0, f"{NOW} {local}\n", ""),
             ("gh", "pr", "list", "--state", "open"): (0, json.dumps(prs), ""),
             ("gh", "pr", "edit"): (0, "", ""), ("gh", "pr", "ready"): (0, "", ""), ("gh", "pr", "merge"): (0, "", ""),
@@ -73,6 +81,17 @@ class World(Harness):
         finished = [{"id": f"id-{s}", "sessionId": f"sid-{s}", "cwd": f"{WT}/{s}", "kind": "background",
                      "status": "idle", "state": "done"} for s in slugs]
         return answers, [DISPATCHER | {"name": SESSION}, *finished], slugs
+
+    def tip_moved_in_last_fetch(self):
+        """Whether the default branch's tip, as the last `git fetch` left it, holds a merge of this command: a fetch
+        made before a merge still shows the old tip, which every head then contains."""
+        merges, seen = 0, 0
+        for call in self.fake.calls:
+            if call[:3] == ["gh", "pr", "merge"]:
+                merges += 1
+            elif call[:2] == ["git", "fetch"]:
+                seen = merges
+        return seen > 0
 
     def merge(self, *argv, prs, **kw):
         answers, sessions, slugs = self.world(prs, **{k: kw.pop(k) for k in list(kw) if k in (
@@ -104,15 +123,13 @@ class MergeCommandTests(World):
         self.assertEqual(code, 0)
         self.assertEqual([c[:2] for c in self.pr_calls()][-2:], [["pr", "ready"], ["pr", "merge"]])
 
-    def test_a_stack_named_in_reverse_merges_bottom_up_and_retargets(self):
-        code, out, _ = self.merge("2", "1", prs=[pr(1), pr(2, base="worktree-t1")])
-        self.assertEqual(code, 0)
+    def test_a_stack_named_in_reverse_merges_the_bottom_and_stops_the_next_behind(self):
+        code, out, _ = self.merge("2", "1", prs=[pr(1), pr(2, base="worktree-t1")], extra=stacked_base())
+        self.assertEqual(code, 1)
         self.assertEqual(self.pr_calls(), [
             ["pr", "checks", "1", "--json", "name,bucket"], ["pr", "view", "1", "--json", "mergeable"],
-            ["pr", "merge", "1", "--merge", "--match-head-commit", SHA],
-            ["pr", "checks", "2", "--json", "name,bucket"], ["pr", "edit", "2", "--base", "main"],
-            ["pr", "view", "2", "--json", "mergeable"], ["pr", "merge", "2", "--merge", "--match-head-commit", SHA]])
-        self.assertLess(out.index("#1 merged"), out.index("#2 merged"))
+            ["pr", "merge", "1", "--merge", "--match-head-commit", SHA]])
+        self.assertLess(out.index("#1 merged"), out.index(self.behind(2)))
 
     def test_a_base_merged_earlier_is_retargeted(self):
         merged = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
@@ -195,15 +212,37 @@ class MergeCommandTests(World):
         self.assertEqual(sleep.call_count, 1)
         self.assertIn("#1 merged", out)
 
+    def behind(self, n):
+        return f"#{n} stopped: its base has moved since its head: bring it up to date (factory land t{n}) so its checks run on the combination"
+
     def test_a_stop_ends_the_run(self):
-        prs = [pr(1), pr(2), pr(3)]
-        code, out, _ = self.merge("1", "2", "3", prs=prs, checks={1: GREEN, 2: [{"name": "t", "bucket": "fail"}], 3: GREEN})
+        code, out, _ = self.merge("1", "2", "3", prs=[pr(1), pr(2), pr(3)])
         self.assertEqual(code, 1)
         self.assertIn("#1 merged", out)
-        self.assertIn("#2 stopped: failed or cancelled checks: t\n#3 not attempted\n", out)
+        self.assertIn(self.behind(2) + "\n#3 not attempted\n", out)
         self.assertEqual([c[1] for c in self.gh_mutations()], ["merge"])
         self.assertEqual(self.gh_mutations()[0][2], "1")
         self.assertIn("kept t1:", out)
+
+    def test_siblings_on_one_base_merge_the_first_and_stop_behind(self):
+        code, out, _ = self.merge("1", "2", "3", prs=[pr(1), pr(2, base="worktree-t1"), pr(3, base="worktree-t1")],
+                                  extra=stacked_base())
+        self.assertEqual(code, 1)
+        self.assertIn("#1 merged", out)
+        self.assertIn(self.behind(2) + "\n#3 not attempted\n", out)
+
+    def test_a_base_merged_in_an_earlier_command_and_main_moved_since_is_behind(self):
+        merged = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
+        code, out, _ = self.merge("5", prs=[pr(5, base="worktree-t9")],
+                                  extra={("gh", "pr", "list", "--head", "worktree-t9"): merged,
+                                         ("git", "merge-base", "--is-ancestor"): (1, "", "")})
+        self.assertEqual(code, 1)
+        self.assertIn(self.behind(5), out)
+        self.assertEqual(self.gh_mutations(), [])
+
+    def test_every_pull_request_gets_a_fresh_fetch(self):
+        self.merge("1", "2", prs=[pr(1), pr(2)])
+        self.assertEqual(sum(c[:2] == ["git", "fetch"] for c in self.fake.calls), 2)
 
     def test_nothing_merged_runs_no_clean(self):
         code, out, _ = self.merge("1", "2", prs=[pr(1), pr(2)], checks=[])
@@ -221,12 +260,22 @@ class MergeCommandTests(World):
         self.assertIn("#1 merged", out)
 
     def test_all_skips_tasks_not_handed_over(self):
-        code, out, _ = self.merge("--all", prs=[pr(1), pr(2), pr(3)], state={"t1": "handed-over", "t2": "working",
-                                                                             "t3": "handed-over"}, tasks=["t1", "t2", "t3"])
+        code, out, _ = self.merge("--all", prs=[pr(1), pr(2), pr(3, base="worktree-t2")],
+                                  state={"t1": "handed-over", "t2": "working", "t3": "handed-over"},
+                                  tasks=["t1", "t2", "t3"])
         self.assertEqual(code, 0)
         self.assertIn("#2 skipped: task t2 is in phase motion (declared working)\n", out)
-        self.assertEqual([c[1] for c in self.gh_mutations()], ["merge", "merge"])
+        self.assertIn("#3 skipped: its base worktree-t2 was skipped\n", out)
+        self.assertEqual([c[1] for c in self.gh_mutations()], ["merge"])
         self.assertNotIn("stopped", out)
+
+    def test_two_pull_requests_on_the_default_branch_merge_one_and_stop_the_other(self):
+        code, out, _ = self.merge("1", "2", prs=[pr(1), pr(2)])
+        self.assertEqual(code, 1)
+        self.assertIn("#1 merged", out)
+        self.assertIn(self.behind(2), out)
+        self.assertEqual([c[2] for c in self.gh_mutations() if c[1] == "merge"], ["1"])
+        self.assertFalse(any(c[:4] == ["gh", "pr", "checks", "2"] for c in self.fake.calls))
 
     def test_a_named_number_that_is_not_open_exits_2(self):
         code, _, err = self.merge("9", prs=[pr(1)])
@@ -254,18 +303,15 @@ class MergeCommandTests(World):
 
 
 class DryRunTests(World):
-    def test_dry_run_changes_nothing_and_continues_past_a_stop(self):
+    def test_dry_run_changes_nothing_and_every_pull_request_after_the_first_would_be_behind(self):
         prs = [pr(1, draft=True), pr(2, base="worktree-t1"), pr(3), pr(4)]
-        code, out, _ = self.merge("--dry-run", "--all", prs=prs,
-                                  checks={1: GREEN, 2: GREEN, 3: [{"name": "t", "bucket": "fail"}], 4: GREEN})
+        code, out, _ = self.merge("--dry-run", "--all", prs=prs)
         self.assertEqual(code, 1)
+        why = "its base has moved since its head: bring it up to date (factory land t{}) so its checks run on the combination"
         self.assertEqual(out.splitlines(), [
             "#1 would merge (draft: would be marked ready)",
-            "#2 would merge (retarget onto main first; mergeability is checked after that)",
-            "#3 would stop: failed or cancelled checks: t",
-            "#4 would merge"])
+            "#2 would stop: " + why.format(2), "#3 would stop: " + why.format(3), "#4 would stop: " + why.format(4)])
         self.assertEqual(self.gh_mutations(), [])
-        self.assertFalse(any(c[:3] == ["gh", "pr", "view"] and c[3] == "2" for c in self.fake.calls))
         self.assertFalse(self.fake.ran("claude", "rm"))
 
     def test_dry_run_exits_0_when_all_would_merge(self):
@@ -323,7 +369,7 @@ class ApprovalTests(unittest.TestCase):
 
     def stale(self, approved, activity):
         p = {"gh": lambda kind, *args: activity}
-        return factory.stale_approval(p, pr(1), comment(at=approved))
+        return factory.stale_approval(p, pr(1), comment(at=approved), [SHA])
 
     def test_the_approval_against_the_activity_timestamp(self):
         change = {"after": SHA, "timestamp": iso(NOW - 100)}
@@ -337,240 +383,75 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(self.stale(NOW, [{"after": SHA}])[0], "head-time")
 
 
-class LgtmTests(World):
-    def lgtm_world(self, prs, comments, activity=None, reviews=None, **kw):
+class ApprovedTests(World):
+    """`factory merge --approved`: GitHub's own records must hold a valid approval, read at that moment."""
+
+    def approved(self, prs, comments=None, *argv, activity=None, reviews=None, **kw):
         answers, sessions, slugs = self.world(prs, **kw)
         for p in prs:
             n = p["number"]
             answers[("gh", "api", "--paginate", "--slurp", REVIEWS % n)] = raw([(reviews or {}).get(n, [])])
-            answers[("gh", "api", "--paginate", "--slurp", COMMENTS % n)] = raw([comments.get(n, [])])
+            answers[("gh", "api", "--paginate", "--slurp", COMMENTS % n)] = raw([(comments or {}).get(n, [])])
             answers[("gh", "api", "-X", "GET", ACTIVITY, "-f", f"ref=refs/heads/worktree-t{n}")] = raw(
                 (activity or {}).get(n, [{"after": SHA, "timestamp": iso(NOW - 3600)}]))
         for login, permission in {"andrei": "admin", "dev": "write", "reader": "read"}.items():
             answers[("gh", "api", f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission")] = raw(
                 {"permission": permission})
         answers.update(kw.get("extra") or {})
-        return answers, sessions, slugs
-
-    def tick_lgtm(self, prs, comments, command="watch", at=None, **kw):
-        answers, sessions, slugs = self.lgtm_world(prs, comments, **kw)
-        return self.cli(command, answers=answers, sessions=sessions, entries=slugs, at=at)
-
-    def test_an_approved_green_pull_request_merges_without_a_model(self):
-        code, out, _ = self.tick_lgtm([pr(1)], {1: [comment()]})
-        self.assertEqual(code, 0)
-        self.assertIn(f"#1 merged on lgtm https://x/pull/1#c{NOW - 60}\n", out)
-        self.assertIn(["gh", "pr", "merge", "1", "--merge", "--match-head-commit", SHA], self.fake.calls)
-        self.assertIn("kept t1:", out)
-        self.assertEqual(self.claude_runs(), [])
-        self.assertEqual(self.records(), [])
-
-    def test_no_approval_does_nothing(self):
-        code, out, _ = self.tick_lgtm([pr(1)], {1: [comment("lgtm, thanks"), comment(login="octocat")]},
-                                      extra={("gh", "api", "repos/{owner}/{repo}/collaborators/octocat/permission"):
-                                             raw({"permission": "read"})})
-        self.assertEqual(code, 0)
-        self.assertEqual(self.gh_mutations(), [])
-        self.assertNotIn("blocked", out)
-        self.assertEqual(self.records(), [])
-
-    def test_a_stale_approval_fires_is_sent_and_not_merged(self):
-        code, out, _ = self.tick_lgtm([pr(1)], {1: [comment(at=NOW - 7200)]})
-        self.assertEqual(code, 0)
-        self.assertIn("#1 blocked: its head changed after the lgtm", out)
-        self.assertEqual(self.gh_mutations(), [])
-        [record] = self.records()
-        self.assertEqual((record["criterion"], record["escalate"], record["slug"], record["subject"]),
-                         ("lgtm-blocked", "always", "t1", "#1/stale"))
-        self.assertIn("https://x/pull/1", record["detail"])
-        [argv] = self.claude_runs()
-        [sent] = json.loads(argv[-1].partition("\n\n")[2])
-        self.assertEqual((sent["id"], sent["subject"]), (record["id"], "#1/stale"))
-
-    def test_pending_fires_nothing(self):
-        code, out, _ = self.tick_lgtm([pr(1, draft=True)], {1: [comment()]}, checks=[{"name": "t", "bucket": "pending"}])
-        self.assertEqual(code, 0)
-        self.assertIn("#1 blocked: checks are still running", out)
-        self.assertEqual((self.records(), self.claude_runs(), self.gh_mutations()), ([], [], []))
-
-    def test_unknown_mergeability_fires_nothing(self):
-        with mock.patch.object(factory.time, "sleep"):
-            self.tick_lgtm([pr(1)], {1: [comment()]}, mergeable="UNKNOWN")
-        self.assertEqual((self.records(), self.gh_mutations()), ([], []))
-
-    def test_a_blocker_of_another_kind_is_a_new_firing_and_the_old_one_clears(self):
-        self.tick_lgtm([pr(1)], {1: [comment(at=NOW - 7200)]})
-        [first] = self.records()
-        self.tick_lgtm([pr(1)], {1: [comment(at=NOW - 7200)]}, activity={1: []}, at=NOW + 60)
-        records = self.records()
-        self.assertIn({"ts": iso(NOW + 60), "repo": ROOT, "id": first["id"], "cleared": True}, records)
-        second = next(r for r in records if r.get("criterion") and r["id"] != first["id"])
-        self.assertEqual(second["subject"], "#1/head-time")
-        self.assertEqual(len(self.claude_runs()), 1)
-
-    def test_the_same_blocker_is_not_sent_again(self):
-        self.tick_lgtm([pr(1)], {1: [comment(at=NOW - 7200)]})
-        self.seed("firings", [{"ts": iso(NOW + 1), "repo": ROOT, "id": self.records()[0]["id"], "decision": "escalated",
-                               "reason": "r", "by": "site-manager"}])
-        self.tick_lgtm([pr(1)], {1: [comment(at=NOW - 7200)]}, at=NOW + 60)
-        self.assertEqual(self.claude_runs(), [])
-        self.assertEqual(len([r for r in self.records() if r.get("criterion")]), 1)
-
-    def test_a_merge_clears_the_firing(self):
-        self.seed("firings", [fired("aaa", criterion="lgtm-blocked", subject="#1/stale")])
-        code, out, _ = self.tick_lgtm([pr(1)], {1: [comment()]})
-        self.assertIn("#1 merged on lgtm", out)
-        self.assertIn({"ts": iso(NOW), "repo": ROOT, "id": "aaa", "cleared": True}, self.records())
-        self.assertEqual(self.claude_runs(), [])
-
-    def test_one_blocked_pull_request_does_not_stop_another(self):
-        code, out, _ = self.tick_lgtm([pr(1), pr(2)], {1: [comment(at=NOW - 7200)], 2: [comment(n=2)]})
-        self.assertIn("#1 blocked: its head changed", out)
-        self.assertIn("#2 merged on lgtm", out)
-        self.assertEqual([c[2] for c in self.gh_mutations() if c[1] == "merge"], ["2"])
-
-    def test_a_stack_merges_in_one_tick(self):
-        code, out, _ = self.tick_lgtm([pr(2, base="worktree-t1"), pr(1)], {1: [comment()], 2: [comment(n=2)]})
-        self.assertEqual([c[:2] for c in self.pr_calls() if c[1] != "view" and c[1] != "checks"],
-                         [["pr", "merge"], ["pr", "edit"], ["pr", "merge"]])
-
-    def test_a_failing_comments_call_is_not_evaluated_and_merges_nothing_further(self):
-        code, out, _ = self.tick_lgtm([pr(1), pr(2)], {2: [comment(n=2)]},
-                                      extra={("gh", "api", "--paginate", "--slurp", COMMENTS % 1): (1, "", "boom")})
-        self.assertEqual(code, 0)
-        self.assertIn("not evaluated: lgtm-blocked: gh api --paginate failed: boom", out)
-        self.assertEqual((self.gh_mutations(), self.records()), ([], []))
-
-    def test_failing_calls_leave_open_firings_alone(self):
-        self.seed("firings", [fired("aaa", criterion="lgtm-blocked", subject="#1/stale")])
-        calls = {
-            "pull request list": {("gh", "pr", "list", "--state", "open"): (1, "", "boom")},
-            "permission": {("gh", "api", "repos/{owner}/{repo}/collaborators/andrei/permission"): (1, "", "boom")},
-            "activity": {("gh", "api", "-X", "GET", ACTIVITY, "-f", "ref=refs/heads/worktree-t1"): (1, "", "boom")},
-        }
-        for label, extra in calls.items():
-            with self.subTest(label):
-                _, out, _ = self.tick_lgtm([pr(1)], {1: [comment()]}, extra=extra)
-                self.assertIn("not evaluated: lgtm-blocked", out)
-                self.assertEqual(self.gh_mutations(), [])
-                self.assertNotIn({"ts": iso(NOW), "repo": ROOT, "id": "aaa", "cleared": True}, self.records())
-
-    def subjects(self):
-        return [r["subject"] for r in self.records() if r.get("criterion")]
-
-    def test_each_blocker_kind_fires_under_its_own_subject(self):
-        bucket = lambda b: [{"name": "c", "bucket": b}]
-        unreadable = {("gh", "pr", "list", "--head", "worktree-t0"): (1, "", "boom")}
-        cases = {
-            "#1/ci": [dict(checks=[]), dict(checks=bucket("fail")), dict(checks=bucket("skipping"))],
-            "#1/conflict": [dict(mergeable="CONFLICTING")],
-            "#1/handover": [dict(state="working")],
-            "#1/base": [dict(prs=[pr(1, base="worktree-t0")])],
-            "#1/merge": [dict(extra={("gh", "pr", "merge"): (1, "", "boom")})],
-            None: [dict(checks=bucket("pending")), dict(mergeable="UNKNOWN"),
-                   dict(prs=[pr(1, base="worktree-t0")], extra=unreadable)],
-        }
-        for subject, variants in cases.items():
-            for kw in variants:
-                with self.subTest(subject=subject, kw=kw), mock.patch.object(factory.time, "sleep"):
-                    self.setUp()
-                    self.tick_lgtm(kw.pop("prs", [pr(1)]), {1: [comment()]}, **kw)
-                    self.assertEqual(self.subjects(), [subject] if subject else [])
-
-    def test_a_fork_with_an_approval_fires_without_asking_for_its_activity(self):
-        self.tick_lgtm([pr(1, fork=True)], {1: [comment()]})
-        self.assertEqual(self.subjects(), ["#1/fork"])
-        self.assertFalse(any(ACTIVITY in c for c in self.fake.calls))
-        self.assertEqual(self.gh_mutations(), [])
-
-    def test_a_merged_result_without_a_comment_url_prints_the_pull_request(self):
-        bare = {k: v for k, v in comment().items() if k != "html_url"}
-        _, out, _ = self.tick_lgtm([pr(1)], {1: [bare]})
-        self.assertIn("#1 merged on lgtm https://x/pull/1\n", out)
-
-    def test_the_permission_of_a_login_is_asked_once_across_pull_requests(self):
-        self.tick_lgtm([pr(1), pr(2)], {1: [comment()], 2: [comment(n=2)]})
-        self.assertEqual(sum(c[:3] == ["gh", "api", "repos/{owner}/{repo}/collaborators/andrei/permission"]
-                             for c in self.fake.calls), 1)
-        self.assertEqual([c[2] for c in self.gh_mutations() if c[1] == "merge"], ["1", "2"])
-
-    def test_a_failure_after_a_merge_keeps_the_merge_and_cleans(self):
-        _, out, _ = self.tick_lgtm([pr(1), pr(2)], {1: [comment()]},
-                                   extra={("gh", "api", "--paginate", "--slurp", COMMENTS % 2): (1, "", "boom")})
-        self.assertIn("#1 merged on lgtm", out)
-        self.assertIn("kept t1:", out)
-        self.assertIn("not evaluated: lgtm-blocked: gh api --paginate failed: boom", out)
-        self.assertEqual([c[2] for c in self.gh_mutations() if c[1] == "merge"], ["1"])
-
-    def test_after_a_merge_the_picture_is_gathered_again_and_keeps_the_results(self):
-        results = [(pr(1), "merged", "u")]
-
-        def step(p, dry):
-            p["lgtm"], p["lgtm_unread"] = results, "why"
-        calls = mock.Mock()
-        calls.gather.return_value = {"rows": "fresh"}
-        with mock.patch.object(factory, "lgtm_step", step), mock.patch.object(factory, "run_clean", calls.clean), \
-                mock.patch.object(factory, "gather", calls.gather), redirect_stdout(io.StringIO()):
-            got = factory.watch_lgtm({"repo": "r", "fallback": "d", "rows": "old"})
-            self.assertEqual(got, {"rows": "fresh", "lgtm": results, "lgtm_unread": "why"})
-            self.assertEqual(calls.mock_calls, [mock.call.clean(), mock.call.gather("r", "d")])
-            results.clear()
-            same = {"rows": "old"}
-            self.assertIs(factory.watch_lgtm(same), same)
-
-    def test_phases_that_cannot_be_trusted_leave_lgtm_blocked_not_evaluated(self):
-        unplaced = {"id": "s9", "kind": "background", "status": "busy", "state": "working"}
-        cases = {"an unplaced session": (dict(), [unplaced], "no working directory"),
-                 "an unknown pull request state": (
-                     dict(extra={("gh", "pr", "list", "--head", "worktree-t1"): (1, "", "boom")}), [],
-                     "pull request state is unknown")}
-        for label, (kw, more, why) in cases.items():
-            with self.subTest(label):
-                self.setUp()
-                answers, sessions, slugs = self.lgtm_world([pr(1)], {1: [comment()]}, **kw)
-                _, out, _ = self.cli("watch", answers=answers, sessions=[*sessions, *more], entries=slugs)
-                self.assertIn("not evaluated: lgtm-blocked: ", out)
-                self.assertIn(why, out)
-                self.assertEqual((self.gh_mutations(), self.records()), ([], []))
-
-    def test_health_checks_without_changing_anything(self):
-        prs, comments = [pr(1), pr(2)], {1: [comment()], 2: [comment(at=NOW - 7200, n=2)]}
-        answers, sessions, slugs = self.lgtm_world(prs, comments)
-        before = {p.name: p.read_bytes() for p in self.store.iterdir()}
-        code, out, _ = self.cli("health", answers=answers, sessions=sessions, entries=slugs)
-        self.assertEqual(code, 0)
-        self.assertIn("lgtm-blocked  always  #2/stale  its head changed after the lgtm; a fresh lgtm is needed "
-                      "https://x/pull/2", out)
-        self.assertNotIn("#1/", out)
-        self.assertEqual(self.gh_mutations(), [])
-        self.assertFalse(self.fake.ran("claude", "rm"))
-        self.assertEqual({p.name: p.read_bytes() for p in self.store.iterdir()}, before)
+        return self.cli("merge", "--approved", *(argv or [str(p["number"]) for p in prs]), answers=answers,
+                        sessions=sessions, entries=slugs)
 
     def merges(self):
         return [c[2] for c in self.gh_mutations() if c[1] == "merge"]
 
-    def test_an_approving_review_on_the_head_merges_without_comments_or_activity(self):
-        code, out, _ = self.tick_lgtm([pr(1)], {}, reviews={1: [review()]})
+    def test_a_review_on_the_head_merges(self):
+        code, out, _ = self.approved([pr(1)], reviews={1: [review()]})
         self.assertEqual(code, 0)
-        self.assertIn(f"#1 merged on approval https://x/pull/1#r{NOW - 60}\n", out)
+        self.assertIn("#1 merged https://x/pull/1\n", out)
         self.assertEqual(self.merges(), ["1"])
         self.assertFalse(any(COMMENTS % 1 in c or ACTIVITY in c for c in self.fake.calls))
+        self.assertEqual(self.claude_runs(), [])
 
-    def test_a_review_that_may_not_approve_does_nothing(self):
-        cases = {"the author": review(login="andrei"), "no write access": review(login="reader"),
-                 "a bot": review(login="factory[bot]", type="Bot")}
-        for label, r in cases.items():
+    def test_an_lgtm_newer_than_the_push_merges(self):
+        code, out, _ = self.approved([pr(1)], {1: [comment()]})
+        self.assertEqual((code, self.merges()), (0, ["1"]))
+        self.assertIn("#1 merged", out)
+
+    def test_nothing_that_approves_is_a_stop_with_nothing_changed(self):
+        cases = {"no review, no lgtm": ({}, {}),
+                 "an lgtm that is not exactly lgtm": ({1: [comment("lgtm, thanks")]}, {}),
+                 "a review that only comments": ({}, {1: [review("COMMENTED")]}),
+                 "the author's own review": ({}, {1: [review(login="andrei")]}),
+                 "a login without write access": ({}, {1: [review(login="reader")]}),
+                 "a bot": ({}, {1: [review(login="factory[bot]", type="Bot")]}),
+                 "an lgtm from a login without write access": ({1: [comment(login="reader")]}, {})}
+        for label, (comments, reviews) in cases.items():
             with self.subTest(label):
                 self.setUp()
-                code, out, _ = self.tick_lgtm([pr(1)], {}, reviews={1: [r]})
-                self.assertEqual((code, self.gh_mutations(), self.records()), (0, [], []))
-                self.assertNotIn("blocked", out)
+                code, out, _ = self.approved([pr(1)], comments, reviews=reviews)
+                self.assertEqual(code, 1)
+                self.assertIn("#1 stopped: not approved on GitHub", out)
+                self.assertEqual(self.gh_mutations(), [])
                 self.assertFalse(any("factory[bot]" in part for c in self.fake.calls for part in c))
 
-    def test_an_approval_on_an_older_commit_is_stale(self):
-        _, out, _ = self.tick_lgtm([pr(1)], {}, reviews={1: [review(sha="old")]})
-        self.assertIn("#1 blocked: its head changed after the approval; a fresh approval is needed", out)
-        self.assertEqual((self.gh_mutations(), self.subjects()), ([], ["#1/stale"]))
+    def test_a_review_on_an_older_commit_is_stale(self):
+        code, out, _ = self.approved([pr(1)], reviews={1: [review(sha="old")]})
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped: its head changed after the approval; a fresh approval is needed", out)
+        self.assertEqual(self.gh_mutations(), [])
+
+    def test_an_lgtm_older_than_the_push_is_stale(self):
+        code, out, _ = self.approved([pr(1)], {1: [comment(at=NOW - 7200)]})
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped: its head changed after the lgtm; a fresh lgtm is needed", out)
+        self.assertEqual(self.gh_mutations(), [])
+
+    def test_an_lgtm_rescues_a_review_on_an_older_commit_and_a_review_on_the_head_needs_none(self):
+        code, out, _ = self.approved([pr(1)], {1: [comment()]}, reviews={1: [review(sha="old")]})
+        self.assertEqual((code, self.merges()), (0, ["1"]))
+        self.setUp()
+        self.approved([pr(1)], {1: [comment()]}, reviews={1: [review()]})
+        self.assertFalse(any(ACTIVITY in c for c in self.fake.calls))
 
     def test_a_later_verdict_withdraws_an_approval_and_a_comment_does_not(self):
         cases = {"changes requested": ([review(at=NOW - 120), review("CHANGES_REQUESTED")], False),
@@ -580,49 +461,338 @@ class LgtmTests(World):
         for label, (reviews, merged) in cases.items():
             with self.subTest(label):
                 self.setUp()
-                _, out, _ = self.tick_lgtm([pr(1)], {}, reviews={1: reviews})
+                self.approved([pr(1)], reviews={1: reviews})
                 self.assertEqual(self.merges(), ["1"] if merged else [])
-                self.assertNotIn("blocked", out)
-
-    def test_an_approval_on_the_head_is_preferred_to_a_newer_one_on_an_older_commit(self):
-        _, out, _ = self.tick_lgtm([pr(1)], {}, reviews={1: [review(at=NOW - 120), review(login="andrea", sha="old")]},
-                                   extra={("gh", "api", "repos/{owner}/{repo}/collaborators/andrea/permission"):
-                                          raw({"permission": "write"})})
-        self.assertIn(f"#1 merged on approval https://x/pull/1#r{NOW - 120}\n", out)
-
-    def test_a_review_on_the_head_wins_and_an_lgtm_rescues_an_older_one(self):
-        _, out, _ = self.tick_lgtm([pr(1)], {1: [comment()]}, reviews={1: [review()]})
-        self.assertIn("#1 merged on approval", out)
-        self.setUp()
-        _, out, _ = self.tick_lgtm([pr(1)], {1: [comment()]}, reviews={1: [review(sha="old")]})
-        self.assertIn("#1 merged on lgtm", out)
-
-    def test_an_lgtm_from_a_bot_author_does_nothing(self):
-        bot = {"login": "app/factory", "is_bot": True}
-        _, out, _ = self.tick_lgtm([pr(1, author=bot)], {1: [comment(login="factory[bot]", type="Bot")]})
-        self.assertEqual((self.gh_mutations(), self.records()), ([], []))
-        self.assertNotIn("blocked", out)
 
     def test_lgtm_from_author_false_leaves_the_author_out_only(self):
         (self.store / "settings.json").write_text('{"lgtm_from_author": false}')
-        self.tick_lgtm([pr(1)], {1: [comment()]})
+        self.approved([pr(1)], {1: [comment()]})
         self.assertEqual(self.gh_mutations(), [])
-        _, out, _ = self.tick_lgtm([pr(1)], {1: [comment(login="dev")]})
-        self.assertIn("#1 merged on lgtm", out)
+        self.approved([pr(1)], {1: [comment(login="dev")]})
+        self.assertEqual(self.merges(), ["1"])
 
-    def test_health_shows_a_stale_approval_without_changing_anything(self):
-        answers, sessions, slugs = self.lgtm_world([pr(1)], {}, reviews={1: [review(sha="old")]})
-        before = {p.name: p.read_bytes() for p in self.store.iterdir()}
-        _, out, _ = self.cli("health", answers=answers, sessions=sessions, entries=slugs)
-        self.assertIn("lgtm-blocked  always  #1/stale  its head changed after the approval; a fresh approval is "
-                      "needed https://x/pull/1", out)
-        self.assertEqual((self.gh_mutations(), {p.name: p.read_bytes() for p in self.store.iterdir()}), ([], before))
+    def test_a_fork_is_a_stop_before_any_approval_is_read(self):
+        code, out, _ = self.approved([pr(1, fork=True)], {1: [comment()]})
+        self.assertIn("#1 stopped: its head is in another repository", out)
+        self.assertFalse(any(ACTIVITY in c for c in self.fake.calls))
 
-    def test_a_failing_reviews_call_is_not_evaluated(self):
-        _, out, _ = self.tick_lgtm([pr(1)], {1: [comment()]},
-                                   extra={("gh", "api", "--paginate", "--slurp", REVIEWS % 1): (1, "", "boom")})
-        self.assertIn("not evaluated: lgtm-blocked: gh api --paginate failed: boom", out)
-        self.assertEqual((self.gh_mutations(), self.records()), ([], []))
+    def test_the_permission_of_a_login_is_asked_once_across_pull_requests(self):
+        self.approved([pr(1), pr(2)], {1: [comment()], 2: [comment(n=2)]})
+        self.assertEqual(sum(c[:3] == ["gh", "api", "repos/{owner}/{repo}/collaborators/andrei/permission"]
+                             for c in self.fake.calls), 1)
+        self.assertEqual(self.merges(), ["1"])
+
+    def test_every_other_check_still_applies(self):
+        code, out, _ = self.approved([pr(1)], {1: [comment()]}, checks=[{"name": "t", "bucket": "fail"}])
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped: failed or cancelled checks: t", out)
+        self.assertEqual(self.gh_mutations(), [])
+
+    def test_a_failing_reviews_call_is_a_stop_that_changes_nothing(self):
+        code, out, _ = self.approved([pr(1)], {1: [comment()]},
+                                     extra={("gh", "api", "--paginate", "--slurp", REVIEWS % 1): (1, "", "boom")})
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped: gh api --paginate failed: boom", out)
+        self.assertEqual(self.gh_mutations(), [])
+
+    def test_a_stack_merges_the_bottom_and_stops_the_next_behind(self):
+        code, out, _ = self.approved([pr(2, base="worktree-t1"), pr(1)], {1: [comment()], 2: [comment(n=2)]},
+                                     extra=stacked_base())
+        self.assertEqual(code, 1)
+        self.assertEqual(self.merges(), ["1"])
+        self.assertIn("#2 stopped: its base has moved", out)
+
+    def test_all_skips_what_is_not_approved_and_merges_the_rest(self):
+        code, out, _ = self.approved([pr(1), pr(2), pr(3)], {1: [comment()], 3: [comment(n=3)]}, "--all")
+        self.assertEqual(code, 1)
+        self.assertIn("#2 skipped: not approved on GitHub", out)
+        self.assertIn("#3 stopped: its base has moved since its head: bring it up to date (factory land t3) so its checks run on the combination", out)
+        self.assertEqual(self.merges(), ["1"])
+
+    def test_an_approved_draft_that_is_handed_over_up_to_date_and_green_is_marked_ready_and_merged(self):
+        code, out, _ = self.approved([pr(1, draft=True)], {1: [comment()]})
+        self.assertEqual(code, 0)
+        self.assertIn("#1 merged", out)
+        self.assertEqual([c[:2] for c in self.gh_mutations()], [["pr", "ready"], ["pr", "merge"]])
+
+    def test_an_approved_draft_whose_task_is_working_is_refused_for_the_handover(self):
+        code, out, _ = self.approved([pr(1, draft=True)], {1: [comment()]}, state="working")
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped: task t1 is in phase motion (declared working)", out)
+        self.assertEqual(self.gh_mutations(), [])
+
+    def test_all_skips_a_stale_approval_and_goes_on(self):
+        code, out, _ = self.approved([pr(1), pr(2)], {1: [comment(at=NOW - 7200)], 2: [comment(n=2)]}, "--all")
+        self.assertEqual(code, 0)
+        self.assertIn("#1 skipped: its head changed after the lgtm", out)
+        self.assertEqual(self.merges(), ["2"])
+
+    def test_a_named_number_that_is_not_approved_stops_the_run(self):
+        code, out, _ = self.approved([pr(1), pr(2)], {2: [comment(n=2)]}, "1", "2")
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped: not approved on GitHub", out)
+        self.assertIn("#2 not attempted", out)
+
+    def test_a_head_behind_its_base_is_refused_in_both_modes(self):
+        behind = {("git", "merge-base", "--is-ancestor"): (1, "", "")}
+        why = ("#1 stopped: its base has moved since its head: bring it up to date (factory land t1) so its checks "
+               "run on the combination")
+        code, out, _ = self.approved([pr(1)], {1: [comment()]}, extra=behind)
+        self.assertEqual(code, 1)
+        self.assertIn(why, out)
+        self.assertEqual(self.gh_mutations(), [])
+        code, out, _ = self.merge("1", prs=[pr(1)], extra=behind)
+        self.assertEqual(code, 1)
+        self.assertIn(why, out)
+        self.assertEqual(self.gh_mutations(), [])
+        self.assertEqual(self.pr_calls(), [])
+
+    def test_behind_is_a_stop_not_a_skip_with_all_and_the_rest_is_not_attempted(self):
+        code, out, _ = self.approved([pr(1), pr(2)], {1: [comment()], 2: [comment(n=2)]}, "--all",
+                                     extra={("git", "merge-base", "--is-ancestor"): (1, "", "")})
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped: its base has moved", out)
+        self.assertIn("#2 not attempted", out)
+
+    def test_the_default_branch_is_the_one_compared_when_the_base_has_merged(self):
+        merged = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
+        self.merge("2", prs=[pr(2, base="worktree-t1")], extra={("gh", "pr", "list", "--head", "worktree-t1"): merged})
+        self.assertIn(["git", "merge-base", "--is-ancestor", "origin/main", SHA], self.fake.calls)
+
+    def test_git_that_cannot_answer_is_pending(self):
+        for label, extra in {"fetch": {("git", "fetch"): (1, "", "no network")},
+                             "merge-base": {("git", "merge-base", "--is-ancestor"): (128, "", "bad object")}}.items():
+            with self.subTest(label):
+                self.setUp()
+                code, out, _ = self.merge("1", prs=[pr(1)], extra=extra)
+                self.assertEqual(code, 1)
+                self.assertIn("#1 stopped: ", out)
+                self.assertEqual(self.gh_mutations(), [])
+
+    def test_every_pull_request_gets_its_own_fetch(self):
+        self.approved([pr(1), pr(2)], {1: [comment()], 2: [comment(n=2)]})
+        self.assertEqual(sum(c[:2] == ["git", "fetch"] for c in self.fake.calls), 2)
+
+    def test_all_skips_a_pull_request_stacked_on_a_skipped_one(self):
+        code, out, _ = self.approved([pr(1), pr(2, base="worktree-t1"), pr(3)], {3: [comment(n=3)]}, "--all",
+                                     reviews={2: [review(n=2)]})
+        self.assertEqual(code, 0)
+        self.assertIn("#1 skipped: not approved on GitHub", out)
+        self.assertIn("#2 skipped: its base worktree-t1 was skipped", out)
+        self.assertEqual(self.merges(), ["3"])
+
+    def test_a_dry_run_reads_the_approval_too(self):
+        code, out, _ = self.approved([pr(1)], {}, "--dry-run", "1")
+        self.assertEqual(code, 1)
+        self.assertIn("#1 would stop: not approved on GitHub", out)
+
+    def test_the_heads_of_a_clean_merge_of_the_base_carry_the_approval(self):
+        heads = mock.patch.object(factory, "approved_heads", lambda p, pr: [SHA, "before"])
+        with heads:
+            code, out, _ = self.approved([pr(1)], reviews={1: [review(sha="before")]})
+        self.assertEqual((code, self.merges()), (0, ["1"]))
+        self.setUp()
+        with heads:
+            self.approved([pr(1)], {1: [comment(at=NOW - 1800)]}, reviews={1: [review(sha="other")]},
+                          activity={1: [{"after": SHA, "timestamp": iso(NOW - 60)},
+                                        {"after": "before", "timestamp": iso(NOW - 3600)},
+                                        {"after": "other", "timestamp": iso(NOW - 7200)}]})
+        self.assertEqual(self.merges(), ["1"])
+
+    def test_plain_merge_reads_no_approval(self):
+        self.merge("1", prs=[pr(1)])
+        self.assertFalse(any(c[:2] == ["gh", "api"] for c in self.fake.calls))
+        self.assertEqual(self.merges(), ["1"])
+
+
+class StaleTests(unittest.TestCase):
+    def stale(self, approved, activity, heads=(SHA,)):
+        p = {"gh": lambda kind, *args: activity}
+        return factory.stale_approval(p, pr(1), comment(at=approved), list(heads))
+
+    def test_the_lgtm_is_newer_than_the_oldest_of_the_pushes_that_kept_an_approved_head(self):
+        run = [{"after": SHA, "timestamp": iso(NOW - 60)}, {"after": "before", "timestamp": iso(NOW - 3600)},
+               {"after": "elsewhere", "timestamp": iso(NOW - 7200)}]
+        self.assertIsNone(self.stale(NOW - 1800, run, (SHA, "before")))
+        self.assertEqual(self.stale(NOW - 3600, run, (SHA, "before"))[0], "stale")
+        self.assertEqual(self.stale(NOW - 1800, run)[0], "stale")
+        self.assertIsNone(self.stale(NOW - 7000, run, (SHA, "before", "elsewhere")))
+
+    def test_a_push_in_between_ends_the_run(self):
+        run = [{"after": SHA, "timestamp": iso(NOW - 60)}, {"after": "other", "timestamp": iso(NOW - 600)},
+               {"after": "before", "timestamp": iso(NOW - 3600)}]
+        self.assertEqual(self.stale(NOW - 300, run, (SHA, "before"))[0], "stale")
+        self.assertIsNone(self.stale(NOW - 30, run, (SHA, "before")))
+
+
+class HeadsTests(unittest.TestCase):
+    """`approved_heads` against real git: a bare remote, a clone, a branch, a base that moved."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.remote, self.work = root / "remote.git", root / "work"
+        patch = mock.patch.object(factory, "identity_exports", lambda: ({}, None))
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.git("init", "--bare", "-b", "main", str(self.remote), cwd=root)
+        self.git("clone", str(self.remote), str(self.work), cwd=root)
+        for key, value in (("user.name", "t"), ("user.email", "t@x"), ("commit.gpgsign", "false")):
+            self.git("config", key, value)
+        self.commit("a.txt", "a\n")
+        self.git("push", "origin", "HEAD:main")
+        self.git("checkout", "-b", "feature")
+        self.commit("f.txt", "f\n")
+        self.git("push", "origin", "feature")
+        self.git("checkout", "main")
+        self.commit("b.txt", "b\n")
+        self.git("push", "origin", "main")
+        self.git("checkout", "feature")
+        self.repo = SimpleNamespace(root=str(self.work), remote="origin", default="main",
+                                    git=lambda *a, path=None: factory.run(["git", *a], cwd=str(self.work)))
+
+    def git(self, *args, cwd=None):
+        done = subprocess.run(["git", *args], cwd=cwd or self.work, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout.strip()
+
+    def commit(self, name, text):
+        (self.work / name).write_text(text)
+        self.git("add", name)
+        self.git("commit", "-m", name)
+
+    def head(self):
+        return self.git("rev-parse", "HEAD")
+
+    def heads(self, base="main"):
+        return factory.approved_heads({"repo": self.repo}, {"headRefOid": self.head(), "baseRefName": base})
+
+    def test_a_head_that_is_no_merge_is_the_only_head(self):
+        self.assertEqual(self.heads(), [self.head()])
+
+    def test_a_clean_merge_of_the_base_steps_back_to_the_first_parent(self):
+        before = self.head()
+        self.git("merge", "--no-edit", "origin/main")
+        self.assertEqual(self.heads(), [self.head(), before])
+
+    def test_two_merges_of_the_base_in_a_row(self):
+        first = self.head()
+        self.git("merge", "--no-edit", "origin/main")
+        second = self.head()
+        self.git("checkout", "main")
+        self.commit("c.txt", "c\n")
+        self.git("push", "origin", "main")
+        self.git("checkout", "feature")
+        self.git("merge", "--no-edit", "main")
+        self.assertEqual(self.heads(), [self.head(), second, first])
+
+    def test_a_commit_on_top_of_the_merge_makes_the_approval_stale(self):
+        self.git("merge", "--no-edit", "origin/main")
+        self.commit("g.txt", "g\n")
+        self.assertEqual(self.heads(), [self.head()])
+
+    def test_a_merge_commit_whose_tree_differs_from_gits_own_is_not_stepped_back_through(self):
+        self.git("merge", "--no-edit", "--no-commit", "origin/main")
+        (self.work / "f.txt").write_text("changed in the merge\n")
+        self.git("add", "f.txt")
+        self.git("commit", "-m", "merge with a change")
+        self.assertEqual(self.heads(), [self.head()])
+
+    def test_a_second_parent_that_is_not_on_the_default_branch_is_not_stepped_back_through(self):
+        self.git("checkout", "-b", "other")
+        self.commit("o.txt", "o\n")
+        self.git("checkout", "feature")
+        self.commit("g.txt", "g\n")
+        self.git("merge", "--no-ff", "--no-edit", "other")
+        self.assertEqual(len(self.git("rev-list", "--parents", "-n", "1", "HEAD").split()), 3)
+        self.assertEqual(self.heads(), [self.head()])
+
+    def test_a_resolved_conflict_is_not_stepped_back_through(self):
+        self.git("checkout", "main")
+        self.commit("f.txt", "main's f\n")
+        self.git("push", "origin", "main")
+        self.git("checkout", "feature")
+        done = subprocess.run(["git", "merge", "main"], cwd=self.work, capture_output=True, text=True)
+        self.assertNotEqual(done.returncode, 0)
+        (self.work / "f.txt").write_text("resolved\n")
+        self.git("add", "f.txt")
+        self.git("commit", "-m", "resolve")
+        self.assertEqual(self.heads(), [self.head()])
+
+    def test_the_branch_of_the_base_pull_request_does_not_count_as_the_base(self):
+        self.git("checkout", "-b", "stack")
+        self.commit("s.txt", "s\n")
+        self.git("push", "origin", "stack")
+        self.git("checkout", "feature")
+        self.commit("f2.txt", "f2\n")
+        self.git("push", "origin", "feature")
+        self.git("checkout", "stack")
+        self.git("merge", "--no-ff", "--no-edit", "feature")
+        self.assertEqual(self.heads(base="feature"), [self.head()])
+
+    def test_a_failing_fetch_leaves_just_the_head(self):
+        self.git("merge", "--no-edit", "origin/main")
+        self.assertEqual(len(self.heads()), 2)
+        with mock.patch.object(factory, "act_git", lambda *a: (1, "", "no network")):
+            self.assertEqual(self.heads(), [self.head()])
+
+
+class LanderBlockedTests(World):
+    """`lgtm-blocked` fires from the stops lander.json records, for pull requests still open at the recorded head."""
+
+    def stop(self, n=1, head=SHA, kind="ci", text="check test failed https://x/run/1"):
+        repo = SimpleNamespace(root=ROOT)
+        state = factory.read_lander(repo)
+        state["stopped"][str(n)] = {"head": head, "kind": kind, "text": text, "ts": iso(NOW - 60)}
+        factory.write_lander(repo, state)
+
+    def health(self, prs, **kw):
+        answers, sessions, slugs = self.world(prs, **kw)
+        return self.cli("health", answers=answers, sessions=sessions, entries=slugs)[1]
+
+    def test_it_fires_under_the_kind_the_lander_gave(self):
+        self.stop()
+        out = self.health([pr(1)])
+        self.assertIn("lgtm-blocked  always  #1/ci  check test failed https://x/run/1 https://x/pull/1", out)
+
+    def test_it_does_not_fire_once_the_head_moved_or_the_pull_request_is_gone(self):
+        self.stop(head="old")
+        self.assertEqual(self.health([pr(1)]), "nothing fired\n")
+        self.stop(n=2)
+        self.assertEqual(self.health([pr(1)]), "nothing fired\n")
+
+    def test_nothing_stopped_asks_github_nothing(self):
+        self.health([pr(1)])
+        self.assertFalse(self.fake.ran("gh", "pr", "list", "--state", "open"))
+
+    def test_a_failing_pull_request_list_is_not_evaluated(self):
+        self.stop()
+        out = self.health([pr(1)], extra={("gh", "pr", "list", "--state", "open"): (1, "", "boom")})
+        self.assertIn("not evaluated: lgtm-blocked: gh pr list failed: boom", out)
+
+
+class PullMainTests(World):
+    def merged(self, branch, pull, **kw):
+        extra = {("git", "rev-parse", "--abbrev-ref"): (0, f"{branch}\n", ""), ("git", "pull"): pull}
+        return self.merge("1", prs=[pr(1)], extra=extra, **kw)
+
+    def test_the_main_checkout_on_the_default_branch_is_fast_forwarded_after_a_merge(self):
+        _, out, _ = self.merged("main", (0, "", ""))
+        self.assertIn(["git", "pull", "--ff-only", "origin", "main"], self.fake.calls)
+        self.assertNotIn("not updated", out)
+
+    def test_a_failure_prints_one_line_and_does_not_fail_the_merge(self):
+        code, out, _ = self.merged("main", (1, "", "not possible to fast-forward"))
+        self.assertEqual(code, 0)
+        self.assertIn("main checkout not updated: not possible to fast-forward\n", out)
+
+    def test_another_branch_or_a_stop_leaves_the_checkout_alone(self):
+        self.merged("other", (0, "", ""))
+        self.assertFalse(self.fake.ran("git", "pull"))
+        self.setUp()
+        self.merged("main", (0, "", ""), checks=[])
+        self.assertFalse(self.fake.ran("git", "pull"))
 
 
 PENDING = [{"name": "test", "bucket": "pending"}]
@@ -630,11 +800,11 @@ FAILED = [{"name": "test", "bucket": "fail"}]
 
 
 class SyncDraftTests(World):
-    def tick(self, prs, comments=None, orphaned=False, **kw):
-        answers, sessions, slugs = LgtmTests.lgtm_world(self, prs, comments or {}, **kw)
+    def tick(self, prs, orphaned=False, at=None, **kw):
+        answers, sessions, slugs = self.world(prs, **kw)
         if orphaned:
             sessions = [s for s in sessions if s.get("name") != SESSION]
-        return self.cli("watch", answers=answers, sessions=sessions, entries=slugs)
+        return self.cli("watch", answers=answers, sessions=sessions, entries=slugs, at=at)
 
     def flips(self):
         return [c[1:] for c in self.fake.calls if c[:3] == ["gh", "pr", "ready"]]
@@ -708,7 +878,7 @@ class SyncDraftTests(World):
 
     def test_an_unreadable_list_changes_nothing(self):
         code, out, _ = self.tick([pr(1, draft=True)], extra={("gh", "pr", "list", "--state", "open"): (1, "", "down")})
-        self.assertIn("drafts not synced: gh pr list failed: down\n", out)
+        self.assertIn("notice: gh pr list failed: down\n", out)
         self.assertEqual(self.flips(), [])
 
     def test_a_refusal_is_reported_and_does_not_stop_the_tick(self):
@@ -718,17 +888,24 @@ class SyncDraftTests(World):
         self.assertIn("#1 draft flag not changed: gh pr ready 1: refused\n", out)
         self.assertIn("#2 ready for review\n", out)
 
-    def test_the_tick_syncs_before_the_lgtm_step_so_an_approved_green_draft_merges_in_one_tick(self):
-        code, out, _ = self.tick([pr(1, draft=True)], {1: [comment()]})
-        self.assertEqual(code, 0)
-        self.assertLess(out.index("#1 ready for review"), out.index("#1 merged on lgtm"))
-        self.assertEqual([c[:2] for c in self.gh_mutations()][0], ["pr", "ready"])
-        self.assertIn(["pr", "merge", "1", "--merge", "--match-head-commit", SHA], self.gh_mutations())
+    def test_a_green_approved_draft_turns_ready_and_the_next_tick_starts_the_lander(self):
+        approved = {"latestReviews": [{"state": "APPROVED", "submittedAt": iso(NOW - 60)}], "comments": []}
+        code, out, _ = self.tick([{**pr(1, draft=True), **approved}])
+        self.assertIn("#1 ready for review\n", out)
+        self.assertEqual([c for c in self.claude_runs() if "--agent" in c], [])  # a draft is never taken on an approval
+        code, out, _ = self.tick([{**pr(1), **approved}], at=NOW + 120)
+        self.assertEqual(len([c for c in self.claude_runs() if "--agent" in c]), 1)
 
-    def test_an_orphaned_tick_runs_neither_step(self):
-        code, out, _ = self.tick([pr(1, draft=True)], {1: [comment()]}, orphaned=True)
-        self.assertEqual(self.gh_mutations(), [])
-        self.assertNotIn("#1 ", out)
+    def test_an_orphaned_tick_still_syncs_the_drafts(self):
+        code, out, _ = self.tick([pr(1, draft=True)], orphaned=True)
+        self.assertEqual(self.flips(), [["pr", "ready", "1"]])
+        self.assertIn("#1 ready for review\n", out)
+
+    def test_the_cheap_tick_asks_github_once_for_the_list_and_once_per_checked_pull_request(self):
+        self.tick([pr(1), pr(2, draft=True)], tasks=["t1", "t2"])
+        lists = [c for c in self.fake.calls if c[:5] == ["gh", "pr", "list", "--state", "open"] and factory.NOTICE_FIELDS in c]
+        checks = [c for c in self.fake.calls if c[:3] == ["gh", "pr", "checks"]]
+        self.assertEqual((len(lists), len(checks)), (1, 2))
 
     def test_a_draft_whose_lead_went_back_to_work_is_not_merged_even_when_approved(self):
         code, out, _ = self.merge("1", prs=[pr(1, draft=True)], state="working")

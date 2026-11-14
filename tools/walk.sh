@@ -106,6 +106,8 @@ expect "present, loaded" "after a tick with a live dispatcher"
 
 say "no dispatcher session: the next tick removes the job"
 gone
+# The health run is gated to once per 30 minutes (kept in lander.json); the tick above ran it, so forget that.
+rm -f "$HOME"/.claude/factory/lander-walk-repo-*.json
 tick
 wait_for "$patience" absent || { cat "$log"; die "the job did not remove itself"; }
 cat "$log"
