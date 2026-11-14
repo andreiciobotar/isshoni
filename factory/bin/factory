@@ -2821,6 +2821,243 @@ def cmd_wizard(args):
                    f"one identity per machine (to replace it, undo it first)", 1)
     verify_app(identity)
     return 0
+# ---- land -------------------------------------------------------------------
+
+LAND_TEST_TIMEOUT = 1800
+LAND_TIMEOUT = 1800
+LAND_REASONS = ("dirty", "conflict", "golden", "tests", "denied", "other")
+LAND_RESULT_RE = re.compile(r"(LANDED, LOOK|LANDED|STOPPED)(?: (\S+))?")
+RANGE_PAIR_RE = re.compile(r"\s*(?:-|\d+):\s+\S+ ([=!<>]) (?:-|\d+):")
+
+
+def land_base(repo, branch):
+    """(the branch the task is based on, whether it has merged): the recorded base, else the default branch."""
+    recorded = repo.git("config", "--get", f"branch.{branch}.factoryBase")[1].strip()
+    if not recorded:
+        return repo.default, False
+    return recorded, not base_counts(repo, recorded, {})
+
+
+def land_busy(repo, path):
+    """Why the lead of the task at `path` may still be running, or None. Sessions that cannot be told count as busy."""
+    sessions = list_sessions()
+    if sessions is None:
+        return "sessions cannot be listed with `claude agents --json --all`"
+    return unplaced_block(sessions) or session_block(sessions_in(sessions, repo.root, path))
+
+
+def lander_sections(text):
+    """The `## ` sections of a lander's reply by heading, each as its non-blank lines."""
+    sections, lines = {}, None
+    for line in text.splitlines():
+        if line.startswith("## "):
+            lines = sections.setdefault(line[3:].strip(), [])
+        elif lines is not None and line.strip():
+            lines.append(line)
+    return sections
+
+
+class Landing:
+    """One handed-over task brought up to its base, as factory/agents/lander.md defines it. `run` gives
+    (result, facts, needs): the result is LANDED, LANDED, LOOK or STOPPED <reason>."""
+
+    def __init__(self, repo, task):
+        self.repo, self.path, self.branch, self.remote = repo, task["path"], task["branch"], repo.remote
+        self.slug = os.path.basename(self.path)
+
+    def git(self, *args):
+        return self.repo.git(*args, path=self.path)
+
+    def out(self, *args):
+        return self.git(*args)[1].strip()
+
+    def stop(self, reason, needs, facts=()):
+        return f"STOPPED {reason}", list(facts), needs
+
+    def run(self):
+        repo, remote, branch = self.repo, self.remote, self.branch
+        busy = land_busy(repo, self.path)
+        if busy:
+            return self.stop("busy", busy)
+        if self.out("status", "--porcelain"):
+            return self.stop("dirty", "the worktree has uncommitted changes")
+        self.base, self.merged = land_base(repo, branch or "")
+        self.target_branch = repo.default if self.merged else self.base
+        self.target = f"{remote}/{self.target_branch}"
+        rc, _, err = self.git("fetch", remote)
+        if rc != 0:
+            return self.stop("other", f"git fetch {remote} failed: {err.strip()}")
+        if branch != f"worktree-{self.slug}" or branch == repo.default:
+            return self.stop("other", f"the branch is {branch}, not worktree-{self.slug}")
+        state, self.url, pr_head, self.pr_base = pull_request(repo, branch)
+        self.old_head = self.out("rev-parse", "HEAD")
+        pushed = self.out("rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/{branch}")
+        if state != "open":
+            return self.stop("other", f"its pull request is {state}")
+        if self.old_head != pushed:
+            return self.stop("other", f"HEAD {self.old_head} is not {remote}/{branch} ({pushed or 'not pushed'})")
+        if self.old_head != pr_head:
+            return self.stop("other", f"HEAD {self.old_head} is not the head of its pull request ({pr_head})")
+        old_base = self.out("merge-base", "HEAD", self.target)
+        if not old_base:
+            return self.stop("other", f"HEAD and {self.target} have no common ancestor")
+        if self.git("merge-base", "--is-ancestor", self.target, "HEAD")[0] == 0:
+            error = self.retarget()
+            facts = [f"base: `{self.target}` has not moved", f"head: `{self.old_head}`, unchanged, pushed",
+                     "pull request: " + (f"retargeted onto {self.target_branch}" if error is None and
+                                         self.pr_base != self.target_branch else "unchanged")]
+            return ("LANDED", facts, "none") if error is None else self.stop("other", error, facts)
+        task_files = self.out("diff", "--name-only", old_base, "HEAD").splitlines()
+        overlap = sorted(set(self.out("diff", "--name-only", old_base, self.target).splitlines()) & set(task_files))
+        rc, out, err = self.git("rebase", self.target)
+        if rc != 0:
+            return self.conflict(task_files, [line for line in (out + err).splitlines() if "CONFLICT" in line])
+        return self.rebased(old_base, overlap)
+
+    def rebased(self, old_base, overlap):
+        repo, branch = self.repo, self.branch
+        new_head = self.out("rev-parse", "HEAD")
+        pairs = self.out("range-diff", f"{old_base}..{self.old_head}", f"{self.target}..HEAD").splitlines()
+        identical = all(m.group(1) == "=" for m in map(RANGE_PAIR_RE.match, pairs) if m)
+        unpushed = [f"head: `{self.old_head}` -> `{new_head}`, not pushed"]
+        if run(["make", "-n", "test"], cwd=self.path)[0] != 0:
+            return self.stop("tests", "no test command: make test is not defined; the worktree is on the "
+                             f"rebased commits at {new_head}, unpushed", unpushed)
+        rc, out, err = run(["make", "test"], cwd=self.path, timeout=LAND_TEST_TIMEOUT)
+        if rc != 0:
+            tail = "\n".join((out + err).splitlines()[-40:])
+            return self.stop("tests", f"make test {'timed out' if rc == 124 else 'failed'}; the worktree is on the "
+                             f"rebased commits at {new_head}, unpushed. Last lines:\n{tail}", unpushed)
+        busy = land_busy(repo, self.path)
+        if busy:
+            return self.stop("busy", f"{busy}; the worktree is on the rebased commits at {new_head}, unpushed",
+                             unpushed)
+        rc, out, err = self.git("push", f"--force-with-lease={branch}:{self.old_head}", self.remote, f"HEAD:{branch}")
+        if rc != 0:
+            return self.stop("other", f"git push failed: {(err or out).strip()}", unpushed)
+        look = bool(overlap) or not identical
+        kind = "LANDED, LOOK" if look else "LANDED"
+        details = [f"Range-diff: {'identical' if identical else 'differs'}.",
+                   f"Overlap with the base: {', '.join(overlap) or 'none'}.", "Conflicts: none.",
+                   "Regenerated: nothing.", "Tests: `make test` pass."]
+        error = self.retarget() or self.announce(new_head, kind, details)
+        count = self.out("rev-list", "--count", f"{old_base}..{self.target}")
+        facts = [f"base: `{self.target}` at `{self.out('rev-parse', self.target)}`, {count} commits since the old base; "
+                 f"overlap: {', '.join(overlap) or 'none'}",
+                 f"head: `{self.old_head}` -> `{new_head}`, pushed; range-diff: {'identical' if identical else 'differs'}",
+                 "conflicts: none", "goldens: not run", "tests: `make test` pass",
+                 f"pull request: updated; its base is {self.target_branch}"]
+        if error:
+            return self.stop("other", f"pushed {new_head}, but {error}", facts)
+        needs = "\n".join([f"the base changed files the task also changes: {', '.join(overlap)}" if overlap else "",
+                           "range-diff differs:\n" + "\n".join(pairs[:40]) if not identical else ""]).strip()
+        return kind, facts, needs or "none"
+
+    def retarget(self):
+        """None, or why the pull request could not be moved onto the target branch."""
+        if self.pr_base == self.target_branch:
+            return None
+        stop = gh_step(self.repo, "pr", "edit", self.url, "--base", self.target_branch)
+        return stop and stop[1]
+
+    def announce(self, new_head, kind, details):
+        """Comment on the pull request after a push; None, or why `gh` could not."""
+        body = "\n".join([
+            f"Rebased onto `{self.target}` at `{self.out('rev-parse', self.target)}` by `factory land`, without the "
+            f"task's lead: `{self.old_head}` -> `{new_head}`.", *details,
+            f"Result: {kind}" + (" (the lead has been asked to look)." if kind != "LANDED" else ".")])
+        with tempfile.NamedTemporaryFile("w", suffix=".md") as f:
+            f.write(body)
+            f.flush()
+            stop = gh_step(self.repo, "pr", "comment", self.url, "--body-file", f.name)
+        return stop and stop[1]
+
+    def conflict(self, task_files, conflicts):
+        self.git("rebase", "--abort")
+        if self.out("rev-parse", "HEAD") != self.old_head or self.out("status", "--porcelain"):
+            return self.stop("other", "the rebase conflicted and could not be aborted back to the old head")
+        base = f"The base is {self.base} (remote {self.remote})." + (" The base has merged." if self.merged else "")
+        brief = "\n".join([
+            f"Your task slug is {self.slug}.", base, f"The reviewed head is {self.old_head}.",
+            f"The head last pushed is {self.old_head}.",
+            "There is no pull request title, body file or retrospective file. Do not declare the hand-over.",
+            f"The forced push of this task's branch is authorised: `git push --force-with-lease -u {self.remote} HEAD`.",
+            f"The golden files this task means to change: {', '.join(task_files) or 'none'}. A generated file on this "
+            "list may be regenerated with the repository's documented command; any other golden that changes is a stop."])
+        argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", "sonnet",
+                "--permission-mode", load_settings()["lead_permission_mode"], "--output-format", "json", brief]
+        rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT)
+        try:
+            text = json.loads(out).get("result")
+        except (ValueError, AttributeError):
+            text = None
+        sections = lander_sections(text) if rc == 0 and isinstance(text, str) else {}
+        said = LAND_RESULT_RE.match(next(iter(sections.get("Result", [])), "").lstrip("` "))
+        facts = sections.get("Facts") or [f"conflicts: {line}" for line in conflicts]
+        needs = "\n".join(sections.get("Needs the lead", [])) or "none"
+        self.git("fetch", self.remote)
+        new_head = self.out("rev-parse", "--verify", "--quiet", f"refs/remotes/{self.remote}/{self.branch}")
+        if new_head and new_head != self.old_head:
+            error = self.announce(new_head, "LANDED, LOOK", facts)
+            return ("LANDED, LOOK", facts, needs) if not error else self.stop(
+                "other", f"pushed {new_head}, but {error}", facts)
+        reason = said.group(2).strip("`") if said and said.group(1) == "STOPPED" and said.group(2) else None
+        return self.stop(reason if reason in LAND_REASONS else "other",
+                         needs if said else "the lander's reply could not be read", facts)
+
+
+def land_one(repo, slug):
+    """Land one task and print its report; True when the result is LANDED."""
+    task = next((t for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
+    if task is None:
+        raise Fail(f"land: {slug} is not a task worktree")
+    if read_tasks(repo.root).get(slug, {}).get("state") != "handed-over":
+        raise Fail(f"land: {slug} is not handed over")
+    landing = Landing(repo, task)
+    result, facts, needs = landing.run()
+    declared = result not in ("LANDED", "STOPPED busy")
+    if declared:
+        declare(repo, slug, "lander", "working")
+    facts = [*facts, "state: " + ("working, declared by factory land" if declared else "handed-over, unchanged")]
+    print("## Result\n`" + result + (f" {landing.url}" if result.startswith("LANDED") else "") + "`\n")
+    print("## Facts\n" + "\n".join(f if f.startswith("- ") else f"- {f}" for f in facts) + "\n")
+    print(f"## Needs the lead\n{needs}")
+    return result == "LANDED"
+
+
+def land_candidates(repo):
+    """The handed-over tasks whose open pull request GitHub reports as conflicting, or whose base has merged."""
+    declared, found = read_tasks(repo.root), []
+    for task in repo.tasks:
+        slug, branch = os.path.basename(task["path"]), task["branch"]
+        if not branch or declared.get(slug, {}).get("state") != "handed-over":
+            continue
+        state, url, _, _ = pull_request(repo, branch)
+        if state != "open":
+            continue
+        rc, out, _ = run(["gh", "pr", "view", url, "--json", "mergeable"], cwd=repo.root)
+        try:
+            conflicting = json.loads(out).get("mergeable") == "CONFLICTING"
+        except (ValueError, AttributeError):
+            conflicting = False
+        if conflicting or land_base(repo, branch)[1]:
+            found.append(slug)
+    return found
+
+
+def cmd_land(args):
+    if bool(args.slug) == args.all:
+        raise Fail("land: name a task or give --all, not both")
+    repo = Repo()
+    slugs = [args.slug] if args.slug else land_candidates(repo)
+    if not slugs:
+        print("nothing to land")
+    landed = []
+    for slug in slugs:
+        if args.all:
+            print(f"# {slug}")
+        landed.append(land_one(repo, slug))
+    return 0 if all(landed) else 1
 
 
 def parse_args(argv):
@@ -2887,6 +3124,9 @@ def parse_args(argv):
     merge.add_argument("prs", nargs="*", type=int, metavar="pr")
     merge.add_argument("--all", action="store_true", help="every open pull request whose task is handed over")
     merge.add_argument("--dry-run", action="store_true")
+    land = sub.add_parser("land", help="bring a handed-over task up to its base (a model takes part only on a conflict)")
+    land.add_argument("slug", nargs="?")
+    land.add_argument("--all", action="store_true", help="every handed-over task whose pull request conflicts or whose base merged")
     schedule = sub.add_parser("schedule", help="install, remove or show the job that runs watch every 30 minutes")
     schedule.add_argument("action", choices=("install", "remove", "status"))
     schedule.add_argument("--dispatcher", help="the dispatcher's session name (default dispatcher-<repo directory>)")
@@ -2901,7 +3141,7 @@ def main(argv=None):
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "schedule": cmd_schedule, "wizard": cmd_wizard, "env": cmd_env}[args.cmd](args)
+                "land": cmd_land, "schedule": cmd_schedule, "wizard": cmd_wizard, "env": cmd_env}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)
         return e.code

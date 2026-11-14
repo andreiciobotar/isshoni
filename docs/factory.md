@@ -31,6 +31,7 @@ factory firings [--json]
 factory merge (<number>... | --all) [--dry-run]
 factory wizard [--owner <account>]
 factory env                                                              # exports that make git and gh act as the App
+factory land (<slug> | --all)
 ```
 
 - **`new`** starts a lead: a background session in a new worktree, with `factory/roles/lead.md` appended to its system prompt, declared `working`. The calling session must be named `--dispatcher` (default `dispatcher-<main checkout's directory name>`; set it with `/rename`), and no other session may carry that name. It refuses a slug whose worktree, branch, session or pull request (in any state) already exists (when `gh` cannot say, it warns and goes on), and a repository at its cap. `--base` stacks the task on another open task's branch.
@@ -41,6 +42,7 @@ factory env                                                              # expor
 - **`wizard`** creates the factory's GitHub App, gets it installed and verifies it; rerun, it verifies or repairs. See Identity.
 - **`env`** prints `export` lines that make `git` and `gh` act as the App, or nothing (exit 0) when no installed identity is stored. See Identity.
 - **`retro`** takes the task from the working directory and reads the JSON from `<file>` when one is given (exit 2 if it cannot be read), else from stdin.
+- **`land`** lands a handed-over task whose base moved or merged, or whose pull request conflicts, without waking its lead (see Landing without the lead).
 
 ## Declared state, phases and the cap
 | Declared state | By | Meaning |
@@ -92,11 +94,33 @@ The lander refuses to start unless the worktree is clean and its head is the rev
 
 `factory state` and `factory retro` take the task from the working directory, so a lander's declaration is the lead's (`role: lead`).
 
+## Landing without the lead
+`factory land <slug>` or `factory land --all` (exactly one) does the mechanics of `factory/agents/lander.md` for a task that was handed over, so the dispatcher does not wake its lead for "your base moved". Run it from the main checkout or any worktree. It prints one report in the lander's format: `## Result` (`LANDED <url>`, `LANDED, LOOK <url>` or `STOPPED <reason>`), `## Facts`, `## Needs the lead` (`none` for `LANDED`); with `--all` each report follows a `# <slug>` line, and `nothing to land` says there was none. Exit 0 when every result is `LANDED`, 1 otherwise, 2 for a task with no worktree or one not declared `handed-over` (no report). `--all` takes only the handed-over tasks whose open pull request GitHub reports `CONFLICTING`, or whose recorded base (`branch.<b>.factoryBase`) has merged: a pull request that is merely behind is left alone, because any push makes an earlier `lgtm` stale (the merge step then stops with `stale`) and the human would approve again for nothing. A named slug always lands.
+
+It checks, in this order, before changing anything: (1) the task's sessions: they cannot be listed, one has no `cwd` and is unfinished, or one in the worktree is interactive or not finished is `STOPPED busy`, and nothing else is done or declared; (2) `git status --porcelain` not empty is `STOPPED dirty`; (3) after `git fetch`, a branch that is not `worktree-<slug>` or is the default branch, a pull request that is not open, or a local head that is not `<remote>/<branch>` and the pull request's head is `STOPPED other`. The reviewed head is taken to be the head that is at once local, pushed and on the open pull request.
+
+The scripted path uses no model. The target is `<remote>/<recorded base>` while that base counts, else `<remote>/<default branch>` (a recorded base that merged: the pull request is retargeted). A target already in the head's history changes nothing but the pull request's base. Otherwise `git rebase <target>`; then `git range-diff` of the old against the new commits; `make test` in the worktree (`LAND_TEST_TIMEOUT`, 1800 s; a repository without a `test` target is `STOPPED tests`, since nothing can say green; no other test command is known); the sessions again; `git push --force-with-lease=<branch>:<old head>`; the retarget; a pull request comment (`Rebased onto <target> at <sha> by factory land, without the task's lead: <old> -> <new>`, then range-diff, overlap, conflicts, regenerated files, tests and the result; never `lgtm`). It never runs a golden command or edits a file: a stale golden is a failing test.
+
+When the rebase conflicts it is aborted (the worktree is back at the old head) and a short run of the lander starts in the worktree (`LAND_TIMEOUT`, 1800 s): `claude -p --agent factory:lander --plugin-dir <plugin> --model sonnet --permission-mode <lead_permission_mode> --output-format json <brief>`. The brief gives the slug, the base and its remote, the old head as both reviewed and last pushed head, whether the base merged, no title, body or retrospective, no hand-over, the files the branch changes as the goldens it may regenerate, and that the forced push of the task's branch is authorised. The script, not the model, settles the outcome from the remote: a branch head that moved is `LANDED, LOOK` (a conflict was resolved) whatever the model said, with the comment; one that did not is `STOPPED <the lander's reason>`, or `other` when the reply cannot be read, the run failed or timed out, or the lander said `LANDED` without pushing. The printed report is the lander's, with the settled result and without its `## Factory feedback` section. What the form was found to do (claude 2.1.325; `--output-format stream-json --verbose` shows it): `--agent factory:lander` with `--plugin-dir` applies the agent's prompt, its model (Sonnet, also without `--model`) and its tool list (the init message names `Bash`, `Read` and `Edit`; no `Write`); hooks of the run carry the payload's `agent_type`, so `tags()` records `role: "lander"` with no change to it; under `--permission-mode auto` the classifier denied `git push --force-with-lease` until the brief said it was authorised; `ANTHROPIC_LOG=debug` makes `claude` log on standard output, which the run reads as a failure.
+
+| Result | When | State after |
+|---|---|---|
+| `LANDED` | the base did not move, or moved with an empty overlap; the range-diff is identical; tests pass; pushed; the pull request is open against the target | nothing declared: `handed-over` stays |
+| `LANDED, LOOK` | pushed, but the base changed a file the task changes, or a commit differs, or the lander resolved a conflict | `working` (`role: lander`) |
+| `STOPPED busy` | see (1) above, or a lead that turned busy at the second check (the worktree is then on the rebased commits, unpushed) | nothing declared |
+| `STOPPED dirty`, `other`, `tests`; `conflict`, `golden`, `denied` (from the lander) | as above; the last 40 lines of a failing or timed-out `make test` (the worktree stays on the rebased commits, unpushed); a failed fetch, abort, lease or `gh` step; the hunks, golden diff or denied step the lander reports | `working` |
+
+A `working` task is not mergeable (`handover` stop) and holds a slot until its lead has looked and declared `handed-over` again. The dispatcher messages the lead only on `LANDED, LOOK` and on a `STOPPED` other than `busy`, pasting the report; on `busy` it does nothing and runs `land` again when the lead's turn has ended. A lead that gets such a report declares `working`, acts on it as on a lander's report and declares the hand-over again.
+
+Limits. Busy is told from the session list at two moments: when it starts and after the tests; a lead woken after the second look is not excluded, and only the leased push keeps the remote safe. Listing sessions failing counts as busy. The task's pull request must be open; the old head must equal the pushed one; `--all` makes no mergeability retry (`UNKNOWN` is not conflicting).
+
+Metric: dispatcher messages to a lead after its first hand-over, per landed task. In the events log a dispatcher message is a `PostToolUse` event with `tool_name` `SendMessage`, `role` `other` and `to` the lead's name (the slug); count those of a slug whose `ts` is after the first `handed-over` record of that slug in the task state log, and divide by the number of tasks that landed in the period (`factory log events --since <ts>`).
+
 ## Stacked tasks
-`new --base <slug>` branches the worktree from the base task's branch and records it in `git config branch.worktree-<slug>.factoryBase`; the pull request targets that branch. The record is never cleared: `status` stops showing a base once it has merged into the default branch, and `clean` stops treating a merged task as stacked. When a base merges, a lead still working on top of it has its lander rebase onto the default branch (the `base-merged` criterion flags it); `merge` retargets a stacked pull request itself when its turn comes.
+`new --base <slug>` branches the worktree from the base task's branch and records it in `git config branch.worktree-<slug>.factoryBase`; the pull request targets that branch. The record is never cleared: `status` stops showing a base once it has merged into the default branch, and `clean` stops treating a merged task as stacked. When a base merges, a lead still working on top of it has its lander rebase onto the default branch (the `base-merged` criterion flags it), and a task already handed over is landed by `factory land`; `merge` retargets a stacked pull request itself when its turn comes.
 
 ## Logs
-All under `~/.claude/factory/`, JSON lines, append-only, mode 0600. Except where noted, a record carries `ts` (UTC, `2026-11-14T00:01:02Z`), `repo` (the main checkout's path), `slug`, `role` (`lead`, `dispatcher`, a subagent's type without the `factory:` prefix such as `coder`, `subagent` when it has none, else `other`; `feedback add` stores the `--role` it is given), `model`, `version` (the plugin's), `session`.
+All under `~/.claude/factory/`, JSON lines, append-only, mode 0600. Except where noted, a record carries `ts` (UTC, `2026-11-14T00:01:02Z`), `repo` (the main checkout's path), `slug`, `role` (`lead`, `dispatcher`, a subagent's type without the `factory:` prefix such as `coder`, or the same for a session started with `--agent`, as `factory land` starts the lander, `subagent` when it has none, else `other`; `feedback add` stores the `--role` it is given), `model`, `version` (the plugin's), `session`.
 
 | Log | Files | Written by | Kept |
 |---|---|---|---|
@@ -295,7 +319,7 @@ Undo: uninstall the App (the installation URL the report prints), delete the App
 
 ## Known limits
 - Nothing caps what a lead spends; the time limit is checked by the lead between subagent runs.
-- A message that a base moved still wakes the lead, which only passes it to its lander; the dispatcher cannot run a lander on a task's worktree itself. What the lander may do rests on its rules and its tool list, not on a mechanism: Bash can do anything the lead's session may. When a stacked task's base was itself rebased, or was squash-merged, the lander's rebase replays the base's old commits: it reports a difference or stops on a conflict, and the lead sorts it out.
+- A message that a base moved still wakes a lead that is working: it passes it to its lander. A handed-over task is landed by `factory land` without its lead; what the lander may do rests on its rules and its tool list, not on a mechanism: Bash can do anything the session may, and the scripted path trusts the session list to tell a lead that is running. When a stacked task's base was itself rebased, or was squash-merged, the rebase replays the base's old commits: `land` reports a difference or stops on a conflict, and the lead sorts it out.
 - A worktree made by hand under a slug used before inherits that slug's last declared state.
 - A store nobody writes to is never pruned. A month file and `watch.log` have no size limit.
 - The monitor adds up the cost of a reused slug, so a task started under an old slug looks dearer than it is. A model the monitor has no price for understates the cost.
