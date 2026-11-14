@@ -117,6 +117,8 @@ class StarterTests(World):
         for never in ("Edit", "Write", "Bash(git", "pr merge", "pr review", "pr comment", "pr edit", "pr ready", "push"):
             self.assertNotIn(never, tools)
         self.assertFalse(any(re.fullmatch(r"Bash\(factory merge \d+\)", t) for t in factory.MERGE_TOOLS))
+        self.assertIn("Bash(factory rerun *)", factory.MERGE_TOOLS)
+        self.assertNotIn("gh run rerun", tools)
 
     def test_without_numbers_it_takes_what_is_approved_and_the_word_permission_is_absent(self):
         code, out, _ = self.lander(prs=[reviewed(1), said(2), plain(3), reviewed(4, state="CHANGES_REQUESTED"),
