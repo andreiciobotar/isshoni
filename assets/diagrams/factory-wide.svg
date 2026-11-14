@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1012 380" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 380" role="img">
   <!-- Preview: open this file in a browser. Wide (this file) and factory-narrow.svg show the same
        picture; change them together. Palette and roles: internal/tui/theme.go.
        Arrows are orthogonal and end on a box edge; the gap between top-lane boxes is 16. -->
   <title>How a brief becomes a merged pull request, and how the factory improves</title>
-  <desc>You give the dispatcher a brief. It starts one lead per task, in its own worktree. The lead writes the spec and dispatches an explorer (Haiku), a coder (Sonnet) and a reviewer (Opus) until the reviewer approves. The lander (Sonnet) runs the tests and pushes a pull request, a draft until it is handed over with checks green. You approve with a review or a comment lgtm, and the lander merges it to main within about two minutes. A watcher script flips the pull request from draft to ready when it is handed over and green; a courier (Haiku) carries your pull request comments to the lead; a site manager (Sonnet, every 30 minutes) watches and escalates to the dispatcher. Models are defaults. Kaizen: every task leaves feedback, decisions, a retrospective and its cost; the dispatcher proposes rule edits, you decide, and the rules apply to the next task.</desc>
+  <desc>You give the dispatcher a brief. It starts one lead per task, in its own worktree. The lead writes the spec and dispatches an explorer (Haiku), a coder (Sonnet) and a reviewer (Opus) until the reviewer approves. The lander (Sonnet) runs the tests and pushes a pull request, a draft until it is ready: green with no conflict. You approve, and a merge queue script merges it to main in order, every 2 minutes. If the merge hits a conflict or a red check, the tech lead (Opus) resolves it, notes it on the pull request and hands it over again; only if behaviour would change does it go back to the lead. A site manager (Sonnet, every 30 minutes) looks, then tells the dispatcher and the lead. Models are defaults. Kaizen: every task leaves feedback, decisions, a retrospective and its cost; the dispatcher (Fable) proposes rule edits, you decide, and the rules apply to the next task.</desc>
   <style>
     svg { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; }
     .bg { fill: #12111C; }
@@ -42,145 +42,149 @@
   </defs>
 
   <!-- card -->
-  <rect class="bg" width="1012" height="380" rx="12"/>
+  <rect class="bg" width="1040" height="380" rx="12"/>
 
   <!-- lane titles -->
-  <text class="k" x="10" y="20">a task · default models</text>
-  <text class="k" x="10" y="364">kaizen 改善</text>
+  <text class="k" x="7" y="20">a task · default models</text>
+  <text class="k" x="7" y="364">kaizen 改善</text>
 
   <!-- top lane, left to right -->
-  <path class="arrow" d="M66 118H82"/>
-  <path class="arrow" d="M202 118H218"/>
-  <path class="arrow" d="M486 118H502"/>
-  <path class="arrow" d="M622 118H638"/>
-  <path class="arrow" d="M754 118H770"/>
-  <path class="arrow" d="M870 118H886"/>
+  <path class="arrow" d="M57 118H73"/>
+  <path class="arrow" d="M183 118H199"/>
+  <path class="arrow" d="M457 118H473"/>
+  <path class="arrow" d="M583 118H599"/>
+  <path class="arrow" d="M747 118H763"/>
+  <path class="arrow" d="M827 118H843"/>
+  <path class="arrow" d="M961 118H977"/>
 
   <!-- you: brief -->
   <g class="human">
-    <rect class="box" x="10" y="86" width="56" height="64" rx="8"/>
-    <text class="n" x="38" y="114" text-anchor="middle">You</text>
-    <text class="t" x="38" y="130" text-anchor="middle">brief</text>
+    <rect class="box" x="7" y="86" width="50" height="64" rx="8"/>
+    <text class="n" x="32" y="114" text-anchor="middle">You</text>
+    <text class="t" x="32" y="130" text-anchor="middle">brief</text>
   </g>
 
   <!-- dispatcher -->
   <g class="dispatcher">
-    <rect class="box" x="82" y="86" width="120" height="64" rx="8"/>
-    <text class="n" x="142" y="106" text-anchor="middle">Dispatcher</text>
-    <text class="s" x="142" y="122" text-anchor="middle">Fable</text>
-    <text class="t" x="142" y="138" text-anchor="middle">lead per task</text>
+    <rect class="box" x="73" y="86" width="110" height="64" rx="8"/>
+    <text class="n" x="128" y="106" text-anchor="middle">Dispatcher</text>
+    <text class="s" x="128" y="122" text-anchor="middle">Fable</text>
+    <text class="t" x="128" y="138" text-anchor="middle">lead per task</text>
   </g>
 
   <!-- one task: the lead and the three roles it dispatches -->
-  <rect class="group" x="218" y="20" width="268" height="178" rx="10"/>
-  <text class="s" x="352" y="38" text-anchor="middle">one task · its own worktree</text>
-  <path class="arrow" d="M298 118H330"/>
-  <path class="arrow" d="M314 118V76Q314 68 322 68H330"/>
-  <path class="arrow" d="M314 118V160Q314 168 322 168H330"/>
+  <rect class="group" x="199" y="20" width="258" height="178" rx="10"/>
+  <text class="s" x="328" y="38" text-anchor="middle">one task · its own worktree</text>
+  <path class="arrow" d="M281 118H305"/>
+  <path class="arrow" d="M293 118V74Q293 68 299 68H305"/>
+  <path class="arrow" d="M293 118V162Q293 168 299 168H305"/>
   <g class="lead">
-    <rect class="box" x="228" y="86" width="70" height="64" rx="8"/>
-    <text class="n" x="263" y="106" text-anchor="middle">Lead</text>
-    <text class="s" x="263" y="122" text-anchor="middle">Fable</text>
-    <text class="t" x="263" y="138" text-anchor="middle">judgment</text>
+    <rect class="box" x="209" y="86" width="72" height="64" rx="8"/>
+    <text class="n" x="245" y="106" text-anchor="middle">Lead</text>
+    <text class="s" x="245" y="122" text-anchor="middle">Fable</text>
+    <text class="t" x="245" y="138" text-anchor="middle">judgment</text>
   </g>
   <g class="explorer">
-    <rect class="box" x="330" y="48" width="146" height="40" rx="8"/>
-    <text class="n" x="403" y="65" text-anchor="middle">explorer<tspan class="m"> · Haiku</tspan></text>
-    <text class="t" x="403" y="80" text-anchor="middle">reads</text>
+    <rect class="box" x="305" y="48" width="142" height="40" rx="8"/>
+    <text class="n" x="376" y="65" text-anchor="middle">explorer<tspan class="m"> · Haiku</tspan></text>
+    <text class="t" x="376" y="80" text-anchor="middle">reads</text>
   </g>
   <g class="coder">
-    <rect class="box" x="330" y="98" width="146" height="40" rx="8"/>
-    <text class="n" x="403" y="115" text-anchor="middle">coder<tspan class="m"> · Sonnet</tspan></text>
-    <text class="t" x="403" y="130" text-anchor="middle">writes</text>
+    <rect class="box" x="305" y="98" width="142" height="40" rx="8"/>
+    <text class="n" x="376" y="115" text-anchor="middle">coder<tspan class="m"> · Sonnet</tspan></text>
+    <text class="t" x="376" y="130" text-anchor="middle">writes</text>
   </g>
   <g class="reviewer">
-    <rect class="box" x="330" y="148" width="146" height="40" rx="8"/>
-    <text class="n" x="403" y="165" text-anchor="middle">reviewer<tspan class="m"> · Opus</tspan></text>
-    <text class="t" x="403" y="180" text-anchor="middle">until APPROVE</text>
+    <rect class="box" x="305" y="148" width="142" height="40" rx="8"/>
+    <text class="n" x="376" y="165" text-anchor="middle">reviewer<tspan class="m"> · Opus</tspan></text>
+    <text class="t" x="376" y="180" text-anchor="middle">until APPROVE</text>
   </g>
 
   <!-- lander: tests, pushes -->
   <g class="lander">
-    <rect class="box" x="502" y="86" width="120" height="64" rx="8"/>
-    <text class="n" x="562" y="106" text-anchor="middle">Lander</text>
-    <text class="s" x="562" y="122" text-anchor="middle">Sonnet</text>
-    <text class="t" x="562" y="138" text-anchor="middle">tests, pushes</text>
+    <rect class="box" x="473" y="86" width="110" height="64" rx="8"/>
+    <text class="n" x="528" y="106" text-anchor="middle">Lander</text>
+    <text class="s" x="528" y="122" text-anchor="middle">Sonnet</text>
+    <text class="t" x="528" y="138" text-anchor="middle">tests, pushes</text>
   </g>
 
   <!-- pull request: draft, then ready -->
   <g class="pr">
-    <rect class="box" x="638" y="86" width="116" height="64" rx="8"/>
-    <text class="n" x="696" y="106" text-anchor="middle">Pull request</text>
-    <text class="s" x="696" y="122" text-anchor="middle">draft → ready</text>
-    <text class="t" x="696" y="138" text-anchor="middle">checks green</text>
+    <rect class="box" x="599" y="86" width="148" height="64" rx="8"/>
+    <text class="n" x="673" y="106" text-anchor="middle">Pull request</text>
+    <text class="s" x="673" y="122" text-anchor="middle">draft → ready</text>
+    <text class="t" x="673" y="138" text-anchor="middle">green, no conflict</text>
   </g>
 
   <!-- you: approve -->
   <g class="human">
-    <rect class="box" x="770" y="86" width="100" height="64" rx="8"/>
-    <text class="n" x="816" y="106" text-anchor="middle">You</text>
-    <text class="s" x="816" y="122" text-anchor="middle">approve:</text>
-    <text class="t" x="816" y="138" text-anchor="middle">review/lgtm</text>
+    <rect class="box" x="763" y="86" width="64" height="64" rx="8"/>
+    <text class="n" x="795" y="114" text-anchor="middle">You</text>
+    <text class="t" x="795" y="130" text-anchor="middle">approve</text>
   </g>
 
-  <!-- main, reached by the lander's merge -->
+  <!-- merge queue: a script merges in order -->
+  <g class="muted">
+    <rect class="box" x="843" y="86" width="118" height="64" rx="8"/>
+    <text class="n" x="902" y="106" text-anchor="middle">Merge queue</text>
+    <text class="s" x="902" y="122" text-anchor="middle">script · 2 min</text>
+    <text class="t" x="902" y="138" text-anchor="middle">in order</text>
+  </g>
+
+  <!-- main -->
   <g class="lander">
-    <rect class="box" x="886" y="86" width="116" height="64" rx="8"/>
-    <text class="n" x="936" y="106" text-anchor="middle">main</text>
-    <text class="s" x="936" y="122" text-anchor="middle">lander merges</text>
-    <text class="t" x="936" y="138" text-anchor="middle">in ~2 min</text>
+    <rect class="box" x="977" y="86" width="56" height="64" rx="8"/>
+    <text class="n" x="1005" y="122" text-anchor="middle">main</text>
   </g>
 
   <!-- side notes, each under what it touches -->
-  <path class="aux" d="M142 214V150"/>
+  <path class="aux" d="M128 214V150"/>
+  <path class="aux" d="M225 214V150"/>
   <g class="side muted">
-    <rect class="box" x="67" y="214" width="150" height="64" rx="8"/>
-    <text class="n" x="142" y="234" text-anchor="middle">site manager</text>
-    <text class="s" x="142" y="250" text-anchor="middle">Sonnet · 30 min</text>
-    <text class="t" x="142" y="266" text-anchor="middle">watches, escalates</text>
+    <rect class="box" x="70" y="214" width="170" height="64" rx="8"/>
+    <text class="n" x="155" y="234" text-anchor="middle">site manager</text>
+    <text class="s" x="155" y="250" text-anchor="middle">Sonnet · 30 min</text>
+    <text class="t" x="155" y="266" text-anchor="middle">looks, then tells</text>
   </g>
-  <!-- courier: pull request, then your comments to the lead -->
-  <path class="aux" d="M650 150V246H622"/>
-  <path class="aux" d="M502 246H263V150"/>
+
+  <!-- tech lead: conflict or red from the merge queue, and the way back -->
+  <path class="arrow" d="M925 150V214"/>
+  <text class="s" x="917" y="186" text-anchor="end">conflict or red</text>
+  <path class="arrow" d="M735 214V150"/>
+  <path class="aux" d="M720 246H265V150"/>
+  <text class="s" x="492" y="238" text-anchor="middle">only if behaviour would change</text>
   <g class="side muted">
-    <rect class="box" x="502" y="214" width="120" height="64" rx="8"/>
-    <text class="n" x="562" y="234" text-anchor="middle">courier</text>
-    <text class="s" x="562" y="250" text-anchor="middle">Haiku</text>
-    <text class="t" x="562" y="266" text-anchor="middle">your comments</text>
-  </g>
-  <path class="aux" d="M736 214V150"/>
-  <g class="side muted">
-    <rect class="box" x="676" y="214" width="120" height="64" rx="8"/>
-    <text class="n" x="736" y="234" text-anchor="middle">watcher</text>
-    <text class="s" x="736" y="250" text-anchor="middle">script</text>
-    <text class="t" x="736" y="266" text-anchor="middle">draft → ready</text>
+    <rect class="box" x="720" y="214" width="220" height="64" rx="8"/>
+    <text class="n" x="830" y="234" text-anchor="middle">tech lead<tspan class="m"> · Opus</tspan></text>
+    <text class="s" x="830" y="250" text-anchor="middle">resolves, notes on PR</text>
+    <text class="t" x="830" y="266" text-anchor="middle">hands over again</text>
   </g>
 
   <!-- bottom lane, right to left: kaizen -->
-  <path class="loop" d="M944 150V306"/>
-  <path class="loop" d="M790 338H774"/>
-  <path class="loop" d="M614 338H598"/>
-  <path class="loop" d="M502 338H486"/>
-  <path class="loop" d="M218 338H38V150"/>
+  <path class="loop" d="M1005 150V306"/>
+  <path class="loop" d="M863 338H847"/>
+  <path class="loop" d="M687 338H671"/>
+  <path class="loop" d="M575 338H559"/>
+  <path class="loop" d="M345 338H32V150"/>
   <g class="muted">
-    <rect class="box" x="790" y="306" width="212" height="64" rx="8"/>
-    <text class="s" x="892" y="326" text-anchor="middle">every task leaves</text>
-    <text class="t" x="892" y="342" text-anchor="middle">feedback · decisions</text>
-    <text class="t" x="892" y="358" text-anchor="middle">retrospective · cost</text>
+    <rect class="box" x="863" y="306" width="170" height="64" rx="8"/>
+    <text class="s" x="948" y="326" text-anchor="middle">every task leaves</text>
+    <text class="t" x="948" y="342" text-anchor="middle">feedback · decisions</text>
+    <text class="t" x="948" y="358" text-anchor="middle">retrospective · cost</text>
   </g>
   <g class="dispatcher">
-    <rect class="box" x="614" y="306" width="160" height="64" rx="8"/>
-    <text class="n" x="694" y="326" text-anchor="middle">Dispatcher</text>
-    <text class="s" x="694" y="342" text-anchor="middle">Fable</text>
-    <text class="t" x="694" y="358" text-anchor="middle">proposes rule edits</text>
+    <rect class="box" x="687" y="306" width="160" height="64" rx="8"/>
+    <text class="n" x="767" y="326" text-anchor="middle">Dispatcher</text>
+    <text class="s" x="767" y="342" text-anchor="middle">Fable</text>
+    <text class="t" x="767" y="358" text-anchor="middle">proposes rule edits</text>
   </g>
   <g class="human">
-    <rect class="box" x="502" y="306" width="96" height="64" rx="8"/>
-    <text class="n" x="550" y="334" text-anchor="middle">You</text>
-    <text class="t" x="550" y="350" text-anchor="middle">decide</text>
+    <rect class="box" x="575" y="306" width="96" height="64" rx="8"/>
+    <text class="n" x="623" y="334" text-anchor="middle">You</text>
+    <text class="t" x="623" y="350" text-anchor="middle">decide</text>
   </g>
   <g class="muted">
-    <rect class="box" x="218" y="306" width="268" height="64" rx="8"/>
-    <text class="n" x="352" y="343" text-anchor="middle">rules for the next task</text>
+    <rect class="box" x="345" y="306" width="214" height="64" rx="8"/>
+    <text class="n" x="452" y="343" text-anchor="middle">rules for the next task</text>
   </g>
 </svg>
