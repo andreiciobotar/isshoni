@@ -259,7 +259,7 @@ func fixtureCopy(t *testing.T, name string) string {
 	return dst
 }
 
-func fixtureSnapshot(t *testing.T, projects, view, session string, row int, fold bool, w, h int) (string, error) {
+func fixtureSnapshot(t *testing.T, projects, view, session string, row, frames int, fold bool, w, h int) (string, error) {
 	t.Helper()
 	root, _ := filepath.Abs("../..")
 	r := &data.Runner{Root: root, ProjectsDir: projects, AgentsDir: filepath.Join(root, "tests", "fixtures", "agents"),
@@ -269,7 +269,7 @@ func fixtureSnapshot(t *testing.T, projects, view, session string, row int, fold
 	}
 	return Snapshot(SnapshotOptions{
 		Options: Options{Runner: r, NoColor: true, Range: "all", Now: func() time.Time { return goldenNow }},
-		View:    view, Session: session, Row: row, Fold: fold, W: w, H: h,
+		View:    view, Session: session, Row: row, Frames: frames, Fold: fold, W: w, H: h,
 	})
 }
 
@@ -298,7 +298,7 @@ func TestGoldenSnapshots(t *testing.T) {
 			for _, sh := range fx.shots {
 				name := fmt.Sprintf("%s%s-%dx%d", fx.prefix, sh.view, sz[0], sz[1])
 				t.Run(name, func(t *testing.T) {
-					got, err := fixtureSnapshot(t, projects, strings.SplitN(sh.view, "-", 2)[0], "", sh.row, sh.fold, sz[0], sz[1])
+					got, err := fixtureSnapshot(t, projects, strings.SplitN(sh.view, "-", 2)[0], "", sh.row, 1, sh.fold, sz[0], sz[1])
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -325,6 +325,25 @@ func TestGoldenSnapshots(t *testing.T) {
 	}
 }
 
+func TestSnapshotFramesAreSingleSnapshots(t *testing.T) {
+	projects := fixtureCopy(t, "grouping")
+	got, err := fixtureSnapshot(t, projects, "dashboard", "", 1, 3, false, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for row := 1; row <= 3; row++ {
+		one, err := fixtureSnapshot(t, projects, "dashboard", "", row, 1, false, 100, 30)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, one)
+	}
+	if got != strings.Join(want, frameSep) {
+		t.Fatalf("Frames: 3, Row: 1 differs from the snapshots of rows 1, 2, 3 joined\n%s", got)
+	}
+}
+
 func TestSnapshotFailures(t *testing.T) {
 	projects := fixtureCopy(t, "projects")
 	// the python CLI resolves the prefix: two matches is an error, not a pick
@@ -332,13 +351,13 @@ func TestSnapshotFailures(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projects, "-fixture-proj", "fixture-0002.jsonl"), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixtureSnapshot(t, projects, "session", "fixture", 0, false, 100, 30); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+	if _, err := fixtureSnapshot(t, projects, "session", "fixture", 0, 1, false, 100, 30); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("ambiguous prefix: %v", err)
 	}
-	if _, err := fixtureSnapshot(t, projects, "session", "nope", 0, false, 100, 30); err == nil {
+	if _, err := fixtureSnapshot(t, projects, "session", "nope", 0, 1, false, 100, 30); err == nil {
 		t.Fatal("unknown session must fail")
 	}
-	if out, err := fixtureSnapshot(t, projects, "session", "fixture-0001", 0, false, 100, 30); err != nil || !strings.Contains(out, "fixture-0001") {
+	if out, err := fixtureSnapshot(t, projects, "session", "fixture-0001", 0, 1, false, 100, 30); err != nil || !strings.Contains(out, "fixture-0001") {
 		t.Fatalf("exact id: %v", err)
 	}
 	// a load that fails exits non-zero: no python, or a missing projects dir
