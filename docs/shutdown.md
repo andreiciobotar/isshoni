@@ -11,7 +11,7 @@ Starts: `gh pr list` (`events`, 20 s timeout) and `gh` pages (`kaizen`, 10 s a p
 | Normal exit, error | The command returns; its `gh` call has ended (own timeout). | read |
 | SIGINT | `events --follow` exits 0. Other commands: Python's `KeyboardInterrupt`; a running `gh` child is killed by `subprocess.run`. | measured (follow), read |
 | SIGTERM | `events --follow` exits 0 through its handler. Other commands die at once; a running `gh` child is not signalled and ends at its own timeout. | measured (follow), read |
-| SIGHUP | The process dies (default action); no child of `events --follow` exists. A running `gh` child is not signalled. | measured (follow), read |
+| SIGHUP | The process dies (default action); `events --follow` has a child only while its `gh pr list` runs (every 60 s unless `--no-gh`, bounded by its 20 s timeout). A running `gh` child is not signalled. | measured (follow), read |
 | Parent killed with SIGKILL | `events --follow` checks `os.getppid()` every tick (0.5 s) and ends. Before: it lived until the next event was written (still running 5 s later). After: gone 0.11 s later. | measured |
 | Reader closes the pipe | Ends at its next write; the first write (the `live` marker) comes at once. | measured |
 | Hung network | `gh` ends at 20 s (`events`) or 10 s a page (`kaizen`). | read |
@@ -35,7 +35,7 @@ Starts: one `ssh` per remote step (every one goes through `host.ssh`), `git` on 
 | Normal exit, error | Each child has been waited for. | read |
 | SIGINT | `subprocess.run` kills its direct child (`ssh`) and re-raises. | read |
 | SIGTERM, SIGHUP | The process dies; the running `ssh` is not signalled and ends when the connection or the remote command ends. | read |
-| Hung network | Every `ssh` call carries `ConnectTimeout=10`, `ServerAliveInterval=15`, `ServerAliveCountMax=3`: a connection that goes quiet ends after about 55 s. No overall limit: a remote clone may be long. | tested with a fake `ssh` that records its options |
+| Hung network | Every `ssh` call carries `ConnectTimeout=10`, `ServerAliveInterval=15`, `ServerAliveCountMax=3`: a connection that goes quiet ends after about 45 s (three missed 15 s probes; `ConnectTimeout` applies only while connecting). No overall limit: a remote clone may be long. | tested with a fake `ssh` that records its options |
 | Local `git` and `ssh -G` hang | Each ends at 30 s and the command stops with a sentence naming it. | tested |
 | Left on disk | `~/.ssh/config` block and `hosts.json` by design (`host remove` takes them out). Nothing temporary. | read |
 
@@ -87,6 +87,6 @@ These are left by Claude Code, not by a script of this repository. The factory o
 
 ## How it is kept true
 
-- **The wrapper.** `tools/noleft.py <command...>` runs a command, then lists every process that descended from it and is still alive, kills those (they are the command's own), prints `left behind: N`, and exits 1 when N is above 0. A process is found by walking the process table every 0.1 s (`ps -axo pid=,ppid=,lstart=,command=`), not by an environment token: macOS hides the environment of system binaries (`/bin/sleep`, `/bin/sh`) from `ps -E`, so a token would miss the most likely leftover. Limit: a process whose whole parent chain ends within 0.1 s of its start is missed. Linux uses the same code path (`ps` there takes the same options); it was verified on macOS only.
+- **The wrapper.** `tools/noleft.py <command...>` runs a command, then lists every process that descended from it and is still alive, kills those (they are the command's own), prints `left behind: N`, and exits 1 when N is above 0. A process is found by walking the process table every 0.1 s (`ps -axo pid=,ppid=,lstart=,command=`), not by an environment token: macOS hides the environment of system binaries (`/bin/sleep`, `/bin/sh`) from `ps -E`, so a token would miss the most likely leftover. Limit: a process whose whole parent chain ends within 0.1 s of its start is missed. A second limit: where the test runner is PID 1 of a container without an init, zombies count as left behind; the project's container sets `init: true`. Linux uses the same code path (`ps` there takes the same options); it was verified on macOS only.
 - **The watch criterion and the health lines** report what a script cannot prevent: a session that handed over but is still busy, old `agent-*` worktrees and old finished job directories ([docs/factory.md](factory.md#shutdown-and-leftovers)).
 - **The rules.** `factory/agents/*.md` and `factory/roles/lead.md` say how to wait for a background command (through its completion notice, not a polling loop: `until ! pgrep -f name` matches its own command line and never ends), that every background command is stopped before the report, that a test that starts a process kills its process group, and that the report names the `left behind` count.

@@ -147,7 +147,7 @@ def ssh_env():
 
 LOCAL_TIMEOUT = 30  # seconds for a local helper (git, ssh -G); the remote ssh call has none: clones are long
 
-# A dead connection ends in about 55 s: 10 to connect, then three missed 15 s probes.
+# A dead connection ends in about 45 s: three missed 15 s probes (ConnectTimeout does not add to it).
 SSH_OPTS = ["-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"]
 
 
