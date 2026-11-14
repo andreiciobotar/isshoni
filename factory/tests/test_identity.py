@@ -11,7 +11,7 @@ from unittest import mock
 
 import test_wizard
 from test_factory import ROOT, WT, factory, invoke, repo_answers
-from test_wizard import TOKEN, FakeGitHub
+from test_wizard import INSTALL_URL, TOKEN, FakeGitHub
 
 real_subprocess_run = subprocess.run
 BOT = "factory-octocat[bot]"
@@ -26,17 +26,38 @@ def expiring(seconds):
 
 
 class Identity(test_wizard.Wizard):
-    def installed(self):
-        self.stored(installation_id=7654321, bot_login=BOT, bot_id=99999999, bot_email=EMAIL)
+    def setUp(self):
+        super().setUp()
+        self.remote = ("octocat", "one")  # what `git remote get-url origin` says in the repository the command runs in
+        patcher = mock.patch.object(factory, "remote_repo", lambda cwd=None: self.remote)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.bodies = []
 
-    def github(self, status=201, lifetime=3600):
-        self.gh = FakeGitHub({MINT: (status, {"token": TOKEN, "expires_at": expiring(lifetime)})})
-        patcher = mock.patch.object(factory, "github_api", self.gh)
+        def no_network(*args, **kw):
+            raise AssertionError(f"a test reached GitHub: {args}")
+
+        patcher = mock.patch.object(factory, "github_api", no_network)
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def cache(self, content):
-        (self.identity / "token.json").write_text(content if isinstance(content, str) else json.dumps(content))
+    def installed(self, **over):
+        self.stored(installation_id=7654321, installation_url=INSTALL_URL, bot_login=BOT, bot_id=99999999, bot_email=EMAIL,
+                    **over)
+
+    def github(self, status=201, lifetime=3600):
+        self.gh = FakeGitHub({MINT: (status, {"token": TOKEN, "expires_at": expiring(lifetime)})})
+
+        def stub(method, path, bearer=None, body=None):
+            self.bodies.append(body)
+            return self.gh(method, path, bearer, body)
+
+        patcher = mock.patch.object(factory, "github_api", stub)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def cache(self, content, name="one"):
+        (self.identity / f"token-{name}.json").write_text(content if isinstance(content, str) else json.dumps(content))
 
     def mints(self):
         return sum(c[:2] == MINT for c in self.gh.calls)
@@ -53,18 +74,18 @@ class AppTokenTests(Identity):
         super().setUp()
         self.installed()
 
-    def token(self):
-        return factory.app_token(factory.acting_identity())
+    def token(self, name="one"):
+        return factory.app_token(factory.load_identity(), name)
 
     def test_first_call_mints_and_caches_privately(self):
         self.github()
         self.assertEqual(self.token(), TOKEN)
         self.assertEqual(self.mints(), 1)
-        cache = self.identity / "token.json"
+        cache = self.identity / "token-one.json"
         self.assertEqual(stat.S_IMODE(cache.stat().st_mode), 0o600)
         self.assertEqual(json.loads(cache.read_text())["token"], TOKEN)
         self.assertEqual(factory.epoch(json.loads(cache.read_text())["expires_at"]) > time.time() + 3000, True)
-        self.assertEqual(self.files(), ["app.json", "key.pem", "token.json"])
+        self.assertEqual(self.files(), ["app.json", "key.pem", "token-one.json"])
 
     def test_cached_token_is_reused(self):
         self.github()
@@ -86,7 +107,7 @@ class AppTokenTests(Identity):
                 self.cache(content)
                 self.assertEqual(self.token(), TOKEN)
                 self.assertEqual(self.mints(), 1)
-                self.assertEqual(json.loads((self.identity / "token.json").read_text())["token"], TOKEN)
+                self.assertEqual(json.loads((self.identity / "token-one.json").read_text())["token"], TOKEN)
 
     def test_a_failing_cache_write_still_returns_the_token(self):
         self.github()
@@ -111,6 +132,40 @@ class AppTokenTests(Identity):
         self.assertEqual(rc, 1)
         self.assertIn("export GH_TOKEN=unavailable", out.splitlines())
 
+    def test_the_token_is_scoped_to_the_repository(self):
+        self.github()
+        self.token()
+        self.assertEqual(self.bodies, [{"repositories": ["one"]}])
+        self.assertEqual(factory.installation_token(factory.load_identity())[0], TOKEN)
+        self.assertEqual(self.bodies[-1], None)
+
+    def test_each_repository_has_its_own_cache(self):
+        self.github()
+        self.token("one")
+        self.token("two")
+        self.assertEqual(self.mints(), 2)
+        self.assertEqual(self.bodies, [{"repositories": ["one"]}, {"repositories": ["two"]}])
+        self.assertEqual(self.files(), ["app.json", "key.pem", "token-one.json", "token-two.json"])
+        self.cache({"token": "only-for-one", "expires_at": expiring(3000)}, "one")
+        self.assertEqual(self.token("one"), "only-for-one")
+        self.assertEqual(self.token("two"), TOKEN)
+
+    def test_a_repository_the_app_is_not_installed_on(self):
+        self.github(status=422)
+        with self.assertRaises(factory.Fail) as caught:
+            self.token()
+        self.assertEqual(str(caught.exception), f"the App is not installed on octocat/one: add it at {INSTALL_URL}")
+        rc, out, err = self.cli("env")
+        self.assertEqual((rc, out), (1, "export GH_TOKEN=unavailable\n"))
+        self.assertIn("the App is not installed on octocat/one", err)
+
+    def test_a_name_that_is_not_a_repository_name_is_refused(self):
+        self.github()
+        for name in ("", "a/b", "../x", "a b"):
+            with self.subTest(name), self.assertRaises(factory.Fail):
+                self.token(name)
+        self.assertEqual(self.gh.calls, [])
+
     def test_a_refused_mint_fails_and_leaves_nothing_behind(self):
         self.github(status=401)
         with self.assertRaises(factory.Fail):
@@ -123,12 +178,18 @@ class ActingIdentityTests(Identity):
         self.assertIsNone(factory.acting_identity())
         self.stored()
         self.assertIsNone(factory.acting_identity())
-        self.installed_over()
-        self.assertEqual(factory.acting_identity()["bot_login"], BOT)
-
-    def installed_over(self):
         data = json.loads((self.identity / "app.json").read_text())
         (self.identity / "app.json").write_text(json.dumps({**data, "bot_login": BOT, "bot_email": EMAIL}))
+        identity, name = factory.acting_identity()
+        self.assertEqual((identity["bot_login"], name), (BOT, "one"))
+
+    def test_only_in_a_repository_of_the_apps_owner(self):
+        self.installed()
+        self.remote = ("OCTOCAT", "one")
+        self.assertEqual(factory.acting_identity()[1], "one")
+        for remote in (("someone-else", "one"), None):
+            self.remote = remote
+            self.assertIsNone(factory.acting_identity())
 
 
 class EnvTests(Identity):
@@ -136,6 +197,14 @@ class EnvTests(Identity):
         self.assertEqual(self.cli("env"), (0, "", ""))
         self.stored()
         self.assertEqual(self.cli("env"), (0, "", ""))
+
+    def test_nothing_outside_a_repository_of_the_apps_owner(self):
+        self.installed()
+        self.github()
+        for remote in (("someone-else", "one"), None):
+            self.remote = remote
+            self.assertEqual(self.cli("env"), (0, "", ""))
+        self.assertEqual(self.gh.calls, [])
 
     def test_the_exports(self):
         self.installed()
@@ -259,6 +328,14 @@ class RunTests(Identity):
         self.assertIsNone(self.run_with(["git", "status"])[1])
         self.assertEqual(self.mints(), 0)
 
+    def test_gh_outside_a_repository_of_the_apps_owner_gets_no_token(self):
+        self.installed()
+        self.github()
+        for remote in (("someone-else", "one"), None):
+            self.remote = remote
+            self.assertIsNone(self.run_with(["gh", "pr", "list"])[1])
+        self.assertEqual(self.mints(), 0)
+
     def test_an_unwritable_identity_directory_does_not_break_gh(self):
         self.installed()
         self.github()
@@ -285,16 +362,32 @@ class StatusTests(Identity):
         with mock.patch.object(factory, "load_identity", return_value=stored):
             return invoke(["status", *flags], repo_answers([]))[1]
 
+    INSTALLED = {"owner": "octocat", "bot_login": BOT, "installation_url": INSTALL_URL}
+
     def test_the_line_says_who_acts(self):
         self.assertIn("\nacting on GitHub with your gh login (no App identity: factory wizard)\n", self.status(None))
         self.assertIn("\nacting on GitHub with your gh login (the App is stored but not installed: factory wizard)\n",
-                      self.status({"app_id": 1}))
-        self.assertIn(f"\nacting on GitHub as {BOT} (the factory's App)\n", self.status({"bot_login": BOT}))
+                      self.status({"app_id": 1, "owner": "octocat"}))
+        self.assertIn(f"\nacting on GitHub as {BOT} (the factory's App)\n", self.status(self.INSTALLED))
+        for remote in (("someone-else", "one"), None):
+            self.remote = remote
+            self.assertIn("\nacting on GitHub with your gh login (the App belongs to octocat, not this repository's owner)\n",
+                          self.status(self.INSTALLED))
 
-    def test_json_names_the_bot_or_null(self):
-        self.assertIsNone(json.loads(self.status(None, "--json"))["identity"])
-        self.assertIsNone(json.loads(self.status({"app_id": 1}, "--json"))["identity"])
-        self.assertEqual(json.loads(self.status({"bot_login": BOT}, "--json"))["identity"], BOT)
+    def test_all_repositories_are_flagged(self):
+        everything = {**self.INSTALLED, "repository_selection": "all"}
+        self.assertIn(f"\nacting on GitHub as {BOT} (the factory's App); installed on ALL repositories: narrow it at "
+                      f"{INSTALL_URL}\n", self.status(everything))
+        self.assertNotIn("ALL", self.status({**self.INSTALLED, "repository_selection": "selected"}))
+
+    def test_json_names_the_bot_and_the_selection(self):
+        doc = json.loads(self.status(None, "--json"))
+        self.assertEqual((doc["identity"], doc["repository_selection"]), (None, None))
+        self.assertIsNone(json.loads(self.status({"app_id": 1, "owner": "octocat"}, "--json"))["identity"])
+        doc = json.loads(self.status({**self.INSTALLED, "repository_selection": "all"}, "--json"))
+        self.assertEqual((doc["identity"], doc["repository_selection"]), (BOT, "all"))
+        self.remote = ("someone-else", "one")
+        self.assertIsNone(json.loads(self.status(self.INSTALLED, "--json"))["identity"])
 
 
 class RetroTests(Identity):

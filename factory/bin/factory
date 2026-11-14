@@ -70,8 +70,8 @@ def run(argv, cwd=None, timeout=None, input=None):
     env = None
     if argv[0] == "gh":
         try:
-            if identity := acting_identity():
-                env = {**os.environ, "GH_TOKEN": app_token(identity)}
+            if found := acting_identity(cwd):
+                env = {**os.environ, "GH_TOKEN": app_token(*found)}
         except (Fail, OSError) as e:
             return 1, "", str(e)
     try:
@@ -736,10 +736,12 @@ def cmd_status(args):
                              ("settled", "settled"))}
     counts["in_motion"] = sum(r["phase"] in ("motion", "blocked") for r in rows)
     stored = load_identity()
-    bot = stored and stored.get("bot_login")
+    acting = stored and stored.get("bot_login") and acting_identity()
+    bot = acting and stored["bot_login"]
     if args.json:
         doc = {"rows": rows, "cap": cap, "open": len(rows), **counts,
-               "leftover_agent_worktrees": repo.leftover, "outside_worktrees": repo.outside, "identity": bot or None}
+               "leftover_agent_worktrees": repo.leftover, "outside_worktrees": repo.outside, "identity": bot or None,
+               "repository_selection": stored and stored.get("repository_selection")}
         print(json.dumps(doc, indent=2))
         return 0
     now = time.time()
@@ -760,9 +762,14 @@ def cmd_status(args):
           f"waiting for review {counts['in_review']}; merged, not cleaned {counts['merged']}; "
           f"settled, not cleaned {counts['settled']}; leftover agent worktrees {repo.leftover}; "
           f"worktrees outside .claude/worktrees {repo.outside}")
-    print(f"acting on GitHub as {bot} (the factory's App)" if bot else
-          "acting on GitHub with your gh login (" + ("the App is stored but not installed" if stored else "no App identity")
-          + ": factory wizard)")
+    if bot:
+        print(f"acting on GitHub as {bot} (the factory's App)" + (
+            f"; installed on ALL repositories: narrow it at {stored['installation_url']}"
+            if stored.get("repository_selection") == "all" else ""))
+    else:
+        print("acting on GitHub with your gh login (" + (
+            f"the App belongs to {stored['owner']}, not this repository's owner" if stored and stored.get("bot_login") else
+            "the App is stored but not installed: factory wizard" if stored else "no App identity: factory wizard") + ")")
     for r in rows:
         if r["phase"] == "review":
             print(f"waiting on the human: {r['slug']} {r['deliverable'] or r['pr_url'] or '-'}")
@@ -2424,6 +2431,7 @@ def watch_lgtm(p):
 
 GITHUB = "https://api.github.com"
 TOKEN_MARGIN = 900
+REPO_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 WIZARD_WAIT = 600
 INSTALL_POLL = 3
 PERMISSIONS = {"contents": "write", "pull_requests": "write", "checks": "read", "statuses": "read", "actions": "read"}
@@ -2497,22 +2505,33 @@ def api(method, path, want, bearer=None):
     return body
 
 
-def installation_token(identity):
-    """(token, expires_at) of a fresh installation token."""
+def installation_token(identity, repository=None):
+    """(token, expires_at) of a fresh installation token, reaching only `repository` when one is named."""
     path = f"/app/installations/{identity['installation_id']}/access_tokens"
-    body = api("POST", path, 201, app_jwt(identity))
+    status, body = github_api("POST", path, app_jwt(identity), {"repositories": [repository]} if repository else None)
+    if status == 422 and repository:
+        raise Fail(f"the App is not installed on {identity['owner']}/{repository}: add it at {identity.get('installation_url')}", 1)
+    if status != 201:
+        raise Fail(f"GitHub POST {path} failed: {reason(status, body)}", 1)
     return body["token"], body["expires_at"]
 
 
-def acting_identity():
-    """The stored identity once the wizard has installed it (it writes bot_login last), else None."""
+def acting_identity(cwd=None):
+    """(identity, repository name) once the wizard has installed the App (it writes bot_login last) and `cwd` is in a
+    repository of the App's owner, else None."""
     identity = load_identity()
-    return identity if identity and identity.get("bot_login") else None
+    if not (identity and identity.get("bot_login")):
+        return None
+    repo = remote_repo(cwd)
+    return (identity, repo[1]) if repo and repo[0].lower() == identity["owner"].lower() else None
 
 
-def app_token(identity):
-    """An installation token with at least TOKEN_MARGIN seconds left: the cached one, else a fresh one (cached, 0600)."""
-    cache = IDENTITY.expanduser() / "token.json"
+def app_token(identity, name):
+    """An installation token for repository `name` with at least TOKEN_MARGIN seconds left: the cached one, else a
+    fresh one (cached, 0600)."""
+    if not REPO_NAME_RE.fullmatch(name):
+        raise Fail(f"{name!r} is not a repository name", 1)
+    cache = IDENTITY.expanduser() / f"token-{name}.json"
     cached_token, left = None, 0
     try:
         cached = json.loads(cache.read_text())
@@ -2522,7 +2541,7 @@ def app_token(identity):
     if cached_token and left > TOKEN_MARGIN:
         return cached_token
     try:
-        token, expires_at = installation_token(identity)
+        token, expires_at = installation_token(identity, name)
     except Fail:
         if cached_token and left > 0:
             return cached_token
@@ -2542,10 +2561,10 @@ def app_token(identity):
 def cmd_env(args):
     """Print the exports that make git and gh act as the App; nothing without an identity."""
     try:
-        identity = acting_identity()
-        if not identity:
+        found = acting_identity()
+        if not found:
             return 0
-        token, code = app_token(identity), 0
+        identity, token, code = found[0], app_token(*found), 0
     except (Fail, OSError) as e:
         print(f"factory: no App token: {e}; git and gh will fail until one can be minted", file=sys.stderr)
         identity, token, code = None, "unavailable", 1
@@ -2567,10 +2586,11 @@ def cmd_env(args):
     return code
 
 
-def remote_owner():
-    rc, out, _ = run(["git", "remote", "get-url", "origin"])
-    m = re.search(r"github\.com[:/]+([^/\s]+)/", out) if rc == 0 else None
-    return m and m.group(1)
+def remote_repo(cwd=None):
+    """(owner, name) of the GitHub repository `origin` points to (https or ssh form), or None."""
+    rc, out, _ = run(["git", "remote", "get-url", "origin"], cwd=cwd)
+    m = re.search(r"github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$", out.strip()) if rc == 0 else None
+    return m and m.groups()
 
 
 def manifest_page(owner, org, name, port, state):
@@ -2655,7 +2675,7 @@ def store_identity(identity, pem):
 
 
 def create_app(owner):
-    owner = owner or remote_owner()
+    owner = owner or (remote_repo() or (None,))[0]
     if not owner:
         raise Fail("no owner: run inside a clone whose origin is on GitHub, or pass --owner NAME", 1)
     org = api("GET", f"/users/{urllib.parse.quote(owner)}", 200).get("type") == "Organization"
@@ -2709,6 +2729,8 @@ def installation_for(identity):
     if found:
         return found
     url = f"{identity['html_url']}/installations/new"
+    print(f'On GitHub choose "Only select repositories" and pick the ones the factory works in: with "All repositories" '
+          f"the bot can write to every repository of {identity['owner']}.")
     print(f"Install the App on {identity['owner']} and choose its repositories: {url}")
     open_browser(url)
     deadline = time.monotonic() + WIZARD_WAIT
@@ -2750,12 +2772,18 @@ def verify_app(identity):
     bot = f"{identity['slug']}[bot]"
     bot_id = api("GET", f"/users/{urllib.parse.quote(bot, safe='')}", 200)["id"]
     identity = {**identity, "installation_id": installation["id"], "installation_url": installation["html_url"],
-                "bot_login": bot, "bot_id": bot_id, "bot_email": f"{bot_id}+{bot}@users.noreply.github.com"}
+                "repository_selection": installation.get("repository_selection"), "bot_login": bot, "bot_id": bot_id, "bot_email": f"{bot_id}+{bot}@users.noreply.github.com"}
     write_identity(identity)
     print(f"App {identity['slug']}: {identity['html_url']}")
-    print(f"Acts as {bot}; reads and writes {len(repos)} repositories:")
-    for name in repos:
-        print(f"  {name}")
+    if identity["repository_selection"] == "all":
+        print(f"Acts as {bot}; reads and writes all {len(repos)} repositories of {identity['owner']}.")
+        print(f"WARNING: the App is installed on ALL repositories of {identity['owner']} ({len(repos)}). "
+              f"Narrow it to the ones the factory works in: {identity['installation_url']}")
+        print("The tokens the factory hands out reach only the repository a task runs in, either way.")
+    else:
+        print(f"Acts as {bot}; reads and writes {len(repos)} repositories:")
+        for name in repos:
+            print(f"  {name}")
     print(f"Its private key is in {IDENTITY}. To undo:")
     print("\n".join(undo_lines(identity)))
 
