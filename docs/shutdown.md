@@ -56,7 +56,7 @@ Start: headless Chrome (`tools/strip.py`, 120 s timeout), `bin/isshoni-tui` and 
 
 ## Container start script (`docker/start`)
 
-Starts `supercronic` and, when a key and the dashboard exist, a loop that runs `isshoni-tui --serve` and restarts it 2 s after it ends. Both are children of the script. A third, `revive &`, runs in the background when the same container restarts: `stop()` ends it too, and inside it `claude agents --json` and `claude --bg` each get 30 s.
+Starts `supercronic` and, when a key and the dashboard exist, a loop that runs `isshoni-tui --serve` and restarts it 2 s after it ends. Both are children of the script. A third, `revive &`, runs in the background when the same container restarts: `stop()` ends it too when the dashboard runs (without one the script is replaced by `supercronic` and nothing stops `revive`), and inside it `claude agents --json` and `claude --bg` each get 30 s.
 
 | Event | What happens | How learned |
 |---|---|---|
