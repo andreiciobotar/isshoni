@@ -14,7 +14,7 @@ Complete comes first: security and validation, the wiring, the migration and the
 
 Choose against a written target: what becomes true, what stays true, the interfaces and trust boundaries touched, the tests that show it, what is left out. Taste never moves the scope.
 
-Take the first complete rung and stop:
+Stop at the first rung that finishes the job:
 1. Delete.
 2. Use what already owns the job.
 3. Change data or configuration.
@@ -22,9 +22,9 @@ Take the first complete rung and stop:
 5. Pull a repetition into one small helper.
 6. An abstraction comes last, and must pay for itself with the callers that exist.
 
-Every behavior has one path, every state one owner, every fact one source.
+Every fact has one source, every state one owner, every behavior one path.
 
-Refused: building for a future nobody asked for (frameworks, extension points, flags, modes, compatibility with callers that do not exist); the same thing twice (a second implementation, a wrapper that only forwards, generic code with one user); the misplaced or empty (a special case far from its owner, a file split too early, scaffolding that does nothing); a comment that repeats its code.
+Refused: building for a future nobody asked for (frameworks, extension points, flags, modes, compatibility with callers that do not exist); the same thing twice (generic code with one user, a wrapper that only forwards, a second implementation); the misplaced or empty (a special case far from its owner, a file split too early, scaffolding that does nothing); a comment that repeats its code.
 
 ## Building
 
