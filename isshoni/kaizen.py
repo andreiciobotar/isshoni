@@ -727,8 +727,10 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     with ThreadPoolExecutor(max(len(paths), 1)) as pool:
         loaded = dict(zip(paths, pool.map(load_prs, paths)))
     pulls = {k: _pr_for(loaded[k[0]][0], k[1]) for k in by_task}
-    started = [_ts(_started_rec(by_task[k])) if _started_rec(by_task[k]) else None for k, p in pulls.items() if pulse.merged_recently(p, now)]
-    sessions = load_sessions(pulse.sessions_from(cutoff, now, started)) if by_task else []
+    merged_at = {k: transcript.parse_ts(p["merged"]) for k, p in pulls.items() if p}
+    baseline = pulse.baseline_start(cutoff, now, [m for m in merged_at.values() if m])
+    started = [_ts(_started_rec(by_task[k])) if _started_rec(by_task[k]) else None for k, m in merged_at.items() if m and m >= baseline]
+    sessions = load_sessions(pulse.sessions_from(cutoff, baseline, started)) if by_task else []
     mine = {}
     for s in sessions:
         mine.setdefault((s.repo_path, s.task), []).append(s)
@@ -739,7 +741,7 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     for t in tasks:
         t["_build_runs"] = builds[(t["repo_path"], t["slug"])]
     tasks.sort(key=lambda t: (t["started"] is not None, t["started"] or transcript.EPOCH, t["slug"], t["repo_path"]))
-    everyone = tasks  # the pulse ignores the cutoff
+    everyone = tasks  # the pulse takes every task: the cutoff only sets its baseline
     tasks = [t for t in tasks if cutoff is None or (t["started"] and t["started"] >= cutoff)]
     for t in everyone:
         _apply_pr(t, pulls[(t["repo_path"], t["slug"])])
@@ -764,7 +766,7 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     summary["by_mode"] = _by_mode([t for t in tasks if t["landed"]])
     tech_lead = _tech_lead(tech, cutoff, tasks)
     queue = pulse.read_queue(factory_dir)
-    pulse_doc = pulse.build(factory_dir, everyone, by_task, sessions, prices, queue, now, cached)
+    pulse_doc = pulse.build(factory_dir, everyone, by_task, sessions, prices, queue, cutoff, now, cached)
     friction_doc = friction.build(factory_dir, tasks, by_task, sessions, mine, prices, cutoff, queue, tech_sessions)
     for t in everyone:
         for private in [k for k in t if k.startswith("_")]:
