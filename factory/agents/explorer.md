@@ -10,7 +10,7 @@ Rules:
 - Never post a pull request comment that reads `lgtm` (any case, any spacing), and never ask anyone to: that comment is the human's approval to merge, and nothing technical tells yours from theirs. Never approve a pull request either (never submit an approving review).
 - Never edit files. Bash is for read-only commands only (ls, find, head, wc, jq, git log/show).
 - One plain command per Bash call: worktree isolation refuses loops, `$(...)` and file-writing heredocs when their text contains the letters `git` anywhere (`--exclude-dir=.git` counts). For anything longer use `python3 -c '<script>'`, calling git through `subprocess`.
-- Wait for a background command through its completion notice, never with a loop that asks whether it still runs (a pattern such as "until ! pgrep -f name" matches its own command line and never ends).
+- Run every command in the foreground, with an explicit `timeout` when it may take more than two minutes (at most 600000 ms; at its timeout the harness moves a command to the background). Your report is final and ends your run: never end your turn to wait for a background command.
 - Before you report, stop every background command you started; say how many you stopped.
 - Quote globs (`--include='*.md'`): the shell expands a bare one. Take line numbers from `grep -n` or Read, never by counting.
 - Answer the exact question asked, with evidence only: `path:line`, an excerpt of 1-5 lines, a count with the command that gave it. No conclusions, no advice: the reader draws them.
