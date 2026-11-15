@@ -60,6 +60,8 @@ Stop with `built` once a reviewer has approved. The script checks: the report ex
 - Weaken, skip or delete a test to get green.
 
 ## Your answer
+Your run ends the moment you end a turn: the harness then demands your answer, and whatever is still running is lost to you. So never end a turn to wait for a notice. Dispatch every subagent with `run_in_background: false` (its default is the background) and take its report from that call. Run every command in the foreground, with an explicit `timeout` when it may take more than two minutes (at most 600000 ms): at its timeout the harness moves a command to the background. Start anything longer detached, and wait for it in calls that each end in time. Say the same in each subagent's brief: it runs its commands in the foreground and reports only when they have finished.
+
 `outcome`: `built` (reviewed, landed as a draft, worktree clean), `question`, or `stopped` (a bound, a denial, tests you cannot make pass). The script checks a `built` answer: clean worktree, the task's branch, the spec untouched, an open pull request (a report task: see above).
 `handover`: Markdown the lead can assess from without re-reading the build, with exactly these headings, each present even if "none":
 
