@@ -524,7 +524,9 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   `factory status --json` reports: the tasks holding a slot against the cap (the meter
   shows the ordinary limit plus the slots held in reserve for critical work, `7/9+1`),
   and every task with its phase, elapsed time (for a task in motion, against its limit,
-  yellow when nearing it and red past it), size (shown when any task has one), pull
+  yellow when nearing it and red past it; a task the site manager gave more time has one
+  faint line beneath: `limit +30m by site-manager · <reason>`), size (shown when any task
+  has one), pull
   request or deliverable, base, and `overtime` or `stale`. At the top, a band lists everything that waits on you across
   repositories, oldest first: tasks in review (the pull request or deliverable to look
   at) and tasks blocked on you (what they asked; a task blocked on the dispatcher or on
@@ -567,6 +569,8 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   a column chart per measure, one column per landed task in start order, with the
   plugin versions marked under it; who caught the defects; the site manager's record:
   precision and recall, then what it escalated with the outcomes, suppressed and missed,
+  then, when it extended any limit, a line of its own: the share of extended limits kept
+  (`-` until one has ended) and how many were extended, kept and overran,
   or one line saying nothing is logged yet; the tech lead's record: what came back from
   the merge queue and how each ended, the cost per resolution (`unpriced` when no
   resolution has a price), the lead wake-ups after hand-over over the landed tasks, or one

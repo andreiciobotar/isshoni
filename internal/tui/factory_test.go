@@ -576,6 +576,53 @@ func TestFactoryTaskRowNamesWhomABlockedTaskWaitsOn(t *testing.T) {
 	}
 }
 
+func TestFactoryTaskRowShowsWhyATaskInMotionHasMoreTime(t *testing.T) {
+	ext := func(mins int, by, reason string) data.FactoryExtension {
+		return data.FactoryExtension{Minutes: mins, By: by, Reason: reason}
+	}
+	motion := func(slug string, es ...data.FactoryExtension) data.FactoryTask {
+		x := ftask(slug, "motion")
+		x.Extensions = es
+		return x
+	}
+	one := motion("one", ext(30, "site-manager", "the migration  is\nhalf done"))
+	two := motion("two", ext(30, "site-manager", "first"), ext(15, "lead", "the rollback path is left"))
+	long := motion("long", ext(30, "site-manager", strings.Repeat("a long reason ", 20)))
+	bare := motion("bare", ext(10, "site-manager", " "))
+	none := motion("none")
+	review := ftask("in-review", "review")
+	review.Extensions = []data.FactoryExtension{ext(30, "site-manager", "kept")}
+	m := factoryModel(true, 140, 60, factoryRepo{name: "m", st: fstatus(5, one, two, long, bare, none, review)})
+	p, rows := m.th.on(m.th.Bg), m.fac.repos[0].st.Rows
+	cols := m.factoryCols(p, 140, rows)
+	detail := func(i int) (string, int) {
+		b := m.taskRow(p, cols, rows[i], 140)
+		if len(b) == 1 {
+			return "", 1
+		}
+		return strings.TrimRight(ansi.Strip(b[1]), " "), len(b)
+	}
+	indent := strings.Repeat(" ", 2+cols.slug+2)
+	for i, want := range map[int]string{
+		0: "limit +30m by site-manager · the migration is half done",
+		1: "limit +45m in 2 extensions, last by lead · the rollback path is left",
+		3: "limit +10m by site-manager",
+	} {
+		if got, n := detail(i); got != indent+want || n != 2 {
+			t.Errorf("row %d: %q (%d lines), want %q", i, got, n, indent+want)
+		}
+	}
+	got, n := detail(2)
+	if n != 2 || width(got) > 139 || !strings.HasSuffix(got, "…") || !strings.HasPrefix(got, indent+"limit +30m by site-manager · a long reason") {
+		t.Errorf("a long reason is cut to the width on one line: %q (%d lines, %d cells)", got, n, width(got))
+	}
+	for _, i := range []int{4, 5} {
+		if _, n := detail(i); n != 1 {
+			t.Errorf("row %d has no extension line: %d lines", i, n)
+		}
+	}
+}
+
 func TestFactoryBlockedOnSomeoneElseIsLighter(t *testing.T) {
 	human := ftask("on-human", "blocked")
 	human.WaitsOn = "human"
