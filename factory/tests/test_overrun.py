@@ -265,6 +265,15 @@ class ValidityTests(Overrun):
         for criterion in ("past-limit", "quiet", "churning"):
             self.assertEqual(self.logged(criterion, "paused", waits_on=["human"]), [], criterion)
 
+    def test_a_churning_pause_records_the_decision_and_the_script_sends_nothing(self):
+        p = pic(rows=[row("x")], sessions=self.sessions)
+        sent = [{"id": "aaa", "criterion": "churning", "escalate": "judgment", "slug": "x"}]
+        with mock.patch.object(factory, "churning", lambda p: {"x": {"others": [{"slug": "y"}]}}), \
+                mock.patch.object(factory, "forward") as forward, mock.patch.object(factory, "log_firing") as log:
+            factory.record_decisions(p, sent, {"sent": True, "decisions": [{**choice("aaa", "paused"), "waits_on": ["y"]}]}, "r1")
+        self.assertEqual([c.kwargs["decision"] for c in log.call_args_list], ["paused"])
+        forward.assert_not_called()
+
     def test_an_overrun_is_not_suppressed_nor_sent_to_the_lead(self):
         self.assertEqual(self.logged("overrun", "suppressed"), [])
         self.assertEqual(self.logged("overrun", "escalated", to="lead"), [])
@@ -332,6 +341,18 @@ class RunStoppedTests(Overrun):
         self.assertEqual(self.runs(), [])
         [fired_row] = [r for r in self.records() if r.get("criterion") == "run-stopped"]
         self.assertIn({"repo": ROOT, "id": fired_row["id"], "cleared": True, "ts": iso(NOW)}, self.records())
+
+    def test_a_stopped_run_is_decided_once_even_when_the_task_goes_back_to_working(self):
+        self.stopped_runs(1)
+        self.watch({"decision": "paused", "waits_on": ["human"], "reason": "nothing handed over"}, sent=False)
+        self.watch()  # blocked: the firing is cleared
+        self.assertEqual(self.cli("state", "working")[0], 0)
+        self.watch()
+        self.assertEqual(self.runs(), [])
+        self.seed("techlead", [{"ts": iso(NOW - 60), "repo": ROOT, "slug": "x", "kind": "build", "outcome": "stopped"}])
+        self.watch({"decision": "suppressed", "reason": "second run, first was paused"})
+        [run] = self.runs()
+        self.assertEqual(json.loads(run[-1].partition("\n\n")[2])[0]["subject"], "x/run2")
 
     def test_a_message_to_the_lead_is_accepted_for_a_stopped_run(self):
         self.stopped_runs(1)

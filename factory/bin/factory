@@ -2267,9 +2267,12 @@ def build_runs(repo):
 def c_run_stopped(p, _):
     """Needs only `declared`, `repo.tasks` and the `techlead` log, so the watch can run it on every tick."""
     here = {os.path.basename(t["path"]) for t in p["repo"].tasks}
+    decided = {f["subject"] for f in fold(repo_log("firings", p["repo"].root) or [])[0]
+               if f["criterion"] == "run-stopped" and f["decision"]}  # one decision per stopped run
     found = []
     for slug, runs in build_runs(p["repo"]).items():
-        if slug in here and p["declared"].get(slug, {}).get("state") == "working" and runs[-1].get("outcome") == "stopped":
+        if slug in here and p["declared"].get(slug, {}).get("state") == "working" and runs[-1].get("outcome") == "stopped" \
+                and f"{slug}/run{len(runs)}" not in decided:
             stopped = sum(r.get("outcome") == "stopped" for r in runs)
             costs = [r["cost_usd"] for r in runs if isinstance(r.get("cost_usd"), (int, float))]
             found.append((slug, f"{slug}/run{len(runs)}", f"{runs[-1].get('reason') or 'no reason'}; {stopped} of {len(runs)} build runs "
@@ -2923,7 +2926,7 @@ def tell_decision(p, f, decision, reason, minutes=None, until=None):
     """The lines the script sends after a decision on an overrun, or a pause: the lead (if it is live), then once the
     dispatcher; on an escalated overrun the model's own message is the dispatcher's."""
     repo, slug, clock = p["repo"], f["slug"], (until or "")[11:16] + "Z"
-    if f.get("criterion") != "overrun" and decision != "paused":
+    if f.get("criterion") != "overrun" and not (decision == "paused" and f.get("criterion") in ASKS):
         return
     said = {"extended": f"extended {minutes} min, limit now {clock}: {reason}",
             "paused": f"paused: start no build run and end your turn; the human decides. {reason}",
@@ -3363,7 +3366,7 @@ def cmd_watch(args):
             return 0
         watch_tick(args, repo)
         word = read_word(repo)
-        if handed_over(repo) or word["all"] or word["prs"] or paused_rows(repo):  # last: the loop runs until health is next due
+        if handed_over(repo) or word["all"] or word["prs"] or any("human" not in (r.get("waits_on") or []) for r in paused_rows(repo).values()):  # last: the loop runs until health is next due
             with repo_lock(repo, "lander") as free:
                 if free:
                     drain(repo, args.dispatcher, tick=True, deadline=read_lander(repo)["health"] + HEALTH_SECONDS)
