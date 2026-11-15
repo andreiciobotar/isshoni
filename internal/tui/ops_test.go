@@ -134,6 +134,9 @@ func TestOpsLoadsAtStartEveryTwoMinutesOffTheTabAndEveryThirtySecondsOnIt(t *tes
 	if more := only[opsMsg](upd(m, press("5"))); len(more) != 0 {
 		t.Fatal("entering the tab while a load runs starts none")
 	}
+	if out := plain(m); !strings.Contains(out, "asking the factory…") {
+		t.Fatalf("the page asks before the first answer:\n%s", out)
+	}
 	upd(m, first[0])
 	if m.ops.busy || m.ops.err != "" || len(m.ops.watches) != len(opsWatches(t)) {
 		t.Fatalf("the answer is applied: %+v", m.ops.busy)
@@ -149,8 +152,7 @@ func TestOpsLoadsAtStartEveryTwoMinutesOffTheTabAndEveryThirtySecondsOnIt(t *tes
 		t.Fatal("off the tab an older one is loaded again, in the background")
 	}
 	upd(m, got[0])
-	send(m, "5")
-	m.ops.busy = false
+	upd(m, only[opsMsg](upd(m, press("5")))[0]) // entering loads at once
 	*now = now.Add(29 * time.Second)
 	if got := only[opsMsg](upd(m, tickMsg{})); len(got) != 0 {
 		t.Fatal("on the tab an answer under 30 s old is kept")
@@ -189,7 +191,11 @@ func TestOpsFailedReloadKeepsTheWatchesAndShowsOneLine(t *testing.T) {
 	}
 	os.Remove(filepath.Join(dir, "fail"))
 	*now = now.Add(31 * time.Second)
-	upd(m, only[opsMsg](upd(m, tickMsg{}))[0])
+	retry := only[opsMsg](upd(m, tickMsg{}))
+	if sub := strings.Split(plain(m), "\n")[1]; !m.ops.busy || m.ops.err != "boom" || !strings.Contains(sub, "stale, from") {
+		t.Fatalf("while the next load runs the old error and the stale age stay: busy=%v %q", m.ops.busy, sub)
+	}
+	upd(m, retry[0])
 	if m.ops.err != "" || strings.Contains(plain(m), "⚠") {
 		t.Fatalf("a good load clears the line: %q", m.ops.err)
 	}
@@ -406,5 +412,21 @@ func TestOpsAmountsAreDollarsWhateverThePriceFileSays(t *testing.T) {
 	setOps(m, opsWatches(t)[:1], "")
 	if out := plain(m); !strings.Contains(out, "$0.42 of $5.00") || strings.Contains(out, "EUR") {
 		t.Errorf("amounts are USD by contract:\n%s", out)
+	}
+}
+
+func TestOpsEveryGoesBeforeTheRepositoryOnAWatchWithNoNextLook(t *testing.T) {
+	wt := opsByName(t, "cert-renewal")
+	wt.Name = "a-name-of-thirty-characters-xx"
+	m := fakeModel(true, 60, 30)
+	setOps(m, []data.OpsWatch{wt}, "")
+	line := strings.Split(plain(m), "\n")[2]
+	if !strings.Contains(line, "ended: met") || !strings.Contains(line, "· app") || strings.Contains(line, "every") {
+		t.Errorf("at 60 the interval goes first, the repository stays: %q", line)
+	}
+	m = fakeModel(true, 80, 30)
+	setOps(m, []data.OpsWatch{wt}, "")
+	if line := strings.Split(plain(m), "\n")[2]; !strings.Contains(line, "· app") || !strings.Contains(line, "every 1h") {
+		t.Errorf("at 80 both fit: %q", line)
 	}
 }

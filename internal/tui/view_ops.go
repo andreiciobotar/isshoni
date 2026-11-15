@@ -164,10 +164,15 @@ func (m *model) opsHead(p paint, wt data.OpsWatch, w int) string {
 		}
 		return l + p.sp(w-1-width(l)-width(right)) + right, true
 	}
-	for _, c := range []struct {
+	type shape struct {
 		repo bool
 		k    int
-	}{{true, len(parts)}, {true, max(1, len(parts)-1)}, {true, 1}, {false, 1}, {false, 0}} {
+	}
+	shapes := []shape{{true, len(parts)}, {true, max(1, len(parts)-1)}, {true, 1}, {false, 1}, {false, 0}}
+	if len(parts) == 1 { // only `every`: it goes before the repository
+		shapes = []shape{{true, 1}, {true, 0}, {false, 0}}
+	}
+	for _, c := range shapes {
 		if line, ok := try(c.repo, c.k); ok {
 			return line
 		}
