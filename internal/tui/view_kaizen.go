@@ -958,24 +958,29 @@ func (m *model) siteManagerLines(p paint, w int) block {
 		}
 		return p.t(name+" ", th.Muted) + p.b(pct(*v*100), th.Text) + p.t("  "+of, th.Muted)
 	}
-	var keptShare *float64
-	if ended := s.Kept + s.Overran; ended > 0 {
-		v := float64(s.Kept) / float64(ended)
-		keptShare = &v
-	}
 	lines = append(lines, legend(p, w, []string{
 		ratio("precision", s.Precision, fmt.Sprintf("%d acted on of %d with an outcome", s.Acted, s.Acted+s.Ignored), "no outcome recorded yet"),
 		ratio("recall", s.Recall, fmt.Sprintf("%d acted on of %d that needed the human", s.Acted, s.Acted+s.Missed), "nothing acted on or missed yet"),
-		ratio("limits kept", keptShare, fmt.Sprintf("%d kept of %d extensions that ended", s.Kept, s.Kept+s.Overran), "no extension has ended yet"),
 	})...)
 	missed := m.kzCount(p, s.Missed, "missed", th.Red)
 	if s.Missed > 0 {
 		missed += p.t(fmt.Sprintf(" (%d suppressed first, %d never fired)", s.MissedSuppressed, s.MissedNeverFired), th.Muted)
 	}
-	return append(lines, legend(p, w, []string{
+	lines = append(lines, legend(p, w, []string{
 		m.kzCount(p, s.Escalated, "escalated", th.Text), m.kzCount(p, s.Acted, "acted on", th.Green),
 		m.kzCount(p, s.Ignored, "ignored", th.Orange), m.kzCount(p, s.NoOutcome, "no outcome yet", th.Text),
 		m.kzCount(p, s.Suppressed, "suppressed", th.Text), missed,
+	})...)
+	if s.Extended == 0 {
+		return lines
+	}
+	var keptShare *float64
+	if ended := s.Kept + s.Overran; ended > 0 {
+		v := float64(s.Kept) / float64(ended)
+		keptShare = &v
+	}
+	return append(lines, legend(p, w, []string{
+		ratio("limits kept", keptShare, fmt.Sprintf("%d kept of %d that ended", s.Kept, s.Kept+s.Overran), "no extension has ended yet"),
 		m.kzCount(p, s.Extended, "extended", th.Text), m.kzCount(p, s.Kept, "kept", th.Green), m.kzCount(p, s.Overran, "overran", th.Red),
 	})...)
 }

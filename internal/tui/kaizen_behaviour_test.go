@@ -462,7 +462,7 @@ func TestKaizenSiteManagerRecord(t *testing.T) {
 
 	// escalations without an outcome give no ratio, and a zero is a number, not a dash
 	has(pulse(data.SiteManager{Escalated: 2, NoOutcome: 2, Suppressed: 1}, 140),
-		"precision -  no outcome recorded yet", "recall -  nothing acted on or missed yet", "2 escalated   0 acted on   0 ignored   2 no outcome yet   1 suppressed   0 missed", "0 extended")
+		"precision -  no outcome recorded yet", "recall -  nothing acted on or missed yet", "2 escalated   0 acted on   0 ignored   2 no outcome yet   1 suppressed   0 missed")
 	has(pulse(data.SiteManager{Escalated: 1, Ignored: 1, Missed: 1, MissedNeverFired: 1, Precision: ptr(0.0), Recall: ptr(0.0)}, 140),
 		"precision 0%  0 acted on of 1 with an outcome", "recall 0%  0 acted on of 1 that needed the human", "1 missed (0 suppressed first, 1 never fired)")
 }
@@ -484,14 +484,18 @@ func TestKaizenSiteManagerExtensions(t *testing.T) {
 			}
 		}
 	}
-	has(pulse(kaizenDoc(t).SiteManager), "limits kept 50%  1 kept of 2 extensions that ended", "2 extended", "1 kept", "1 overran")
+	has(pulse(kaizenDoc(t).SiteManager), "limits kept 50%  1 kept of 2 that ended   2 extended   1 kept   1 overran")
+	// nothing extended: no extension line at all
+	if none := pulse(data.SiteManager{Escalated: 2, NoOutcome: 2}); strings.Contains(none, "limits kept") || strings.Contains(none, "overran") {
+		t.Errorf("no extension, no extension line:\n%s", none)
+	}
 	// extended and still running: no share, not 0%, and not the empty state
 	running := pulse(data.SiteManager{Extended: 1})
 	has(running, "limits kept -  no extension has ended yet", "1 extended   0 kept   0 overran", "what it escalated and extended, and what came of it")
 	if strings.Contains(running, "limits kept 0%") || strings.Contains(running, "nothing escalated") {
 		t.Errorf("a running extension is neither 0%% nor an empty record:\n%s", running)
 	}
-	has(pulse(data.SiteManager{Kept: 3, Overran: 0, Extended: 3}), "limits kept 100%  3 kept of 3 extensions that ended")
+	has(pulse(data.SiteManager{Kept: 3, Overran: 0, Extended: 3}), "limits kept 100%  3 kept of 3 that ended")
 	has(pulse(data.SiteManager{}), "nothing escalated, suppressed, missed or extended yet")
 }
 
