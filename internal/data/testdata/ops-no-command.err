@@ -1,0 +1,4 @@
+usage: factory [-h]
+               {new,status,clean,state,commands,ack,hook,retro,env,feedback,log,health,watch,digest,firing,miss,firings,pauses,merge,lander,tech-lead,build,land,overlap,rerun,schedule,dispatcher,settings,wizard,uninstall}
+               ...
+factory: error: argument cmd: invalid choice: 'ops' (choose from 'new', 'status', 'clean', 'state', 'commands', 'ack', 'hook', 'retro', 'env', 'feedback', 'log', 'health', 'watch', 'digest', 'firing', 'miss', 'firings', 'pauses', 'merge', 'lander', 'tech-lead', 'build', 'land', 'overlap', 'rerun', 'schedule', 'dispatcher', 'settings', 'wizard', 'uninstall')

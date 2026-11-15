@@ -113,15 +113,16 @@ type FactoryPRs struct {
 // never asks GitHub; with fetch true as `--max-age`, which asks GitHub when that cache
 // is older than PRFloor.
 func (r *Runner) FactoryStatus(ctx context.Context, repoPath string, fetch bool) (*FactoryStatus, error) {
-	script, err := filepath.Abs(filepath.Join(r.Root, "factory", "bin", "factory"))
+	script, err := r.factoryScript()
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(script); err != nil {
-		return nil, fmt.Errorf("factory command not found: %s", script)
-	}
 	b, err := r.shared(ctx, "factory\x00"+strconv.FormatBool(fetch)+"\x00"+repoPath, false, func(ctx context.Context) ([]byte, error) {
-		return r.factoryOutput(ctx, script, repoPath, fetch)
+		timeout, flag := cachedTimeout, []string{"--cached"}
+		if fetch {
+			timeout, flag = fetchTimeout, []string{"--max-age", strconv.Itoa(int(PRFloor.Seconds()))}
+		}
+		return r.factoryOutput(ctx, "factory status", repoPath, cmp.Or(r.Timeout, timeout), append([]string{script, "status", "--json"}, flag...)...)
 	})
 	if err != nil {
 		return nil, err
@@ -133,31 +134,43 @@ func (r *Runner) FactoryStatus(ctx context.Context, repoPath string, fetch bool)
 	return &out, nil
 }
 
-// factoryOutput is one `factory status --json` process and what it printed.
-func (r *Runner) factoryOutput(ctx context.Context, script, repoPath string, fetch bool) ([]byte, error) {
+// factoryScript is the factory command of the checkout the runner reads.
+func (r *Runner) factoryScript() (string, error) {
+	script, err := filepath.Abs(filepath.Join(r.Root, "factory", "bin", "factory"))
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(script); err != nil {
+		return "", fmt.Errorf("factory command not found: %s", script)
+	}
+	return script, nil
+}
+
+// factoryOutput is one factory process, `python argv...` run in dir, and what it printed; what names
+// it in the timeout message. argv[1] is the subcommand: a factory that does not know it (argparse
+// exits 2 with `invalid choice`) is "this factory has no <subcommand> command yet".
+func (r *Runner) factoryOutput(ctx context.Context, what, dir string, timeout time.Duration, argv ...string) ([]byte, error) {
 	if !r.begin() {
 		return nil, cmp.Or(ctx.Err(), context.Canceled)
 	}
 	defer r.calls.Done()
-	timeout, flag := cachedTimeout, []string{"--cached"}
-	if fetch {
-		timeout, flag = fetchTimeout, []string{"--max-age", strconv.Itoa(int(PRFloor.Seconds()))}
-	}
-	timeout = cmp.Or(r.Timeout, timeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := groupCmd(ctx, r.python(), append([]string{script, "status", "--json"}, flag...)...)
-	cmd.Dir = repoPath
+	cmd := groupCmd(ctx, r.python(), argv...)
+	cmd.Dir = dir
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
 	if err := cmd.Run(); err != nil {
+		var exit *exec.ExitError
 		switch {
 		case errors.Is(err, exec.ErrNotFound):
 			return nil, ErrPython
 		case errors.Is(ctx.Err(), context.DeadlineExceeded):
-			return nil, fmt.Errorf("factory status timed out after %s", timeout)
+			return nil, fmt.Errorf("%s timed out after %s", what, timeout)
 		case ctx.Err() != nil:
 			return nil, ctx.Err()
+		case errors.As(err, &exit) && exit.ExitCode() == 2 && strings.Contains(se.String(), "invalid choice: '"+argv[1]+"'"):
+			return nil, fmt.Errorf("this factory has no %s command yet", argv[1])
 		}
 		return nil, stderrLine(se.String(), err)
 	}

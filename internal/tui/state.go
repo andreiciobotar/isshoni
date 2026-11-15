@@ -25,6 +25,7 @@ const (
 	viewAgents
 	viewFactory
 	viewKaizen
+	viewOps
 	viewHanami
 )
 
@@ -134,6 +135,7 @@ type model struct {
 	atop    int
 	fac     factoryState
 	kz      kaizenState
+	ops     opsState
 	hn      hanamiState
 
 	loading     bool
@@ -839,6 +841,8 @@ func (m *model) animating() bool {
 		return m.fac.busy || m.factoryWorking()
 	case viewKaizen:
 		return m.kaizenMoving()
+	case viewOps:
+		return m.ops.busy
 	}
 	return false
 }
@@ -1151,6 +1155,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case kaizenMsg:
 		cmds = append(cmds, m.applyKaizen(msg))
 
+	case opsMsg:
+		m.applyOps(msg)
+
 	case hanamiEventsMsg, hanamiEndMsg, hanamiHistoryMsg:
 		cmds = append(cmds, m.hanamiUpdate(msg))
 
@@ -1207,7 +1214,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.agentsDirty && !m.agentsBusy && now.Sub(m.agentsAt) >= agentsEvery {
 			cmds = append(cmds, m.loadAgentsCmd())
 		}
-		cmds = append(cmds, m.refreshFactory(factoryEvery))
+		cmds = append(cmds, m.refreshFactory(factoryEvery), m.loadOps(opsEvery))
 
 	case attachMsg:
 		if msg.err != nil {
@@ -1324,6 +1331,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.switchView(viewFactory)
 	case key.Matches(msg, keys.Kaizen):
 		return m.switchView(viewKaizen)
+	case key.Matches(msg, keys.Ops):
+		return m.switchView(viewOps)
 	case key.Matches(msg, keys.Hanami):
 		return m.switchView(viewHanami)
 	case m.view == viewDashboard && !m.zoom && key.Matches(msg, keys.Fold): // the same keys turn the page in the Kaizen view
@@ -1471,6 +1480,8 @@ func (m *model) switchView(v viewID) tea.Cmd {
 	case viewKaizen:
 		m.kz.shownAt = m.now()
 		return m.loadKaizen()
+	case viewOps:
+		return m.loadOps(0)
 	}
 	return nil
 }
@@ -1603,6 +1614,8 @@ func (m *model) listLen() int {
 		return m.factoryPositions()
 	case viewKaizen:
 		return m.kaizenPositions()
+	case viewOps:
+		return m.opsPositions()
 	}
 	return 0
 }
@@ -1628,6 +1641,8 @@ func (m *model) move(delta int) {
 		cur = m.fac.top
 	case viewKaizen:
 		cur = m.kz.top[m.kz.page]
+	case viewOps:
+		cur = m.ops.top
 	}
 	m.moveTo(cur + delta)
 }
@@ -1656,6 +1671,8 @@ func (m *model) moveTo(i int) {
 		m.fac.top = i
 	case viewKaizen:
 		m.kz.top[m.kz.page] = i
+	case viewOps:
+		m.ops.top = i
 	}
 	m.fixScroll()
 }
@@ -1694,5 +1711,7 @@ func (m *model) fixScroll() {
 		m.fac.top = min(m.fac.top, m.factoryPositions()-1)
 	case viewKaizen:
 		m.kz.top[m.kz.page] = min(m.kz.top[m.kz.page], m.kaizenPositions()-1)
+	case viewOps:
+		m.ops.top = min(m.ops.top, m.opsPositions()-1)
 	}
 }
