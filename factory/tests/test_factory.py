@@ -412,7 +412,7 @@ DEFAULT_SETTINGS = {
     "worktree_cap": 5, "reserve_percent": 10, "task_time_limit_hours": 2, "lead_permission_mode": "auto",
     "lean_start": True, "dispatchers": None, "lgtm_from_author": True, "tools": None, "monitor": None,
     "models": {"dispatcher": "fable", "lead": "fable", "explorer": "haiku", "coder": "sonnet", "reviewer": "opus",
-               "lander": "sonnet", "ops_explorer": "haiku", "site_manager": "sonnet", "courier": "haiku", "tech_lead": "opus"}}
+               "lander": "sonnet", "ops_explorer": "haiku", "ops_watch": "sonnet", "site_manager": "sonnet", "courier": "haiku", "tech_lead": "opus"}}
 
 # A settings file as a human leaves it: tables and keys in their own order, comments, blank lines, an unknown key.
 HAND_EDITED = '''# my notes
@@ -481,6 +481,7 @@ coder = "haiku"
 reviewer = "fable"
 lander = "claude-haiku-4-5"
 ops_explorer = "opus"
+ops_watch = "haiku"
 site_manager = "opus"
 courier = "sonnet"
 tech_lead = "haiku"
@@ -504,7 +505,7 @@ monitor = "/bin/isshoni"
             "lean_start": False, "dispatchers": ["dispatcher-a"], "lgtm_from_author": False, "monitor": "/bin/isshoni",
             "tools": ["mcp__metrics__query", "mcp__logs__*"],
             "models": {"dispatcher": "opus", "lead": "claude-opus-4-1[1m]", "explorer": "sonnet", "coder": "haiku",
-                       "reviewer": "fable", "lander": "claude-haiku-4-5", "ops_explorer": "opus", "site_manager": "opus",
+                       "reviewer": "fable", "lander": "claude-haiku-4-5", "ops_explorer": "opus", "ops_watch": "haiku", "site_manager": "opus",
                        "courier": "sonnet", "tech_lead": "haiku"}})
         for percent in (0, 100):
             self.assertEqual(self.load(f"[limits]\nreserve_percent = {percent}\n")["reserve_percent"], percent)

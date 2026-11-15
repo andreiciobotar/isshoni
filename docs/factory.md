@@ -32,6 +32,9 @@ factory retro [<file>]                                                   # a JSO
 factory log events|retros [--since <ts>] [--until <ts>]
 factory hook                                                             # run by the plugin's hooks
 factory ops-hook                                                         # run by the plugin's hooks: gates and records the ops explorer's MCP calls
+factory ops start <name> "<goal>" --every <duration> --until <duration|UTC time> --budget <usd>   # the human only, in their own terminal
+factory ops list [--json]
+factory ops stop <name>
 factory health [--json] [--dispatcher <session-name>]
 factory watch [--dispatcher <session-name>]
 factory digest [--dispatcher <session-name>] [--dry-run]
@@ -112,6 +115,7 @@ The model of every role is a line of `[models]`: an alias (`fable`, `opus`, `son
 | `models.lead` | `fable` | at the next `factory new` (`new --lead-model <m>` overrides it for that task; the model used is recorded in `TaskStarted`) |
 | `models.explorer`, `models.coder`, `models.reviewer` | `haiku`, `sonnet`, `opus` | the explorer for the next lead started, the coder and reviewer at the next build run (the lead and the build run are each launched with `--agents`, one `factory:<role>` entry per file in `factory/agents/`: its description, body, tools and skills, and this model), which shadows the plugin's agent of the same name; a frontmatter key other than `name`, `description`, `model`, `tools` and `skills`, or an agent file without a `models` key, is an error |
 | `models.ops_explorer` | `haiku` | for the next lead, build run or tech lead run started (the agent file `ops-explorer.md`; a file's key is its stem with `_` for `-`) |
+| `models.ops_watch` | `sonnet` | the next look of an ops watch: the judge, which reads only through the ops explorer (see Watching production) |
 | `models.lander` | `sonnet` | the build run's lander as above, and the headless run of `factory land` at its next run (merging itself is a script and uses no model) |
 | `models.site_manager` | `sonnet` | the next `watch` tick or digest |
 | `models.courier` | `haiku` | the next tick that carries a comment |
@@ -141,6 +145,37 @@ Where the servers come from: for each server name in the list, the first of loca
 - After a call, the hook writes `$FACTORY_HOME/deliverables/<slug>/evidence/<UTC timestamp>-<tool>-<last 8 characters of the tool use id>.json` (`session-<session id>` instead of the slug outside a task), the folder `0700` and the file `0600`: `{"ts", "server", "tool", "input" (the query and its time range), "response" (as received), "agent_id", "session_id"}`. The model is told the path (`Evidence saved: <path>`), or that the evidence was not saved and the result is not to be used. The files are never committed. A call that failed leaves none.
 
 Limits. MCP only: a source reachable only by a command line is out of reach. The list is the human's judgment of what is read-only; the factory does not inspect a tool. With `sessions.lean_start = false` the dispatching session keeps whatever servers the user has. How to read production (server, dataset, time field, query language) belongs in the repository's `CLAUDE.md`, `AGENTS.md` or `CLAUDE.local.md` (uncommitted, for a public repository); the ops explorer says so when it finds nothing there. `factory/tests/live_ops_explorer.py` proves the boundary against real servers (by hand, a scratch `FACTORY_HOME`).
+
+## Watching production: the ops watch
+A human-started, periodic look at a running system. It has no worktree and no write tool, and never messages a lead, opens a task or comments; only the script informs.
+```
+factory ops start <name> "<goal>" --every <duration> --until <duration|UTC time> --budget <usd>
+factory ops list [--json]
+factory ops stop <name>
+```
+- **`start`**: `<name>` is `[a-z0-9][a-z0-9-]*` and new. A duration is `90s`, `10m`, `6h` or `2d`; `--until` is also a UTC time (`2026-11-15T15:00:00Z`); all three options are required and positive. `--until` is the hard end; the goal may name an earlier one ("done once X"). It refuses when `CLAUDECODE` is set (`only the human starts a watch: run this in your own terminal`): that is a guard against a role doing it by habit, not a security boundary. It refuses when `ops.tools` resolves no server for the repository. It records the repository, makes the first look due at once, installs the watch job when the repository has none (an installed one is never replaced) and prints the notes path. No role starts a watch: when work needs watching after a merge, the dispatcher gives the human the command.
+- **`stop`** works from anywhere, a session included.
+- **`list`** prints one row per watch, newest first: name, state (and verdict), the last look (age, outcome, what it saw), the next look, spent of the budget (`+N unpriced` when a look reported no cost), the notes path. `--json` prints `{"watches": [...]}` with `name`, `repo`, `goal`, `state`, `verdict`, `started`, `until`, `every_seconds`, `ticks`, `missed`, `last_look` (`{ts, outcome, saw, late_seconds}` or null), `next_look`, `spent_usd`, `unpriced_ticks`, `budget_usd` and `notes`.
+- **States**: `watching`, `alarmed` (looks go on), `ended` (with a verdict: `met`, `not-met` or `inconclusive`), `stopped`, `out-of-budget`.
+
+**A look.** The two-minute `factory watch` tick runs the looks that are due, first, under a lock of its own (`ops`): the watch lock is held for the lander's whole loop, which can last until the next health run, and the loop gives the looks a turn on each of its passes. A look is one fresh headless session (`models.ops_watch`, `--permission-mode dontAsk`, `--strict-mcp-config`, `--tools=Agent` allowed only for `factory:ops-explorer`, `--setting-sources ""`, at most 15 turns (`OPS_TICK_TURNS`), at most `min($0.50, what is left of the budget)` (`OPS_TICK_BUDGET`), 300 seconds (`OPS_TICK_TIMEOUT`)) that reads only by dispatching the ops explorer and answers `{outcome: fine|alarm|done|could-not-look, saw, verdict, checks}`. The first look turns the goal into four checks (`read`, `fine`, `alarm`, `done`); the script stores them once and later looks apply them as written. Its prompt holds the goal, the times, whether this is the final look, the checks and the last 20 entries of the notes (so a look's context is bounded). The script, not the model, decides the rest: a look that has no evidence file (the explorer's hook writes one per successful call), no usable output or no checks is `could-not-look` whatever the model said; `alarm` is sticky (the looks go on) and informs once; `done`, or the first look at or after `--until`, ends the watch (`inconclusive` when the end time came without a verdict backed by evidence); a spent budget ends it `out-of-budget`. A cost the session did not report is kept as unpriced, not as 0; the cap it ran under counts against the budget (`reserved_usd` in `watch.json`, the sum of those caps, not in `ops list --json`), so a watch whose looks never report a cost still ends `out-of-budget`. A due look runs before the lander's pass in its loop, so a merge can wait for it (up to the look's timeout plus the dispatcher line).
+
+**Files**, in `$FACTORY_HOME` (folders `0700`, files `0600`): `ops/<name>/watch.json` (the state, written only by the script), `ops/<name>/notes.md` (the goal, start, end, every and budget; then the `## Checks`; then one line per look `- <time> <outcome>: <saw> [evidence: <n> file(s) in <folder>]`, and lines for missed looks and state changes), and `ops-YYYY-MM.jsonl` (one record per look: `ts`, `repo`, `watch`, `tick`, `outcome`, `saw`, `cost_usd` (null when unpriced), `seconds`, `turns`, `session`, `evidence`, `late_seconds`; one per gap: `outcome: "missed"`, `count`, `from`, `to`). The evidence stays where the ops explorer's hook puts it, `deliverables/session-<session id>/evidence/`.
+
+**Late and missed looks.** A look runs when the tick comes; launchd does not start a tick while the last one runs, so a look can be late while the lander drains, and a machine that sleeps or is off runs none. A tick that finds a look `n` intervals late (an interval is the longer of `--every` and the two-minute tick) runs one look, records `n` looks missed (note, record, `missed` in the list) and does not catch up. `--every` below two minutes is not faster than the tick. An active watch keeps the repository's watch job when no dispatcher is left.
+
+**Informing** (the script, one line, `OPS WATCH <name>: <event> - <saw or reason> (notes: <path>)`, `saw` cut to 200 characters; a notification service failing leaves a `notify:` line in `watch.log`):
+
+| Event | List, notes, record | Desktop notification | Dispatcher (one `courier` message, only with a live dispatcher session; a failure is printed, not retried) |
+|---|---|---|---|
+| alarm (the first of a run of them) | yes | yes | yes |
+| ended, with the verdict | yes | yes | yes |
+| out of budget | yes | yes | yes |
+| could not look | yes | the first of a run | no |
+| missed looks | yes | no | no |
+| stopped by the human | yes | no | no |
+
+Limits carried over from the ops explorer: MCP only; a failed call leaves no evidence, so a look that could read nothing shows as `could-not-look`, and so does one whose gate ran out of time, since that blocks the call (see Reading production). `factory/tests/live_ops_watch.py` runs a watch end to end against a stdio server of its own (by hand, a scratch `FACTORY_HOME`, a fake scheduler).
 
 ## FACTORY_HOME
 `FACTORY_HOME` moves everything the factory keeps under `~/.claude/factory`: the settings file, the logs and the outbox, the task state, `watch.log` and the `identity/` directory (App, key, cached tokens). Unset or empty it is `~/.claude/factory`; `~` is expanded; a relative value exits 2 with one line (the `hook` command exits 0 and records nothing; `ops-hook` exits 0 for other agents and exits 2, which refuses the call, for the ops explorer), because the hook and the schedule run in other directories. Messages that name the settings file print the real path. It does not move `~/.claude/projects` (Claude Code's transcripts), the scheduler's own files (`~/Library/LaunchAgents`, systemd units, crontab) or the spec directory the lead's rules name. The dashboard's settings editor always opens `~/.claude/factory/settings.toml` (`FactorySettingsPath` in `internal/data/factory.go`), and `~/.claude/factory/deliverables/` named in the lead's rules is not moved either (the ops explorer's evidence files do follow `FACTORY_HOME`). The hook and `factory env` run in the session's environment and read the same variable.
@@ -257,6 +292,7 @@ All under `~/.claude/factory/`, JSON lines, append-only, mode 0600. Except where
 | task state | `tasks-YYYY-MM.jsonl` | `new`, `state`, `ack` | the current month and the 12 before it, and the newest record of every task that still has a worktree |
 | firings | `firings-YYYY-MM.jsonl` | `watch`, `firing`, `miss` | the current month and the 12 before it, and every miss and every firing that is still open or was escalated, with its records |
 | tech lead | `techlead-YYYY-MM.jsonl` | `factory tech-lead`; the lander's loop (an `unstarted` record) | the current month and the 12 before it |
+| ops watch | `ops-YYYY-MM.jsonl` | `factory watch`'s looks: one record per look and one per gap of missed looks (see Watching production) | the current month and the 12 before it |
 | queue | `queue-YYYY-MM.jsonl` | the merge queue (`merge`, the lander's loop); `factory land` | the current month and the 12 before it |
 | gh calls | `gh-YYYY-MM.jsonl` | every `gh` call that took over 2 s or failed: `ts`, `argv`, `cwd`, `seconds`, `rc`, `error` (the first stderr line; never the token). A `gh` call without a timeout is cut at 30 s. `isshoni kaizen` appends to the same file | pruned like the other logs: the current month and the 12 before it |
 
@@ -619,6 +655,7 @@ Undo: `factory uninstall` uninstalls the App and removes `identity/`; you delete
 | `MONITOR_TIMEOUT` | 120 | the monitor's `isshoni` |
 | `COMMENT_TIMEOUT` | 120 | the courier run (`claude -p`) |
 | `WATCH_TIMEOUT` | 600 | the site manager run (`claude -p`) |
+| `OPS_TICK_TIMEOUT` | 300 | one look of an ops watch (`claude -p`) |
 | `LAND_TEST_TIMEOUT` | 1800 | the test command before a push, and `make build` in the wizard |
 | `LAND_TIMEOUT` | 1800 | the lander of `factory land` (`claude -p`) |
 
