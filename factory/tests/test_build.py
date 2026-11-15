@@ -202,9 +202,10 @@ class OutcomeTests(BuildCase):
 
     def test_a_report_with_a_commit_ahead_and_no_pull_request_is_stopped(self):
         self.write_report()
-        code, *_ = self.build(pr=None, ahead=1)
+        code, _, _, m = self.build(pr=None, ahead=1)
         self.assertEqual((code, self.only_record()["reason"]),
                          (1, f"worktree-{SLUG} has commits and no pull request: a report task commits nothing"))
+        self.assertIn(["git", "rev-list", "--count", "origin/main..HEAD"], [c[-4:] for c in m.calls])
 
     def test_question_and_stopped_are_taken_as_they_are_without_the_checks(self):
         for outcome in ("question", "stopped"):
