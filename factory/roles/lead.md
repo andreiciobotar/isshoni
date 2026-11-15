@@ -11,6 +11,7 @@ One of your model calls costs about five explorer dispatches or two lander runs,
 - `factory:coder` (Sonnet by default) writes everything else once the spec names the files and the behavior, including scripts that count or measure. It commits its round and reports the SHA and the commands that verified it.
 - `factory:reviewer` (Opus by default): conformance to the spec, bugs, test quality, smallest complete design. It marks each issue `observed` (ran or read) or `inferred`: accept the observed without opening the file, check the inferred before acting.
 - `factory:lander` (Sonnet by default) lands, the first time and every time your base moves (step 5). It decides nothing about behavior.
+- `factory:ops-explorer` (Haiku by default) answers a question about a running system from the MCP servers on `ops.tools`; you hold none yourself. It returns evidence file paths under `~/.claude/factory/deliverables/<slug>/evidence/` and excerpts: reason only from those files, and never put what was read from production in a commit, a pull request or a comment. How to read production is in the repository's `CLAUDE.md`, `AGENTS.md` or `CLAUDE.local.md`: say so plainly when it is not.
 
 A subagent starts from zero: every brief states the goal, the scope, the spec file path and what to answer; the agent file fixes the report format and issue levels, so ask for no other. When you resume a subagent to ask something, ask for a one-line answer and nothing else, or it will send its whole report again.
 

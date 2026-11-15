@@ -452,7 +452,8 @@ class TaskEventTests(StoreCase):
         self.assertEqual({k: v for k, v in e.items() if k != "ts"},
                          {"repo": tf.ROOT, "slug": "demo-task", "role": "dispatcher", "model": None, "version": VERSION,
                           "session": "sid-d", "event": "TaskStarted", "base": "main", "lead_model": "fable",
-                          "mode": "single", "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet", "reviewer": "opus"}})
+                          "mode": "single", "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet",
+                                                       "ops-explorer": "haiku", "reviewer": "opus"}})
 
     def test_clean_records_task_removed(self):
         code, out, _, _ = self.clean()
@@ -797,12 +798,15 @@ class HooksJsonTests(unittest.TestCase):
         doc = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())
         events = doc["hooks"]
         self.assertEqual(set(events), {"SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "SubagentStart",
-                                       "SubagentStop", "Notification", "PermissionRequest", "PermissionDenied", "PostToolUse"})
+                                       "SubagentStop", "Notification", "PermissionRequest", "PermissionDenied", "PreToolUse",
+                                       "PostToolUse"})
         for name, groups in events.items():
-            self.assertEqual(len(groups), 1)
-            self.assertEqual(groups[0]["hooks"], [{"type": "command", "timeout": 10,
-                                                   "command": '"${CLAUDE_PLUGIN_ROOT}/bin/factory" hook'}])
-            self.assertEqual(groups[0].get("matcher"), "SendMessage|SubagentHandback" if name == "PostToolUse" else None)
+            want = [(None, "hook")] if name not in ("PreToolUse", "PostToolUse") else [("mcp__.*", "ops-hook")]
+            if name == "PostToolUse":
+                want.insert(0, ("SendMessage|SubagentHandback", "hook"))
+            self.assertEqual([(g.get("matcher"), g["hooks"]) for g in groups], [
+                (matcher, [{"type": "command", "timeout": 10, "command": f'"${{CLAUDE_PLUGIN_ROOT}}/bin/factory" {command}'}])
+                for matcher, command in want], name)
 
 
 if __name__ == "__main__":
