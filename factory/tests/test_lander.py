@@ -839,7 +839,7 @@ class ChurnTests(ScratchRepoBase):
         self.declare("t2", "working")
         ran = []
         with mock.patch.object(factory, "Repo", lambda: self.repo), mock.patch.object(factory, "watch_tick", lambda *a: None), \
-                mock.patch.object(factory, "drain", lambda *a, **k: ran.append(a)):
+                mock.patch.object(factory, "review_tick", lambda r: None), mock.patch.object(factory, "drain", lambda *a, **k: ran.append(a)):
             self.assertEqual(factory.cmd_watch(SimpleNamespace(dispatcher="d")), 0)
         self.assertEqual(len(ran), 1)
 
@@ -847,7 +847,7 @@ class ChurnTests(ScratchRepoBase):
         self.paused(waits=("human",))
         ran = []
         with mock.patch.object(factory, "Repo", lambda: self.repo), mock.patch.object(factory, "watch_tick", lambda *a: None), \
-                mock.patch.object(factory, "drain", lambda *a, **k: ran.append(a)):
+                mock.patch.object(factory, "review_tick", lambda r: None), mock.patch.object(factory, "drain", lambda *a, **k: ran.append(a)):
             self.assertEqual(factory.cmd_watch(SimpleNamespace(dispatcher="d")), 0)
         self.assertEqual(ran, [])
 

@@ -96,6 +96,7 @@ def main():
     real_run = factory.run
     factory.run, factory.scheduler, factory.notify_argv = noted_run, FakeScheduler, lambda *_: None
     factory.scheduler = lambda: FakeScheduler()
+    factory.review_tick = lambda *_: None  # the proof copy of the watch is not to start a review
     print(f"scratch: {TMP}\nmodel: {args.model}")
     code = factory.main(["ops", "start", "proof", GOAL, "--every", "5s", "--until", "30m", "--budget", args.budget])
     print(f"ops start: exit {code}")
