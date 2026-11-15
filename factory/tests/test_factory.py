@@ -5,10 +5,12 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -408,9 +410,9 @@ class AckTests(unittest.TestCase):
 
 DEFAULT_SETTINGS = {
     "worktree_cap": 5, "reserve_percent": 10, "task_time_limit_hours": 2, "lead_permission_mode": "auto",
-    "lean_start": True, "mode": "single", "dispatchers": None, "lgtm_from_author": True, "monitor": None,
+    "lean_start": True, "dispatchers": None, "lgtm_from_author": True, "tools": None, "monitor": None,
     "models": {"dispatcher": "fable", "lead": "fable", "explorer": "haiku", "coder": "sonnet", "reviewer": "opus",
-               "lander": "sonnet", "site_manager": "sonnet", "courier": "haiku", "tech_lead": "opus"}}
+               "lander": "sonnet", "ops_explorer": "haiku", "site_manager": "sonnet", "courier": "haiku", "tech_lead": "opus"}}
 
 # A settings file as a human leaves it: tables and keys in their own order, comments, blank lines, an unknown key.
 HAND_EDITED = '''# my notes
@@ -478,6 +480,7 @@ explorer = "sonnet"
 coder = "haiku"
 reviewer = "fable"
 lander = "claude-haiku-4-5"
+ops_explorer = "opus"
 site_manager = "opus"
 courier = "sonnet"
 tech_lead = "haiku"
@@ -488,19 +491,21 @@ task_time_limit_hours = 0.5
 [sessions]
 lead_permission_mode = "plan"
 lean_start = false
-mode = "team"
 dispatchers = ["dispatcher-a"]
 [merging]
 lgtm_from_author = false
+[ops]
+tools = ["mcp__metrics__query", "mcp__logs__*"]
 [paths]
 monitor = "/bin/isshoni"
 ''')
         self.assertEqual(got, {
             "worktree_cap": 2, "reserve_percent": 25, "task_time_limit_hours": 0.5, "lead_permission_mode": "plan",
-            "lean_start": False, "mode": "team", "dispatchers": ["dispatcher-a"], "lgtm_from_author": False, "monitor": "/bin/isshoni",
+            "lean_start": False, "dispatchers": ["dispatcher-a"], "lgtm_from_author": False, "monitor": "/bin/isshoni",
+            "tools": ["mcp__metrics__query", "mcp__logs__*"],
             "models": {"dispatcher": "opus", "lead": "claude-opus-4-1[1m]", "explorer": "sonnet", "coder": "haiku",
-                       "reviewer": "fable", "lander": "claude-haiku-4-5", "site_manager": "opus", "courier": "sonnet",
-                       "tech_lead": "haiku"}})
+                       "reviewer": "fable", "lander": "claude-haiku-4-5", "ops_explorer": "opus", "site_manager": "opus",
+                       "courier": "sonnet", "tech_lead": "haiku"}})
         for percent in (0, 100):
             self.assertEqual(self.load(f"[limits]\nreserve_percent = {percent}\n")["reserve_percent"], percent)
         self.assertEqual(self.load("[limits]\ntask_time_limit_hours = 3\n")["task_time_limit_hours"], 3)
@@ -517,10 +522,12 @@ monitor = "/bin/isshoni"
                 ("limits", "task_time_limit_hours", "true"), ("limits", "reserve_percent", "true"),
                 ("limits", "reserve_percent", "-1"), ("limits", "reserve_percent", "101"), ("limits", "reserve_percent", "2.5"),
                 ("limits", "reserve_percent", '"10"'), ("sessions", "lead_permission_mode", '"yolo"'),
-                ("sessions", "lean_start", '"yes"'), ("sessions", "lean_start", "1"), ("sessions", "mode", '"both"'),
-                ("sessions", "mode", '""'), ("sessions", "mode", "true"),
+                ("sessions", "lean_start", '"yes"'), ("sessions", "lean_start", "1"),
                 ("sessions", "dispatchers", '"a"'), ("sessions", "dispatchers", "[1]"), ("sessions", "dispatchers", '[""]'),
                 ("merging", "lgtm_from_author", '"no"'), ("merging", "lgtm_from_author", "0"),
+                ("ops", "tools", '["Bash"]'), ("ops", "tools", '["mcp__x"]'), ("ops", "tools", '["mcp____y"]'),
+                ("ops", "tools", '"mcp__x__y"'), ("ops", "tools", "[1]"),
+                ("ops", "tools", '["mcp__a__q*"]'), ("ops", "tools", '["mcp__a__*x"]'),
                 ("paths", "monitor", '""'), ("paths", "monitor", "3")):
             with self.subTest(f"{table}.{key} = {bad}"):
                 with self.assertRaises(factory.Fail) as raised:
@@ -569,7 +576,7 @@ monitor = "/bin/isshoni"
     def test_the_agent_files_pin_the_default_models(self):
         for path in (BIN.parent.parent / "agents").glob("*.md"):
             head = path.read_text().split("---")[1]
-            self.assertEqual(re.search(r"^model:\s*(\S+)", head, re.M)[1], factory.SETTINGS_DEFAULTS["models"][path.stem], path)
+            self.assertEqual(re.search(r"^model:\s*(\S+)", head, re.M)[1], factory.SETTINGS_DEFAULTS["models"][factory.model_key(path)], path)
 
 
 class SetTests(InStore):
@@ -625,16 +632,19 @@ class SetTests(InStore):
             self.assertEqual(factory.set_setting("limits.worktree_cap", "5"), "set limits.worktree_cap = 5")  # the default, new file
             self.assertTrue((self.dir / "sub" / "settings.toml").exists())
 
-    def test_the_mode_is_set_like_its_neighbours(self):
-        self.assertEqual(self.set("sessions.mode", "team", text=None), 'set sessions.mode = "team"')
-        self.assertEqual(self.load()["mode"], "team")
-        self.assertEqual(self.set("sessions.mode", "single"), 'set sessions.mode = "single"')
-        self.assertEqual(self.load()["mode"], "single")
+    def test_the_retired_mode_key_still_loads_but_cannot_be_set(self):
+        for value in ("single", "team"):
+            factory.warned.clear()
+            settings = self.load(f'[sessions]\nmode = "{value}"\nlean_start = false\n')
+            self.assertEqual((settings["lean_start"], "mode" in settings), (False, False))
+            self.assertIn("unknown key sessions.mode, ignored", self.err)
+        with self.assertRaisesRegex(factory.Fail, "unknown setting 'sessions.mode'"):
+            factory.set_setting("sessions.mode", "team")
 
     def test_an_invalid_value_leaves_the_file_byte_identical(self):
         for key, value in (("limits.worktree_cap", "0"), ("limits.worktree_cap", "many"), ("models.coder", "sonet"),
                            ("sessions.lean_start", "maybe"), ("sessions.dispatchers", "a,b"), ("paths.monitor", " "),
-                           ("sessions.lead_permission_mode", "yolo"), ("sessions.mode", "both"), ("nope.key", "1"), ("limits.nope", "1")):
+                           ("sessions.lead_permission_mode", "yolo"), ("nope.key", "1"), ("limits.nope", "1")):
             with self.subTest(f"{key} {value}"):
                 self.path.write_text(HAND_EDITED)
                 with self.assertRaises(factory.Fail):
@@ -864,6 +874,7 @@ class MigrationTests(InStore):
 
 class AgentDefinitionTests(unittest.TestCase):
     MODELS = {**DEFAULT_SETTINGS["models"], "coder": "haiku", "lander": "claude-haiku-4-5"}
+    SETTINGS = {**DEFAULT_SETTINGS, "models": MODELS}
 
     def files(self, text_by_name):
         d = Path(tempfile.mkdtemp())
@@ -874,10 +885,11 @@ class AgentDefinitionTests(unittest.TestCase):
         return d
 
     def test_the_shipped_agents_become_factory_entries_with_the_configured_models(self):
-        got = factory.agent_definitions(self.MODELS)
-        self.assertEqual(sorted(got), ["factory:coder", "factory:explorer", "factory:lander", "factory:reviewer"])
+        got = factory.agent_definitions(self.SETTINGS, ROOT)
+        self.assertEqual(sorted(got), ["factory:coder", "factory:explorer", "factory:lander", "factory:ops-explorer", "factory:reviewer"])
         self.assertEqual({k: v["model"] for k, v in got.items()}, {
-            "factory:coder": "haiku", "factory:explorer": "haiku", "factory:lander": "claude-haiku-4-5", "factory:reviewer": "opus"})
+            "factory:coder": "haiku", "factory:explorer": "haiku", "factory:lander": "claude-haiku-4-5",
+            "factory:ops-explorer": "haiku", "factory:reviewer": "opus"})
         agents = BIN.parent.parent / "agents"
         for name, entry in ((k.split(":")[1], v) for k, v in got.items()):
             text = (agents / f"{name}.md").read_text()
@@ -888,6 +900,7 @@ class AgentDefinitionTests(unittest.TestCase):
             self.assertEqual(entry.get("tools"), tools and [t.strip() for t in tools[1].split(",")], name)
             self.assertEqual(entry.get("skills"), re.findall(r"^  - (.*)$", head, re.M) or None, name)
         self.assertEqual(got["factory:explorer"]["tools"], ["Read", "Grep", "Glob", "Bash"])
+        self.assertEqual(got["factory:ops-explorer"]["tools"], ["Read", "Grep", "Glob"])
         self.assertEqual(got["factory:coder"]["skills"], ["coding-taste"])
         self.assertNotIn("tools", got["factory:coder"])
 
@@ -895,13 +908,213 @@ class AgentDefinitionTests(unittest.TestCase):
         d = self.files({"coder": "---\nname: coder\ndescription: d\nmodel: sonnet\nmaxTurns: 3\n---\nbody\n"})
         with mock.patch.object(factory, "PLUGIN_ROOT", d):
             with self.assertRaisesRegex(factory.Fail, r"coder\.md: frontmatter key 'maxTurns'"):
-                factory.agent_definitions(self.MODELS)
+                factory.agent_definitions(self.SETTINGS, ROOT)
 
     def test_an_agent_without_a_models_key_fails(self):
         d = self.files({"janitor": "---\nname: janitor\ndescription: d\nmodel: haiku\n---\nbody\n"})
         with mock.patch.object(factory, "PLUGIN_ROOT", d):
             with self.assertRaisesRegex(factory.Fail, r"janitor\.md: no models\.janitor setting"):
-                factory.agent_definitions(self.MODELS)
+                factory.agent_definitions(self.SETTINGS, ROOT)
+
+
+class OpsServersTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.root = self.dir / "repo"
+        self.root.mkdir()
+        self.claude_json = self.dir / "claude.json"
+        patcher = mock.patch.object(factory, "CLAUDE_JSON", self.claude_json)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        factory.warned.clear()
+
+    def servers(self, tools):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            return factory.ops_servers(tools, str(self.root)), err.getvalue()
+
+    def test_local_scope_beats_project_scope_beats_user_scope(self):
+        def at(scope, url):
+            return {"type": "http", "url": f"https://{scope}.example/{url}"}
+        self.claude_json.write_text(json.dumps({
+            "mcpServers": {"a": at("user", "a"), "b": at("user", "b"), "c": at("user", "c")},
+            "projects": {str(self.root): {"mcpServers": {"a": at("local", "a")}}}}))
+        (self.root / ".mcp.json").write_text(json.dumps({"mcpServers": {"a": at("project", "a"), "b": at("project", "b")}}))
+        got, err = self.servers(["mcp__c__x", "mcp__a__x", "mcp__a__y", "mcp__b__*"])
+        self.assertEqual(got, [{"c": at("user", "c")}, {"a": at("local", "a")}, {"b": at("project", "b")}])
+        self.assertEqual(err, "")
+
+    def test_a_server_found_nowhere_is_skipped_with_one_line(self):
+        self.claude_json.write_text(json.dumps({"mcpServers": {"a": {"type": "http", "url": "u"}}}))
+        got, err = self.servers(["mcp__a__x", "mcp__gone__x", "mcp__gone__y"])
+        self.assertEqual(got, [{"a": {"type": "http", "url": "u"}}])
+        self.assertEqual(err, "factory: ops.tools names server gone, which is not configured here (claude mcp add)\n")
+
+    def test_an_unreadable_or_malformed_config_file_counts_as_not_found(self):
+        (self.root / ".mcp.json").write_text("{not json")
+        self.claude_json.write_text('{"mcpServers": ["a"], "projects": 3}')
+        got, err = self.servers(["mcp__a__x"])
+        self.assertEqual((got, err.count("server a,")), ([], 1))
+
+    def test_nothing_is_read_when_no_tool_is_listed(self):
+        self.assertEqual(self.servers(None), ([], ""))
+        self.assertEqual(self.servers([]), ([], ""))
+
+    def test_the_servers_go_to_the_ops_explorer_entry_only(self):
+        self.claude_json.write_text(json.dumps({"mcpServers": {"metrics": {"type": "http", "url": "u"}}}))
+        got = factory.agent_definitions({**DEFAULT_SETTINGS, "tools": ["mcp__metrics__query"]}, str(self.root))
+        self.assertEqual(got["factory:ops-explorer"]["mcpServers"], [{"metrics": {"type": "http", "url": "u"}}])
+        self.assertEqual([k for k, v in got.items() if "mcpServers" in v], ["factory:ops-explorer"])
+        for settings in (DEFAULT_SETTINGS, {**DEFAULT_SETTINGS, "tools": ["mcp__other__q"]}):
+            with redirect_stderr(io.StringIO()):
+                self.assertNotIn("mcpServers", factory.agent_definitions(settings, str(self.root))["factory:ops-explorer"])
+
+
+class OpsHookTests(InStore):
+    OPS = "factory:ops-explorer"
+    TOOLS = '[ops]\ntools = ["mcp__metrics__query", "mcp__logs__*"]\n'
+
+    def setUp(self):
+        super().setUp()
+        for patcher in (mock.patch.object(factory, "STORE", self.dir),
+                        mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": ""})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def hook(self, payload, settings=TOOLS):
+        if settings is not None:
+            self.path.write_text(settings)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "stdin", io.StringIO(payload if isinstance(payload, str) else json.dumps(payload))), \
+                redirect_stdout(out), redirect_stderr(err):
+            try:
+                code = factory.main(["ops-hook"])
+            finally:
+                signal.alarm(0)  # main() arms the gate's deadline; this process is not the gate
+        return code, out.getvalue(), err.getvalue()
+
+    def pre(self, tool, **extra):
+        return {"hook_event_name": "PreToolUse", "agent_type": self.OPS, "tool_name": tool, "session_id": "s1", **extra}
+
+    def decision(self, tool, **kw):
+        code, out, err = self.hook(self.pre(tool), **kw)
+        self.assertEqual((code, err), (0, ""))
+        return json.loads(out)["hookSpecificOutput"]
+
+    def test_a_listed_tool_is_allowed_and_an_unlisted_one_denied_with_the_reason(self):
+        self.assertEqual(self.decision("mcp__metrics__query"), {
+            "hookEventName": "PreToolUse", "permissionDecision": "allow", "permissionDecisionReason": "on ops.tools"})
+        self.assertEqual(self.decision("mcp__metrics__delete"), {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": "mcp__metrics__delete is not on ops.tools: the ops explorer is read-only"})
+
+    def test_a_server_wildcard_covers_that_server_only(self):
+        for tool, want in (("mcp__logs__x", "allow"), ("mcp__logs__", "allow"), ("mcp__logsx__y", "deny"),
+                           ("mcp__other__x", "deny"), ("mcp__metrics__*", "deny")):
+            self.assertEqual(self.decision(tool)["permissionDecision"], want, tool)
+
+    def test_unset_tools_deny_everything(self):
+        self.assertEqual(self.decision("mcp__metrics__query", settings="")["permissionDecision"], "deny")
+
+    def test_another_agent_or_none_is_not_its_business(self):
+        for extra in ({"agent_type": "factory:coder"}, {"agent_type": None}):
+            self.assertEqual(self.hook({**self.pre("mcp__x__y"), **extra}), (0, "", ""))
+        payload = self.pre("mcp__x__y")
+        del payload["agent_type"]
+        self.assertEqual(self.hook(payload), (0, "", ""))
+
+    def test_a_failure_before_a_call_exits_2_and_never_allows(self):
+        for what, payload, settings in (
+                ("garbage", "{nope", self.TOOLS), ("not an object", "[1]", self.TOOLS),
+                ("no tool name", {"hook_event_name": "PreToolUse", "agent_type": self.OPS}, self.TOOLS),
+                ("malformed settings", self.pre("mcp__metrics__query"), "not toml"),
+                ("settings of the wrong type", self.pre("mcp__metrics__query"), '[ops]\ntools = "mcp__metrics__query"\n')):
+            with self.subTest(what):
+                code, out, err = self.hook(payload, settings)
+                self.assertEqual((code, out), (2, ""))
+                self.assertTrue(err.startswith("factory ops-hook: "), err)
+        self.path.unlink()
+        self.path.mkdir()
+        code, out, err = self.hook(self.pre("mcp__metrics__query"), None)
+        self.assertEqual((code, out), (2, ""))
+
+    def test_a_gate_that_waits_for_its_input_blocks_the_call_after_its_deadline(self):
+        started = time.monotonic()
+        proc = subprocess.Popen([sys.executable, str(BIN), "ops-hook"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env={**os.environ, "FACTORY_HOME": str(self.dir)})
+        self.addCleanup(proc.kill)
+        stop = threading.Timer(factory.OPS_HOOK_DEADLINE + 5, proc.kill)  # a gate without a deadline fails the test, it does not hang it
+        stop.start()
+        self.addCleanup(stop.cancel)
+        with proc.stdin, proc.stdout, proc.stderr:  # stdin stays open: nobody writes, nobody closes
+            err = proc.stderr.read()  # ends when the gate does
+            proc.wait()
+        took = time.monotonic() - started
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(err, "factory: ops-hook ran out of time: the call is blocked, or its result was not saved: do not use it\n")
+        self.assertTrue(factory.OPS_HOOK_DEADLINE - 0.5 <= took < factory.OPS_HOOK_DEADLINE + 3, took)
+
+    def post(self, **extra):
+        return {"hook_event_name": "PostToolUse", "agent_type": self.OPS, "agent_id": "a1", "session_id": "s1",
+                "tool_name": "mcp__metrics__query", "tool_use_id": "toolu_0123456789abcdef", "cwd": "/r",
+                "tool_input": {"query": "count by status", "from": "2026-11-15T00:00:00Z", "to": "2026-11-15T01:00:00Z"},
+                "tool_response": [{"type": "text", "text": "ok é\n"}, {"n": 1.5, "none": None}], **extra}
+
+    def saved(self, out):
+        said = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(said["hookEventName"], "PostToolUse")
+        return said["additionalContext"].removeprefix("Evidence saved: "), said["additionalContext"]
+
+    def test_the_evidence_file_holds_the_call_untouched_and_is_private(self):
+        payload = self.post()
+        code, out, err = self.hook(payload)
+        self.assertEqual((code, err), (0, ""))
+        path, text = self.saved(out)
+        self.assertTrue(text.startswith("Evidence saved: "))
+        path = Path(path)
+        self.assertEqual(path.parent, self.dir / "deliverables" / "session-s1" / "evidence")
+        self.assertRegex(path.name, r"^\d{8}T\d{6}Z-mcp__metrics__query-89abcdef\.json$")
+        doc = json.loads(path.read_text())
+        ts = doc.pop("ts")
+        self.assertRegex(ts, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(doc, {"server": "metrics", "tool": "mcp__metrics__query", "input": payload["tool_input"],
+                               "response": payload["tool_response"], "agent_id": "a1", "session_id": "s1"})
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        for level in (path.parent, path.parent.parent, path.parent.parent.parent):
+            self.assertEqual(stat.S_IMODE(level.stat().st_mode), 0o700, level)
+
+    def test_a_folder_that_exists_keeps_its_mode(self):
+        (self.dir / "deliverables").mkdir(mode=0o755)
+        (self.dir / "deliverables").chmod(0o755)
+        self.hook(self.post())
+        self.assertEqual(stat.S_IMODE((self.dir / "deliverables").stat().st_mode), 0o755)
+
+    def test_a_relative_home_refuses_the_ops_explorer_and_nobody_else(self):
+        with mock.patch.object(factory, "STORE", Path("relative/home")):
+            self.assertEqual(self.hook(self.pre("mcp__metrics__query"))[0:2], (2, ""))
+            self.assertEqual(self.hook(self.post())[0:2], (2, ""))
+            self.assertEqual(self.hook({**self.pre("mcp__x__y"), "agent_type": "factory:coder"}), (0, "", ""))
+
+    def test_a_task_worktree_names_the_folder_by_its_slug(self):
+        _, out, _ = self.hook(self.post(cwd="/repo/.claude/worktrees/demo-task"))
+        self.assertEqual(Path(self.saved(out)[0]).parent, self.dir / "deliverables" / "demo-task" / "evidence")
+
+    def test_two_calls_leave_two_files(self):
+        paths = {self.saved(self.hook(self.post(tool_use_id=f"toolu_{i:08d}"))[1])[0] for i in range(2)}
+        self.assertEqual(len(paths), 2)
+
+    def test_a_failed_write_says_the_result_is_not_to_be_used(self):
+        (self.dir / "deliverables").write_text("a file")
+        code, out, _ = self.hook(self.post())
+        self.assertEqual(code, 0)
+        text = self.saved(out)[1]
+        self.assertRegex(text, r"^EVIDENCE NOT SAVED \(.+\): do not use this result$")
+        self.assertNotIn("Evidence saved", text)
+
+    def test_another_agents_result_leaves_no_file(self):
+        self.assertEqual(self.hook(self.post(agent_type="factory:coder")), (0, "", ""))
+        self.assertFalse((self.dir / "deliverables").exists())
 
 
 class ReserveTests(unittest.TestCase):
@@ -916,6 +1129,8 @@ class ReserveTests(unittest.TestCase):
 class NewTests(unittest.TestCase):
     ARGS = ["new", "demo-task", "--brief", "do it", "--dispatcher", "d1"]
     OK = {("claude", "--bg"): (0, "backgrounded · 96dc4869 · demo-task\n", ""), ("git", "ls-remote"): (2, "", "")}
+    DENIED = ["Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
+              "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)"]
 
     def answers(self, entries, sessions=(), *extras, dispatcher="d1"):
         return repo_answers(entries, [dict(DISPATCHER, name=dispatcher), *sessions], *extras)
@@ -931,40 +1146,38 @@ class NewTests(unittest.TestCase):
         want = ["claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
                 "--agents", fake.calls[-1][fake.calls[-1].index("--agents") + 1],
                 "--permission-mode", "auto", "--plugin-dir", plugin, "--strict-mcp-config",
-                "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}", "--append-system-prompt", lead,
+                "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}",
+                "--disallowedTools", *self.DENIED, "--append-system-prompt", lead,
                 "Your task slug is demo-task. Before each message to the dispatcher run `factory dispatcher`: "
                 "it prints its current session name (now d1). "
                 "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
                 "Your time limit is 120 minutes. Your brief follows.\n\ndo it"]
         self.assertEqual(fake.calls[-1], want)
 
-    def test_the_mode_reaches_the_argv_and_the_started_event(self):
-        roles = BIN.resolve().parent.parent / "roles"
-        single = (roles / "lead.md").read_text()
-        team = single + "\n\n" + (roles / "lead-team.md").read_text()
-        denied = ["Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
-                  "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)"]
-        cases = [([], {"mode": "team"}, "team"), (["--mode", "team"], {}, "team"),
-                 (["--mode", "single"], {"mode": "team"}, "single"), ([], {}, "single")]
-        for extra, settings, mode in cases:
-            for lean in (True, False):
-                with self.subTest(extra=extra, settings=settings, lean=lean), mock.patch.object(factory, "task_event") as event:
-                    code, _, err, fake = invoke(self.ARGS + extra, self.answers([], (), self.OK),
-                                                "[sessions]\n" + "".join(f"{k} = {json.dumps(v)}\n" for k, v in {**settings, "lean_start": lean}.items()))
-                    argv = fake.calls[-1]
-                    rules = argv.index("--append-system-prompt")
-                    self.assertEqual(code, 0, err)
-                    self.assertEqual(event.call_args.kwargs["mode"], mode)
-                    self.assertEqual(argv[rules + 1], team if mode == "team" else single)
-                    self.assertTrue(argv[-1].endswith("do it"))
-                    self.assertEqual(rules + 2, len(argv) - 1)
-                    self.assertEqual("--disallowedTools" in argv, mode == "team")
-                    if mode == "team":
-                        self.assertEqual(argv[rules - len(denied) - 1:rules], ["--disallowedTools", *denied])
+    def test_every_lead_gets_the_team_rules_the_denied_list_and_a_team_started_event(self):
+        rules_file = BIN.resolve().parent.parent / "roles" / "lead.md"
+        for lean in (True, False):
+            with self.subTest(lean=lean), mock.patch.object(factory, "task_event") as event:
+                code, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK), f"[sessions]\nlean_start = {json.dumps(lean)}\n")
+                argv = fake.calls[-1]
+                rules = argv.index("--append-system-prompt")
+                self.assertEqual(code, 0, err)
+                self.assertEqual(event.call_args.kwargs["mode"], "team")
+                self.assertEqual(argv[rules + 1], rules_file.read_text())
+                self.assertEqual(argv[rules - len(self.DENIED) - 1:rules], ["--disallowedTools", *self.DENIED])
+                self.assertEqual(rules + 2, len(argv) - 1)
+                self.assertTrue(argv[-1].endswith("do it"))
 
-    def test_a_mode_that_is_not_one_is_refused(self):
-        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
-            factory.parse_args(self.ARGS + ["--mode", "both"])
+    def test_there_is_no_mode_switch(self):
+        with self.assertRaises(SystemExit) as raised, redirect_stderr(io.StringIO()):
+            factory.parse_args(self.ARGS + ["--mode", "team"])
+        self.assertEqual(raised.exception.code, 2)
+        roles = BIN.resolve().parent.parent / "roles"
+        lead = (roles / "lead.md").read_text()
+        self.assertFalse((roles / "lead-team.md").exists())
+        self.assertIn("your tools refuse", lead)
+        self.assertIn("factory build", lead)
+        self.assertNotIn("lead-team", lead)
 
     def test_lean_start_off_launches_the_old_argv_without_listing_plugins(self):
         with mock.patch.object(factory.time, "time", return_value=1794610677):
@@ -974,7 +1187,7 @@ class NewTests(unittest.TestCase):
         self.assertEqual(fake.calls[-1], [
             "claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
             "--agents", fake.calls[-1][fake.calls[-1].index("--agents") + 1],
-            "--permission-mode", "auto", "--plugin-dir", plugin, "--append-system-prompt", lead,
+            "--permission-mode", "auto", "--plugin-dir", plugin, "--disallowedTools", *self.DENIED, "--append-system-prompt", lead,
             "Your task slug is demo-task. Before each message to the dispatcher run `factory dispatcher`: "
                 "it prints its current session name (now d1). "
             "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
@@ -1012,9 +1225,10 @@ class NewTests(unittest.TestCase):
         _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), settings)
         argv = fake.calls[-1]
         agents = json.loads(argv[argv.index("--agents") + 1])
-        self.assertEqual(sorted(agents), ["factory:coder", "factory:explorer", "factory:lander", "factory:reviewer"])
+        self.assertEqual(sorted(agents), ["factory:coder", "factory:explorer", "factory:lander", "factory:ops-explorer", "factory:reviewer"])
         self.assertEqual({k.split(":")[1]: v["model"] for k, v in agents.items()},
-                         {"coder": "haiku", "explorer": "haiku", "lander": "sonnet", "reviewer": "claude-opus-4-1[1m]"})
+                         {"coder": "haiku", "explorer": "haiku", "lander": "sonnet", "ops-explorer": "haiku",
+                          "reviewer": "claude-opus-4-1[1m]"})
         coder = (BIN.parent.parent / "agents" / "coder.md").read_text().split("\n---\n", 1)[1]
         self.assertEqual(agents["factory:coder"]["prompt"], coder)
         self.assertEqual(agents["factory:explorer"]["tools"], ["Read", "Grep", "Glob", "Bash"])
@@ -1027,8 +1241,8 @@ class NewTests(unittest.TestCase):
         argv = fake.calls[-1]
         self.assertEqual(argv[argv.index("--model") + 1], "opus")
         self.assertEqual(started, [("TaskStarted", "demo-task", {
-            "base": "main", "lead_model": "opus", "mode": "single",
-            "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet", "reviewer": "opus"}})])
+            "base": "main", "lead_model": "opus", "mode": "team",
+            "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet", "ops-explorer": "haiku", "reviewer": "opus"}})])
         started.clear()
         with mock.patch.object(factory, "task_event", lambda kind, repo, slug, **kw: started.append((kind, slug, kw))):
             _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), '[models]\nlead = "haiku"\n')
@@ -2314,9 +2528,9 @@ print(os.environ["FAKE_LSOF"])
     def git(self, *args):
         return subprocess.run(["git", *args], cwd=self.repo, env=self.env, check=True, capture_output=True, text=True).stdout
 
-    def factory(self, *args, env=None, cwd=None):
+    def factory(self, *args, env=None, cwd=None, input=None):
         return subprocess.run([sys.executable, str(BIN), *args], cwd=cwd or self.repo, env={**self.env, **(env or {})},
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, input=input)
 
     def test_new_status_clean(self):
         p = self.factory("new", "demo-task", "--brief", "build it")
@@ -2428,6 +2642,36 @@ print(os.environ["FAKE_LSOF"])
         self.assertEqual((row["state"], row["deliverable"], row["phase"]), ("handed-over", "https://x/y", "review"))
         p = self.factory("state", "working", cwd=self.repo)
         self.assertEqual(p.returncode, 2)
+
+    def test_a_task_started_single_before_the_change_finishes_as_it_started(self):
+        store = self.home / ".claude/factory"
+        month = time.strftime("%Y-%m", time.gmtime())
+        started = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "repo": str(self.repo), "role": "dispatcher",
+                   "model": None, "version": "0.1.0", "session": "sid-d", "event": "TaskStarted", "base": "main",
+                   "lead_model": "fable"}
+        old = {"old-single": {"mode": "single"}, "old-silent": {}}  # a task of the first kind and one from before `mode` was recorded
+        store.mkdir(parents=True)
+        (store / f"events-{month}.jsonl").write_text("".join(json.dumps({**started, "slug": s, **extra}) + "\n" for s, extra in old.items()))
+        retro = json.dumps({"defects": [], "slowed": ["x"], "rules_missing": [], "rules_dead_weight": [], "brief_questions": []})
+        for slug in old:
+            self.git("worktree", "add", "-q", "-b", f"worktree-{slug}", f".claude/worktrees/{slug}")
+            wt = self.repo / ".claude/worktrees" / slug
+            for args, stdin in ((("state", "working"), None), (("state", "blocked"), None), (("state", "working"), None),
+                                (("commands", "test", "true"), None), (("feedback", "decide", "kept the rules. Why: it started single"), None),
+                                (("retro",), retro), (("state", "handed-over", f"https://example.com/pull/{slug}"), None)):
+                with self.subTest(slug=slug, args=args):
+                    p = self.factory(*args, cwd=wt, input=stdin)
+                    self.assertEqual((p.returncode, p.stderr), (0, ""))
+        rows = {r["slug"]: r for r in json.loads(self.factory("status", "--json").stdout)["rows"]}
+        self.assertEqual({s: rows[s]["state"] for s in old}, {"old-single": "handed-over", "old-silent": "handed-over"})
+
+        self.assertEqual(self.factory("new", "new-team", "--brief", "build it").returncode, 0)
+        (self.home / ".claude/projects").mkdir()
+        kaizen = subprocess.run([sys.executable, str(BIN.parent.parent.parent / "bin" / "isshoni"), "kaizen", "--json", "--cached",
+                                 "--factory-dir", str(store)], env=self.env, capture_output=True, text=True)
+        self.assertEqual(kaizen.returncode, 0, kaizen.stderr)
+        modes = {t["slug"]: t["mode"] for t in json.loads(kaizen.stdout)["tasks"]}
+        self.assertEqual(modes, {"old-single": "single", "old-silent": "single", "new-team": "team"})
 
     def test_a_file_inside_the_worktree_is_refused(self):
         self.git("worktree", "add", "-q", "-b", "worktree-demo-task", ".claude/worktrees/demo-task")

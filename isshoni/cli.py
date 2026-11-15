@@ -311,7 +311,7 @@ def _friction_lines(f, cur, subagents_only):
 
 
 def print_modes(rows, cur):
-    """The landed tasks of each mode by stated size (summary.by_mode) as plain text."""
+    """The landed tasks from before the team (single) and since (team) by stated size (summary.by_mode) as plain text."""
     if not rows:
         print("no landed task carries a mode yet")
         return 0
@@ -456,7 +456,7 @@ def build_parser():
     s = sub.add_parser("kaizen", parents=[_common(True), since], help="improvement measures of the factory")
     s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")
     s.add_argument("--cached", action="store_true", help="pull requests from the disk cache only; never run gh")
-    s.add_argument("--modes", action="store_true", help="landed tasks of each mode (single, team) by stated size, as a table")
+    s.add_argument("--modes", action="store_true", help="landed tasks from before the team (single) and since (team) by stated size, as a table")
     s.set_defaults(func=cmd_kaizen)
     s = sub.add_parser("anatomy", parents=[_common(True), since, scope], help="cost anatomy of each task per role")
     s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")

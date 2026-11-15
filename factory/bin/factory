@@ -178,7 +178,6 @@ def validate_slug(slug):
 
 
 ALIASES = ("fable", "opus", "sonnet", "haiku")
-MODES = ("single", "team")
 MODEL_SHAPE_RE = re.compile(r"(fable|opus|sonnet|haiku|claude-[a-z0-9.-]+)(\[[0-9a-z]+\])?")
 TABLE_RE = re.compile(r"\s*\[([^\[\]]+)\]\s*(#.*)?")
 VALUE_RE = r"(\"(?:[^\"\\]|\\.)*\"|'[^']*'|\[[^\]]*\]|[^#\s]+)(.*)"
@@ -211,12 +210,16 @@ def a_model(v):
     return None if ok else (f': "{v}" is not a model (an alias: {", ".join(ALIASES)}; or a full id starting claude-)')
 
 
-def a_mode(v):
-    return None if v in MODES else f" must be one of {', '.join(MODES)}"
-
-
 def name_list(v):
     return None if isinstance(v, list) and all(isinstance(i, str) and i.strip() for i in v) else " must be a list of strings"
+
+
+OPS_TOOL_RE = re.compile(r"mcp__((?:(?!__).)+)__(\*|[^*]+)")
+
+
+def ops_tool_list(v):
+    ok = name_list(v) is None and all(OPS_TOOL_RE.fullmatch(i) for i in v)
+    return None if ok else " must be a list of MCP tool names: mcp__<server>__<tool> or mcp__<server>__*"
 
 
 def toml_arg(raw):
@@ -240,13 +243,14 @@ SETTINGS = (
     Setting("models", "dispatcher", "fable", a_model, 'Advice only: the human starts the dispatcher. Default "fable".'),
     Setting("models", "lead", "fable", a_model, 'The lead of each task. Takes effect at the next `factory new`. Default "fable".'),
     Setting("models", "explorer", "haiku", a_model, 'The lead\'s explorer. Takes effect for the next lead started. Default "haiku".'),
-    Setting("models", "coder", "sonnet", a_model, 'The lead\'s coder. Takes effect for the next lead started. Default "sonnet".'),
-    Setting("models", "reviewer", "opus", a_model, 'The lead\'s reviewer. Takes effect for the next lead started. Default "opus".'),
+    Setting("models", "coder", "sonnet", a_model, 'The build run\'s coder. Takes effect at the next build run. Default "sonnet".'),
+    Setting("models", "reviewer", "opus", a_model, 'The build run\'s reviewer. Takes effect at the next build run. Default "opus".'),
     Setting("models", "lander", "sonnet", a_model,
-            'The lander: the lead\'s subagent, also the headless run of `factory land` (next run). Default "sonnet".'),
+            'The lander: the build run\'s subagent, also the headless run of `factory land` (next run). Default "sonnet".'),
     Setting("models", "site_manager", "sonnet", a_model, 'The watch tick\'s judge. Next tick. Default "sonnet".'),
+    Setting("models", "ops_explorer", "haiku", a_model, 'The ops explorer, which reads production through MCP servers. Takes effect for the next lead, build or tech lead run started. Default "haiku".'),
     Setting("models", "courier", "haiku", a_model, 'Carries pull request comments to a lead. Next tick. Default "haiku".'),
-    Setting("models", "tech_lead", "opus", a_model, 'Resolves a pull request that came back from the merge queue and, in team mode, runs a task\'s build. Its next run. Default "opus".'),
+    Setting("models", "tech_lead", "opus", a_model, 'Resolves a pull request that came back from the merge queue and runs every task\'s build. Its next run. Default "opus".'),
     Setting("limits", "worktree_cap", 5, int_in(1), "Open task worktrees at most, the dashboard's c key edits it. Default 5.", toml_arg),
     Setting("limits", "reserve_percent", 10, int_in(0, 100),
             "Percent of the cap held back for critical tasks, rounded up, never the last slot. Default 10.", toml_arg),
@@ -256,17 +260,17 @@ SETTINGS = (
             f"The permission mode of every lead ({', '.join(PERMISSION_MODES)}). Default \"auto\"."),
     Setting("sessions", "lean_start", True, boolean,
             "Start leads, the site manager and the lander with no MCP servers, bundled skills or other plugins. Default true.", toml_arg),
-    Setting("sessions", "mode", "single", a_mode,
-            'What `factory new` starts a task as: "single" (the lead builds with its own subagents) or "team" (a tech lead '
-            'runs the build). Takes effect at the next `factory new`. Default "single".'),
     Setting("sessions", "dispatchers", None, name_list,
             "The dispatcher session names the served dashboard's `d` key reads; `isshoni host add` sets it. Unset by default.", json_arg),
     Setting("merging", "lgtm_from_author", True, boolean,
             "Whether an `lgtm` comment by the pull request's author counts as the human's word. Default true.", toml_arg),
+    Setting("ops", "tools", None, ops_tool_list,
+            "The MCP tools the ops explorer may call, read-only ones only. Unset by default: no MCP tools.", json_arg),
     Setting("paths", "monitor", None, nonempty,
             "The isshoni command the cost criteria and the digest run; the wizard's cost step sets it. Unset by default."),
 )
-UNSET_EXAMPLES = {"monitor": '"/path/to/ccmon/bin/isshoni"', "dispatchers": '["dispatcher-<repository>"]'}
+UNSET_EXAMPLES = {"monitor": '"/path/to/ccmon/bin/isshoni"', "dispatchers": '["dispatcher-<repository>"]',
+                  "tools": '["mcp__metrics__query"]'}
 TABLES = tuple(dict.fromkeys(s.table for s in SETTINGS))
 SETTINGS_HEADER = ("# The factory's settings. Edit a line and save: no reinstall.\n"
                    "# A model is an alias (fable, opus, sonnet, haiku) or a full id (claude-...).")
@@ -514,9 +518,45 @@ def cmd_settings(args):
 AGENT_KEYS = ("name", "description", "model", "tools", "skills")
 
 
-def agent_definitions(models):
-    """The `--agents` JSON of a lead: every file in factory/agents as `factory:<name>`, its model the configured one."""
-    out = {}
+CLAUDE_JSON = Path("~/.claude.json")
+OPS_AGENT = "factory:ops-explorer"
+OPS_HOOK_DEADLINE = 5  # seconds the ops-hook gives itself; the harness lets a call run when a hook outlives its own timeout
+
+
+def mcp_servers(path, *keys):
+    """The `mcpServers` object of the JSON file `path`, found under `keys`; {} when the file cannot be read or has none."""
+    try:
+        node = json.loads(path.expanduser().read_text())
+        for key in keys:
+            node = node[key]
+        return node["mcpServers"] if isinstance(node["mcpServers"], dict) else {}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
+def ops_servers(tools, root):
+    """The definitions of the servers `tools` (ops.tools) name, as `[{name: definition}]`: the first of local scope
+    (`~/.claude.json`, this repository), project scope (`.mcp.json`) and user scope (`~/.claude.json`) that has the name."""
+    names = list(dict.fromkeys(OPS_TOOL_RE.fullmatch(t)[1] for t in tools or ()))
+    scopes = [mcp_servers(CLAUDE_JSON, "projects", root), mcp_servers(Path(root) / ".mcp.json"), mcp_servers(CLAUDE_JSON)] if names else []
+    out = []
+    for name in names:
+        if found := next((s[name] for s in scopes if name in s), None):
+            out.append({name: found})
+        else:
+            warn(f"ops.tools names server {name}, which is not configured here (claude mcp add)")
+    return out
+
+
+def model_key(path):
+    """The `[models]` key of an agent file: its stem, with `_` for `-`."""
+    return path.stem.replace("-", "_")
+
+
+def agent_definitions(settings, root):
+    """The `--agents` JSON of a session: every file in factory/agents as `factory:<name>`, its model the configured one.
+    The ops explorer also gets the MCP servers `ops.tools` names, defined inline: no other agent holds an MCP tool."""
+    models, out = settings["models"], {}
     for path in sorted((PLUGIN_ROOT / "agents").glob("*.md")):
         head, _, body = path.read_text().removeprefix("---\n").partition("\n---\n")
         meta, key = {}, None
@@ -528,23 +568,25 @@ def agent_definitions(models):
             if key not in AGENT_KEYS:
                 raise Fail(f"{path}: frontmatter key {key!r} is not one the factory passes on ({', '.join(AGENT_KEYS)})")
             meta[key] = value.strip() or []
-        if path.stem not in models:
-            raise Fail(f"{path}: no models.{path.stem} setting for this agent")
+        if model_key(path) not in models:
+            raise Fail(f"{path}: no models.{model_key(path)} setting for this agent")
         out[f"factory:{path.stem}"] = {
-            "description": meta["description"], "prompt": body, "model": models[path.stem],
+            "description": meta["description"], "prompt": body, "model": models[model_key(path)],
             **({"tools": [t.strip() for t in meta["tools"].split(",")]} if "tools" in meta else {}),
             **({"skills": meta["skills"]} if "skills" in meta else {})}
+    if servers := ops_servers(settings["tools"], root):
+        out[OPS_AGENT]["mcpServers"] = servers
     return out
 
 
 LEAD_TOOLS = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch,SendMessage,WebFetch,WebSearch,TaskStop,Monitor"
-LEAD_TEAM_DENIED = ("Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
-                    "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)")
+LEAD_DENIED = ("Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
+               "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)")
 
 
 def agent_models(models):
     """The configured model of each agent file in factory/agents, by role."""
-    return {f.stem: models[f.stem] for f in sorted((PLUGIN_ROOT / "agents").glob("*.md")) if f.stem in models}
+    return {f.stem: models[model_key(f)] for f in sorted((PLUGIN_ROOT / "agents").glob("*.md")) if model_key(f) in models}
 
 
 def lean_flags():
@@ -599,14 +641,10 @@ def span(secs):
     return f"{h}h" * (h > 0) + f"{m}m" * (m > 0 or h == 0)
 
 
-def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limit, mode):
-    """The lead's launch command: the one place another runner would plug in. In team mode the lead's rules are
-    followed by the team rules and its tools refuse the writing subagents (`--disallowedTools` is variadic: the flag
-    after it ends the list, and the prompt stays last)."""
+def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limit, root):
+    """The lead's launch command: the one place another runner would plug in. Its tools refuse the writing subagents
+    (`--disallowedTools` is variadic: the flag after it ends the list, and the prompt stays last)."""
     lead_rules = (PLUGIN_ROOT / "roles" / "lead.md").read_text()
-    team = mode == "team"
-    if team:
-        lead_rules += "\n\n" + (PLUGIN_ROOT / "roles" / "lead-team.md").read_text()
     prompt = (
         f"Your task slug is {slug}. Before each message to the dispatcher run `factory dispatcher`: "
         f"it prints its current session name (now {dispatcher}). "
@@ -618,11 +656,11 @@ def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limi
     return [
         "claude", "--bg", "--worktree", slug, "-n", slug,
         "--model", settings["models"]["lead"],
-        "--agents", json.dumps(agent_definitions(settings["models"])),
+        "--agents", json.dumps(agent_definitions(settings, root)),
         "--permission-mode", settings["lead_permission_mode"],
         "--plugin-dir", str(PLUGIN_ROOT),
         *lean,
-        *(["--disallowedTools", *LEAD_TEAM_DENIED] if team else []),
+        "--disallowedTools", *LEAD_DENIED,
         "--append-system-prompt", lead_rules,
         prompt,
     ]
@@ -1270,7 +1308,6 @@ def cmd_new(args):
         if problem := a_model(args.lead_model):
             raise Fail(f"--lead-model{problem}")
         settings["models"]["lead"] = args.lead_model
-    mode = args.mode or settings["mode"]
     size = brief_size(brief)
     repo = Repo()
     branch = f"worktree-{args.slug}"
@@ -1340,7 +1377,7 @@ def cmd_new(args):
                     remove_stacked(repo, path, branch)
                 raise Fail(f"git {' '.join(argv)} failed: {err.strip()}", code=1)
     rc, out, err = run(build_launch_argv(args.slug, dispatcher, brief, settings, base, repo.remote, time.time(),
-                                         task_limit(size, settings["task_time_limit_hours"]), mode),
+                                         task_limit(size, settings["task_time_limit_hours"]), repo.root),
                        cwd=repo.root)
     match = BACKGROUNDED_RE.search(f"{out}\n{err}")
     if rc != 0 and not match:
@@ -1357,7 +1394,8 @@ def cmd_new(args):
         rc, _, err = repo.git("config", f"branch.{branch}.factorySize", size)
         if rc != 0:
             sys.stderr.write(f"factory: warning: cannot record the size of {branch}: {err.strip()}\n")
-    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"], mode=mode,
+    # mode: a record for `isshoni kaizen --modes`, which compares these tasks with those started before the team (`single`).
+    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"], mode="team",
                models=agent_models(settings["models"]), **({"size": size} if size else {}))
     try:
         declare(repo, args.slug, "dispatcher", "working")
@@ -1754,6 +1792,52 @@ def cmd_hook(args):
         follow_dispatcher(p)
     except Exception:
         pass
+    return 0
+
+
+def save_evidence(p):
+    """Write the MCP call of the hook payload `p` to its evidence file and return the path (see docs/factory.md, "Reading production")."""
+    server = OPS_TOOL_RE.fullmatch(p["tool_name"])[1]
+    folder = STORE.expanduser() / "deliverables" / (tags(p)["slug"] or f"session-{p['session_id']}") / "evidence"
+    folder.parents[2].mkdir(parents=True, exist_ok=True)
+    for level in (folder.parents[1], folder.parents[0], folder):
+        level.mkdir(mode=0o700, exist_ok=True)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    path = folder / f"{stamp}-{p['tool_name']}-{str(p.get('tool_use_id'))[-8:]}.json"
+    doc = {"ts": now(), "server": server, "tool": p["tool_name"], "input": p.get("tool_input"),
+           "response": p.get("tool_response"), "agent_id": p.get("agent_id"), "session_id": p["session_id"]}
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+        json.dump(doc, f)
+    return path
+
+
+def cmd_ops_hook(args):
+    """The ops explorer's MCP calls: before one, allow it when its tool is on ops.tools and deny it otherwise; after one,
+    save its evidence. Nothing for any other agent. A failure before a call exits 2, which blocks it."""
+    try:
+        p = json.loads(sys.stdin.read())
+        if p.get("agent_type") != OPS_AGENT:
+            return 0
+        if not STORE.expanduser().is_absolute():
+            raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
+        event, tool = p["hook_event_name"], p["tool_name"]
+        if event == "PreToolUse":
+            allowed = any(tool == t or t.endswith("__*") and tool.startswith(t[:-1]) for t in load_settings()["tools"] or ())
+            decision = {"permissionDecision": "allow", "permissionDecisionReason": "on ops.tools"} if allowed else {
+                "permissionDecision": "deny", "permissionDecisionReason": f"{tool} is not on ops.tools: the ops explorer is read-only"}
+            out = {"hookEventName": event, **decision}
+        elif event == "PostToolUse":
+            try:
+                said = f"Evidence saved: {save_evidence(p)}"
+            except Exception as e:
+                said = f"EVIDENCE NOT SAVED ({why(e)}): do not use this result"
+            out = {"hookEventName": event, "additionalContext": said}
+        else:
+            return 0
+        print(json.dumps({"hookSpecificOutput": out}))
+    except Exception as e:
+        print(f"factory ops-hook: {why(e)}", file=sys.stderr)
+        return 2
     return 0
 
 
@@ -5608,6 +5692,7 @@ def tech_lead_argv(repo, slug, pr, evidence, spec, settings):
     """The tech lead's launch command, the one place another runner would plug in."""
     lean = lean_flags() if settings["lean_start"] else []
     return ["claude", "-p", "--model", settings["models"]["tech_lead"], "--permission-mode", settings["lead_permission_mode"],
+            "--agents", json.dumps(agent_definitions(settings, repo.root)),
             "--plugin-dir", str(PLUGIN_ROOT), *lean, f"--tools={TECH_LEAD_KIT}",
             "--allowedTools", *TECH_LEAD_TOOLS, "--disallowedTools", *TECH_LEAD_DENIED,
             "--max-budget-usd", TECH_LEAD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(TECH_LEAD_SCHEMA),
@@ -5763,7 +5848,7 @@ def build_argv(repo, slug, spec, handover, note, settings):
     """The build's launch command, the one place another runner would plug in."""
     lean = lean_flags() if settings["lean_start"] else []
     return ["claude", "-p", "--model", settings["models"]["tech_lead"],
-            "--agents", json.dumps(agent_definitions(settings["models"])), "--permission-mode", settings["lead_permission_mode"],
+            "--agents", json.dumps(agent_definitions(settings, repo.root)), "--permission-mode", settings["lead_permission_mode"],
             "--plugin-dir", str(PLUGIN_ROOT), *lean, f"--tools={LEAD_TOOLS}", "--disallowedTools", *BUILD_DENIED,
             "--max-budget-usd", BUILD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(BUILD_SCHEMA),
             "--append-system-prompt", BUILD_ROLE.read_text(), build_prompt(repo, slug, spec, handover, note)]
@@ -6238,8 +6323,6 @@ def parse_args(argv):
     new.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
     new.add_argument("--lead-model", help="the lead's model for this task instead of models.lead in the settings")
     new.add_argument("--base", help="slug of an open task to stack this task on")
-    new.add_argument("--mode", choices=MODES, help="single: the lead builds with its own subagents; team: a tech lead "
-                     "runs the build (default: sessions.mode in the settings)")
     new.add_argument("--critical", action="store_true",
                      help="use the slots held in reserve: the default branch is red, the factory is broken, "
                           "or the human says so")
@@ -6263,6 +6346,7 @@ def parse_args(argv):
     ack.add_argument("slug")
     ack.add_argument("state", choices=SETTLED)
     sub.add_parser("hook", help="record one hook payload read from stdin (run by the plugin's hooks)")
+    sub.add_parser("ops-hook", help="gate and record the ops explorer's MCP calls from a hook payload on stdin (run by the plugin's hooks)")
     retro = sub.add_parser("retro", help="store a lead retrospective (a JSON object on stdin, or in a file)")
     retro.add_argument("file", nargs="?", help="read the JSON from this file instead of stdin")
     sub.add_parser("env", help="print shell exports that make git and gh act as the factory's App (nothing without one)")
@@ -6354,14 +6438,25 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
-def main(argv=None):
-    args = parse_args(sys.argv[1:] if argv is None else argv)
+def ops_hook_out_of_time(_signum, _frame):
     try:
-        if not STORE.expanduser().is_absolute():
+        os.write(2, b"factory: ops-hook ran out of time: the call is blocked, or its result was not saved: do not use it\n")
+    finally:
+        os._exit(2)
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["ops-hook"]:  # first of all: a gate that is slow must block the call, not let it run
+        signal.signal(signal.SIGALRM, ops_hook_out_of_time)
+        signal.alarm(OPS_HOOK_DEADLINE)
+    args = parse_args(argv)
+    try:
+        if not STORE.expanduser().is_absolute() and args.cmd != "ops-hook":  # which refuses only the ops explorer's calls
             if args.cmd == "hook":
                 return 0
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
-        return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "commands": cmd_commands, "ack": cmd_ack, "hook": cmd_hook,
+        return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "commands": cmd_commands, "ack": cmd_ack, "hook": cmd_hook, "ops-hook": cmd_ops_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "pauses": cmd_pauses,
                 "merge": cmd_merge, "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander,
