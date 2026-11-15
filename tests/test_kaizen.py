@@ -453,8 +453,8 @@ def then(fid, hhmm, repo=ALPHA, **kw):
 
 
 class SiteManagerTests(Store):
-    EMPTY = {"escalated": 0, "acted": 0, "ignored": 0, "no_outcome": 0, "suppressed": 0, "paused": 0, "missed": 0,
-             "missed_suppressed": 0, "missed_never_fired": 0, "precision": None, "recall": None}
+    EMPTY = {"escalated": 0, "acted": 0, "ignored": 0, "no_outcome": 0, "suppressed": 0, "paused": 0, "extended": 0,
+             "kept": 0, "overran": 0, "missed": 0, "missed_suppressed": 0, "missed_never_fired": 0, "precision": None, "recall": None}
 
     def record(self, cutoff=None):
         return self.build(lambda p: [], cutoff=cutoff)["site_manager"]
@@ -493,8 +493,18 @@ class SiteManagerTests(Store):
             # carried into the new month after its first record: older than the lines above, so the fold is by ts
             *(fired("f%d" % i, "2026-11-10T10:%02d:00Z" % i) for i in range(5, 8))])
         self.assertEqual(self.record(), {
-            "escalated": 6, "acted": 3, "ignored": 1, "no_outcome": 2, "suppressed": 2, "paused": 0, "missed": 2,
+            "escalated": 6, "acted": 3, "ignored": 1, "no_outcome": 2, "suppressed": 2, "paused": 0, "extended": 0, "kept": 0, "overran": 0, "missed": 2,
             "missed_suppressed": 1, "missed_never_fired": 1, "precision": 0.75, "recall": 0.6})
+
+    def test_extended_firings_count_with_their_outcome_and_an_unknown_decision_is_not_an_error(self):
+        self.log("firings-2026-11.jsonl", [
+            *(fired("f%d" % i, "2026-11-10T10:%02d:00Z" % i) for i in range(1, 6)),
+            then("f1", "11:01", decision="extended", minutes=20), then("f1", "11:02", outcome="kept"),
+            then("f2", "11:03", decision="extended", minutes=20), then("f2", "11:04", outcome="overran"),
+            then("f3", "11:05", decision="extended", minutes=20),
+            then("f4", "11:06", decision="postponed"),
+            then("f5", "11:07", decision="escalated", by="watch"), then("f5", "11:08", outcome="kept")])
+        self.assertEqual(self.record(), {**self.EMPTY, "escalated": 1, "no_outcome": 1, "extended": 3, "kept": 1, "overran": 1})
 
     def test_since_keeps_firings_and_misses_by_their_own_time(self):
         self.log("firings-2026-11.jsonl", [

@@ -841,6 +841,14 @@ class ChurnTests(ScratchRepoBase):
             self.assertEqual(factory.cmd_watch(SimpleNamespace(dispatcher="d")), 0)
         self.assertEqual(len(ran), 1)
 
+    def test_a_tick_with_only_a_pause_on_the_human_does_not_run_the_loop(self):
+        self.paused(waits=("human",))
+        ran = []
+        with mock.patch.object(factory, "Repo", lambda: self.repo), mock.patch.object(factory, "watch_tick", lambda *a: None), \
+                mock.patch.object(factory, "drain", lambda *a, **k: ran.append(a)):
+            self.assertEqual(factory.cmd_watch(SimpleNamespace(dispatcher="d")), 0)
+        self.assertEqual(ran, [])
+
     def test_a_merge_ends_the_priority_of_its_task_in_the_pass(self):
         self.prioritize()
         pr = self.pr()

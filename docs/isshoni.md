@@ -320,7 +320,7 @@ and decisions by status, and groups open issues by the first keyword topic that 
 `site_manager` is the site manager's record over every repository, read from
 the firing log (every month file) and counted as `factory firings` counts it
 (`docs/factory.md`, "Site manager"; a record without a `repo` counts nowhere): `escalated` firings and of those `acted`, `ignored` and `no_outcome`;
-`suppressed` firings; `paused` firings (a churning task the site manager paused: counted apart, outside precision and recall); `missed` problems (`missed_suppressed` had fired and were
+`suppressed` firings; `paused` firings (a task the site manager paused: counted apart, outside precision and recall); `extended` firings (a task whose limit the site manager extended: counted apart too) and of those `kept` (handed over within the extension) and `overran` (not); a decision this version does not know counts nowhere; `missed` problems (`missed_suppressed` had fired and were
 suppressed, `missed_never_fired` the rest); `precision` is `acted / (acted + ignored)` and
 `recall` is `acted / (acted + missed)`, each 0 to 1, or null with nothing to divide by.
 With `--since` it counts the firings that fired, and the misses recorded, at or after the
@@ -524,7 +524,9 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   `factory status --json` reports: the tasks holding a slot against the cap (the meter
   shows the ordinary limit plus the slots held in reserve for critical work, `7/9+1`),
   and every task with its phase, elapsed time (for a task in motion, against its limit,
-  yellow when nearing it and red past it), size (shown when any task has one), pull
+  yellow when nearing it and red past it; a task the site manager gave more time has one
+  faint line beneath: `limit +30m by site-manager · <reason>`), size (shown when any task
+  has one), pull
   request or deliverable, base, and `overtime` or `stale`. At the top, a band lists everything that waits on you across
   repositories, oldest first: tasks in review (the pull request or deliverable to look
   at) and tasks blocked on you (what they asked; a task blocked on the dispatcher or on
@@ -567,6 +569,8 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   a column chart per measure, one column per landed task in start order, with the
   plugin versions marked under it; who caught the defects; the site manager's record:
   precision and recall, then what it escalated with the outcomes, suppressed and missed,
+  then, when it extended any limit, a line of its own: the share of extended limits kept
+  (`-` until one has ended) and how many were extended, kept and overran,
   or one line saying nothing is logged yet; the tech lead's record: what came back from
   the merge queue and how each ended, the cost per resolution (`unpriced` when no
   resolution has a price), the lead wake-ups after hand-over over the landed tasks, or one

@@ -66,6 +66,11 @@ func TestFactoryStatusDecodesNulls(t *testing.T) {
 		e.Prioritized != nil || e.Paused == nil || !slices.Equal(e.Paused.WaitsOn, []string{"needs-an-answer"}) || !e.Paused.Since.Equal(time.Date(2099, 12, 31, 23, 48, 0, 0, time.UTC)) {
 		t.Fatalf("paused and prioritized rows: %+v %+v", b, e)
 	}
+	if a, b := st.Rows[0], st.Rows[1]; a.Limit == nil || *a.Limit != 5400 || len(a.Extensions) != 2 || b.Extensions == nil || len(b.Extensions) != 0 ||
+		a.Extensions[0] != (FactoryExtension{Minutes: 30, By: "site-manager", Reason: "the migration is half done", Decided: "2099-12-31T23:00:00Z"}) ||
+		a.Extensions[1].Minutes != 15 || a.Extensions[1].By != "site-manager" || !strings.HasPrefix(a.Extensions[1].Reason, "the remaining work is the rollback path:") {
+		t.Fatalf("the extended row: %+v", a)
+	}
 	if a, c := st.Rows[0], st.Rows[2]; a.Paused != nil || a.Prioritized != nil || c.Paused != nil || c.Prioritized != nil {
 		t.Fatalf("absent keys and nulls give nil: %+v %+v", a, c)
 	}

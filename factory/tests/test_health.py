@@ -360,7 +360,7 @@ class CriteriaTests(Home):
                                             criteria)
         self.assertEqual(firings, [])
         names = {s["criterion"] for s in skipped}
-        self.assertEqual(names, {c["name"] for c in criteria} - {"ci-red-default", "lgtm-blocked", "churning"})
+        self.assertEqual(names, {c["name"] for c in criteria} - {"ci-red-default", "lgtm-blocked", "churning", "run-stopped"})
         why = {s["criterion"]: s["why"] for s in skipped}
         self.assertIn("sessions cannot be listed", why["past-limit"])
         self.assertIn("no agent files", why["wrong-model"])
@@ -577,6 +577,8 @@ class Harness(Home):
         self.fake = None
         self.role = self.home / "site-manager.md"
         self.role.write_text("SITE MANAGER RULES")
+        self.guidance = self.home / "site-manager-cases.md"
+        self.guidance.write_text("SITE MANAGER CASES")
         self.criteria_path = self.home / "criteria.json"
         self.use(*self.CRITERIA)
         self.clock = NOW
@@ -588,6 +590,7 @@ class Harness(Home):
                         mock.patch.object(factory, "CRITERIA_PATH", self.criteria_path),
                         mock.patch.object(factory, "review_tick", lambda repo: None),  # these tests do not test the review
                         mock.patch.object(factory, "ROLE_PATH", self.role),
+                mock.patch.object(factory, "GUIDANCE_PATH", self.guidance),
                         mock.patch.object(factory, "now", lambda: iso(self.clock)),
                         mock.patch.object(factory.time, "time", lambda: self.clock),
                         mock.patch.object(factory.time, "sleep", lambda seconds: setattr(self, "clock", self.clock + seconds))):
@@ -765,19 +768,19 @@ class WatchTests(Harness):
         self.tick()
         [argv] = self.claude_runs()
         self.assertEqual(argv[:-1], [
-            "claude", "-p", "--model", "sonnet", "--permission-mode", "dontAsk", "--strict-mcp-config", "--settings",
+            "claude", "-p", "--model", "opus", "--permission-mode", "dontAsk", "--strict-mcp-config", "--settings",
             json.dumps(LEAN_SETTINGS), "--disable-slash-commands", "--tools=Read,Grep,Glob,Bash,SendMessage,ToolSearch",
             "--allowedTools", *factory.SITE_MANAGER_TOOLS, "--disallowedTools", "Edit", "Write", "NotebookEdit",
             *factory.SETTINGS_ISOLATION, "--max-turns", "30", "--max-budget-usd", "1.50",
             "--output-format", "json", "--json-schema", json.dumps(factory.RUN_SCHEMA),
-            "--append-system-prompt", "SITE MANAGER RULES"])
+            "--append-system-prompt", "SITE MANAGER RULES\n\nSITE MANAGER CASES"])
         schema = factory.RUN_SCHEMA
         self.assertEqual(schema["required"], ["sent", "decisions"])
         self.assertEqual(schema["properties"]["decisions"]["items"]["required"], ["id", "decision", "reason", "looked"])
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["to"]["enum"],
                          ["dispatcher", "lead"])
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["decision"]["enum"],
-                         ["escalated", "suppressed", "paused"])
+                         ["escalated", "suppressed", "paused", "extended"])
         head, _, body = argv[-1].partition("\n\n")
         self.assertEqual(head, f"Job: watch. Repo: {ROOT}. The dispatcher's session name is dispatcher-repo.")
         [sent] = json.loads(body)
@@ -1212,7 +1215,7 @@ class ChurningTests(Harness):
         self.assertEqual((f["decision"], f["waits_on"]), ("paused", ["y"]))
         s = json.loads(self.cli("firings", "--json")[1])["summary"]
         self.assertEqual((s["paused"], s["escalated"], s["suppressed"], s["acted"], s["ignored"], s["precision"]), (1, 0, 0, 0, 0, None))
-        self.assertIn("suppressed 0; paused 1; missed 0", self.cli("firings")[1])
+        self.assertIn("suppressed 0; paused 1; extended 0 (kept 0, overran 0, no outcome 0); missed 0", self.cli("firings")[1])
         code, _, err = self.cli("firing", "ppp", "acted")
         self.assertEqual(code, 2)
         self.assertIn("was not escalated", err)
@@ -1391,7 +1394,7 @@ class FiringsTests(Harness):
         self.assertEqual(lines[4], f"u1  {iso(NOW - HOUR)}  past-limit  x  undecided  -  cleared  -")
         self.assertEqual(lines[5], f"miss  {iso(NOW)}  x  s1  late")
         self.assertEqual(lines[-1], "escalated 3 (acted 1, ignored 1, no outcome 1); to lead 0; suppressed 1; "
-                                    "paused 0; missed 3 (1 suppressed first, 2 never fired); precision 0.50; recall 0.25")
+                                    "paused 0; extended 0 (kept 0, overran 0, no outcome 0); missed 3 (1 suppressed first, 2 never fired); precision 0.50; recall 0.25")
 
     def test_json(self):
         self.seed_log()
@@ -1400,7 +1403,7 @@ class FiringsTests(Harness):
         self.assertEqual([f["id"] for f in doc["firings"]], ["a1", "a2", "a3", "s1", "u1"])
         self.assertEqual(len(doc["misses"]), 3)
         self.assertEqual(doc["summary"], {"escalated": 3, "acted": 1, "ignored": 1, "no_outcome": 1, "suppressed": 1,
-                                          "paused": 0, "missed": 3, "missed_suppressed": 1, "missed_never_fired": 2,
+                                          "paused": 0, "extended": 0, "kept": 0, "overran": 0, "missed": 3, "missed_suppressed": 1, "missed_never_fired": 2,
                                           "precision": 0.5, "recall": 0.25})
 
     def test_a_lead_message_shows_in_the_table_and_everything_in_the_json(self):
@@ -1421,7 +1424,7 @@ class FiringsTests(Harness):
     def test_zero_denominators(self):
         code, out, _ = self.cli("firings")
         self.assertEqual(out, "escalated 0 (acted 0, ignored 0, no outcome 0); to lead 0; suppressed 0; "
-                              "paused 0; missed 0 (0 suppressed first, 0 never fired); precision -; recall -\n")
+                              "paused 0; extended 0 (kept 0, overran 0, no outcome 0); missed 0 (0 suppressed first, 0 never fired); precision -; recall -\n")
         _, out, _ = self.cli("firings", "--json")
         self.assertEqual((json.loads(out)["summary"]["precision"], json.loads(out)["summary"]["recall"]), (None, None))
         self.seed("firings", [{"ts": iso(NOW), "repo": ROOT, "miss": "m", "slug": None, "firing": None}])

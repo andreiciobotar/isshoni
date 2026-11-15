@@ -665,7 +665,11 @@ def _site_manager(records, cutoff):
     return {"escalated": len(escalated), "acted": acted, "ignored": ignored,
             "no_outcome": len(escalated) - acted - ignored,
             "suppressed": sum(f["decision"] == "suppressed" for f in firings.values()),
-            "paused": sum(f["decision"] == "paused" for f in firings.values()), "missed": misses,
+            "paused": sum(f["decision"] == "paused" for f in firings.values()),
+            "extended": sum(f["decision"] == "extended" for f in firings.values()),
+            "kept": sum(f["decision"] == "extended" and f["outcome"] == "kept" for f in firings.values()),
+            "overran": sum(f["decision"] == "extended" and f["outcome"] == "overran" for f in firings.values()),
+            "missed": misses,
             "missed_suppressed": suppressed_first, "missed_never_fired": misses - suppressed_first,
             "precision": ratio(acted, acted + ignored), "recall": ratio(acted, acted + misses)}
 

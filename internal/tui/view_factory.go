@@ -616,8 +616,29 @@ func (c factoryCols) header(p paint) string {
 	return c.join(p, f("SLUG", c.slug, false), f("PHASE", c.phase, false), f("ELAPSED", c.elapsed, true), f("SIZE", c.size, false), f("PR", c.pr, false), f("BASE", c.base, false), f("FLAGS", c.flags, false))
 }
 
-// taskRow is a task's table line, and under a task blocked on someone else the reason it
-// gave, faint, from the PHASE column.
+// extensionLine is why a task in motion has more time than it started with: the minutes
+// granted in all, by whom last, and the reason given then. Empty without extensions.
+func extensionLine(t data.FactoryTask) string {
+	if t.Phase != "motion" || len(t.Extensions) == 0 {
+		return ""
+	}
+	mins := 0
+	for _, e := range t.Extensions {
+		mins += e.Minutes
+	}
+	last := t.Extensions[len(t.Extensions)-1]
+	s := fmt.Sprintf("limit +%dm by %s", mins, last.By)
+	if n := len(t.Extensions); n > 1 {
+		s = fmt.Sprintf("limit +%dm in %d extensions, last by %s", mins, n, last.By)
+	}
+	if reason := strings.Join(strings.Fields(last.Reason), " "); reason != "" {
+		s += " · " + reason
+	}
+	return s
+}
+
+// taskRow is a task's table line, and under it, faint, from the PHASE column, the reason a
+// task blocked on someone else gave or the reason a task in motion got more time.
 func (m *model) taskRow(p paint, c factoryCols, t data.FactoryTask, w int) block {
 	th := m.th
 	glyph, label, col := m.phaseLook(t, m.w >= 100)
@@ -650,9 +671,13 @@ func (m *model) taskRow(p paint, c factoryCols, t data.FactoryTask, w int) block
 		p.t(cell(pr, c.pr, false), prCol),
 		p.t(cell(base, c.base, false), baseCol),
 		fit(flagPills(p, t), c.flags, p))}
+	detail := extensionLine(t)
 	if reason := strings.Join(strings.Fields(t.StopSummary), " "); t.Phase == "blocked" && !t.WaitsOnHuman() && reason != "" {
+		detail = reason
+	}
+	if detail != "" {
 		indent := 2 + c.slug + 2
-		row = append(row, fit(p.sp(indent)+p.t(trunc(reason, max(1, w-indent-1)), th.Faint), w, p))
+		row = append(row, fit(p.sp(indent)+p.t(trunc(detail, max(1, w-indent-1)), th.Faint), w, p))
 	}
 	return row
 }

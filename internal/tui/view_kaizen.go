@@ -940,13 +940,14 @@ func (m *model) stopLines(p paint, w int) block {
 }
 
 // siteManagerLines is the site manager's record: how often the human acted on what it
-// escalated (precision) and how much of what needed the human it escalated (recall).
+// escalated (precision), how much of what needed the human it escalated (recall), and how
+// many of the limits it extended were kept.
 func (m *model) siteManagerLines(p paint, w int) block {
 	th := m.th
 	s := m.kz.doc.SiteManager
-	lines := block{m.heading(p, w, "site manager", "what it escalated, and what came of it")}
-	if s.Escalated+s.Suppressed+s.Missed == 0 {
-		for _, l := range wrapPlain("nothing escalated, suppressed or missed yet · precision and recall start with the first outcome (factory firing <id> acted|ignored)", w-2) {
+	lines := block{m.heading(p, w, "site manager", "what it escalated and extended, and what came of it")}
+	if s.Escalated+s.Suppressed+s.Missed+s.Extended == 0 {
+		for _, l := range wrapPlain("nothing escalated, suppressed, missed or extended yet · precision and recall start with the first outcome (factory firing <id> acted|ignored)", w-2) {
 			lines = append(lines, p.sp(1)+p.t(l, th.Faint))
 		}
 		return lines
@@ -965,10 +966,22 @@ func (m *model) siteManagerLines(p paint, w int) block {
 	if s.Missed > 0 {
 		missed += p.t(fmt.Sprintf(" (%d suppressed first, %d never fired)", s.MissedSuppressed, s.MissedNeverFired), th.Muted)
 	}
-	return append(lines, legend(p, w, []string{
+	lines = append(lines, legend(p, w, []string{
 		m.kzCount(p, s.Escalated, "escalated", th.Text), m.kzCount(p, s.Acted, "acted on", th.Green),
 		m.kzCount(p, s.Ignored, "ignored", th.Orange), m.kzCount(p, s.NoOutcome, "no outcome yet", th.Text),
 		m.kzCount(p, s.Suppressed, "suppressed", th.Text), missed,
+	})...)
+	if s.Extended == 0 {
+		return lines
+	}
+	var keptShare *float64
+	if ended := s.Kept + s.Overran; ended > 0 {
+		v := float64(s.Kept) / float64(ended)
+		keptShare = &v
+	}
+	return append(lines, legend(p, w, []string{
+		ratio("limits kept", keptShare, fmt.Sprintf("%d kept of %d that ended", s.Kept, s.Kept+s.Overran), "no extension has ended yet"),
+		m.kzCount(p, s.Extended, "extended", th.Text), m.kzCount(p, s.Kept, "kept", th.Green), m.kzCount(p, s.Overran, "overran", th.Red),
 	})...)
 }
 

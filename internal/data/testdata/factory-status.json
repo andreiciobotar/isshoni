@@ -7,7 +7,12 @@
       "waited": null, "stop_kind": null, "stop_summary": null,
       "elapsed": null, "overtime": false, "dirty": null, "behind": null, "ahead": null,
       "head": "abc", "last_commit": null, "pr_state": "unknown", "pr_url": "", "pr_head": "", "pr_base": "", "pr_draft": true,
-      "phase": "motion", "stale": false
+      "limit": 5400,
+      "phase": "motion", "stale": false,
+      "extensions": [
+        {"minutes": 30, "by": "site-manager", "reason": "the migration is half done", "decided": "2099-12-31T23:00:00Z"},
+        {"minutes": 15, "by": "site-manager", "reason": "the remaining work is the rollback path:   the schema change is applied, the backfill is running and the tests that cover the rollback still have to be written and run against it", "decided": "2099-12-31T23:30:00Z"}
+      ]
     },
     {
       "slug": "stacked", "branch": "worktree-stacked", "path": "/r/.claude/worktrees/stacked",
@@ -16,7 +21,7 @@
       "waited": 5400, "stop_kind": null, "stop_summary": null,
       "elapsed": 252, "overtime": true, "dirty": false, "behind": 0, "ahead": 2,
       "head": "def", "last_commit": 1794647916, "pr_state": "open", "pr_url": "https://github.com/o/r/pull/12", "pr_head": "h", "pr_base": "b", "pr_draft": false,
-      "phase": "review", "stale": true, "paused": null, "prioritized": {"since": "2099-12-31T23:57:00Z"}
+      "phase": "review", "stale": true, "extensions": [], "paused": null, "prioritized": {"since": "2099-12-31T23:57:00Z"}
     },
     {
       "slug": "needs-an-answer", "branch": "worktree-needs-an-answer", "path": "/r/.claude/worktrees/needs-an-answer",
@@ -25,7 +30,7 @@
       "waited": 600, "stop_kind": "QUESTION", "stop_summary": "Which database should it use?", "waits_on": "human",
       "elapsed": 640, "overtime": false, "dirty": false, "behind": 0, "ahead": 1,
       "head": "aaa", "last_commit": 1794647000, "pr_state": "none", "pr_url": "", "pr_head": "", "pr_base": "",
-      "phase": "blocked", "stale": false
+      "phase": "blocked", "stale": false, "extensions": []
     },
     {
       "slug": "write-up", "branch": "worktree-write-up", "path": "/r/.claude/worktrees/write-up",
@@ -34,7 +39,7 @@
       "waited": 86400, "stop_kind": null, "stop_summary": null,
       "elapsed": 3000, "overtime": false, "dirty": false, "behind": 0, "ahead": 0,
       "head": "bbb", "last_commit": 1794646000, "pr_state": "none", "pr_url": "", "pr_head": "", "pr_base": "",
-      "phase": "settled", "stale": false
+      "phase": "settled", "stale": false, "extensions": []
     },
     {
       "slug": "wait-for-login", "branch": "worktree-wait-for-login", "path": "/r/.claude/worktrees/wait-for-login",
@@ -43,7 +48,7 @@
       "waited": 120, "stop_kind": "BLOCKED", "stop_summary": "Needs the login task to land first.", "waits_on": "needs-an-answer",
       "elapsed": 90, "overtime": false, "dirty": false, "behind": 0, "ahead": 0,
       "head": "ccc", "last_commit": 1794645000, "pr_state": "none", "pr_url": "", "pr_head": "", "pr_base": "",
-      "phase": "blocked", "stale": false, "paused": {"since": "2099-12-31T23:48:00Z", "waits_on": ["needs-an-answer"]}
+      "phase": "blocked", "stale": false, "extensions": [], "paused": {"since": "2099-12-31T23:48:00Z", "waits_on": ["needs-an-answer"]}
     }
   ],
   "cap": 7, "reserve": 1, "open": 5, "in_motion": 3, "blocked": 2, "in_review": 1, "merged": 0, "settled": 1,
