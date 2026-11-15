@@ -3640,7 +3640,9 @@ def run_site_manager(p, send, job="watch", look=None):
     repo = p["repo"]
     look = look or look_picture(p, None, [], send) if job == "watch" else None
     begun = time.monotonic()
-    rc, out, err = run(site_manager_argv(p, send, job, look), cwd=repo.root, timeout=WATCH_TIMEOUT, group=True)
+    path = str(FACTORY.parent) + os.pathsep + os.environ.get("PATH", "")  # so `factory` in his allowed commands is this script
+    rc, out, err = run(site_manager_argv(p, send, job, look), cwd=repo.root, timeout=WATCH_TIMEOUT,
+                       env={**os.environ, "PATH": path}, group=True)
     seconds = round(time.monotonic() - begun)
     try:
         doc = json.loads(out)

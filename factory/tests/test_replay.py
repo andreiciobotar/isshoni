@@ -58,7 +58,7 @@ class Replay(Harness):
         self.pr_closed = {r["pr"]: epoch(r["ts"]) for r in self.logs["queue"] if r["step"] == "merged"}
         self.builds = [(r["slug"], epoch(r["ts"]) - r["seconds"], epoch(r["ts"])) for r in self.logs["techlead"]]
         self.lead_gone = {"kaizen-review-role": epoch("2026-11-15T13:33:49Z")}  # its lead ended right after starting the build run
-        self.held, self.reported, self.prompts, self.couriers = {}, [], {}, []
+        self.held, self.reported, self.prompts, self.couriers, self.paths = {}, [], {}, [], []
         self.addCleanup(lambda: [f.close() for f in self.held.values()])
 
     def worktrees(self, t):
@@ -96,6 +96,7 @@ class Replay(Harness):
         if "--json-schema" not in argv:
             self.couriers.append(argv[-1])
             return 0, json.dumps({"result": "sent"}), ""
+        self.paths.append(self.fake.envs[-1]["PATH"])
         head, _, body = argv[-1].partition("\n\n")
         if not head.startswith("Job: watch"):
             return 0, json.dumps({"total_cost_usd": None, "structured_output": {"sent": False, "decisions": []}}), ""
@@ -136,7 +137,7 @@ class Replay(Harness):
         print("firings that woke him:", dict(Counter(self.criteria(looked))))
         for name, check in (("every record that wakes him", self.check_records), ("quiet ticks", self.check_quiet),
                             ("pulse-band-visual", self.check_stopped_runs), ("kaizen-review-role", self.check_ended),
-                            ("his own call", self.check_own_call), ("cost", self.check_cost)):
+                            ("his own call", self.check_own_call), ("his PATH", self.check_path), ("cost", self.check_cost)):
             with self.subTest(name):
                 check(looked)
         self.assertLess(seconds, 20)
@@ -209,9 +210,18 @@ class Replay(Harness):
         line = f"ESCALATION: {call['id']} unlisted {OWN_CALL['slug']}: {OWN_CALL['reason']}"
         self.assertEqual(len([c for c in self.couriers if line in c]), 1)
         self.assertEqual(decision["ts"], call["ts"])
+        later = [p for ts, p in self.prompts.items() if ts > call["ts"]]
+        [row] = [x for p in later[:1] for x in p["tasks"] if x["slug"] == OWN_CALL["slug"]]
+        [seen] = [c for c in row["calls"] if c["entry"] == "unlisted"]
+        self.assertEqual((seen["decision"], seen["reason"]), ("escalated", OWN_CALL["reason"]))
         _, out, _ = self.cli("firings")
         [entry] = [x for x in out.splitlines() if x.startswith("unlisted: ")]
         self.assertEqual(entry, "unlisted: fired 1; escalated 1 (acted 0, ignored 0, no outcome 1); to lead 0; suppressed 0; missed 0; precision -")
+
+    def check_path(self, looked):
+        self.assertEqual(len(self.paths), len(looked))
+        for path in self.paths:
+            self.assertTrue(path.startswith(str(factory.FACTORY.parent) + ":"), path)
 
     def check_cost(self, looked):
         self.assertTrue(self.reported)
