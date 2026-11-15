@@ -37,9 +37,13 @@ type pulseRow struct {
 // pulseSparkMax is the most days a sparkline shows, the newest.
 const pulseSparkMax = 30
 
+// pulseCardH is the height of a card: label, today, delta against the baseline, sparkline, detail.
+const pulseCardH = 5
+
 // dayLines is the band at the top of the Pulse page: today against the baseline of days
-// before it, four lead figures with a verdict, a delta and a sparkline, and the detail
-// beneath each. Each unknown is shown as "-"; nothing when the producer wrote no pulse.
+// before it. Wide, four cards (cost, first pass, approval → merge, conflicts) with a verdict
+// colour, a delta and a sparkline each; narrow, a row for each figure and its detail. Each
+// unknown is shown as "-"; nothing when the producer wrote no pulse.
 func (m *model) dayLines(p paint, w int) block {
 	pl := m.kz.doc.Pulse
 	if pl == nil {
@@ -47,10 +51,6 @@ func (m *model) dayLines(p paint, w int) block {
 	}
 	th := m.th
 	wide := w >= 100
-	lw, dc, gap := 25, 9, " " // label, delta, value-to-count gap
-	if wide {
-		lw, gap = 39, "  "
-	}
 	rows := m.pulseRows(pl, wide)
 	rows = slices.DeleteFunc(rows, func(r pulseRow) bool { return (wide && r.label == "") || (!wide && r.short == "") })
 	b := pl.Baseline
@@ -64,95 +64,26 @@ func (m *model) dayLines(p paint, w int) block {
 			title, since = fmt.Sprintf("TODAY VS %dD BEFORE", b.Days), shortDate(b.Date)+".."+shortDate(b.To) // fits the baseline column at 60
 		}
 	}
-	// Narrow: two equal columns. Wide: each column is as wide as its figures, so the
-	// sparkline of the lead rows starts one gap after the baseline column.
-	tc := min(20, (w-1-lw-dc+1)/2)
-	bc := w - 1 - lw - dc - tc // the baseline column of the detail rows: the rest of the line
-	leadBc, sparkW, per := bc, 0, 1
+	var lines block
+	var notes []string
 	if wide {
-		tw, lb := 0, width(since)
-		for _, r := range rows {
-			tw = max(tw, width(r.today.text(gap)))
-			if r.lead {
-				lb = max(lb, width(r.base.text(gap)))
-			}
+		var send *pulseRow
+		lines, send = m.pulseCards(p, rows, w)
+		lines = append(block{fit(p.sp(1)+p.b(title, th.Text), w, p)}, lines...)
+		if send != nil {
+			notes = append(notes, fmt.Sprintf("%s: %s today · %s baseline", strings.TrimSpace(send.label), send.today.val, send.base.val))
 		}
-		tc = min(w-1-lw-dc, tw+2)
-		bc = w - 1 - lw - dc - tc
-		leadBc = min(bc, lb)
-		room, days := bc-leadBc-1, min(pulseSparkMax, len(pl.Days))
-		if 2*days <= room {
-			per = 2
-		}
-		sparkW = min(days, room/per)
-		if sparkW*per < 4 {
-			sparkW = 0
-		}
-	}
-	look := func(v *string) (delta, today color.Color) {
-		switch {
-		case v != nil && *v == "better":
-			return th.Green, th.Green
-		case v != nil && *v == "worse":
-			return th.Orange, th.Orange
-		}
-		return th.Muted, th.Text
-	}
-	figure := func(c pulseCol, cw int, bold bool, fg, nfg color.Color) string {
-		val := trunc(c.val, cw)
-		note := ""
-		if c.n != "" {
-			note = trunc(gap+c.n, max(0, cw-width(val)))
-		}
-		if bold {
-			val = p.b(val, fg)
-		} else {
-			val = p.t(val, fg)
-		}
-		return val + p.t(note, nfg) + p.sp(cw-width(val)-width(note))
-	}
-	put := func(r pulseRow) string {
-		label := r.short
-		if wide {
-			label = r.label
-		}
-		var line string
-		if !r.lead {
-			line = p.sp(1) + p.t(cell(label, lw-1, false), th.Faint) + figure(r.today, tc-1, false, th.Muted, th.Faint) + p.sp(1+dc) + figure(r.base, bc, false, th.Muted, th.Faint)
-			return fit(line, w, p)
-		}
-		dcol, tcol := look(r.verdict)
-		delta := trunc(r.delta, dc-1)
-		line = p.sp(1) + p.t(cell(label, lw-1, false), th.Text) + figure(r.today, tc-1, true, th.Text, th.Muted) + p.sp(1) +
-			p.b(delta, dcol) + p.sp(dc-width(delta)) + figure(r.base, leadBc, false, th.Text, th.Muted)
-		if sparkW > 0 {
-			line += p.sp(1) + p.spark(r.days[len(r.days)-sparkW:], per, th.Muted, tcol)
-		}
-		return fit(line, w, p)
-	}
-
-	head := p.sp(1) + p.b(cell(title, lw-1, false), th.Text) + p.t(cell("today "+shortDate(pl.Today.Date), tc, false), th.Faint) +
-		p.sp(dc) + p.t(cell(since, leadBc, false), th.Faint)
-	if sparkW > 0 {
-		label := "each day, today last"
-		if width(label) > w-1-lw-dc-tc-leadBc-1 { // the sparkline is narrower than its head
-			label = "days"
-		}
-		head += p.sp(1) + p.t(label, th.Faint)
-	}
-	lines := block{fit(head, w, p)}
-	for _, r := range rows {
-		lines = append(lines, put(r))
+	} else {
+		lines = m.pulseTable(p, rows, pl, title, since, w)
 	}
 	periods := []data.PulseDay{pl.Today, pl.Baseline}
-	var notes []string
 	if note := m.sendBackNote(periods, pl.QueueSince); note != "" {
 		notes = append(notes, note)
 	}
 	if t, b := pl.Today.Handover.ApprovalsBackfilled, pl.Baseline.Handover.ApprovalsBackfilled; t+b > 0 {
 		notes = append(notes, fmt.Sprintf("approvals backfilled: %d today, %d in the baseline", t, b))
 	}
-	if both := strings.Join(notes, " · "); len(notes) == 2 && 1+width(both) <= w {
+	if both := strings.Join(notes, " · "); len(notes) > 1 && 1+width(both) <= w {
 		notes = []string{both}
 	}
 	for _, note := range notes {
@@ -170,6 +101,121 @@ func (m *model) dayLines(p paint, w int) block {
 		}
 	}
 	return append(lines, "")
+}
+
+// verdictLook is the colour of a delta and of today's mark: green better, orange worse,
+// muted (text for the mark) for same, few and unknown.
+func (m *model) verdictLook(v *string) (delta, today color.Color) {
+	switch {
+	case v != nil && *v == "better":
+		return m.th.Green, m.th.Green
+	case v != nil && *v == "worse":
+		return m.th.Orange, m.th.Orange
+	}
+	return m.th.Muted, m.th.Text
+}
+
+// pulseTable is the narrow band: a title line, then a row for each figure with today, the
+// delta and the baseline in columns.
+func (m *model) pulseTable(p paint, rows []pulseRow, pl *data.Pulse, title, since string, w int) block {
+	th := m.th
+	lw, dc, gap := 25, 9, " " // label, delta, value-to-count gap
+	tc := min(20, (w-1-lw-dc+1)/2)
+	bc := w - 1 - lw - dc - tc // the baseline column: the rest of the line
+	figure := func(c pulseCol, cw int, bold bool, fg, nfg color.Color) string {
+		val := trunc(c.val, cw)
+		note := ""
+		if c.n != "" {
+			note = trunc(gap+c.n, max(0, cw-width(val)))
+		}
+		if bold {
+			val = p.b(val, fg)
+		} else {
+			val = p.t(val, fg)
+		}
+		return val + p.t(note, nfg) + p.sp(cw-width(val)-width(note))
+	}
+	put := func(r pulseRow) string {
+		if !r.lead {
+			return fit(p.sp(1)+p.t(cell(r.short, lw-1, false), th.Faint)+figure(r.today, tc-1, false, th.Muted, th.Faint)+p.sp(1+dc)+figure(r.base, bc, false, th.Muted, th.Faint), w, p)
+		}
+		dcol, _ := m.verdictLook(r.verdict)
+		delta := trunc(r.delta, dc-1)
+		return fit(p.sp(1)+p.t(cell(r.short, lw-1, false), th.Text)+figure(r.today, tc-1, true, th.Text, th.Muted)+p.sp(1)+
+			p.b(delta, dcol)+p.sp(dc-width(delta))+figure(r.base, bc, false, th.Text, th.Muted), w, p)
+	}
+	lines := block{fit(p.sp(1)+p.b(cell(title, lw-1, false), th.Text)+p.t(cell("today "+shortDate(pl.Today.Date), tc, false), th.Faint)+
+		p.sp(dc)+p.t(cell(since, bc, false), th.Faint), w, p)}
+	for _, r := range rows {
+		lines = append(lines, put(r))
+	}
+	return lines
+}
+
+// pulseCards lays the lead rows out as cards across w cells, in the tile row's style, the
+// stripe in the verdict's colour. A lead row's first detail row is the card's last line;
+// a second one (the send-backs) is returned for the line under the cards.
+func (m *model) pulseCards(p paint, rows []pulseRow, w int) (block, *pulseRow) {
+	var leads []pulseRow
+	var details []string
+	var send *pulseRow
+	for i, r := range rows {
+		switch {
+		case r.lead:
+			leads, details = append(leads, r), append(details, "")
+		case details[len(details)-1] == "":
+			details[len(details)-1] = r.today.val
+		default:
+			send = &rows[i]
+		}
+	}
+	widths := cardWidths(w, len(leads))
+	var cols []block
+	for i, r := range leads {
+		cols = append(cols, m.pulseCard(p, r, details[i], widths[i]))
+	}
+	return joinCols(p, pulseCardH, tileGap, widths, cols...), send
+}
+
+// pulseCard is one card of width w. The sparkline has two cells a day when they fit.
+func (m *model) pulseCard(p paint, r pulseRow, detail string, w int) block {
+	th := m.th
+	sp := p.on(th.Surface)
+	dcol, tcol := m.verdictLook(r.verdict)
+	stripe := sp.t("▌", dcol)
+	if th.NoColor {
+		stripe = "▌"
+	}
+	inner := w - 2
+	label := r.label
+	if width(label) > inner {
+		label = r.short
+	}
+	delta := ""
+	if r.delta != "" {
+		delta = sp.b(r.delta, dcol) + sp.sp(1)
+	}
+	var spark string
+	days := min(pulseSparkMax, len(r.days))
+	per := 1
+	if 2*days <= inner {
+		per = 2
+	}
+	if n := min(days, inner/per); n*per >= 4 {
+		spark = sp.spark(r.days[len(r.days)-n:], per, th.Muted, tcol)
+	}
+	lines := []string{
+		sp.t(label, th.Faint),
+		sp.b(r.today.val, th.Text) + sp.t("  "+r.today.n, th.Muted),
+		delta + sp.t("vs "+r.base.val+" "+r.base.n, th.Muted),
+		spark,
+		sp.t(detail, th.Muted),
+	}
+	out := make(block, pulseCardH)
+	for i, ln := range lines {
+		out[i] = stripe + fit(sp.sp(1)+trunc(ln, inner), w-1, sp)
+	}
+	return out
 }
 
 // shortDate is the month and day of a YYYY-MM-DD date.
@@ -272,23 +318,18 @@ func (m *model) pulseRows(pl *data.Pulse, wide bool) []pulseRow {
 		}
 	}
 
-	// wide: p90 is a note on the lead row and the human's part is one row; narrow keeps a row each
+	// wide: the p90s are one detail row; narrow keeps a row each
 	rows = append(rows, lead("approval → merge, median", "approval → merge p50", func(d data.PulseDay) *float64 { return secs(d.Handover.ApprovalToMerge.P50S) }, func(d data.PulseDay) pulseCol {
 		q := d.Handover.ApprovalToMerge
 		if q.P50S == nil {
 			return pulseCol{"-", n(q.N)}
 		}
-		note := n(q.N)
-		if wide && q.P90S != nil {
-			note += "  p90 " + kzSecs(float64(*q.P90S))
-		}
-		return pulseCol{kzSecs(float64(*q.P50S)), note}
+		return pulseCol{kzSecs(float64(*q.P50S)), n(q.N)}
 	}, v.ApprovalToMerge, false))
 	if wide {
-		rows = append(rows, both("  hand-over → merge · → approval, p90", "", func(d data.PulseDay) pulseCol {
+		rows = append(rows, both("  p90: approval → merge · hand-over → merge · → approval", "", func(d data.PulseDay) pulseCol {
 			h := d.Handover
-			tm := p90(h.ToMerge)
-			return pulseCol{tm.val + " · " + p90(h.ToApproval).val, tm.n}
+			return pulseCol{val: "p90 " + p90(h.ApprovalToMerge).val + " · " + p90(h.ToMerge).val + " · " + p90(h.ToApproval).val}
 		}))
 	} else {
 		rows = append(rows,
@@ -307,20 +348,15 @@ func (m *model) pulseRows(pl *data.Pulse, wide bool) []pulseRow {
 		if c.PerMerged == nil {
 			return pulseCol{"-", n(c.Prs)}
 		}
-		if wide {
-			return pulseCol{fmt.Sprintf("%.2f", *c.PerMerged), fmt.Sprintf("%d in %d PRs", c.Conflicted, c.Prs)}
-		}
 		return pulseCol{fmt.Sprintf("%.2f", *c.PerMerged), n(c.Prs)}
 	}, v.Conflicts, false))
-	if !wide {
-		rows = append(rows, both("", "  conflicted merges", func(d data.PulseDay) pulseCol {
-			c := d.Conflicts
-			if c.PerMerged == nil {
-				return pulseCol{val: "-"}
-			}
-			return pulseCol{val: fmt.Sprintf("%d in %d PRs", c.Conflicted, c.Prs)}
-		}))
-	}
+	rows = append(rows, both("  conflicted base merges", "  conflicted merges", func(d data.PulseDay) pulseCol {
+		c := d.Conflicts
+		if c.PerMerged == nil {
+			return pulseCol{val: "-"}
+		}
+		return pulseCol{val: fmt.Sprintf("%d in %d PRs", c.Conflicted, c.Prs)}
+	}))
 	return rows
 }
 
