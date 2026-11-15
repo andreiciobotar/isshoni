@@ -186,9 +186,13 @@ class SinceTests(PulseStore):
 
     def test_the_baseline_of_the_range_is_loaded_back_to_its_first_midnight(self):
         self.task("p1", 1, self.at(13), self.at(12), started=self.at(-7))
-        loose(self.projects, "in", ALPHA, [(self.at(-47.9), "claude-fable-5-2", 1)], title="dispatcher-alpha")  # 6 minutes after the midnight 3 days back, before the task started and before the cutoff
-        loose(self.projects, "out", ALPHA, [(self.at(-80), "claude-fable-5-2", 1)], title="dispatcher-alpha")
-        self.assertEqual(self.loaded("--since", "3d"), {"p-in"})
+        first = date.today() - timedelta(days=3)  # the baseline's first day; the cutoff is its local noon, which no clock change touches
+        midnight = pulse._midnight(first, None)
+        cutoff = datetime(first.year, first.month, first.day, 12).astimezone().isoformat()
+        hours = lambda moment: (moment - self.start) / timedelta(hours=1)
+        loose(self.projects, "in", ALPHA, [(self.at(hours(midnight) + 1), "claude-fable-5-2", 1)], title="dispatcher-alpha")  # an hour into that day, before the task started and before the cutoff
+        loose(self.projects, "out", ALPHA, [(self.at(hours(midnight) - 1), "claude-fable-5-2", 1)], title="dispatcher-alpha")
+        self.assertEqual(self.loaded("--since", cutoff), {"p-in"})
 
 
 class BaselineTests(PulseStore):

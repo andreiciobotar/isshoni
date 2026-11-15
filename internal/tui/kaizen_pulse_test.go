@@ -195,6 +195,14 @@ func TestPulseColourFollowsTheVerdict(t *testing.T) {
 	if !has(all("same"), muted, "≈") {
 		t.Error("same is a muted ≈")
 	}
+	text := func(m *model, s string) string { return on(m).t(s, m.th.Text) }
+	for _, v := range []string{"few", "same"} {
+		for _, g := range "▁▂▃▄▅▆▇█" {
+			if has(all(v), text, strings.Repeat(string(g), 2)) {
+				t.Errorf("with %s today's sparkline cell is muted, not text: %q", v, g)
+			}
+		}
+	}
 	// the human's waiting never colours: the hand-over rows have no colour
 	if has(func(*data.Pulse) {}, orange, "36m44s") || has(func(*data.Pulse) {}, green, "36m44s") {
 		t.Error("hand-over → merge is not coloured")
