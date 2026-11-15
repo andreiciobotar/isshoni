@@ -178,7 +178,6 @@ def validate_slug(slug):
 
 
 ALIASES = ("fable", "opus", "sonnet", "haiku")
-MODES = ("single", "team")
 MODEL_SHAPE_RE = re.compile(r"(fable|opus|sonnet|haiku|claude-[a-z0-9.-]+)(\[[0-9a-z]+\])?")
 TABLE_RE = re.compile(r"\s*\[([^\[\]]+)\]\s*(#.*)?")
 VALUE_RE = r"(\"(?:[^\"\\]|\\.)*\"|'[^']*'|\[[^\]]*\]|[^#\s]+)(.*)"
@@ -211,10 +210,6 @@ def a_model(v):
     return None if ok else (f': "{v}" is not a model (an alias: {", ".join(ALIASES)}; or a full id starting claude-)')
 
 
-def a_mode(v):
-    return None if v in MODES else f" must be one of {', '.join(MODES)}"
-
-
 def name_list(v):
     return None if isinstance(v, list) and all(isinstance(i, str) and i.strip() for i in v) else " must be a list of strings"
 
@@ -240,13 +235,13 @@ SETTINGS = (
     Setting("models", "dispatcher", "fable", a_model, 'Advice only: the human starts the dispatcher. Default "fable".'),
     Setting("models", "lead", "fable", a_model, 'The lead of each task. Takes effect at the next `factory new`. Default "fable".'),
     Setting("models", "explorer", "haiku", a_model, 'The lead\'s explorer. Takes effect for the next lead started. Default "haiku".'),
-    Setting("models", "coder", "sonnet", a_model, 'The lead\'s coder. Takes effect for the next lead started. Default "sonnet".'),
-    Setting("models", "reviewer", "opus", a_model, 'The lead\'s reviewer. Takes effect for the next lead started. Default "opus".'),
+    Setting("models", "coder", "sonnet", a_model, 'The build run\'s coder. Takes effect at the next build run. Default "sonnet".'),
+    Setting("models", "reviewer", "opus", a_model, 'The build run\'s reviewer. Takes effect at the next build run. Default "opus".'),
     Setting("models", "lander", "sonnet", a_model,
-            'The lander: the lead\'s subagent, also the headless run of `factory land` (next run). Default "sonnet".'),
+            'The lander: the build run\'s subagent, also the headless run of `factory land` (next run). Default "sonnet".'),
     Setting("models", "site_manager", "sonnet", a_model, 'The watch tick\'s judge. Next tick. Default "sonnet".'),
     Setting("models", "courier", "haiku", a_model, 'Carries pull request comments to a lead. Next tick. Default "haiku".'),
-    Setting("models", "tech_lead", "opus", a_model, 'Resolves a pull request that came back from the merge queue and, in team mode, runs a task\'s build. Its next run. Default "opus".'),
+    Setting("models", "tech_lead", "opus", a_model, 'Resolves a pull request that came back from the merge queue and runs every task\'s build. Its next run. Default "opus".'),
     Setting("limits", "worktree_cap", 5, int_in(1), "Open task worktrees at most, the dashboard's c key edits it. Default 5.", toml_arg),
     Setting("limits", "reserve_percent", 10, int_in(0, 100),
             "Percent of the cap held back for critical tasks, rounded up, never the last slot. Default 10.", toml_arg),
@@ -256,9 +251,6 @@ SETTINGS = (
             f"The permission mode of every lead ({', '.join(PERMISSION_MODES)}). Default \"auto\"."),
     Setting("sessions", "lean_start", True, boolean,
             "Start leads, the site manager and the lander with no MCP servers, bundled skills or other plugins. Default true.", toml_arg),
-    Setting("sessions", "mode", "single", a_mode,
-            'What `factory new` starts a task as: "single" (the lead builds with its own subagents) or "team" (a tech lead '
-            'runs the build). Takes effect at the next `factory new`. Default "single".'),
     Setting("sessions", "dispatchers", None, name_list,
             "The dispatcher session names the served dashboard's `d` key reads; `isshoni host add` sets it. Unset by default.", json_arg),
     Setting("merging", "lgtm_from_author", True, boolean,
@@ -538,8 +530,8 @@ def agent_definitions(models):
 
 
 LEAD_TOOLS = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch,SendMessage,WebFetch,WebSearch,TaskStop,Monitor"
-LEAD_TEAM_DENIED = ("Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
-                    "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)")
+LEAD_DENIED = ("Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
+               "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)")
 
 
 def agent_models(models):
@@ -599,14 +591,10 @@ def span(secs):
     return f"{h}h" * (h > 0) + f"{m}m" * (m > 0 or h == 0)
 
 
-def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limit, mode):
-    """The lead's launch command: the one place another runner would plug in. In team mode the lead's rules are
-    followed by the team rules and its tools refuse the writing subagents (`--disallowedTools` is variadic: the flag
-    after it ends the list, and the prompt stays last)."""
+def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limit):
+    """The lead's launch command: the one place another runner would plug in. Its tools refuse the writing subagents
+    (`--disallowedTools` is variadic: the flag after it ends the list, and the prompt stays last)."""
     lead_rules = (PLUGIN_ROOT / "roles" / "lead.md").read_text()
-    team = mode == "team"
-    if team:
-        lead_rules += "\n\n" + (PLUGIN_ROOT / "roles" / "lead-team.md").read_text()
     prompt = (
         f"Your task slug is {slug}. Before each message to the dispatcher run `factory dispatcher`: "
         f"it prints its current session name (now {dispatcher}). "
@@ -622,7 +610,7 @@ def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limi
         "--permission-mode", settings["lead_permission_mode"],
         "--plugin-dir", str(PLUGIN_ROOT),
         *lean,
-        *(["--disallowedTools", *LEAD_TEAM_DENIED] if team else []),
+        "--disallowedTools", *LEAD_DENIED,
         "--append-system-prompt", lead_rules,
         prompt,
     ]
@@ -1270,7 +1258,6 @@ def cmd_new(args):
         if problem := a_model(args.lead_model):
             raise Fail(f"--lead-model{problem}")
         settings["models"]["lead"] = args.lead_model
-    mode = args.mode or settings["mode"]
     size = brief_size(brief)
     repo = Repo()
     branch = f"worktree-{args.slug}"
@@ -1340,7 +1327,7 @@ def cmd_new(args):
                     remove_stacked(repo, path, branch)
                 raise Fail(f"git {' '.join(argv)} failed: {err.strip()}", code=1)
     rc, out, err = run(build_launch_argv(args.slug, dispatcher, brief, settings, base, repo.remote, time.time(),
-                                         task_limit(size, settings["task_time_limit_hours"]), mode),
+                                         task_limit(size, settings["task_time_limit_hours"])),
                        cwd=repo.root)
     match = BACKGROUNDED_RE.search(f"{out}\n{err}")
     if rc != 0 and not match:
@@ -1357,7 +1344,8 @@ def cmd_new(args):
         rc, _, err = repo.git("config", f"branch.{branch}.factorySize", size)
         if rc != 0:
             sys.stderr.write(f"factory: warning: cannot record the size of {branch}: {err.strip()}\n")
-    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"], mode=mode,
+    # mode: a record for `isshoni kaizen --modes`, which compares these tasks with those started before the team (`single`).
+    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"], mode="team",
                models=agent_models(settings["models"]), **({"size": size} if size else {}))
     try:
         declare(repo, args.slug, "dispatcher", "working")
@@ -6238,8 +6226,6 @@ def parse_args(argv):
     new.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
     new.add_argument("--lead-model", help="the lead's model for this task instead of models.lead in the settings")
     new.add_argument("--base", help="slug of an open task to stack this task on")
-    new.add_argument("--mode", choices=MODES, help="single: the lead builds with its own subagents; team: a tech lead "
-                     "runs the build (default: sessions.mode in the settings)")
     new.add_argument("--critical", action="store_true",
                      help="use the slots held in reserve: the default branch is red, the factory is broken, "
                           "or the human says so")

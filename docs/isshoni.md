@@ -106,7 +106,7 @@ Per task (listed by `started`, tasks without one first, then slug):
 | `state` | its last declared state (the task state record with the newest `ts`) |
 | `pr` | `{number, url, state, opened, merged}` |
 | `landed` | `pr.merged` is set |
-| `mode` | `single` or `team`, from its last `TaskStarted` event; `single` when the event has none |
+| `mode` | `single` or `team`, from its last `TaskStarted` event; `single` when the event has none (every task started since 2026-11-15 is `team`) |
 | `brief_to_pr_s`, `pr_to_merge_s` | `pr.opened - started` (null when negative); `pr.merged - pr.opened` |
 | `size` | `size` of its `TaskStarted` event (`small`, `medium`, `large`), as written; null when absent |
 | `cost` | from its transcript sessions (same repository and worktree name): `{total, unpriced_tokens, by_role, rework}`; `by_role` has `lead` (the main session), `tech-lead` (the main session of a tech lead run: its id is the `session` of a `techlead` record), `coder`, `reviewer`, `explorer` (also `Explore`), `lander` and `other` |
@@ -200,7 +200,7 @@ counts of `refusals` cover whole runs, because the parser keeps counts, not time
   found in it). The columns overlap in time (a conflict the log records later is a conflicted base merge in git) and the log misses
   merges made by hand, so a number is not the sum of its two columns. Rows are sorted by their larger count.
 
-`summary.by_mode` compares the modes: one row per (`mode`, `size`) with a landed task, sizes in
+`summary.by_mode` compares tasks from before the team (`single`) with those since (`team`): different tasks on different days, so the rows are a hint, not a measurement. One row per (`mode`, `size`) with a landed task, sizes in
 the order `small`, `medium`, `large`, `null` (no size stated on the task's `TaskStarted`), modes
 `single` then `team`. A row has `n`, the medians `cost_median`, `lead_share_median` (the lead's
 share of the lines written, 0 to 1), `lead_calls_median`, `handover_s_median` (`TaskStarted` to the
