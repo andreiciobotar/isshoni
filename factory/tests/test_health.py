@@ -355,12 +355,12 @@ class CriteriaTests(Home):
     def test_what_cannot_be_read_is_not_evaluated(self):
         criteria = factory.load_criteria()
         handed = {"x": {"state": "handed-over", "ts": iso(NOW - HOUR)}}  # busy-after-handover reads sessions only for one
-        repo = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"{WT}/x"}])
+        repo = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"{WT}/x", "branch": "worktree-x"}])
         firings, skipped = factory.evaluate(pic(sessions=None, rows=None, events=None, models={}, declared=handed, repo=repo),
                                             criteria)
         self.assertEqual(firings, [])
         names = {s["criterion"] for s in skipped}
-        self.assertEqual(names, {c["name"] for c in criteria} - {"ci-red-default", "lgtm-blocked", "churning", "run-stopped"})
+        self.assertEqual(names, {c["name"] for c in criteria} - {"ci-red-default", "lgtm-blocked", "churning", "run-stopped", "collision", "new-spec"})
         why = {s["criterion"]: s["why"] for s in skipped}
         self.assertIn("sessions cannot be listed", why["past-limit"])
         self.assertIn("no agent files", why["wrong-model"])
@@ -779,7 +779,7 @@ class WatchTests(Harness):
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["to"]["enum"],
                          ["dispatcher", "lead"])
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["decision"]["enum"],
-                         ["escalated", "suppressed", "paused", "extended"])
+                         ["escalated", "suppressed", "paused", "extended", "told"])
         head, _, body = argv[-1].partition("\n\n")
         self.assertEqual(head, f"Job: watch. Repo: {ROOT}. The dispatcher's session name is dispatcher-repo.")
         [sent] = json.loads(body)
@@ -1393,7 +1393,8 @@ class FiringsTests(Harness):
         self.assertEqual(lines[4], f"u1  {iso(NOW - HOUR)}  past-limit  x  undecided  -  cleared  -")
         self.assertEqual(lines[5], f"miss  {iso(NOW)}  x  s1  late")
         self.assertEqual(lines[-1], "escalated 3 (acted 1, ignored 1, no outcome 1); to lead 0; suppressed 1; "
-                                    "paused 0; extended 0 (kept 0, overran 0, no outcome 0); missed 3 (1 suppressed first, 2 never fired); precision 0.50; recall 0.25")
+                                    "paused 0; extended 0 (kept 0, overran 0, no outcome 0); missed 3 (1 suppressed first, 2 never fired); precision 0.50; recall 0.25; "
+                                    "told 0 (acted 0, noise 0, collided 0, no outcome 0, undelivered 0)")
 
     def test_json(self):
         self.seed_log()
@@ -1403,7 +1404,8 @@ class FiringsTests(Harness):
         self.assertEqual(len(doc["misses"]), 3)
         self.assertEqual(doc["summary"], {"escalated": 3, "acted": 1, "ignored": 1, "no_outcome": 1, "suppressed": 1,
                                           "paused": 0, "extended": 0, "kept": 0, "overran": 0, "missed": 3, "missed_suppressed": 1, "missed_never_fired": 2,
-                                          "precision": 0.5, "recall": 0.25})
+                                          "precision": 0.5, "recall": 0.25, "told": 0, "told_acted": 0, "told_noise": 0,
+                                          "told_collided": 0, "told_no_outcome": 0, "told_undelivered": 0})
 
     def test_a_lead_message_shows_in_the_table_and_everything_in_the_json(self):
         self.seed("firings", [fired("l1", escalate="judgment"), decided("l1", "escalated") | {
@@ -1423,7 +1425,8 @@ class FiringsTests(Harness):
     def test_zero_denominators(self):
         code, out, _ = self.cli("firings")
         self.assertEqual(out, "escalated 0 (acted 0, ignored 0, no outcome 0); to lead 0; suppressed 0; "
-                              "paused 0; extended 0 (kept 0, overran 0, no outcome 0); missed 0 (0 suppressed first, 0 never fired); precision -; recall -\n")
+                              "paused 0; extended 0 (kept 0, overran 0, no outcome 0); missed 0 (0 suppressed first, 0 never fired); precision -; recall -; "
+                              "told 0 (acted 0, noise 0, collided 0, no outcome 0, undelivered 0)\n")
         _, out, _ = self.cli("firings", "--json")
         self.assertEqual((json.loads(out)["summary"]["precision"], json.loads(out)["summary"]["recall"]), (None, None))
         self.seed("firings", [{"ts": iso(NOW), "repo": ROOT, "miss": "m", "slug": None, "firing": None}])
