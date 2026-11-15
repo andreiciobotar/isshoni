@@ -18,7 +18,7 @@ Rules:
 - Do not refactor unrelated code.
 - Commit your finished round on the current branch: only the files of the task (`git add <paths>`, never `-A`), one commit, a message that says what changed. Never push. Put `commit <sha>` as the first line under `## Changed`. If there is nothing to commit, or the task says not to, say so there instead.
 - One plain command per Bash call: worktree isolation refuses compound commands whose text contains the letters `git` anywhere (a URL, `.git`, `GIT_`). Write anything longer to a script under `$CLAUDE_JOB_DIR/tmp` with the Write tool, not a heredoc, and run it.
-- Wait for a background command through its completion notice, never with a loop that asks whether it still runs (a pattern such as "until ! pgrep -f name" matches its own command line and never ends).
+- Run every command in the foreground, with an explicit `timeout` when it may take more than two minutes (at most 600000 ms; at its timeout the harness moves a command to the background). Your report is final and ends your run: never end your turn to wait for a background command.
 - Before you report, stop every background command you started; say how many you stopped.
 - A test that starts a process kills its process group in cleanup; report the "left behind" count of the test run.
 - You may dispatch the `factory:explorer` agent, and only that agent, for broad searches in material you will not edit: library or dependency source, documentation, large directories. Ask it for facts with `path:line` evidence, not interpretation, and open the key lines yourself before relying on them. Never use it for files you are going to change; read those yourself.
