@@ -67,9 +67,9 @@ func (p paint) bar(w int, frac float64, fg color.Color, gradient bool) string {
 	return sb.String()
 }
 
-// spark is one eighth-block cell per value, scaled from 0 to the largest, in base; the last
-// cell is in last. A nil value is a faint dot.
-func (p paint) spark(vals []*float64, base, last color.Color) string {
+// spark is per eighth-block cells for each value, scaled from 0 to the largest, in base;
+// the last value's cells are in last. A nil value is faint dots.
+func (p paint) spark(vals []*float64, per int, base, last color.Color) string {
 	hi := 0.0
 	for _, v := range vals {
 		if v != nil && *v > hi {
@@ -83,14 +83,14 @@ func (p paint) spark(vals []*float64, base, last color.Color) string {
 			col = last
 		}
 		if v == nil {
-			sb.WriteString(p.t("·", p.th.Faint))
+			sb.WriteString(p.t(strings.Repeat("·", per), p.th.Faint))
 			continue
 		}
 		level := 0
 		if hi > 0 {
 			level = int(math.Round(*v / hi * 7))
 		}
-		sb.WriteString(p.t(string([]rune("▁▂▃▄▅▆▇█")[level]), col))
+		sb.WriteString(p.t(strings.Repeat(string([]rune("▁▂▃▄▅▆▇█")[level]), per), col))
 	}
 	return sb.String()
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -12,6 +13,14 @@ import (
 
 // pulseCol is one figure of one period: its value and the count (or detail) beside it.
 type pulseCol struct{ val, n string }
+
+// text is the column as shown: the value, then the count after gap.
+func (c pulseCol) text(gap string) string {
+	if c.n == "" {
+		return c.val
+	}
+	return c.val + gap + c.n
+}
 
 // pulseRow is a labelled figure for today and the baseline; label is the wide label and
 // short the narrow one, each empty where the row is left out. A lead row has a delta, a
@@ -38,17 +47,45 @@ func (m *model) dayLines(p paint, w int) block {
 	}
 	th := m.th
 	wide := w >= 100
-	lw, dc, gap, tcap, bcap := 25, 9, " ", 20, w // label, delta, value-to-count gap, today column, baseline column
+	lw, dc, gap := 25, 9, " " // label, delta, value-to-count gap
 	if wide {
-		lw, gap, tcap, bcap = 38, "  ", 24, 28
+		lw, gap = 39, "  "
 	}
-	tc := min(tcap, (w-1-lw-dc+1)/2)
-	bc := min(bcap, w-1-lw-dc-tc)
-	bw, sparkW := bc, 0 // the baseline's text width: it keeps a gap only when the sparkline follows
+	rows := m.pulseRows(pl, wide)
+	rows = slices.DeleteFunc(rows, func(r pulseRow) bool { return (wide && r.label == "") || (!wide && r.short == "") })
+	b := pl.Baseline
+	title, since := "TODAY AGAINST YESTERDAY", "yesterday "+shortDate(b.Date)
+	if !wide {
+		title = "TODAY VS YESTERDAY"
+	}
+	if b.Days != 1 {
+		title, since = fmt.Sprintf("TODAY AGAINST THE %d DAYS BEFORE", b.Days), shortDate(b.Date)+" to "+shortDate(b.To)
+		if !wide {
+			title, since = fmt.Sprintf("TODAY VS %dD BEFORE", b.Days), shortDate(b.Date)+".."+shortDate(b.To) // fits the baseline column at 60
+		}
+	}
+	// Narrow: two equal columns. Wide: each column is as wide as its figures, so the
+	// sparkline of the lead rows starts one gap after the baseline column.
+	tc := min(20, (w-1-lw-dc+1)/2)
+	bc := w - 1 - lw - dc - tc // the baseline column of the detail rows: the rest of the line
+	leadBc, sparkW, per := bc, 0, 1
 	if wide {
-		bw = bc - 1
-		sparkW = min(pulseSparkMax, len(pl.Days), w-1-lw-dc-tc-bc-1)
-		if sparkW < 4 {
+		tw, lb := 0, width(since)
+		for _, r := range rows {
+			tw = max(tw, width(r.today.text(gap)))
+			if r.lead {
+				lb = max(lb, width(r.base.text(gap)))
+			}
+		}
+		tc = min(w-1-lw-dc, tw+2)
+		bc = w - 1 - lw - dc - tc
+		leadBc = min(bc, lb)
+		room, days := bc-leadBc-1, min(pulseSparkMax, len(pl.Days))
+		if 2*days <= room {
+			per = 2
+		}
+		sparkW = min(days, room/per)
+		if sparkW*per < 4 {
 			sparkW = 0
 		}
 	}
@@ -81,47 +118,45 @@ func (m *model) dayLines(p paint, w int) block {
 		}
 		var line string
 		if !r.lead {
-			line = p.sp(1) + p.t(cell(label, lw-1, false), th.Faint) + figure(r.today, tc-1, false, th.Muted, th.Faint) + p.sp(1+dc) + figure(r.base, bw, false, th.Muted, th.Faint)
+			line = p.sp(1) + p.t(cell(label, lw-1, false), th.Faint) + figure(r.today, tc-1, false, th.Muted, th.Faint) + p.sp(1+dc) + figure(r.base, bc, false, th.Muted, th.Faint)
 			return fit(line, w, p)
 		}
 		dcol, tcol := look(r.verdict)
 		delta := trunc(r.delta, dc-1)
 		line = p.sp(1) + p.t(cell(label, lw-1, false), th.Text) + figure(r.today, tc-1, true, th.Text, th.Muted) + p.sp(1) +
-			p.b(delta, dcol) + p.sp(dc-width(delta)) + figure(r.base, bw, false, th.Text, th.Muted)
+			p.b(delta, dcol) + p.sp(dc-width(delta)) + figure(r.base, leadBc, false, th.Text, th.Muted)
 		if sparkW > 0 {
-			line += p.sp(1) + p.spark(r.days[len(r.days)-sparkW:], th.Muted, tcol)
+			line += p.sp(1) + p.spark(r.days[len(r.days)-sparkW:], per, th.Muted, tcol)
 		}
 		return fit(line, w, p)
 	}
 
-	b := pl.Baseline
-	title, since := "TODAY AGAINST YESTERDAY", "yesterday "+shortDate(b.Date)
-	if !wide {
-		title = "TODAY VS YESTERDAY"
-	}
-	if b.Days != 1 {
-		title, since = fmt.Sprintf("TODAY AGAINST THE %d DAYS BEFORE", b.Days), shortDate(b.Date)+" to "+shortDate(b.To)
-		if !wide {
-			title, since = fmt.Sprintf("TODAY VS %dD BEFORE", b.Days), shortDate(b.Date)+".."+shortDate(b.To) // fits the baseline column at 60
-		}
-	}
 	head := p.sp(1) + p.b(cell(title, lw-1, false), th.Text) + p.t(cell("today "+shortDate(pl.Today.Date), tc, false), th.Faint) +
-		p.sp(dc) + p.t(cell(since, bc, false), th.Faint)
+		p.sp(dc) + p.t(cell(since, leadBc, false), th.Faint)
 	if sparkW > 0 {
-		head += p.t("each day, today last", th.Faint)
+		label := "each day, today last"
+		if width(label) > w-1-lw-dc-tc-leadBc-1 { // the sparkline is narrower than its head
+			label = "days"
+		}
+		head += p.sp(1) + p.t(label, th.Faint)
 	}
 	lines := block{fit(head, w, p)}
-	for _, r := range m.pulseRows(pl, wide) {
-		if (wide && r.label != "") || (!wide && r.short != "") {
-			lines = append(lines, put(r))
-		}
+	for _, r := range rows {
+		lines = append(lines, put(r))
 	}
 	periods := []data.PulseDay{pl.Today, pl.Baseline}
+	var notes []string
 	if note := m.sendBackNote(periods, pl.QueueSince); note != "" {
-		lines = append(lines, p.sp(1)+p.t(note, th.Faint))
+		notes = append(notes, note)
 	}
 	if t, b := pl.Today.Handover.ApprovalsBackfilled, pl.Baseline.Handover.ApprovalsBackfilled; t+b > 0 {
-		lines = append(lines, p.sp(1)+p.t(fmt.Sprintf("approvals backfilled: %d today, %d in the baseline", t, b), th.Faint))
+		notes = append(notes, fmt.Sprintf("approvals backfilled: %d today, %d in the baseline", t, b))
+	}
+	if both := strings.Join(notes, " · "); len(notes) == 2 && 1+width(both) <= w {
+		notes = []string{both}
+	}
+	for _, note := range notes {
+		lines = append(lines, p.sp(1)+p.t(note, th.Faint))
 	}
 	for i, d := range periods {
 		if e := d.Conflicts.Error; e != nil {
@@ -167,14 +202,14 @@ func (m *model) pulseRows(pl *data.Pulse, wide bool) []pulseRow {
 		}
 		return fmt.Sprintf("%d/%d", r.Yes, r.Of)
 	}
-	p90 := func(get func(data.PulseHandover) data.PulseP90) func(data.PulseDay) pulseCol {
-		return func(d data.PulseDay) pulseCol {
-			q := get(d.Handover)
-			if q.P90S == nil {
-				return pulseCol{val: "-"}
-			}
-			return pulseCol{kzSecs(float64(*q.P90S)), n(q.N)}
+	p90 := func(q data.PulseP90) pulseCol {
+		if q.P90S == nil {
+			return pulseCol{val: "-"}
 		}
+		return pulseCol{kzSecs(float64(*q.P90S)), n(q.N)}
+	}
+	p90row := func(get func(data.PulseHandover) data.PulseP90) func(data.PulseDay) pulseCol {
+		return func(d data.PulseDay) pulseCol { return p90(get(d.Handover)) }
 	}
 
 	rows := []pulseRow{lead("all-in cost / merged PR", "cost / merged PR", func(d data.PulseDay) *float64 { return d.Cost.PerMerged }, func(d data.PulseDay) pulseCol {
@@ -237,38 +272,55 @@ func (m *model) pulseRows(pl *data.Pulse, wide bool) []pulseRow {
 		}
 	}
 
+	// wide: p90 is a note on the lead row and the human's part is one row; narrow keeps a row each
 	rows = append(rows, lead("approval → merge, median", "approval → merge p50", func(d data.PulseDay) *float64 { return secs(d.Handover.ApprovalToMerge.P50S) }, func(d data.PulseDay) pulseCol {
 		q := d.Handover.ApprovalToMerge
 		if q.P50S == nil {
 			return pulseCol{"-", n(q.N)}
 		}
-		return pulseCol{kzSecs(float64(*q.P50S)), n(q.N)}
-	}, v.ApprovalToMerge, false),
-		both("  approval → merge p90", "  approval → merge p90", p90(func(h data.PulseHandover) data.PulseP90 { return h.ApprovalToMerge })),
-		both("  hand-over → merge p90", "  hand-over → merge p90", p90(func(h data.PulseHandover) data.PulseP90 { return h.ToMerge })),
-		both("  hand-over → approval p90", "  → approval p90", p90(func(h data.PulseHandover) data.PulseP90 { return h.ToApproval })),
-		both("  send-backs that changed nothing", "  sent back unchanged", func(d data.PulseDay) pulseCol {
+		note := n(q.N)
+		if wide && q.P90S != nil {
+			note += "  p90 " + kzSecs(float64(*q.P90S))
+		}
+		return pulseCol{kzSecs(float64(*q.P50S)), note}
+	}, v.ApprovalToMerge, false))
+	if wide {
+		rows = append(rows, both("  hand-over → merge · → approval, p90", "", func(d data.PulseDay) pulseCol {
 			h := d.Handover
-			if h.SentBack == nil || h.SentBackUnchanged == nil {
-				return pulseCol{val: "-"}
-			}
-			return pulseCol{val: fmt.Sprintf("%d of %d", *h.SentBackUnchanged, *h.SentBack)}
-		}),
-		lead("conflicted base merges / PR", "conflicts / PR", func(d data.PulseDay) *float64 { return d.Conflicts.PerMerged }, func(d data.PulseDay) pulseCol {
-			c := d.Conflicts
-			if c.PerMerged == nil {
-				return pulseCol{"-", n(c.Prs)}
-			}
-			return pulseCol{fmt.Sprintf("%.2f", *c.PerMerged), n(c.Prs)}
-		}, v.Conflicts, false),
-		both("  conflicted base merges", "  conflicted merges", func(d data.PulseDay) pulseCol {
+			tm := p90(h.ToMerge)
+			return pulseCol{tm.val + " · " + p90(h.ToApproval).val, tm.n}
+		}))
+	} else {
+		rows = append(rows,
+			both("", "  approval → merge p90", p90row(func(h data.PulseHandover) data.PulseP90 { return h.ApprovalToMerge })),
+			both("", "  hand-over → merge p90", p90row(func(h data.PulseHandover) data.PulseP90 { return h.ToMerge })),
+			both("", "  → approval p90", p90row(func(h data.PulseHandover) data.PulseP90 { return h.ToApproval })))
+	}
+	rows = append(rows, both("  send-backs that changed nothing", "  sent back unchanged", func(d data.PulseDay) pulseCol {
+		h := d.Handover
+		if h.SentBack == nil || h.SentBackUnchanged == nil {
+			return pulseCol{val: "-"}
+		}
+		return pulseCol{val: fmt.Sprintf("%d of %d", *h.SentBackUnchanged, *h.SentBack)}
+	}), lead("conflicted base merges / PR", "conflicts / PR", func(d data.PulseDay) *float64 { return d.Conflicts.PerMerged }, func(d data.PulseDay) pulseCol {
+		c := d.Conflicts
+		if c.PerMerged == nil {
+			return pulseCol{"-", n(c.Prs)}
+		}
+		if wide {
+			return pulseCol{fmt.Sprintf("%.2f", *c.PerMerged), fmt.Sprintf("%d in %d PRs", c.Conflicted, c.Prs)}
+		}
+		return pulseCol{fmt.Sprintf("%.2f", *c.PerMerged), n(c.Prs)}
+	}, v.Conflicts, false))
+	if !wide {
+		rows = append(rows, both("", "  conflicted merges", func(d data.PulseDay) pulseCol {
 			c := d.Conflicts
 			if c.PerMerged == nil {
 				return pulseCol{val: "-"}
 			}
 			return pulseCol{val: fmt.Sprintf("%d in %d PRs", c.Conflicted, c.Prs)}
-		}),
-	)
+		}))
+	}
 	return rows
 }
 

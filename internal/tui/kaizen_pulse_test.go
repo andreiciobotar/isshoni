@@ -59,24 +59,20 @@ func TestPulseBandRowsAndFigures(t *testing.T) {
 		"tasks · dispatcher · site manager $100 · $20.25 · $2.25 $600 · $90.00 · $10.00",
 		"first pass 50% 6/12 ↓ 34 pts 84% 42/50",
 		"small · medium · large · unstated 3/4 · 1/3 · 0/1 · 2/4 19/21 · 12/17 · 3/4 · 8/8",
-		"approval → merge, median 2m30s n=6 ≈ 2m40s n=30",
-		"approval → merge p90 4m00s n=6 7m00s n=30",
-		"hand-over → merge p90 36m44s n=11 55m00s n=46",
-		"hand-over → approval p90 30m00s n=6 40m00s n=30",
+		"approval → merge, median 2m30s n=6 p90 4m00s ≈ 2m40s n=30 p90 7m00s",
+		"hand-over → merge · → approval, p90 36m44s · 30m00s n=11 55m00s · 40m00s n=46",
 		"send-backs that changed nothing 1 of 3 -",
-		"conflicted base merges / PR 0.36 n=11 ↑ 179% 0.13 n=46",
-		"conflicted base merges 4 in 11 PRs 6 in 46 PRs",
-		"send-backs: the queue log starts 11-14",
-		"approvals backfilled: 2 today, 8 in the baseline",
+		"conflicted base merges / PR 0.36 4 in 11 PRs ↑ 179% 0.13 6 in 46 PRs",
 	} {
 		if !strings.Contains(squeeze(out), want) {
 			t.Errorf("the band lacks %q:\n%s", want, out)
 		}
 	}
+	lineWith(t, out, "send-backs: the queue log starts 11-14", " · approvals backfilled: 2 today, 8 in the baseline") // one note line
 	if strings.Index(out, "TODAY AGAINST") > strings.Index(out, "LANDED") {
 		t.Errorf("the band is above the tiles:\n%s", out)
 	}
-	for _, gone := range []string{"yesterday", "(git history)"} {
+	for _, gone := range []string{"yesterday", "(git history)", "approval → merge p90", "conflicted base merges 4"} {
 		if strings.Contains(out, gone) {
 			t.Errorf("%q is for a one-day baseline or gone:\n%s", gone, out)
 		}
@@ -106,7 +102,7 @@ func TestPulseTodayWithNothingMergedShowsDashesAndTheSpend(t *testing.T) {
 		"tasks · dispatcher · site manager $100 · $20.25 · $2.25",
 		"first pass - n=0 84% 42/50",
 		"approval → merge, median - n=0 2m40s n=30",
-		"conflicted base merges / PR - n=0 0.13 n=46",
+		"conflicted base merges / PR - n=0 0.13 6 in 46 PRs",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the band lacks %q:\n%s", want, out)
@@ -129,9 +125,9 @@ func TestPulseUnknownsAreDashesNeverZero(t *testing.T) {
 	for row, tail := range map[string]string{
 		"all-in cost / merged PR":         "- n=0",
 		"small · medium":                  "3/4 · 1/3 · 0/1 · 2/4 - · 12/17 · 3/4 · 8/8",
-		"hand-over → merge p90":           "36m44s n=11 -",
+		"hand-over → merge ·":             "36m44s · 30m00s n=11 - · 40m00s",
 		"send-backs that changed nothing": "1 of 3 -",
-		"4 in 11 PRs":                     "4 in 11 PRs -",
+		"conflicted base merges / PR":     "4 in 11 PRs - n=46",
 	} {
 		if got := strings.Join(strings.Fields(lineWith(t, out, row)), " "); !strings.Contains(got, tail) {
 			t.Errorf("%s: want %q in %q", row, tail, got)
@@ -208,11 +204,11 @@ func TestPulseColourFollowsTheVerdict(t *testing.T) {
 func TestPulseSparklineHasACellPerDayAndADotForNoValue(t *testing.T) {
 	out := pulseBand(t, 140, nil)
 	row := lineWith(t, out, "approval → merge, median")
-	cells := []rune(strings.TrimSpace(row[strings.LastIndex(row, "n=30")+len("n=30"):]))
-	if len(cells) != 8 || cells[0] != '·' || cells[7] == '·' {
-		t.Errorf("eight days, the first without a value, today last: %q", string(cells))
+	cells := []rune(strings.TrimSpace(row[strings.LastIndex(row, "p90 7m00s")+len("p90 7m00s"):]))
+	if len(cells) != 16 || cells[0] != '·' || cells[1] != '·' || cells[14] == '·' || cells[15] != cells[14] {
+		t.Errorf("eight days of two cells, the first without a value, today last: %q", string(cells))
 	}
-	for _, r := range cells[1:] {
+	for _, r := range cells[2:] {
 		if !strings.ContainsRune("▁▂▃▄▅▆▇█", r) {
 			t.Errorf("a day with a value is an eighth block: %q", string(cells))
 		}
@@ -220,8 +216,39 @@ func TestPulseSparklineHasACellPerDayAndADotForNoValue(t *testing.T) {
 	if !strings.Contains(string(cells), "█") {
 		t.Errorf("the largest day fills the cell: %q", string(cells))
 	}
-	if strings.ContainsAny(pulseBand(t, 60, nil), "▁▂▃▄▅▆▇█·") && strings.Contains(lineWith(t, pulseBand(t, 60, nil), "first pass"), "▁") {
+	if strings.ContainsAny(strings.Split(pulseBand(t, 60, nil), "\n")[2], "▁▂▃▄▅▆▇█·") {
 		t.Error("narrow has no sparkline")
+	}
+}
+
+func TestPulseSparklineShowsAt100OneGapAfterTheBaseline(t *testing.T) {
+	row := lineWith(t, pulseBand(t, 100, nil), "approval → merge, median")
+	tail := row[strings.LastIndex(row, "p90 7m00s")+len("p90 7m00s"):]
+	if !strings.HasPrefix(tail, " ") || strings.HasPrefix(tail, "  ") || len([]rune(strings.TrimSpace(tail))) < 4 {
+		t.Errorf("at 100 the sparkline starts one gap after the baseline and has four cells or more: %q", tail)
+	}
+}
+
+func TestPulseBandIsAtMostElevenLinesAtWideAndNothingExceedsTheWidth(t *testing.T) {
+	lines := strings.Split(pulseBand(t, 140, nil), "\n")
+	first, tiles := 0, 0
+	for i, l := range lines {
+		if strings.Contains(l, "TODAY AGAINST") {
+			first = i
+		}
+		if strings.Contains(l, "LANDED") {
+			tiles = i
+		}
+	}
+	if n := tiles - first; n > 11 {
+		t.Errorf("the band at 140 is %d lines, want at most 11", n)
+	}
+	for _, w := range []int{60, 100, 140} {
+		for _, l := range strings.Split(pulseBand(t, w, nil), "\n") {
+			if ansi.StringWidth(l) > w {
+				t.Errorf("at %d: line wider than the window: %q", w, l)
+			}
+		}
 	}
 }
 
