@@ -109,7 +109,7 @@ def sh(*argv, cwd, env):
         sys.exit(f"{' '.join(argv)} exited {p.returncode} in {cwd}:\n{p.stdout}{p.stderr}")
 
 
-def set_up(run, factory):
+def set_up(run):
     """The scratch repository, home and shims of one run; the task's worktree and spec. Returns (env, worktree)."""
     run.mkdir()
     home, state, bindir = (run / d for d in ("home", "state", "bin"))
@@ -149,7 +149,7 @@ def start(args):
     root.mkdir(parents=True, exist_ok=True)
     for i in range(1, args.n + 1):
         run = root / f"run-{i}"
-        env, worktree = set_up(run, os.path.abspath(args.factory))
+        env, worktree = set_up(run)
         with open(run / "out.txt", "ab") as out:
             proc = subprocess.Popen([os.path.abspath(args.factory), "build", SLUG, "--run"], cwd=worktree, env=env,
                                     stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
@@ -208,6 +208,9 @@ def wait(args):
     for line, _, _ in results:
         print(line)
     print(f"total cost_usd={sum(c for _, _, c in results):.2f}")
+    if real_store.leaked(root.resolve().name):
+        print(f"FAILED: a line of the real store's logs names {root.resolve().name}")
+        return 1
     return 0 if runs and all(ok for _, ok, _ in results) else 1
 
 
