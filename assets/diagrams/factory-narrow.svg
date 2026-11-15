@@ -4,7 +4,7 @@
        GitHub's phone column is about 358 px wide, so this viewBox is 360 wide and shows at about 1:1.
        A task is two peers on one row, same top and height: the lead on the left with its explorer
        below, the tech lead on the right with its four roles below. Three arrows join the two; the
-       lead's comments line comes up the gap between them. The left strip (x 6 to 40) carries the
+       comments line to the lead comes up the gap between them. The left strip (x 6 to 40) carries the
        dotted lines up to the dispatcher and the lead; the merge queue's line to the tech lead runs
        up the right margin at x 352. -->
   <title>How a brief becomes a merged pull request, and how the factory improves</title>
@@ -147,7 +147,7 @@
   <text class="s" x="216" y="338" text-anchor="end">hands</text>
   <text class="s" x="216" y="351" text-anchor="end">over</text>
   <text class="s" x="216" y="364" text-anchor="end">again</text>
-  <path class="arrow" d="M270 654V722"/>
+  <path class="arrow" d="M262 654V722"/>
 
   <!-- pull request: draft, then ready -->
   <g class="pr">
@@ -199,8 +199,9 @@
   <path class="aux" d="M40 1022H17V108H110V84"/>
   <text class="s" x="24" y="102">red main</text>
   <path class="aux" d="M58 108V164"/>
-  <text class="s" x="68" y="138">what it</text>
-  <text class="s" x="68" y="151">can fix</text>
+  <text class="s" x="66" y="137">what</text>
+  <text class="s" x="66" y="149">it can</text>
+  <text class="s" x="66" y="161">fix</text>
 
   <!-- kaizen lane, stacked -->
   <text class="k" x="16" y="1078">kaizen 改善</text>
