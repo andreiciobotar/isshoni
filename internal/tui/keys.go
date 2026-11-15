@@ -8,6 +8,7 @@ import "charm.land/bubbles/v2/key"
 type keyMap struct {
 	Interrupt, Quit, Help                     key.Binding
 	Next, Prev, Dash, Agents, Factory, Kaizen key.Binding
+	Ops                                       key.Binding
 	PageLeft, PageRight                       key.Binding
 	Down, Up, Top, Bottom, PageDown, PageUp   key.Binding
 	Fold, Unfold, Open, Back                  key.Binding
@@ -25,11 +26,12 @@ var keys = keyMap{
 
 	Next:    key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next view")),
 	Prev:    key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "previous view")),
-	Dash:    key.NewBinding(key.WithKeys("1"), key.WithHelp("1 2 3 4 5", "dashboard · agents · factory · kaizen · hanami")),
+	Dash:    key.NewBinding(key.WithKeys("1"), key.WithHelp("1 2 3 4 5 6", "dashboard · agents · factory · kaizen · ops · hanami")),
 	Agents:  key.NewBinding(key.WithKeys("2")),
 	Factory: key.NewBinding(key.WithKeys("3")),
 	Kaizen:  key.NewBinding(key.WithKeys("4")),
-	Hanami:  key.NewBinding(key.WithKeys("5")),
+	Ops:     key.NewBinding(key.WithKeys("5")),
+	Hanami:  key.NewBinding(key.WithKeys("6")),
 
 	PageLeft:  key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("←→/hl", "kaizen page")),
 	PageRight: key.NewBinding(key.WithKeys("l", "right")),
@@ -83,6 +85,8 @@ func (m *model) footerKeys() []key.Binding {
 		return []key.Binding{keys.Legend, keys.Zen, keys.Replay, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewKaizen:
 		return []key.Binding{keys.PageLeft, keys.Down, keys.Range, keys.Next, keys.Help, keys.Quit}
+	case m.view == viewOps:
+		return []key.Binding{keys.Down, keys.Next, keys.Help, keys.Quit}
 	case m.zoomed():
 		return []key.Binding{keys.Down, keys.Open, keys.Back, keys.Follow, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewAgents:

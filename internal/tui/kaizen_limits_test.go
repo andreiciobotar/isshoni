@@ -92,7 +92,7 @@ func TestHeaderLiveCountAtEightyColumnsWithTwelveLive(t *testing.T) {
 			m.sessions[s.ID], m.seen[s.ID] = s, m.now()
 		}
 		m.view = view
-		if head := strings.Split(plain(m), "\n")[0]; !strings.Contains(head, "12 live") || !strings.Contains(head, "[7d]") || !strings.Contains(head, "4 Kaizen") {
+		if head := strings.Split(plain(m), "\n")[0]; !strings.Contains(head, "● 12") || !strings.Contains(head, "[7d]") || !strings.Contains(head, "4 Kaizen") {
 			t.Errorf("view %v: %q", view, head)
 		}
 	}

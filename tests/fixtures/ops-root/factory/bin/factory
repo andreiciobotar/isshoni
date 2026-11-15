@@ -1,0 +1,39 @@
+"""Stand-in for `factory ops list --json`: invented watches, their times relative to now."""
+import json
+import sys
+from datetime import datetime, timedelta, timezone
+
+if sys.argv[1:] != ["ops", "list", "--json"]:
+    sys.exit("factory: this stub only prints `ops list --json`")
+now = datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def at(minutes):
+    return (now + timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def watch(name, repo, goal, state, every, ticks, last, nxt, spent, budget, until=300, verdict=None, missed=0, unpriced=0):
+    """last is (minutes ago, outcome, what it saw, seconds late); nxt is minutes from now."""
+    look = last and {"ts": at(-last[0]), "outcome": last[1], "saw": last[2], "late_seconds": last[3]}
+    return {
+        "name": name, "repo": "/home/dev/" + repo, "goal": goal, "state": state, "verdict": verdict,
+        "started": at(until - 360), "until": at(until), "every_seconds": every * 60, "ticks": ticks, "missed": missed,
+        "last_look": look, "next_look": nxt and at(nxt), "spent_usd": spent, "unpriced_ticks": unpriced, "budget_usd": budget,
+        "notes": "/home/dev/store/ops/%s/notes.md" % name,
+    }
+
+
+print(json.dumps({"watches": [
+    watch("pr60-logs", "app", "watch the logs to make sure PR60 did what it should", "watching", 10, 7,
+          (6, "fine", "0 errors, 412 requests", 0), 4, 0.42, 5.0, until=290),
+    watch("nightly-backup", "infra", "check that the nightly backup finishes and every volume verifies", "watching", 30, 10,
+          (9, "fine", "2 of 3 volumes verified, the third still copying", 130), 21, 1.37, 4.0, until=90, missed=3, unpriced=2),
+    watch("disk-pressure", "infra", "watch the free space on the database host", "alarmed", 10, 18,
+          (2, "alarm", "disk at 94% on /var/lib/db, up 1% in ten minutes", 0), 8, 0.9, 3.0, until=540),
+    watch("cert-renewal", "app", "confirm the certificate renews before it expires", "ended", 60, 12,
+          (180, "done", "certificate renewed, expires in 89 days", 0), None, 0.31, 2.0, until=-180, verdict="met"),
+    watch("api-latency", "app", "track the p99 latency of the public API", "out-of-budget", 5, 52,
+          (45, "fine", "p99 210 ms", 0), None, 5.02, 5.0, until=600, missed=1),
+    watch("cost-probe", "lib", "see whether the billing page lists last month's invoice", "watching", 20, 3,
+          (20, "could-not-look", "the billing page timed out", 0), -2, 0.0, 5.0, until=200, unpriced=3),
+]}))
