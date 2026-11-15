@@ -71,6 +71,7 @@ def main():
         L.check(not denied, f"no PermissionDenied hook record in the scratch store: {denied}")
         L.check(any(r.get("event") == "SessionStart" for r in monthly(lab.home, "events")),
                 "the nested sessions' hooks reached the scratch store (a SessionStart record is there)")
+        L.check(any(r.get("role") == "lander" for r in monthly(lab.home, "events")), "a lander subagent ran (an events record has role lander)")
     finally:
         if args.keep:
             L.say(f"kept: {tmp}")
