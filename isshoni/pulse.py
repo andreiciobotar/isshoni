@@ -1,4 +1,4 @@
-"""The pulse: four figures for today and for yesterday (docs/isshoni.md, "Kaizen measures").
+"""The pulse: four figures for today, for the baseline (the whole days before it) and for each day (docs/isshoni.md, "Kaizen measures").
 Its readers (the queue log, the merges and approvals caches) are plain functions; kaizen.build calls `build`."""
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from .kaizen import SIZES, GhError, _iso, _seconds, _ts
 GIT_TIMEOUT = 10
 GH_WORKERS = 8
 _MERGE_SUBJECT = re.compile(r"Merge pull request #(\d+) ")
+PULSE_MIN_N = 5  # a verdict needs this many pull requests on each side
 _FAILED = object()  # a lookup that failed: not cached, not in the split
 
 
@@ -175,9 +176,9 @@ def _approvals(factory_dir, wanted, cached):
 
 # ---- the figures --------------------------------------------------------------------
 
-def _p90(seconds):
-    v = metrics.percentile(seconds, 90)
-    return {"p90_s": None if v is None else int(round(v)), "n": len(seconds)}
+def _durations(seconds):
+    p50, p90 = (metrics.percentile(seconds, p) for p in (50, 90))
+    return {"p50_s": None if p50 is None else int(round(p50)), "p90_s": None if p90 is None else int(round(p90)), "n": len(seconds)}
 
 
 def _zone(now):
@@ -193,64 +194,81 @@ def _midnight(d, tz):
     return local.astimezone(timezone.utc)
 
 
-def yesterday_start(now=None):
-    """When the pulse's yesterday starts (UTC): transcripts from then on are what its cost needs."""
+def baseline_start(cutoff, now, merges):
+    """When the baseline's first day starts (UTC): the local date of `cutoff`, or without one of the earliest of the pull request
+    merge times `merges`, but no later than yesterday."""
     today, tz = _zone(now)
-    return _midnight(today - timedelta(days=1), tz)
+    first = cutoff.astimezone(tz).date() if cutoff else min((m.astimezone(tz).date() for m in merges), default=today)
+    return _midnight(min(first, today - timedelta(days=1)), tz)
 
 
-def merged_recently(pull, now=None):
-    """Whether a task's pull request (kaizen's `_pr_for`, or None) merged today or yesterday."""
-    merged = transcript.parse_ts(pull["merged"]) if pull else None
-    return bool(merged and merged >= yesterday_start(now))
-
-
-def sessions_from(cutoff, now, started):
+def sessions_from(cutoff, baseline, started):
     """The time kaizen's transcripts are needed from: None (all) without a cutoff; else the earliest of the cutoff, the start of
-    yesterday and the TaskStarted times `started` of the tasks merged since (a session of a task cannot predate its start);
+    the baseline and the TaskStarted times `started` of the tasks merged since (a session of a task cannot predate its start);
     None too when one of those has no time."""
     if cutoff is None or None in started:
         return None
-    return min([cutoff, yesterday_start(now), *started])
+    return min([cutoff, baseline, *started])
 
 
 def _spent_by_day(sessions, tasks, prices, dates, tz):
     """{date: spend} of every model call of the task sessions and of the dispatcher and site manager sessions, on `dates`."""
     keys, repos = {(t["repo_path"], t["slug"]) for t in tasks}, {t["repo_path"] for t in tasks}
     out = {d: {"tasks": 0.0, "dispatcher": 0.0, "site_manager": 0.0, "unpriced_tokens": 0} for d in dates}
-    days = [(out[d], _midnight(d, tz), _midnight(d + timedelta(days=1), tz)) for d in dates]  # UTC bounds: call times are UTC
-    since = min(lo for _, lo, _ in days)
+    since = _midnight(dates[0], tz)
     for s in sessions:
         who = "tasks" if (s.repo_path, s.task) in keys else kaizen._spender(s, repos)
         if who is None:
             continue
         for ts, cost, tokens in kaizen._spend(s, prices, since):
-            for spent, lo, hi in days:
-                if lo <= ts < hi:
-                    spent[who] += cost
-                    spent["unpriced_tokens"] += tokens
+            spent = out.get(ts.astimezone(tz).date())
+            if spent:
+                spent[who] += cost
+                spent["unpriced_tokens"] += tokens
     return out
 
 
-def _sent_back(queue, since, d, day):
-    """(send-backs of day `d`, those whose next record for the pull request has the same head); None when the day ended before the log."""
-    if since is None or day(since) > d:
-        return None, None
-    sent = [i for i, r in enumerate(queue) if r.get("step") == "sent-back" and day(_ts(r)) == d]
-    same = 0
-    for i in sent:
-        r = queue[i]
-        nxt = next((x for x in queue[i + 1:] if (x.get("repo"), x.get("pr")) == (r.get("repo"), r.get("pr"))), None)
-        same += nxt is not None and isinstance(r.get("head"), str) and nxt.get("head") == r["head"]
-    return len(sent), same
+def _sent_backs(queue, day):
+    """[(date, whether the next record for the pull request has the same head)] of the queue's send-backs."""
+    out = []
+    for i, r in enumerate(queue):
+        if r.get("step") == "sent-back":
+            nxt = next((x for x in queue[i + 1:] if (x.get("repo"), x.get("pr")) == (r.get("repo"), r.get("pr"))), None)
+            out.append((day(_ts(r)), nxt is not None and isinstance(r.get("head"), str) and nxt.get("head") == r["head"]))
+    return out
 
 
-def build(factory_dir, tasks, by_task, sessions, prices, queue, now=None, cached=False):
+def _verdict(today, baseline, lower_is_better):
+    """None when either (value, n) has no value; "few" when either n < PULSE_MIN_N; "same" within 10% of the baseline; else "better" or "worse"."""
+    (t, nt), (b, nb) = today, baseline
+    if t is None or b is None:
+        return None
+    if nt < PULSE_MIN_N or nb < PULSE_MIN_N:
+        return "few"
+    if abs(t - b) <= 0.10 * b:
+        return "same"
+    return "better" if (t < b) == lower_is_better else "worse"
+
+
+def _verdicts(today, baseline):
+    def lead(d):
+        yes, of = (sum(f[k] for f in d["first_pass"].values()) for k in ("yes", "of"))
+        return {"cost": (d["cost"]["per_merged"], d["merged"]), "first_pass": (yes / of if of else None, of),
+                "approval_to_merge": (d["handover"]["approval_to_merge"]["p50_s"], d["handover"]["approval_to_merge"]["n"]),
+                "conflicts": (d["conflicts"]["per_merged"], d["conflicts"]["prs"])}
+
+    t, b = lead(today), lead(baseline)
+    return {k: _verdict(t[k], b[k], k != "first_pass") for k in t}
+
+
+def build(factory_dir, tasks, by_task, sessions, prices, queue, baseline, now=None, cached=False):
     """The `pulse` of the document. `tasks`: every task, with its pull request; `by_task`: its records by store;
-    `queue`: `read_queue`'s records. `cached`: the caches only, no git and no gh."""
+    `queue`: `read_queue`'s records. `baseline`: when the baseline's first day starts (`baseline_start`). `cached`: the caches only, no git and no gh."""
     today, tz = _zone(now)
     day = lambda ts: ts.astimezone(tz).date()  # noqa: E731
-    dates = (today, today - timedelta(days=1))
+    first_day = day(baseline)
+    baseline_dates = [first_day + timedelta(days=i) for i in range((today - first_day).days)]
+    dates = [*baseline_dates, today]
     merged = {d: [] for d in dates}
     for t in tasks:
         at = transcript.parse_ts(t["pr"]["merged"]) if t["pr"] else None
@@ -259,6 +277,7 @@ def build(factory_dir, tasks, by_task, sessions, prices, queue, now=None, cached
 
     since = _ts(queue[0]) if queue else None
     queued = {(r.get("repo"), r.get("pr")): r.get("approved_at") for r in queue if r.get("step") == "merged"}
+    sent_backs = _sent_backs(queue, day)
 
     first = {id(t): kaizen._handed_over(by_task[(t["repo_path"], t["slug"])]) for rows in merged.values() for t, _ in rows}
     wanted = [(t["repo_path"], t["pr"]["number"], at) for rows in merged.values() for t, at in rows
@@ -278,9 +297,10 @@ def build(factory_dir, tasks, by_task, sessions, prices, queue, now=None, cached
         a = transcript.parse_ts(a)
         return (a, backfilled) if a else None
 
-    def figures(d):
-        rows = merged[d]
-        spent = spend[d]
+    def figures(days):
+        """The figures of the pull requests merged on `days` (dates, oldest first) and of the spend on them."""
+        rows = [row for d in days for row in merged[d]]
+        spent = {k: sum(spend[d][k] for d in days) for k in spend[days[0]]}
         total = spent["tasks"] + spent["dispatcher"] + spent["site_manager"]
         first_pass = {k: {"yes": 0, "of": 0} for k in (*SIZES, "unstated")}
         for t, _ in rows:
@@ -290,23 +310,26 @@ def build(factory_dir, tasks, by_task, sessions, prices, queue, now=None, cached
                 f["yes"] += t["first_pass"]
         times = [(t, first[id(t)], at, approval(t)) for t, at in rows if first[id(t)] and first[id(t)] <= at]
         split = [(h, a[0], at, a[1]) for t, h, at, a in times if a and h <= a[0] <= at]
-        sent, unchanged = _sent_back(queue, since, d, day)
+        known = [d for d in days if since is not None and day(since) <= d]  # the days the queue log covers
+        covered = [same for d, same in sent_backs if d in known]
         mine = [e for t, _ in rows for e in [merges.get((t["repo_path"], t["pr"]["number"]))] if e]
         conflicted = sum(1 for e in mine for b in e["base_merges"] if isinstance(b, dict) and b.get("conflicted") is True)
         return {
-            "date": d.isoformat(), "merged": len(rows),
+            "date": days[0].isoformat(), "to": days[-1].isoformat(), "days": len(days), "merged": len(rows),
             "cost": {**{k: round(v, 6) if isinstance(v, float) else v for k, v in spent.items()},
                      "per_merged": round(total / len(rows), 6) if rows else None},
             "first_pass": first_pass,
             "handover": {
-                "to_merge": _p90([_seconds(at, h) for _, h, at, _ in times]),
-                "to_approval": _p90([_seconds(a, h) for h, a, _, _ in split]),
-                "approval_to_merge": _p90([_seconds(at, a) for _, a, at, _ in split]),
+                "to_merge": _durations([_seconds(at, h) for _, h, at, _ in times]),
+                "to_approval": _durations([_seconds(a, h) for h, a, _, _ in split]),
+                "approval_to_merge": _durations([_seconds(at, a) for _, a, at, _ in split]),
                 "approvals_backfilled": sum(1 for *_, backfilled in split if backfilled),
-                "sent_back": sent, "sent_back_unchanged": unchanged},
+                "sent_back": len(covered) if known else None, "sent_back_unchanged": sum(covered) if known else None},
             "conflicts": {
                 "prs": len(mine), "base_merges": sum(len(e["base_merges"]) for e in mine), "conflicted": conflicted,
                 "per_merged": round(conflicted / len(mine), 6) if mine else None,
                 "error": next((git_errors[k] for t, _ in rows for k in [(t["repo_path"], t["pr"]["number"])] if k in git_errors), None)}}
 
-    return {"queue_since": _iso(since), "today": figures(dates[0]), "yesterday": figures(dates[1])}
+    today_figures, baseline_figures = figures([today]), figures(baseline_dates)
+    return {"queue_since": _iso(since), "today": today_figures, "baseline": baseline_figures,
+            "days": [figures([d]) for d in dates], "verdicts": _verdicts(today_figures, baseline_figures)}

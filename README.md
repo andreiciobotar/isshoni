@@ -62,15 +62,15 @@ Optional:
 <p align="center">
   <picture>
     <source media="(max-width: 600px)" srcset="assets/diagrams/factory-narrow.svg">
-    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief; it starts each task as two sessions in one worktree. The lead writes the spec, with an explorer for its questions, and hands it to the tech lead. The tech lead builds: an explorer reads, a coder writes, a reviewer checks until it approves, and a lander tests and pushes a pull request, a draft until it is handed over, green and free of conflicts. The lead judges the build and hands it over. You approve; a script merges approved pull requests to main in order. What conflicts or fails a check there goes back to the tech lead, which resolves it and hands over again, and asks the lead only if behaviour would change. Your comments on the pull request reach the lead. A site manager watches, and tells the dispatcher (always when main is red) or a lead. Every task leaves feedback and a retrospective; the dispatcher proposes rule edits, you decide. Models are defaults.">
+    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief; it starts each task as two sessions in one worktree. The lead writes the spec, with an explorer for its questions, and hands it to the tech lead. The tech lead builds: an explorer reads, a coder writes, a reviewer checks until it approves; then it tests and pushes a pull request, a draft until it is handed over, green and free of conflicts. The lead judges the build and hands it over. You comment on the pull request, which reaches the lead, and you approve it. The lander, one script across every task, merges approved pull requests to main in order. What conflicts or fails a check there goes back to the tech lead, which resolves it and hands over again, and asks the lead only if behaviour would change. A site manager watches, and tells the dispatcher (always when main is red) or a lead. Every task leaves feedback and a retrospective with the same dispatcher, which proposes rule edits; you decide. Models are defaults.">
   </picture>
 </p>
 
-Every task is two sessions: the lead (Fable) checks the brief, writes the spec, judges the build and hands it over, with explorers for its questions; the tech lead (Opus) builds from the spec with explorers, coders, reviewers and the lander ([Tech lead](docs/factory.md#tech-lead)).
+Every task is two sessions: the lead (Fable) checks the brief, writes the spec, judges the build and hands it over, with explorers for its questions; the tech lead (Opus) builds from the spec with explorers, coders and reviewers, then tests and pushes the pull request ([Tech lead](docs/factory.md#tech-lead)).
 
-A lead asks you only what it cannot decide itself; comment on its pull request and it answers or acts. The pull request is a draft until it is handed over, green and free of conflicts. Nothing merges without you: approve with a review (or a comment `lgtm`), and a script merges what you approved, in order.
+A lead asks you only what it cannot decide itself; comment on its pull request and it answers or acts. The pull request is a draft until it is handed over, green and free of conflicts. Nothing merges without you: approve with a review (or a comment `lgtm`), and the lander, one script across every task, merges what you approved, in order.
 
-What the merge queue finds conflicting or with a failed check goes back to the tech lead: it resolves it, notes it on the pull request and hands over again, waking the lead only if the resolution would change the behaviour asked for. A check that fails before hand-over is part of the build: nobody is messaged, the pull request stays a draft. A red main is the site manager's to report to the dispatcher.
+What the lander finds conflicting or with a failed check goes back to the tech lead: it resolves it, notes it on the pull request and hands over again, waking the lead only if the resolution would change the behaviour asked for. A check that fails before hand-over is part of the build: nobody is messaged, the pull request stays a draft. A red main is the site manager's to report to the dispatcher.
 
 <p align="center">
   <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap and its reserve">
@@ -97,7 +97,7 @@ On day one, agents reported the same shell friction eleven times and counting. I
 
 `isshoni` reads the transcripts Claude Code already keeps in `~/.claude/projects` and never writes there. Beyond cost and tokens it shows the signs of wasted work: repeated dispatches, review loops, agents on a model other than the one pinned for them. Parsed sessions are cached outside that directory ([cache](docs/isshoni.md#cache)).
 
-Cost is the API list price, from [isshoni/prices.toml](isshoni/prices.toml). `isshoni-tui` is the same data live, plus the factory's tasks and whether it is getting better. Its fifth view, [Hanami (花見)](docs/isshoni.md#hanami-花見-the-work-as-something-to-watch), draws the work as motion: something to leave on a second screen.
+Cost is the API list price, from [isshoni/prices.toml](isshoni/prices.toml). `isshoni-tui` is the same data live, plus the factory's tasks and whether it is getting better. One more view, [Hanami (花見)](docs/isshoni.md#hanami-花見-the-work-as-something-to-watch), draws the work as motion: something to leave on a second screen.
 
 <p align="center">
   <img src="assets/tabs/hanami.webp" alt="Hanami: a day of the factory replayed; blossoms open where agents work, and a merge bursts as a firework that lights the stage">

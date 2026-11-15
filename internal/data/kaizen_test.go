@@ -78,19 +78,26 @@ func TestKaizenDecodesThePulse(t *testing.T) {
 	if p == nil || p.QueueSince == nil || *p.QueueSince != "2026-11-14T09:00:00Z" {
 		t.Fatalf("pulse: %+v", p)
 	}
-	d, y := p.Today, p.Yesterday
-	if d.Date != "2026-11-14" || d.Merged != 12 || d.Cost.Tasks != 100.5 || d.Cost.PerMerged == nil || *d.Cost.PerMerged != 10.25 || d.FirstPass.Small != (PulseRate{3, 4}) || d.FirstPass.Unstated.Of != 4 {
+	d, b := p.Today, p.Baseline
+	if d.Date != "2026-11-14" || d.To != d.Date || d.Days != 1 || d.Merged != 12 || d.Cost.Tasks != 100.5 || d.Cost.PerMerged == nil || *d.Cost.PerMerged != 10.25 || d.FirstPass.Small != (PulseRate{3, 4}) || d.FirstPass.Unstated.Of != 4 {
 		t.Fatalf("today: %+v", d)
 	}
 	h := d.Handover
-	if h.ToMerge.P90S == nil || *h.ToMerge.P90S != 2204 || h.ToMerge.N != 11 || h.ApprovalsBackfilled != 2 || h.SentBack == nil || *h.SentBack != 3 || h.SentBackUnchanged == nil || *h.SentBackUnchanged != 1 {
+	if h.ToMerge.P50S == nil || *h.ToMerge.P50S != 1200 || h.ToMerge.P90S == nil || *h.ToMerge.P90S != 2204 || h.ToMerge.N != 11 || h.ApprovalsBackfilled != 2 || h.SentBack == nil || *h.SentBack != 3 || h.SentBackUnchanged == nil || *h.SentBackUnchanged != 1 {
 		t.Fatalf("handover: %+v", h)
 	}
 	if c := d.Conflicts; c.Prs != 11 || c.BaseMerges != 9 || c.Conflicted != 4 || c.PerMerged == nil || c.Error != nil {
 		t.Fatalf("conflicts: %+v", c)
 	}
-	if y.Cost.UnpricedTokens != 1200 || y.Handover.ToApproval.P90S != nil || y.Handover.SentBack != nil || y.Conflicts.PerMerged != nil {
-		t.Fatalf("nulls decode to nil: %+v", y)
+	if b.Date != "2026-11-07" || b.To != "2026-11-13" || b.Days != 7 || b.Merged != 50 || b.Cost.UnpricedTokens != 1200 || b.Handover.SentBack != nil {
+		t.Fatalf("baseline: %+v", b)
+	}
+	if len(p.Days) != 8 || p.Days[0].Date != b.Date || p.Days[7].Date != d.Date || p.Days[0].Handover.ApprovalToMerge.P50S != nil || p.Days[0].Handover.ApprovalToMerge.N != 0 {
+		t.Fatalf("days, oldest first, today last, nulls decode to nil: %d", len(p.Days))
+	}
+	v := p.Verdicts
+	if v.Cost == nil || *v.Cost != "better" || v.FirstPass == nil || *v.FirstPass != "worse" || v.ApprovalToMerge == nil || *v.ApprovalToMerge != "same" || v.Conflicts == nil || *v.Conflicts != "worse" {
+		t.Fatalf("verdicts: %+v", v)
 	}
 	if doc.Tasks[0].Size == nil || *doc.Tasks[0].Size != "small" || doc.Tasks[2].Size != nil {
 		t.Fatal("a task's stated size, nil when none")

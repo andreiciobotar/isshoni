@@ -68,7 +68,7 @@ pulse's `cache/kaizen-merges-<key>.json` and `cache/kaizen-approvals-<key>.json`
 `gh-YYYY-MM.jsonl` (the factory's debug log, which the factory prunes).
 `--since` keeps the tasks that started at or after the cutoff (and the stops, slowed
 texts and feedback of that range) and limits the transcripts loaded. Without `--json` it
-prints the headline numbers, the pulse's four figures (`today X (n=..), yesterday Y (n=..)`), one line per friction figure and one line per task. A missing or empty directory exits 0 with
+prints the headline numbers, the pulse (a line naming today and the baseline, then four lines `today X (n=..), baseline Y (n=..): <verdict>`, below), one line per friction figure and one line per task. A missing or empty directory exits 0 with
 empty lists (`store_found: false` when the directory is missing). Records are read with a
 default for every field and lines that are not JSON objects are skipped.
 
@@ -125,30 +125,55 @@ medians of `cost`, `brief_to_pr_s`, `pr_to_merge_s`, `review_rounds`; `first_pas
 `defects` sums every task's newest retro. `trend` is null below `trend_min` (10) landed
 tasks; else the median of each measure over the latest half (`latest_n`) against the rest.
 
-`pulse` is today against yesterday, four figures each, for the Pulse page and the text output. A
+`pulse` is today against a baseline, four lead figures each, for the Pulse page and the text output. A
 day is a calendar day in the time zone of the time the document is built for (the machine's zone
-unless a caller gives one); a pull request counts on the day it merged (`pr.merged`). The figures
-ignore `--since` (with `--since`, the transcripts from the start of yesterday, and from the start of every task merged since, are loaded too): they are computed from all tasks of the store's repositories, pooled. `queue_since`
-is when the `queue` log (`docs/factory.md`) starts, null without one. Each day holds `date`, `merged`
-(merged pull requests) and:
+unless a caller gives one); a pull request counts on the day it merged (`pr.merged`). The baseline is
+whole days, the range without today: from the local date of the `--since` cutoff (no later than
+yesterday) to yesterday, so `24h` is yesterday, `7d` the 7 days before today and `30d` the 30 days
+before. Without `--since` it starts on the local date of the earliest merged pull request (no later
+than yesterday). It always has at least one day; a day with nothing merged counts, with 0 pull
+requests. The figures take every task of the store's repositories, pooled, and `--since` only sets the
+baseline (the transcripts are loaded back to its first midnight, and to the start of every task merged
+since). Keys:
+```json
+{"queue_since": "2026-11-01T08:00:00Z",
+ "today":    {"date": "2026-11-15", "to": "2026-11-15", "days": 1, "merged": 4, "cost": {}, "first_pass": {}, "handover": {}, "conflicts": {}},
+ "baseline": {"date": "2026-11-08", "to": "2026-11-14", "days": 7, "merged": 80, "cost": {}, "first_pass": {}, "handover": {}, "conflicts": {}},
+ "days":     [{"date": "2026-11-08", "to": "2026-11-08", "days": 1, "merged": 11, "cost": {}, "...": "one per date, oldest first, today last"}],
+ "verdicts": {"cost": "better", "first_pass": "few", "approval_to_merge": null, "conflicts": "same"}}
+```
+`today`, `baseline` and each of `days` hold the same figures, computed by one function over a list of
+dates: `date` and `to` (first and last date, equal for one day), `days`, `merged` (merged pull
+requests) and the keys below. The baseline is pooled, not a mean of the days: its cost per merged
+pull request is all its days' spend over all its pull requests, its durations are percentiles over
+all its pull requests, its first pass is the sums. `days` has one entry per date, `baseline.days + 1`
+in all. `queue_since` is when the `queue` log (`docs/factory.md`) starts, null without one.
+`verdicts` says how today compares with the baseline on four lead figures: `cost` (cost per merged
+pull request, n = merged), `first_pass` (all sizes, n = their `of`), `approval_to_merge` (the median,
+n) and `conflicts` (per merged pull request, n = `prs`). Each is `null` when today or the baseline has
+no value; `"few"` when either n is under 5 (`PULSE_MIN_N`); `"same"` when today is within 10% of the
+baseline (both zero is same); else `"better"` or `"worse"`, a higher first pass being better and a
+lower value on the others. From 100 columns the Pulse page shows the four lead figures as cards, each with its delta, its verdict colour (better green, worse orange, same and few grey), a strip with a cell or two for each day (today last, in the verdict's colour or the text colour) and one detail line, and a faint block under them with the figures the cards leave out; below 100 columns it shows a row for each figure and its detail. The text output prints the verdict. The lead duration
+is approval to merge, the factory's part; the human's wait (`to_approval`, `to_merge`) is detail
+and never judged. The text output prints the heading and the four lead figures, the approval to merge median in place of the old hand-over to merge p90 line. The keys:
 - `cost` (`tasks`, `dispatcher`, `site_manager`, `unpriced_tokens`, `per_merged`): the all-in cost per
   merged pull request. Everything the factory spent on that day (every model call with a timestamp on
   it, in a task's sessions, and in the dispatcher's and site manager's sessions of the store's
   repositories; a person's own sessions are not counted) over the pull requests merged on it, so
   unfinished work is in it. `per_merged` is null (shown `-`) when none merged.
 - `first_pass`: per stated `size` (`small`, `medium`, `large`; anything else or no size is `unstated`),
-  the tasks merged that day with a known `first_pass`: `yes` of `of`. `-` means `of` is 0.
-- `handover`: `to_merge`, the p90 (`p90_s`, over `n` tasks; null and `-` when `n` is 0) of the merge
+  the tasks merged on those dates with a known `first_pass`: `yes` of `of`. `-` means `of` is 0.
+- `handover`: `to_merge`, the median and p90 (`p50_s`, `p90_s`, over `n` tasks; null and `-` when `n` is 0) of the merge
   time minus the task's first `handed-over` state record, for tasks handed over at or before the merge.
   Where an approval time is known and falls between the two, it is split into `to_approval` and
-  `approval_to_merge` (p90, same `n`). The approval is the `approved_at` of the `queue` log's `merged`
+  `approval_to_merge` (median and p90, same `n`). The approval is the `approved_at` of the `queue` log's `merged`
   record (null there: no approval was required, the task is not in the split); a pull request with
   no `merged` record gets it from GitHub (`approvals_backfilled` counts those in the split): the
   newest `APPROVED` review, else the newest comment that is `lgtm` by a user that is not a bot, at or
   before the merge. The backfill does not check that the commenter had the permission to approve.
   `sent_back` counts the `queue` log's `sent-back` records of the day, `sent_back_unchanged` those whose
-  next record for the same pull request has the same `head`. Both are null (`-`) when the day ended
-  before `queue_since`: they start with the `queue` log, nothing earlier is backfilled.
+  next record for the same pull request has the same `head`. They are summed over the days that did not end
+  before `queue_since` and null (`-`) when none did: they start with the `queue` log, nothing earlier is backfilled.
 - `conflicts` (`prs`, `base_merges`, `conflicted`, `per_merged`, `error`): conflicted base merges per
   merged pull request, from git history in the repository's main checkout (`repo_path`). A pull
   request's merge commit is the first-parent commit of `refs/remotes/origin/HEAD` whose subject starts
@@ -159,7 +184,7 @@ is when the `queue` log (`docs/factory.md`) starts, null without one. Each day h
   `per_merged` is `conflicted` over `prs` (null when `prs` is 0); `error` is one line when git failed
   (that pull request is left out and not cached). Every git call has a 10 s timeout.
 
-The pulse runs git and gh only for pull requests merged today or yesterday that its caches do not
+The pulse runs git and gh only for pull requests merged today or in the baseline that its caches do not
 hold, once each: `cache/kaizen-merges-<key>.json` (merge commit to pull request number and base
 merges with their conflicted files) and `cache/kaizen-approvals-<key>.json` (pull request number to
 approval time, or null when none was found) never expire. A failed call is not cached; gh runs 8 at a
@@ -295,7 +320,7 @@ and decisions by status, and groups open issues by the first keyword topic that 
 `site_manager` is the site manager's record over every repository, read from
 the firing log (every month file) and counted as `factory firings` counts it
 (`docs/factory.md`, "Site manager"; a record without a `repo` counts nowhere): `escalated` firings and of those `acted`, `ignored` and `no_outcome`;
-`suppressed` firings; `paused` firings (a churning task the site manager paused: counted apart, outside precision and recall); `missed` problems (`missed_suppressed` had fired and were
+`suppressed` firings; `paused` firings (a task the site manager paused: counted apart, outside precision and recall); `extended` firings (a task whose limit the site manager extended: counted apart too) and of those `kept` (handed over within the extension) and `overran` (not); a decision this version does not know counts nowhere; `missed` problems (`missed_suppressed` had fired and were
 suppressed, `missed_never_fired` the rest); `precision` is `acted / (acted + ignored)` and
 `recall` is `acted / (acted + missed)`, each 0 to 1, or null with nothing to divide by.
 With `--since` it counts the firings that fired, and the misses recorded, at or after the
