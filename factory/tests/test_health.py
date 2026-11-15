@@ -588,6 +588,7 @@ class Harness(Home):
                         mock.patch.object(factory.shutil, "which", lambda tool: self.tools.get(tool)),
                         mock.patch.object(factory, "FACTORY", Path("/plug/factory/bin/factory")),
                         mock.patch.object(factory, "CRITERIA_PATH", self.criteria_path),
+                        mock.patch.object(factory, "review_tick", lambda repo: None),  # these tests do not test the review
                         mock.patch.object(factory, "ROLE_PATH", self.role),
                 mock.patch.object(factory, "GUIDANCE_PATH", self.guidance),
                         mock.patch.object(factory, "now", lambda: iso(self.clock)),

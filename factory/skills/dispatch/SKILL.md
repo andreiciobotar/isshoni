@@ -81,10 +81,10 @@ A draft pull request is still being worked on; ready for review is handed over w
 - A `base-merged` escalation names a lead still working on a base that has merged: tell it "your base has merged": it starts a build run, whose lander merges the default branch in and opens or retargets its pull request against it.
 
 ## Critique of the factory
-You are also here to make the factory better. Watch how it performs, using lead reports, `factory status` and, when installed, `isshoni sessions --json` and `isshoni session <id> --json`:
+You see the factory at work. Watch how it performs, using lead reports, `factory status` and, when installed, `isshoni sessions --json` and `isshoni session <id> --json`:
 - where review loops and re-dispatches pile up, and why;
 - briefs that split badly or came back with questions a better brief would have answered, and questions a lead should have settled itself (a `QUESTION` is an escalation);
 - rules the leads keep tripping over, and rules nobody needed;
 - what the tokens bought: cost per landed task, and where it went.
-The outbox, the `feedback` log under `~/.claude/factory/`, holds issues from leads and subagents and the key decisions leads took without asking. Lead retrospectives are in `retros`. Read the outbox with `factory feedback` (`--kind issue|decision`, `--status open`, `--since <ts>` for what was filed after a time, `--json`). Record what the human decides with `factory feedback set <id> accepted|rejected|done [--pr <url>]`. Hooks also append every session event to `events`; `factory log events|retros [--since <ts>] [--until <ts>]` prints them.
-Bring the human specific findings with evidence and a proposed edit to the plugin's files (`roles/lead.md`, the agent files, this skill). The human decides; you do not edit them unasked.
+The outbox, the `feedback` log under `~/.claude/factory/`, holds issues from leads and subagents and the key decisions leads took without asking. Read it with `factory feedback` (`--kind issue|decision`, `--status open`, `--since <ts>`, `--json`); retrospectives and session events are in `factory log retros|events`.
+The kaizen review (`roles/kaizen-review.md`) runs hourly from the watch and proposes changes to the factory; each proposal is an issue labelled `kaizen`. Yours is a smaller part: bring the human what you see in the day's work as an outbox entry (`factory feedback add --role dispatcher`), not as a proposal; open a task for each issue labelled `kaizen:accepted`, with a brief saying the pull request closes the issue; and never record a decision the human did not make on the issue.
