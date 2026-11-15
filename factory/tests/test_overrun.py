@@ -152,11 +152,13 @@ class IdleLeadTests(Overrun):
         self.assertEqual(self.told(), ["dispatcher"])
 
     def test_nobody_reached_is_recorded(self):
-        p, f = pic(repo=SimpleNamespace(root=ROOT), sessions=[]) | {"dispatcher": "d"}, {"id": "aaa", "criterion": "overrun", "slug": "x"}
-        with mock.patch.object(factory, "forward", return_value=None) as forward, mock.patch.object(factory, "log_firing") as log:
-            factory.tell_decision(p, f, "extended", "r", 20, "2026-01-01T10:20:00Z")
-        self.assertEqual(forward.call_count, 1)
-        log.assert_called_once_with(p["repo"], id="aaa", told="nobody")
+        self.ask()
+        self.watch({"decision": "extended", "minutes": 20, "reason": "landing left"}, deaf=["x", "dispatcher-repo"])
+        self.assertEqual(self.lines(), [
+            ("x", f"SITE MANAGER: x: extended 20 min, limit now {clock(STARTED + 140 * 60)}: landing left"),
+            ("dispatcher-repo", f"SITE MANAGER: x (not delivered to its lead): extended 20 min, limit now "
+                                f"{clock(STARTED + 140 * 60)}: landing left")])
+        self.assertEqual(self.told(), ["nobody"])
 
     def test_task_lead_names_a_lead_with_a_process_idle_or_not(self):
         p = pic(rows=[], sessions=[self.idle_lead()])
