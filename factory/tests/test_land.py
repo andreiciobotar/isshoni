@@ -376,12 +376,16 @@ class LandTests(unittest.TestCase):
             {"disableBundledSkills": True, "enabledPlugins": {"alpha@m": False}})])
         tools = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
         self.assertEqual(tools, ["Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
-                                 "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)"])
+                                 "Bash(gh pr edit *)", "Bash(factory overlap *)"])
+        self.assertFalse([t for t in FACTORY.LAND_TOOLS if t.startswith("Bash(factory state")])
+        agent = (BIN.parent.parent / "agents" / "lander.md").read_text()
+        for banned in ("`factory state working`", "factory state handed-over", "factory retro <"):
+            self.assertNotIn(banned, agent)
         self.assertEqual(argv[argv.index("--disallowedTools") + 1:-3], list(FACTORY.ROLE_DENIED))
         self.assertEqual(argv[argv.index("--output-format") + 1], "json")
         brief = argv[-1]
         for text in ("Your task slug is t1.", "The base is main (remote origin).", f"The reviewed head is {old}.",
-                     "Do not declare the hand-over", "a.txt"):
+                     "There is no pull request title or body file.", "a.txt"):
             self.assertIn(text, brief)
         self.assertNotIn("head last pushed", brief)
         self.assertNotIn("has merged", brief)
