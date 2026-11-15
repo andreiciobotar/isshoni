@@ -11,7 +11,7 @@ from test_merge import World, pr
 V, STACKS = factory.STACKS_VERSION, factory.STACKS
 REPO = SimpleNamespace(root=ROOT, default="main")
 LIST = ("gh", "api", "-H", V, f"{STACKS}?per_page=100")
-UNSTACK = ("gh", "api", "-i", "-X", "POST", "-H", V, f"{STACKS}/7/unstack")
+UNSTACK = ("gh", "api", "-H", V, "-i", "-X", "POST", f"{STACKS}/7/unstack")
 NO_CONTENT = (0, "HTTP/2.0 204 No Content\n\n", "")
 MERGED = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
 
@@ -58,6 +58,19 @@ class EnsureTests(unittest.TestCase):
                                node(5, "main", "e", fork=True), node(6, "e", "f")])
         self.assertEqual(fake.calls, [])
 
+    def test_a_stack_that_is_not_exactly_the_chains_lower_members_gets_no_call(self):
+        fake, _ = self.ensure([node(1, "main", "a"), node(2, "a", "b"), node(3, "b", "c")], [stack(5, 1, 9)])
+        self.assertEqual(posts(fake), [])
+
+    def test_a_member_above_the_bottom_already_in_a_stack_gets_no_call(self):
+        fake, _ = self.ensure([node(1, "main", "a"), node(2, "a", "b")], [stack(9, 2)])
+        self.assertEqual(posts(fake), [])
+
+    def test_a_closed_stack_is_not_counted(self):
+        closed = {**stack(5, 1, 2), "open": False}
+        fake, _ = self.ensure([node(1, "main", "a"), node(2, "a", "b")], [closed])
+        self.assertEqual(len(posts(fake)), 1)
+
     def test_a_failing_stacks_call_prints_one_line(self):
         fake, out = self.ensure([node(1, "main", "a"), node(2, "a", "b")], answers={("gh", "api", "-H", V, STACKS): (1, "", "boom")})
         self.assertEqual(out.count("lander: stacks:"), 1)
@@ -96,8 +109,8 @@ class DissolveTests(World):
         code, _, _ = self.merge("1", prs=[pr(1)], extra=self.stacked())
         self.assertEqual(code, 0)
         self.assertEqual(len(self.unstacks()), 1)
-        self.assertLess(self.index("gh", "api", "-i"), self.index("gh", "pr", "merge"))
-        self.assertLess(self.index("gh", "pr", "view"), self.index("gh", "api", "-i"))
+        self.assertLess(self.index("gh", "api", "-H", V, "-i"), self.index("gh", "pr", "merge"))
+        self.assertLess(self.index("gh", "pr", "view"), self.index("gh", "api", "-H", V, "-i"))
 
     def test_a_dry_run_and_a_stopped_gate_unstack_nothing(self):
         code, _, _ = self.merge("1", "--dry-run", prs=[pr(1)], extra=self.stacked())
@@ -112,7 +125,7 @@ class DissolveTests(World):
         code, _, _ = self.merge("2", prs=[pr(2, base="worktree-t1")], extra=extra)
         self.assertEqual(code, 0)
         self.assertEqual(len(self.unstacks()), 1)
-        self.assertLess(self.index("gh", "api", "-i"), self.index("gh", "pr", "edit"))
+        self.assertLess(self.index("gh", "api", "-H", V, "-i"), self.index("gh", "pr", "edit"))
 
     def test_the_landing_unstacks_before_it_retargets(self):
         landing = factory.Landing.__new__(factory.Landing)
@@ -121,7 +134,8 @@ class DissolveTests(World):
                         UNSTACK: NO_CONTENT, ("gh", "pr", "edit"): (0, "", "")})
         with mock.patch.object(factory, "run", fake):
             self.assertIsNone(landing.retarget())
-        self.assertEqual([c[:3] for c in fake.calls], [["gh", "api", "-H"], ["gh", "api", "-i"], ["gh", "pr", "edit"]])
+        self.assertEqual([c[-1].rpartition("/")[2] if c[1] == "api" else c[1] for c in fake.calls],
+                         ["stacks?pull_request=1", "unstack", "pr"])
 
     def test_a_failed_unstack_stops_before_any_edit_or_merge(self):
         for answer in ((1, "", "locked"), (0, "HTTP/2.0 200 OK\n\n{}", "")):

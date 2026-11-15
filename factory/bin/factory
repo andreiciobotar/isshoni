@@ -3973,11 +3973,14 @@ def dissolve(repo, n):
     stack member); else the stop, as gh_step gives it. HTTP 200 means locked members remain."""
     try:
         found = gh_json(repo, list, *stacks_call(f"{STACKS}?pull_request={n}"))
+        number = found[0]["number"] if found else None
     except NotEvaluated as e:
-        return "merge", str(e)
-    if not found:
+        return "merge", f"{STACKS}?pull_request={n}: {e}"
+    except (LookupError, TypeError) as e:
+        return "merge", f"{STACKS}?pull_request={n}: {e!r}"
+    if number is None:
         return None
-    args = ["api", "-i", "-X", "POST", "-H", STACKS_VERSION, f"{STACKS}/{found[0]['number']}/unstack"]
+    args = stacks_call("-i", "-X", "POST", f"{STACKS}/{number}/unstack")
     rc, out, err = run(["gh", *args], cwd=repo.root)
     if rc != 0 or out.split(None, 2)[1:2] != ["204"]:
         return "merge", f"gh {' '.join(args)}: {(err or out).strip() or rc}"
@@ -4017,9 +4020,10 @@ def ensure_stacks(repo, snap):
             path = f"{STACKS}/{stack['number']}/add" if stack else STACKS
             stop = gh_step(repo, *stacks_call(path, "-X", "POST", *[a for n in rest for a in ("-F", f"pull_requests[]={n}")]))
             if stop:
-                return print(f"lander: stacks: {stop[1]}")
+                print(f"lander: stacks: {stop[1]}")
+                return
     except (NotEvaluated, LookupError, TypeError) as e:
-        print(f"lander: stacks: {e}")
+        print(f"lander: stacks: {STACKS}?per_page=100: {e}")
 
 
 def mergeability(p, n):

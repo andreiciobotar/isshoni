@@ -32,14 +32,8 @@ elif a[:2] in (["pr", "edit"], ["pr", "comment"]):
     open(f"{d}/gh.jsonl", "a").write(json.dumps(rec) + "\\n")
 elif a[:2] == ["pr", "ready"]:
     open(f"{d}/ready.jsonl", "a").write(json.dumps(a) + "\\n")
-elif a[:1] == ["api"] and "unstack" in a[-1]:
-    open(f"{d}/gh.jsonl", "a").write(json.dumps({"argv": a}) + "\\n")
-    if os.environ.get("FAKE_GH_FAIL_UNSTACK"):
-        print("locked", file=sys.stderr)
-        sys.exit(1)
-    print("HTTP/2.0 204 No Content")
 elif a[:1] == ["api"]:
-    print(json.dumps(read("stacks").get(a[-1].partition("pull_request=")[2], [])))
+    print("[]")
 else:
     sys.exit(1)
 """
@@ -120,7 +114,7 @@ class LandTests(unittest.TestCase):
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                     "GIT_COMMITTER_EMAIL": "t@t"}
         self.env.pop("CLAUDE_CODE_SESSION_ID", None)
-        self.prs, self.mergeable, self.stacks = {}, {}, {}
+        self.prs, self.mergeable = {}, {}
         self.sessions([])
         self.write_state()
         self.git("init", "-q", "--bare", "-b", "main", str(self.remote), cwd=tmp)
@@ -146,7 +140,6 @@ class LandTests(unittest.TestCase):
     def write_state(self):
         (self.state / "prs.json").write_text(json.dumps(self.prs))
         (self.state / "mergeable.json").write_text(json.dumps(self.mergeable))
-        (self.state / "stacks.json").write_text(json.dumps(self.stacks))
 
     def edit(self, root, line, text, name="a.txt"):
         path = root / name
