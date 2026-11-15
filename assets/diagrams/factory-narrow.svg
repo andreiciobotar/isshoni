@@ -11,7 +11,7 @@
        bottom and runs up the right margin (x 352) into the dispatcher; its title and words stand left of
        it, clear of the lander's label. -->
   <title>How a brief becomes a merged pull request, and how the factory improves</title>
-  <desc>You give the dispatcher a brief; it starts each task as two sessions in one worktree. The lead (Fable) writes the spec, with an explorer (Haiku) for its questions, and hands it to the tech lead (Opus). The tech lead builds: an explorer (Haiku) reads, a coder (Sonnet) writes, a reviewer (Opus) checks until it approves; then it tests and pushes a pull request, a draft until it is handed over, green and free of conflicts. The lead judges the build and hands it over. You comment on the pull request, which reaches the lead, and you approve it. The lander, one script across every task that runs every 2 minutes, merges approved pull requests to main in order. What conflicts or fails a check there goes back to the tech lead, which resolves it and hands over again, and asks the lead only if behaviour would change. A site manager (Sonnet, every 30 minutes) watches, and tells the dispatcher (always when main is red) or a lead. Every task leaves feedback, decisions, a retrospective and its cost with the same dispatcher (Fable), which proposes rule edits; you decide. Models are defaults.</desc>
+  <desc>You give the dispatcher a brief; it starts each task as two sessions in one worktree. The lead (Fable) writes the spec, with an explorer (Haiku) for its questions, and hands it to the tech lead (Opus). The tech lead builds: an explorer (Haiku) reads, a coder (Sonnet) writes, a reviewer (Opus) checks until it approves; then it tests and pushes a pull request, a draft until it is handed over, green and free of conflicts. The lead judges the build and hands it over. You comment on the pull request, which reaches the lead, and you approve it. The lander, one script across every task, runs every 2 minutes and merges approved pull requests to main in order. What conflicts or fails a check there goes back to the tech lead, which resolves it and hands over again, and asks the lead only if behaviour would change. A site manager (Sonnet, every 30 minutes) watches, and tells the dispatcher (always when main is red) or a lead. Every task leaves feedback, decisions, a retrospective and its cost with the same dispatcher (Fable), which proposes rule edits; you decide. Models are defaults.</desc>
   <style>
     svg { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; }
     .bg { fill: #12111C; }
@@ -59,9 +59,9 @@
   </g>
   <path class="arrow" d="M46 40H196"/>
   <text class="t" x="121" y="35" text-anchor="middle">brief</text>
-  <path class="loop" d="M196 62H46"/>
-  <text class="s" x="121" y="57" text-anchor="middle">proposes rule edits,</text>
-  <text class="s" x="54" y="77">you decide</text>
+  <path class="loop" d="M196 78H46"/>
+  <text class="s" x="121" y="54" text-anchor="middle">proposes rule</text>
+  <text class="s" x="121" y="67" text-anchor="middle">edits, you decide</text>
   <path class="arrow" d="M46 496H132V512"/>
   <text class="t" x="62" y="475">comments ·</text>
   <text class="t" x="62" y="488">approve</text>
@@ -157,12 +157,12 @@
   </g>
 
   <!-- pull request: draft, then ready; your comments reach the lead -->
-  <path class="arrow" d="M230 368V544H202"/>
+  <path class="arrow" d="M230 368V544H204"/>
   <g class="pr">
-    <rect class="box" x="62" y="512" width="140" height="64" rx="8"/>
-    <text class="n" x="132" y="532" text-anchor="middle">Pull request</text>
-    <text class="s" x="132" y="548" text-anchor="middle">draft → ready</text>
-    <text class="t" x="132" y="564" text-anchor="middle">green, no conflict</text>
+    <rect class="box" x="62" y="512" width="142" height="64" rx="8"/>
+    <text class="n" x="133" y="532" text-anchor="middle">Pull request</text>
+    <text class="s" x="133" y="548" text-anchor="middle">draft → ready</text>
+    <text class="t" x="133" y="564" text-anchor="middle">green, no conflict</text>
   </g>
   <path class="aux" d="M156 512V356H148"/>
   <text class="s" x="162" y="430">your</text>

@@ -9,7 +9,7 @@
        so it stands outside the task. The kaizen loop leaves the task along the bottom and enters the
        dispatcher; its title and words sit on that run. The site manager sits below the dispatcher. -->
   <title>How a brief becomes a merged pull request, and how the factory improves</title>
-  <desc>You give the dispatcher a brief; it starts each task as two sessions in one worktree. The lead (Fable) writes the spec, with an explorer (Haiku) for its questions, and hands it to the tech lead (Opus). The tech lead builds: an explorer (Haiku) reads, a coder (Sonnet) writes, a reviewer (Opus) checks until it approves; then it tests and pushes a pull request, a draft until it is handed over, green and free of conflicts. The lead judges the build and hands it over. You comment on the pull request, which reaches the lead, and you approve it. The lander, one script across every task that runs every 2 minutes, merges approved pull requests to main in order. What conflicts or fails a check there goes back to the tech lead, which resolves it and hands over again, and asks the lead only if behaviour would change. A site manager (Sonnet, every 30 minutes) watches, and tells the dispatcher (always when main is red) or a lead. Every task leaves feedback, decisions, a retrospective and its cost with the same dispatcher (Fable), which proposes rule edits; you decide. Models are defaults.</desc>
+  <desc>You give the dispatcher a brief; it starts each task as two sessions in one worktree. The lead (Fable) writes the spec, with an explorer (Haiku) for its questions, and hands it to the tech lead (Opus). The tech lead builds: an explorer (Haiku) reads, a coder (Sonnet) writes, a reviewer (Opus) checks until it approves; then it tests and pushes a pull request, a draft until it is handed over, green and free of conflicts. The lead judges the build and hands it over. You comment on the pull request, which reaches the lead, and you approve it. The lander, one script across every task, runs every 2 minutes and merges approved pull requests to main in order. What conflicts or fails a check there goes back to the tech lead, which resolves it and hands over again, and asks the lead only if behaviour would change. A site manager (Sonnet, every 30 minutes) watches, and tells the dispatcher (always when main is red) or a lead. Every task leaves feedback, decisions, a retrospective and its cost with the same dispatcher (Fable), which proposes rule edits; you decide. Models are defaults.</desc>
   <style>
     svg { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; }
     .bg { fill: #12111C; }
@@ -64,12 +64,12 @@
   <text class="t" x="762" y="62" text-anchor="end">comments · approve</text>
 
   <!-- dispatcher -->
-  <path class="arrow" d="M148 150H188"/>
+  <path class="arrow" d="M150 150H188"/>
   <g class="dispatcher">
-    <rect class="box" x="20" y="118" width="128" height="64" rx="8"/>
-    <text class="n" x="84" y="142" text-anchor="middle">Dispatcher</text>
-    <text class="s" x="84" y="158" text-anchor="middle">Fable</text>
-    <text class="t" x="84" y="174" text-anchor="middle">a lead per task</text>
+    <rect class="box" x="20" y="118" width="130" height="64" rx="8"/>
+    <text class="n" x="85" y="142" text-anchor="middle">Dispatcher</text>
+    <text class="s" x="85" y="158" text-anchor="middle">Fable</text>
+    <text class="t" x="85" y="174" text-anchor="middle">a lead per task</text>
   </g>
 
   <!-- one task: the lead and the tech lead side by side, each with its helpers below -->
