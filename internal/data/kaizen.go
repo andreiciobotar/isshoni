@@ -135,17 +135,32 @@ type FrictionLateFile struct {
 	Git  int    `json:"git"`
 }
 
-// Pulse is today against yesterday: the day's figures over all tasks, whatever the range.
-// QueueSince is when the queue log starts, nil when there is none.
+// Pulse is today against a baseline of whole days before it, over all tasks. QueueSince is
+// when the queue log starts, nil when there is none. Days has one entry per date, oldest
+// first, today last.
 type Pulse struct {
-	QueueSince *string  `json:"queue_since"`
-	Today      PulseDay `json:"today"`
-	Yesterday  PulseDay `json:"yesterday"`
+	QueueSince *string       `json:"queue_since"`
+	Today      PulseDay      `json:"today"`
+	Baseline   PulseDay      `json:"baseline"`
+	Days       []PulseDay    `json:"days"`
+	Verdicts   PulseVerdicts `json:"verdicts"`
 }
 
-// PulseDay is one calendar day: Merged pull requests, and the figures over them.
+// PulseVerdicts is how today compares with the baseline, per lead metric: "better",
+// "worse", "same" or "few" (too few pull requests to colour), nil when either side is unknown.
+type PulseVerdicts struct {
+	Cost            *string `json:"cost"`
+	FirstPass       *string `json:"first_pass"`
+	ApprovalToMerge *string `json:"approval_to_merge"`
+	Conflicts       *string `json:"conflicts"`
+}
+
+// PulseDay is the figures over the pull requests merged on Days calendar days, Date to To
+// (equal for one day).
 type PulseDay struct {
 	Date      string         `json:"date"`
+	To        string         `json:"to"`
+	Days      int            `json:"days"`
 	Merged    int            `json:"merged"`
 	Cost      PulseCost      `json:"cost"`
 	FirstPass PulseFirstPass `json:"first_pass"`
@@ -176,8 +191,9 @@ type PulseFirstPass struct {
 	Unstated PulseRate `json:"unstated"`
 }
 
-// PulseP90 is a 90th percentile in seconds over N tasks; nil when N is 0.
+// PulseP90 is the median and 90th percentile in seconds over N tasks; nil when N is 0.
 type PulseP90 struct {
+	P50S *int `json:"p50_s"`
 	P90S *int `json:"p90_s"`
 	N    int  `json:"n"`
 }

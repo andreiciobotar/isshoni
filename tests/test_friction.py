@@ -8,7 +8,7 @@ from tests.test_kaizen import ALPHA, BETA, assistant, came_back, ev, loose, sess
 from tests.test_pulse import NOW, PulseStore
 
 DAY = "2026-11-10"
-OLD = "2026-11-02T10:00:00Z"  # a merge long before NOW: the pulse looks nothing up
+OLD = "2026-11-02T10:00:00Z"  # a merge long before NOW: the pulse baseline reaches it, so the documents read the caches only (cached=True)
 GUARD = "This session is isolated in the worktree /r/alpha/.claude/worktrees/x. Run it there. Refusing to run it: the guard."
 CLASSIFIER = "Permission for this action was denied by the Claude Code auto mode classifier: too risky."
 
@@ -46,7 +46,7 @@ class FrictionStore(PulseStore):
         self.log("tasks-2026-11.jsonl", self.states)
         self.log("queue-2026-11.jsonl", self.queued)
         self.log("retros-2026-11.jsonl", self.retros)
-        return self.build(lambda path: self.prs.get(path, []), now=NOW, cutoff=cutoff)
+        return self.build(lambda path: self.prs.get(path, []), now=NOW, cutoff=cutoff, cached=True)
 
     def friction(self, cutoff=None):
         return self.document(cutoff)["friction"]
@@ -217,7 +217,7 @@ class LateConflictTests(FrictionStore):
     def conflict(self, step, slug, files, **kw):
         self.queue(step, 1, "2026-11-15T09:00:00Z", slug=slug, files=files, **kw)
 
-    def test_two_columns_from_the_log_and_from_the_cache_with_no_subprocess_even_uncached(self):
+    def test_two_columns_from_the_log_and_from_the_cache_with_no_subprocess(self):
         self.conflict("sent-back", "p1", ["a/b.go", "c.go"], kind="conflict")
         self.conflict("land-conflict", "p1", ["a/b.go"])
         self.conflict("sent-back", "p1", ["z.go"], kind="tests")  # not a conflict
