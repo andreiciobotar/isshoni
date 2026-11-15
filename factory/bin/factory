@@ -5325,7 +5325,7 @@ def cmd_uninstall(args):
 LAND_TEST_TIMEOUT = 1800
 LAND_TIMEOUT = 1800
 LAND_TOOLS = ("Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
-              "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)")
+              "Bash(gh pr edit *)", "Bash(factory overlap *)")
 ROLE_DENIED = ("Bash(gh pr merge*)", "Bash(gh pr review*)", "Bash(gh pr comment*)", "Bash(gh pr ready*)", "Bash(gh api*)",
                "Bash(gh repo*)", "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)",
                "Bash(git commit --amend*)", "Bash(git worktree*)")
@@ -5677,7 +5677,7 @@ class Landing:
         base = f"The base is {self.base} (remote {self.remote})." + (" The base has merged." if self.merged else "")
         brief = "\n".join([
             f"Your task slug is {self.slug}.", base, f"The reviewed head is {self.old_head}.",
-            "There is no pull request title, body file or retrospective file. Do not declare the hand-over.",
+            "There is no pull request title or body file.",
             "Edit files with the Edit tool. `gh` other than `pr view` and `pr edit` is not yours to run; merging, reviewing, "
             "commenting, forced pushes, rebases, amends and `git worktree` are denied.",
             f"The golden files this task means to change: {', '.join(task_files) or 'none'}. A generated file on this "
