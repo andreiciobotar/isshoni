@@ -1042,6 +1042,7 @@ class OpsHookTests(InStore):
         started = time.monotonic()
         proc = subprocess.Popen([sys.executable, str(BIN), "ops-hook"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, env={**os.environ, "FACTORY_HOME": str(self.dir)})
+        self.addCleanup(proc.kill)
         stop = threading.Timer(factory.OPS_HOOK_DEADLINE + 5, proc.kill)  # a gate without a deadline fails the test, it does not hang it
         stop.start()
         self.addCleanup(stop.cancel)

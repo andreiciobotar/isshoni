@@ -124,7 +124,6 @@ def slow_gate(home, settings, agents):
     check(bool(called), "the ops explorer called a read tool")
     check(not files, f"no evidence file ({len(files)})")
     check(bool(mine) and all(err and line in text for _, err, text, _ in mine), "every call's result is an error carrying the gate's stderr line")
-    check(not any(not err for _, err, _, _ in mine), "no call came back as a success")
     leaked = real_store.leaked(TMP.name)
     check(leaked == 0, f"the real store's logs name this scratch directory in {leaked} line(s)")
     print("PASS" if not failures else f"FAIL: {len(failures)} check(s)")

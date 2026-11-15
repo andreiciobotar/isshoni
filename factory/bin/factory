@@ -6453,8 +6453,10 @@ def parse_args(argv):
 
 
 def ops_hook_out_of_time(_signum, _frame):
-    os.write(2, b"factory: ops-hook ran out of time: the call is blocked, or its result was not saved: do not use it\n")
-    os._exit(2)
+    try:
+        os.write(2, b"factory: ops-hook ran out of time: the call is blocked, or its result was not saved: do not use it\n")
+    finally:
+        os._exit(2)
 
 
 def main(argv=None):
