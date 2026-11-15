@@ -248,7 +248,8 @@ SETTINGS = (
     Setting("models", "reviewer", "opus", a_model, 'The build run\'s reviewer. Takes effect at the next build run. Default "opus".'),
     Setting("models", "lander", "sonnet", a_model,
             'The lander: the build run\'s subagent, also the headless run of `factory land` (next run). Default "sonnet".'),
-    Setting("models", "site_manager", "sonnet", a_model, 'The watch tick\'s judge. Next tick. Default "sonnet".'),
+    Setting("models", "site_manager", "opus", a_model,
+            'The watch tick\'s judge, which also decides overruns. Next tick. Default "opus"; a settings file that names "sonnet" keeps it: `factory settings set models.site_manager opus`.'),
     Setting("models", "ops_watch", "sonnet", a_model, 'The judge of one look of an ops watch (the reads are the ops explorer\'s). Next look. Default "sonnet".'),
     Setting("models", "ops_explorer", "haiku", a_model, 'The ops explorer, which reads production through MCP servers. Takes effect for the next lead, build or tech lead run started. Default "haiku".'),
     Setting("models", "courier", "haiku", a_model, 'Carries pull request comments to a lead. Next tick. Default "haiku".'),
@@ -1986,6 +1987,7 @@ def cmd_log(args):
 FACTORY = Path(__file__).resolve()
 CRITERIA_PATH = PLUGIN_ROOT / "criteria.json"
 ROLE_PATH = PLUGIN_ROOT / "roles" / "site-manager.md"
+GUIDANCE_PATH = PLUGIN_ROOT / "roles" / "site-manager-cases.md"
 SITE_MANAGER_TOOLS = (
     "Read", "Grep", "Glob", "SendMessage", "ToolSearch",
     "Bash(factory status)", "Bash(factory status *)", "Bash(factory health)", "Bash(factory health *)",
@@ -2903,7 +2905,7 @@ def site_manager_argv(p, firings, job="watch"):
             "--disallowedTools", "Edit", "Write", "NotebookEdit", *SETTINGS_ISOLATION,
             "--max-turns", str(SITE_MANAGER_TURNS), "--max-budget-usd", SITE_MANAGER_BUDGET,
             "--output-format", "json", "--json-schema", json.dumps(RUN_SCHEMA),
-            "--append-system-prompt", ROLE_PATH.read_text(), prompt]
+            "--append-system-prompt", f"{ROLE_PATH.read_text()}\n\n{GUIDANCE_PATH.read_text()}", prompt]
 
 
 def grant(p, slug, minutes):
@@ -2979,6 +2981,19 @@ def record_decisions(p, sent, result, run):
                    **({"to": to} if to else {}), **({"waits_on": waits} if decision == "paused" else {}),
                    **({"minutes": minutes, "until": until} if decision == "extended" else {}))
         tell_decision(p, f, decision, reason.strip(), minutes, until)
+
+
+def settle_extensions(p):
+    """On the full pass: an `extended` decision without an outcome is `kept` when the task handed over by the time it
+    gave, `overran` when it handed over later or that time has passed."""
+    repo, handed = p["repo"], {}
+    for r in sorted((r for r in read_log("tasks") if r.get("repo") == repo.root and r.get("state") == "handed-over"), key=stamp):
+        handed.setdefault(r.get("slug"), []).append(stamp(r))
+    for f in (f for f in extended(repo) if not f["outcome"]):
+        first = next((t for t in handed.get(f["slug"], []) if t >= f["decided"]), None)
+        outcome = "kept" if first and first <= f["until"] else "overran" if first or p["now"] > epoch(f["until"]) else None
+        if outcome:
+            log_firing(repo, id=f["id"], outcome=outcome)
 
 
 def settle_asks(p, send, why):
@@ -3438,6 +3453,7 @@ def watch_tick(args, repo):
         raise failure
     if not full:
         return 0
+    settle_extensions(p)
     if orphaned and "dispatcher-missing" not in {s["criterion"] for s in skipped} and not handed_over(repo) and not ops_active(repo):
         print(f"no dispatcher session for {repo.root}: removing the schedule", flush=True)  # launchd kills this process in remove
         schedule_remove(repo, scheduler())
@@ -3541,13 +3557,16 @@ def summarize(firings, misses):
     acted = sum(f["outcome"] == "acted" for f in escalated)
     ignored = sum(f["outcome"] == "ignored" for f in escalated)
     first = sum(bool(m.get("firing")) for m in misses)
+    given = [f for f in firings if f["decision"] == "extended"]
 
     def ratio(n, d):
         return n / d if d else None
     return {"escalated": len(escalated), "acted": acted, "ignored": ignored,
             "no_outcome": len(escalated) - acted - ignored,
             "suppressed": sum(f["decision"] == "suppressed" for f in firings),
-            "paused": sum(f["decision"] == "paused" for f in firings), "missed": len(misses),
+            "paused": sum(f["decision"] == "paused" for f in firings),
+            "extended": len(given), "kept": sum(f["outcome"] == "kept" for f in given), "overran": sum(f["outcome"] == "overran" for f in given),
+            "missed": len(misses),
             "missed_suppressed": first, "missed_never_fired": len(misses) - first,
             "precision": ratio(acted, acted + ignored), "recall": ratio(acted, acted + len(misses))}
 
@@ -3559,7 +3578,8 @@ def cmd_firings(args):
         print(json.dumps({"firings": firings, "misses": misses, "summary": s}, indent=2))
         return 0
     for f in firings:
-        decision = f"{f['decision']} to lead" if f.get("to") == "lead" else f["decision"] or "undecided"
+        decision = f"{f['decision']} to lead" if f.get("to") == "lead" else (
+            f"extended {f['minutes']} min until {f['until']}" if f["decision"] == "extended" else f["decision"] or "undecided")
         print("  ".join([f["id"], f["ts"], f["criterion"], f["subject"], decision,
                          f["outcome"] or "-", "cleared" if f["cleared"] else "open", f["reason"] or "-"]))
     for m in misses:
@@ -3567,7 +3587,8 @@ def cmd_firings(args):
     pct = {k: "-" if s[k] is None else f"{s[k]:.2f}" for k in ("precision", "recall")}
     told = sum(f["decision"] == "escalated" and f.get("to") == "lead" for f in firings)
     print(f"escalated {s['escalated']} (acted {s['acted']}, ignored {s['ignored']}, no outcome {s['no_outcome']}); "
-          f"to lead {told}; suppressed {s['suppressed']}; paused {s['paused']}; missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
+          f"to lead {told}; suppressed {s['suppressed']}; paused {s['paused']}; "
+          f"extended {s['extended']} (kept {s['kept']}, overran {s['overran']}, no outcome {s['extended'] - s['kept'] - s['overran']}); missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
           f"{s['missed_never_fired']} never fired); precision {pct['precision']}; recall {pct['recall']}")
     return 0
 

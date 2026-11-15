@@ -165,6 +165,78 @@ class BoundTests(Overrun):
         self.assertEqual(len(self.decisions()), 1)
 
 
+class OutcomeTests(Overrun):
+    """On the full pass an extension is kept or overran; the listing and the summary show it."""
+
+    UNTIL = STARTED + 140 * 60
+
+    def extension(self, decided=NOW - 600):
+        self.seed("firings", [fired("e1", criterion="overrun", escalate="judgment", ts=decided - 60),
+                              {"ts": iso(decided), "repo": ROOT, "id": "e1", "decision": "extended", "reason": "r", "by": "site-manager",
+                               "minutes": 20, "until": iso(self.UNTIL)}])
+
+    def full_pass(self, handed_over=None):
+        factory.write_lander(SimpleNamespace(root=ROOT), {"health": 0})
+        if handed_over:
+            self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "handed-over", "ts": iso(handed_over)}])
+        return self.cli("watch", at=NOW + 12 * 60)
+
+    def outcome(self):
+        return [r["outcome"] for r in self.records() if "outcome" in r]
+
+    def test_handed_over_before_the_time_it_gave_is_kept(self):
+        self.extension()
+        self.full_pass(handed_over=NOW - 60)
+        self.assertEqual(self.outcome(), ["kept"])
+        _, out, _ = self.cli("firings")
+        self.assertIn(f"overrun  x  extended 20 min until {iso(self.UNTIL)}  kept  open  r", out)
+        self.assertIn("extended 1 (kept 1, overran 0, no outcome 0)", out)
+
+    def test_past_the_time_it_gave_or_handed_over_later_is_overran(self):
+        self.extension()
+        self.full_pass()
+        self.assertEqual(self.outcome(), ["overran"])
+        self.assertIn("extended 1 (kept 0, overran 1, no outcome 0)", self.cli("firings")[1])
+        summary = json.loads(self.cli("firings", "--json")[1])["summary"]
+        self.assertEqual((summary["extended"], summary["kept"], summary["overran"]), (1, 0, 1))
+
+    def test_handed_over_after_the_time_it_gave_is_overran(self):
+        self.extension(decided=NOW - 4 * 600)
+        self.full_pass(handed_over=NOW + 11 * 60)
+        self.assertEqual(self.outcome(), ["overran"])
+
+    def test_no_outcome_while_the_time_runs_and_none_is_written_twice(self):
+        self.extension(decided=STARTED + 3600)
+        factory.write_lander(SimpleNamespace(root=ROOT), {"health": 0})
+        self.cli("watch", at=self.UNTIL - 60)
+        self.assertEqual(self.outcome(), [])
+        self.full_pass()
+        self.full_pass()
+        self.assertEqual(self.outcome(), ["overran"])
+
+    def test_an_outcome_comes_only_on_the_full_pass(self):
+        self.extension()
+        self.cli("watch", at=NOW + 12 * 60)
+        self.assertEqual(self.outcome(), [])
+
+
+class ModelTests(Overrun):
+    def argv(self):
+        return factory.site_manager_argv({"repo": mock.Mock(root=ROOT), "dispatcher": "d", "lean_start": False, "monitor": None}, [])
+
+    def test_the_system_prompt_is_the_role_then_the_guidance(self):
+        argv = self.argv()
+        self.assertEqual(argv[argv.index("--append-system-prompt") + 1], "SITE MANAGER RULES\n\nSITE MANAGER CASES")
+
+    def test_the_shipped_guidance_is_there_and_the_default_model_is_opus(self):
+        self.assertTrue((factory.PLUGIN_ROOT / "roles" / "site-manager-cases.md").read_text().startswith("# Deciding on overruns"))
+        self.assertEqual(self.argv()[self.argv().index("--model") + 1], "opus")
+
+    def test_a_settings_file_naming_another_model_is_respected(self):
+        (self.store / "settings.toml").write_text('[models]\nsite_manager = "sonnet"\n')
+        self.assertEqual(self.argv()[self.argv().index("--model") + 1], "sonnet")
+
+
 class ValidityTests(Overrun):
     """record_decisions: what is not in the table of who may decide what is not recorded."""
 

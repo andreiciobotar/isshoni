@@ -412,7 +412,7 @@ DEFAULT_SETTINGS = {
     "worktree_cap": 5, "reserve_percent": 10, "task_time_limit_hours": 2, "extension_minutes": 60, "lead_permission_mode": "auto",
     "lean_start": True, "dispatchers": None, "lgtm_from_author": True, "tools": None, "monitor": None,
     "models": {"dispatcher": "fable", "lead": "fable", "explorer": "haiku", "coder": "sonnet", "reviewer": "opus",
-               "lander": "sonnet", "ops_explorer": "haiku", "ops_watch": "sonnet", "site_manager": "sonnet", "courier": "haiku", "tech_lead": "opus"}}
+               "lander": "sonnet", "ops_explorer": "haiku", "ops_watch": "sonnet", "site_manager": "opus", "courier": "haiku", "tech_lead": "opus"}}
 
 # A settings file as a human leaves it: tables and keys in their own order, comments, blank lines, an unknown key.
 HAND_EDITED = '''# my notes
