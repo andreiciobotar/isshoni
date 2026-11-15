@@ -38,6 +38,7 @@ factory ops stop <name>
 factory health [--json] [--dispatcher <session-name>]
 factory watch [--dispatcher <session-name>]
 factory digest [--dispatcher <session-name>] [--dry-run]
+factory review [--run]                                                   # the kaizen review: decide if one is due and, when it is, run it; --run is the detached form the watch tick starts
 factory schedule install|remove|status
 factory dispatcher [--json]
 factory dispatcher register
@@ -296,6 +297,7 @@ All under `~/.claude/factory/`, JSON lines, append-only, mode 0600. Except where
 | firings | `firings-YYYY-MM.jsonl` | `watch`, `firing`, `miss` | the current month and the 12 before it, and every miss and every firing that is still open or was escalated, with its records |
 | tech lead | `techlead-YYYY-MM.jsonl` | `factory tech-lead`; the lander's loop (an `unstarted` record) | the current month and the 12 before it |
 | ops watch | `ops-YYYY-MM.jsonl` | `factory watch`'s looks: one record per look and one per gap of missed looks (see Watching production) | the current month and the 12 before it |
+| kaizen review | `reviews-YYYY-MM.jsonl` | `factory review`: one record per decision, run or skip (see Kaizen review) | forever: a proposal may cite it |
 | queue | `queue-YYYY-MM.jsonl` | the merge queue (`merge`, the lander's loop); `factory land` | the current month and the 12 before it |
 | gh calls | `gh-YYYY-MM.jsonl` | every `gh` call that took over 2 s or failed: `ts`, `argv`, `cwd`, `seconds`, `rc`, `error` (the first stderr line; never the token). A `gh` call without a timeout is cut at 30 s. `isshoni kaizen` appends to the same file | pruned like the other logs: the current month and the 12 before it |
 
@@ -350,6 +352,65 @@ All of these, and the retro `cause`, start on the day this merges: nothing earli
 **Tech lead** (`techlead`, one record per come-back or build run) adds `kind` (`merge` for a come-back, `build` for a `factory build` run; a record without it is `merge`), `role` (`tech-lead`), `model`, `version`, `session` (the run's Claude session id, `null` when unstarted or unparsed), `pr`, `evidence`, `outcome` (`resolved`, `escalated`, `stopped`, `unstarted` or `paused`: a start that declared a pause and ran no model; `built`, `question` or `stopped` for a build run, whose `pr` is `null` and `evidence` is `build`), `reason` (why stopped or unstarted), `note` (the model's note), `noted` (whether the pull request comment was posted), `head_before`, `head_after` (full SHAs), `cost_usd` (`total_cost_usd` of the run, `null` when unpriced, never 0) and `seconds`.
 
 **Task state** adds `state` and, from the hand-over on, `deliverable`. A task's state is its last record.
+
+## Kaizen review
+A fresh headless session reviews how the factory worked and proposes changes; the human decides. The dispatcher does not run it: it is in the day's work, it is one of the roles under review, and its context is the dearest place to read the records. The session's charter is `factory/roles/kaizen-review.md` (appended whole as its system prompt): the order of questions it asks of a problem (owner, authority, information, judgement, then a mechanism), what counts as evidence, and what it may publish.
+
+It is a script-run session like the site manager's, not a factory task: a task needs a brief from the dispatcher, a worktree slot and a lead, tech lead and reviewer. The cost of that choice: no second model checks the report. Instead every figure in it must come from a script kept beside it (`scripts/`, with the output in `evidence/`), and the human reviews each proposal.
+
+```
+factory review          # decide, with no model call; when due and active, run in the foreground
+factory review --run    # the detached form: what the watch tick starts, output in review.log in the store
+```
+`factory review` prints its decision in one line. The review covers the whole store, not one repository: one at a time, under the non-blocking store lock `review.lock`. Whichever repository's tick finds it due starts it, and the session's working directory is that repository's root.
+
+**Due and activity.** `kaizen.review_hours` hours have passed since the last `reviews` record of any outcome (`ran`, `skipped`, `failed`), or there is none. A failed run counts, so a failing review retries after the period, not every tick. It then needs activity: a record with `ts` later than the start of the last review that `ran`, in `tasks`, `feedback`, `retros`, `queue`, `techlead`, `comments` or `events`. `reviews` and `gh` are not counted (the review writes them), nor `ops` and `firings` (a watch writes them on a timer while nothing happens: an idle weekend would review every hour). Pull request activity reaches the store through `queue`, `comments` and `tasks`. Due with no activity writes one `skipped` record (`reason: "no activity since <ts>"`) and stops: one skip per period, not one per tick. The decision reads stored records only. The watch tick (`review_tick`, beside the ops looks, before the watch lock) starts a detached `factory review --run` and returns at once, so a tick is never slowed by a review, and does nothing while the lock is held.
+
+**Bounds.** 20 minutes (`REVIEW_TIMEOUT = 1200` s) and 3.00 USD (`REVIEW_BUDGET`, as `--max-budget-usd`) per run. A run that hits either is `failed` with that reason: what it wrote stays in its folder and nothing from it is posted. Worst case per day: 24 runs, 72 USD. `report.md` must exist, else the run is `failed`.
+
+| Setting | Default | |
+|---|---|---|
+| `kaizen.review_hours` | 1 | the period in hours; `0` turns the review off |
+| `kaizen.issues_repo` | empty | `owner/name`: where proposals are posted; empty means nothing is fetched or posted |
+| `models.kaizen_review` | `fable` | the model of the next run |
+
+**The session.** `claude -p --permission-mode dontAsk --output-format json`, `SETTINGS_ISOLATION`, no plugin, agents or MCP server, no `SendMessage`; tools `Read`, `Grep`, `Glob`, `Bash`, `Write`. A permission rule limits `Write` to the review's folder, and `gh`, `git push`, `git commit`, `curl` and `factory` are denied in `Bash` (it reads the logs as files and must not change a state). What the flags cannot enforce: `Bash` itself (a `python3` script, say) could still write elsewhere; the charter forbids it, and nothing else stops it. The prompt holds the time now, `since` (the start of the last review that ran, else 24 hours ago), the store, the folder, the previous `report.md` and whether `input/issues.json` exists.
+
+**Folder**, `deliverables/kaizen-review-<YYYYMMDDTHHMMSSZ>/` in the store, made by the script:
+- `report.md`: what it looked at, checks of earlier proposals, each problem with its rung and evidence, what it proposed or left alone, what it did not look at. Stays on this machine.
+- `scripts/`, `evidence/`: the scripts behind every figure and their output.
+- `proposals/`: one file per item (below).
+- `input/issues.json`: written by the script before the session starts, only when posting is on: every issue labelled `kaizen` in the target repository, open and closed, with number, title, body, state, labels and comments (`gh issue list --state all --label kaizen`, at most 200).
+
+**The `reviews` log** (`reviews`, one record per decision, none from a tick that found nothing due): `ts` (the start), `outcome` (`ran`, `skipped`, `failed`), `reason` (a skip or a failure), `folder`, `since`, `cost_usd` (`total_cost_usd` of the run; `null` when the output has none, shown as unpriced, never 0), `seconds`, `session`, `posted` (`[{"file", "issue", "kind"}]`) and `held` (`[{"file", "why"}]`). It is never pruned.
+
+**A proposal** is a file in `proposals/`, front matter and fixed sections:
+```
+---
+kind: proposal            # proposal | evidence | check
+issue: 12                 # evidence and check only: an existing issue's number
+title: Reviewer gets the spec's fact list   # proposal only, at most 80 characters
+rung: information         # proposal only: owner | authority | information | judgement | mechanism
+role: reviewer            # the role it changes
+cites: [3fa9c1d2e4b6]     # outbox ids, may be empty
+---
+## Problem
+## What the role lacked
+## Proposal
+## Evidence
+## Number
+```
+A `proposal` has all five sections, non-empty. `evidence` has `## Evidence` only: new evidence for an open proposal. `check` has `## Number` only: the value now, the target and a verdict (`worked`, `not yet`, `did not work`) for an accepted proposal. The session never touches GitHub. The script holds a file (it stays in the folder, listed in `held` with the reason) that lacks a field or section, has an unknown `kind` or `rung`, or names an `issue` not in `input/issues.json`.
+
+**Posting** is on only when `kaizen.issues_repo` is set. The script makes the labels `kaizen` and `kaizen:accepted` when absent, then posts a `proposal` as an issue (label `kaizen`, the five sections, a footer `Role: <role> · Rung: <rung> · Cites: <ids> · Review: <stamp>`) and an `evidence` or `check` as a comment on its issue. The `gh` calls act as the factory's App with a token for the target repository, never the working directory's and never another account: with no identity, nothing runs and the file is held. Every call has a timeout; one failure holds that file and the rest still go.
+
+**Permission.** The App needs `Issues: Read and write` on the target. Without it, opening an issue and reading still work, but a comment, a label on an issue and a close are refused (`Resource not accessible by integration`, HTTP 403): the file is held with the exact refusal line and posts nothing else of it. The factory does not work around it.
+
+**Public content.** Proposals become public issues, so before any post the script scans the title and body and holds the file when it finds: the home directory's path or any `/Users/<name>/` or `/home/<name>/` path; the GitHub name (`name` or `owner/name`, whole words, any case) of any other repository in the store's records; a host or MCP server name from `ops.tools` or `hosts.json`; an IPv4 address. `why` names the kind of match, not the text. The script rewrites nothing; the human reads a held file locally. Limits: the scan knows names, not meaning. Directory basenames of other checkouts are not matched as bare words (one is an ordinary English word) and are caught inside paths. Text paraphrased from production data is kept out by the session having no ops tools and by the charter, not by the scan.
+
+**Decisions** are made on the issue, which is the one source of truth. Open with `kaizen`: proposed. The human adds `kaizen:accepted`: accepted. Closed without that label: rejected. Closed with it: done (the pull request that carries it says `Closes #N`). A label and not GitHub's close reason, because the default close button says "completed" and would read a rejection as done. The next run reads the states from `input/issues.json`: it checks each done proposal against its number and does not re-propose a rejected one without new evidence. The dispatcher lists `gh issue list --label kaizen:accepted --state open` and opens a task per issue; the review sends it nothing.
+
+**Outbox mirror.** At the start of a run with posting on, after fetching the issues, the script sets the outbox entries cited in each issue's footer through the path of `factory feedback set`: accepted to `accepted`, done to `done`, rejected to `rejected`, only when the status differs. It is derived: nothing reads the outbox to learn a proposal's state.
 
 ## Site manager
 A job runs `factory watch` every 2 minutes (`WATCH_INTERVAL`), output appended to `~/.claude/factory/watch.log`. It follows the dispatcher's life; `factory schedule install|remove|status` are for manual control. Each tick does four things:

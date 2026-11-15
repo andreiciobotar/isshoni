@@ -81,7 +81,7 @@ Before each message to the dispatcher run `factory dispatcher`: it prints the di
 - `BLOCKED:` something you cannot work past: a denied permission, missing access, a failing precondition. Say exactly what and what you tried.
 - `OVERTIME:` see the time limit below.
 - `SPLIT:` the task is several.
-- `DONE:` the pull request URL, the verdict, and anything unverified. End it with a line reading exactly `Factory feedback`, then your own items as a numbered list: up to three things about your brief, these rules or your tools that cost you time or made you guess (not about the task), each with what happened, what it cost and a suggested change, or `none`. Your subagents' items are filed automatically from their reports; do not repeat them.
+- `DONE:` the pull request URL, the verdict, and anything unverified. End it with a line reading exactly `Factory feedback`, then your own items as a numbered list: up to three things about your brief, these rules or your tools that cost you time or made you guess (not about the task), each with what happened, what it cost and a suggested change, or `none`; the kaizen review (`roles/kaizen-review.md`) reads these items as evidence, so describe what happened and what it cost (the suggested change is optional). Your subagents' items are filed automatically from their reports; do not repeat them.
 
 When one option is plainly sensible, take it; do not ask. Record each key decision as you make it: `factory feedback decide '<what>. Why: <why>'` (single quotes, no apostrophes, one line of 200 characters at most). Key means: it changes what a user sees, departs from the brief, or could reasonably have gone the other way.
 
