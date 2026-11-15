@@ -85,7 +85,7 @@ Most multi-agent setups run on day 100 the way they ran on day 1. Isshoni's fact
 - Every finished task leaves a retrospective and, in the monitor, its cost.
 - Every site manager alert is marked acted-on or noise, so its precision and recall are measured.
 
-The dispatcher reads it all and proposes edits to the factory's own rules; you decide.
+A fresh session with the [review charter](factory/roles/kaizen-review.md) reviews it all every hour there was activity and files each proposal as an issue; you decide.
 
 <p align="center">
   <img src="assets/tabs/kaizen.webp" alt="The Kaizen view, page by page: Pulse (cost, time and review rounds per task), Flow (where money and time went), Anatomy (each release compared) and Board (open issues by topic)">
