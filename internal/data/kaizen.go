@@ -101,6 +101,7 @@ type SiteManager struct {
 	Ignored          int      `json:"ignored"`
 	NoOutcome        int      `json:"no_outcome"`
 	Suppressed       int      `json:"suppressed"`
+	Paused           int      `json:"paused"` // churning tasks the queue paused; counted apart, not shown yet
 	Missed           int      `json:"missed"`
 	MissedSuppressed int      `json:"missed_suppressed"`
 	MissedNeverFired int      `json:"missed_never_fired"`

@@ -62,9 +62,33 @@ func TestFactoryStatusDecodesNulls(t *testing.T) {
 	if c, e := st.Rows[2], st.Rows[4]; !c.WaitsOnHuman() || e.WaitsOnHuman() || e.WaitsOn != "needs-an-answer" || st.Rows[0].WaitsOn != "" {
 		t.Fatalf("who the blocked rows wait on: %+v %+v", c, e)
 	}
+	if b, e := st.Rows[1], st.Rows[4]; b.Paused != nil || b.Prioritized == nil || !b.Prioritized.Since.Equal(time.Date(2099, 12, 31, 23, 57, 0, 0, time.UTC)) ||
+		e.Prioritized != nil || e.Paused == nil || !slices.Equal(e.Paused.WaitsOn, []string{"needs-an-answer"}) || !e.Paused.Since.Equal(time.Date(2099, 12, 31, 23, 48, 0, 0, time.UTC)) {
+		t.Fatalf("paused and prioritized rows: %+v %+v", b, e)
+	}
+	if a, c := st.Rows[0], st.Rows[2]; a.Paused != nil || a.Prioritized != nil || c.Paused != nil || c.Prioritized != nil {
+		t.Fatalf("absent keys and nulls give nil: %+v %+v", a, c)
+	}
 	log, _ := os.ReadFile(filepath.Join(dir, "calls"))
 	if !strings.HasPrefix(string(log), "factory ") || !strings.HasSuffix(strings.TrimSpace(string(log)), repo[strings.Index(repo, "TestFactory"):]) {
 		t.Fatalf("the command runs in the repository %s: %q", repo, log)
+	}
+}
+
+func TestFactoryStatusKeepsAFlagWhoseSinceDoesNotParse(t *testing.T) {
+	r, dir := factoryStub(t)
+	doc := `{"rows": [
+		{"slug": "a", "phase": "blocked", "waits_on": "b", "paused": {"since": "yesterday", "waits_on": ["b"]}},
+		{"slug": "c", "phase": "motion", "prioritized": {"since": null}}]}`
+	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.FactoryStatus(context.Background(), t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, q := st.Rows[0].Paused, st.Rows[1].Prioritized; p == nil || !p.Since.IsZero() || !slices.Equal(p.WaitsOn, []string{"b"}) || q == nil || !q.Since.IsZero() {
+		t.Fatalf("the flags stay, without an age: %+v %+v", p, q)
 	}
 }
 

@@ -577,5 +577,47 @@ class TagsTests(unittest.TestCase):
         self.assertEqual(self.role({"FACTORY_ROLE": "tech-lead"}, {"agent_id": "a1"}), "subagent")
 
 
+class PauseTests(Case):
+    """The site manager paused the task (a `paused` decision on its slug waiting for `other`)."""
+
+    def paused(self, waited=("other",)):
+        return mock.patch.object(factory, "paused_for", lambda repo, slug: list(waited))
+
+    def test_a_tech_lead_start_declares_blocked_with_the_pause_and_runs_no_model(self):
+        with self.paused(("a", "b")), mock.patch.object(factory, "conflicting_files", lambda repo, pr: ["a.txt"]):
+            code, out, err, m = self.go()
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(m.tech_lead_calls(), [])
+        self.assertEqual(out, f"#{N} tech lead paused: waits for a, b\n")
+        [row] = self.records("tasks")
+        self.assertEqual((row["state"], row["role"], row["waits_on"], row["paused"]), ("blocked", "tech-lead", ["a", "b"], True))
+        [rec] = self.records("techlead")
+        self.assertEqual((rec["outcome"], rec["cost_usd"], rec["session"], rec["reason"]), ("paused", None, None, "waits for a, b"))
+        [event] = [e for e in self.records("events") if e["event"] == "TaskPaused"]
+        self.assertEqual((event["slug"], event["waits_on"], event["files"], event["sent_back"]), (SLUG, ["a", "b"], ["a.txt"], 0))
+        self.assertEqual(self.machine.comments, [])
+
+    def test_without_a_pause_the_model_runs_as_before(self):
+        with mock.patch.object(factory, "paused_for", lambda repo, slug: []):
+            m = self.go()[3]
+        self.assertEqual(len(m.tech_lead_calls()), 1)
+
+    def test_without_a_tech_lead_the_lead_is_told_to_pause_and_wait(self):
+        self.spec.unlink()
+        with self.paused(("a", "b")), mock.patch.object(factory, "conflicting_files", lambda repo, pr: ["a.txt", "b.txt"]), \
+                mock.patch.object(factory, "spawn"):
+            to, _ = self.send_back()
+        self.assertEqual(to, "lead")
+        self.assertEqual(self.machine.lines, [f"LANDER: {SLUG}: #{N} is paused: it conflicts in a.txt, b.txt while a, b are landing on "
+                                              "the same files. Declare factory state blocked a,b --paused, dispatch nothing, and wait: "
+                                              "you are told when the way is clear."])
+
+    def test_a_tech_lead_started_for_a_pause_is_not_told_anything_by_the_queue(self):
+        with self.paused(), mock.patch.object(factory, "spawn") as spawn:
+            to, _ = self.send_back()
+        self.assertEqual((to, self.machine.lines), ("tech lead", []))
+        spawn.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
