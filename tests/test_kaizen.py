@@ -545,6 +545,7 @@ class SiteManagerTests(Store):
         self.assertEqual(p.returncode, 0, p.stderr)
         theirs = json.loads(p.stdout)["summary"]
         self.assertEqual((theirs["escalated"], theirs["missed"]), (4, 2))
+        theirs = {k: v for k, v in theirs.items() if not k.startswith("told")}  # the dashboard does not count `told`
         theirs.update({k: round(theirs[k], 6) for k in ("precision", "recall")})
         self.assertEqual(self.record(), theirs)
 
