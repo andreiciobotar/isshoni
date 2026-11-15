@@ -83,9 +83,10 @@ func TestPulseBandCardsAndFigures(t *testing.T) {
 		"0.36 n=11", "↑ 179% vs 0.13 n=46", "4 in 11 PRs",
 		// the faint block: what the cards leave out, the baseline's figures among it
 		"hand-over → merge p90 · → approval p90: today 36m44s · 30m00s (n=11), baseline 55m00s · 40m00s (n=46)",
-		"baseline 11-07 to 11-13: parts $600 · $90.00 · $10.00 · first pass 19/21 · 12/17 · 3/4 · 8/8 · approval → merge p90 7m00s",
+		"baseline 11-07 to 11-13: parts $600 · $90.00 · $10.00 · first pass 19/21 · 12/17 · 3/4 · 8/8 · approval → merge p90 7m00s · conflicts 6 in",
+		"46 PRs",
 		"send-backs that changed nothing: 1 of 3 today · - baseline · send-backs: the queue log starts 11-14",
-		"approvals recorded: 6 today, 30 of 46 in the baseline (8 backfilled)",
+		"approvals recorded: 6 today (2 backfilled), 30 of 46 in the baseline (8 backfilled)",
 	} {
 		if !strings.Contains(squeeze(out), want) {
 			t.Errorf("the band lacks %q:\n%s", want, out)
@@ -297,18 +298,43 @@ func TestPulseStripCaptionAppearsBelowThreeDaysWithData(t *testing.T) {
 	}
 	for _, w := range []int{140, 100} {
 		two := cardRow(t, pulseBand(t, w, only(2)), "all-in cost", 3)
-		if !strings.HasSuffix(two, "2 of 8 days with data") {
+		if w == 140 && !strings.HasSuffix(two, "2 of 8 days with data") {
 			t.Errorf("at %d with data on 2 of 8 days the strip says so: %q", w, two)
+		}
+		if w == 100 && (!strings.HasPrefix(two, "▇▇██") || strings.Contains(two, "days with data")) {
+			t.Errorf("at %d the caption does not fit, the strip stays: %q", w, two)
 		}
 		if three := cardRow(t, pulseBand(t, w, only(3)), "all-in cost", 3); strings.Contains(three, "days with data") {
 			t.Errorf("at %d with data on 3 of 8 days there is no caption: %q", w, three)
 		}
 	}
+	for _, label := range []string{"all-in cost", "first pass", "approval → merge", "conflicts / PR"} {
+		if strip := cardRow(t, pulseBand(t, 100, nil), label, 3); !strings.ContainsAny(strip, "▁▂▃▄▅▆▇█") {
+			t.Errorf("%s at 100: the strip stays: %q", label, strip)
+		}
+	}
+	for _, label := range []string{"all-in cost", "first pass", "approval → merge", "conflicts / PR"} {
+		if strip := cardRow(t, pulseFrame(t, oneDayDoc(t), 100), label, 3); !strings.ContainsAny(strip, "▁▂▃▄▅▆▇█") {
+			t.Errorf("one day, %s at 100: the strip stays when the caption does not fit: %q", label, strip)
+		}
+	}
+}
+
+func TestPulseDeltaLineDropsTheBaselineCountWhenTooWide(t *testing.T) {
+	wide := func(p *data.Pulse) { p.Baseline.Merged = 50000 }
+	if line := cardRow(t, pulseBand(t, 100, wide), "all-in cost", 2); !strings.Contains(line, "↓ 27% vs $14.00*") || strings.Contains(line, "n=") {
+		t.Errorf("at 100 the delta line drops the baseline count: %q", line)
+	}
+	if line := cardRow(t, pulseBand(t, 200, wide), "all-in cost", 2); !strings.Contains(line, "vs $14.00* n=50000") {
+		t.Errorf("at 200 it keeps the count: %q", line)
+	}
 }
 
 func TestPulseCardsHaveNoCutAtWideWidths(t *testing.T) {
+	twoDigits := kaizenDoc(t)
+	twoDigits.Pulse.Today.FirstPass = data.PulseFirstPass{Small: data.PulseRate{Yes: 10, Of: 12}, Medium: data.PulseRate{Yes: 11, Of: 13}, Large: data.PulseRate{Yes: 1, Of: 2}, Unstated: data.PulseRate{Yes: 2, Of: 2}}
 	for _, w := range []int{100, 120, 140, 200} {
-		for name, doc := range map[string]*data.Kaizen{"fixture": kaizenDoc(t), "no merge": noMergeDoc(t), "one day": oneDayDoc(t)} {
+		for name, doc := range map[string]*data.Kaizen{"fixture": kaizenDoc(t), "no merge": noMergeDoc(t), "one day": oneDayDoc(t), "two-digit sizes": twoDigits} {
 			out := bandOf(pulseFrame(t, doc, w))
 			if strings.Contains(out, "…") {
 				t.Errorf("%s at %d: something is cut:\n%s", name, w, out)

@@ -58,7 +58,7 @@ func (m *model) dayLines(p paint, w int) block {
 	var lines block
 	periods := []data.PulseDay{pl.Today, pl.Baseline}
 	if wide {
-		lines = append(block{fit(p.sp(1)+p.b(title, th.Text), w, p)}, m.pulseCards(p, rows, w)...)
+		lines = append(block{fit(p.sp(1)+p.b(title, th.Text), w, p)}, m.pulseCards(p, pl, rows, w)...)
 		for _, l := range m.pulseBlock(pl, w) {
 			lines = append(lines, p.sp(1)+p.t(l, th.Faint))
 		}
@@ -144,14 +144,14 @@ func (m *model) pulseTable(p paint, rows []pulseRow, pl *data.Pulse, title, sinc
 
 // pulseCards lays the lead rows out as cards across w cells, in the tile row's style, the
 // stripe in the verdict's colour.
-func (m *model) pulseCards(p paint, rows []pulseRow, w int) block {
+func (m *model) pulseCards(p paint, pl *data.Pulse, rows []pulseRow, w int) block {
 	var leads []pulseRow
 	for _, r := range rows {
 		if r.lead {
 			leads = append(leads, r)
 		}
 	}
-	t := m.kz.doc.Pulse.Today
+	t := pl.Today
 	details := []string{
 		m.kzMoney(t.Cost.Tasks) + " · " + m.kzMoney(t.Cost.Dispatcher) + " · " + m.kzMoney(t.Cost.SiteManager),
 		sizesText(t.FirstPass),
@@ -191,6 +191,9 @@ func (m *model) pulseCard(p paint, r pulseRow, detail string, w int) block {
 	if width(r.delta)+1+width(vs) > inner { // the baseline's count is what gives
 		vs = "vs " + r.base.val
 	}
+	if width(detail) > inner { // the separators' spaces give next
+		detail = strings.ReplaceAll(detail, " · ", "·")
+	}
 	lines := []string{
 		sp.t(label, th.Faint),
 		sp.b(r.today.val, th.Text) + sp.t("  "+r.today.n, th.Muted),
@@ -207,7 +210,7 @@ func (m *model) pulseCard(p paint, r pulseRow, detail string, w int) block {
 
 // pulseStrip is the card's per-day strip in w cells: two cells a day when they fit, the
 // newest days when not. When fewer than 3 of its days have a value it carries a faint caption
-// saying so, and gives up days to make room for it, or all of them below 4 cells.
+// saying so, and gives up days to make room for it; the caption is dropped when it does not fit.
 func (m *model) pulseStrip(sp paint, days []*float64, w int, today color.Color) string {
 	days = days[max(0, len(days)-pulseSparkMax):]
 	last := func(room int) ([]*float64, int) { // the newest days that fit room, and cells a day
@@ -222,7 +225,7 @@ func (m *model) pulseStrip(sp paint, days []*float64, w int, today color.Color) 
 			shown, per = last(room)
 			caption = fmt.Sprintf("%d of %d days with data", valued(shown), len(shown))
 		} else {
-			shown = nil
+			caption = ""
 		}
 	}
 	spark := ""
@@ -265,20 +268,28 @@ func (m *model) pulseBlock(pl *data.Pulse, w int) []string {
 	if k := b.Handover.ApprovalsBackfilled; k > 0 {
 		backfilled = fmt.Sprintf(" (%d backfilled)", k)
 	}
+	todayBackfilled := ""
+	if k := t.Handover.ApprovalsBackfilled; k > 0 {
+		todayBackfilled = fmt.Sprintf(" (%d backfilled)", k)
+	}
 	baseline := shortDate(b.Date)
 	if b.Days != 1 {
 		baseline += " to " + shortDate(b.To)
 	}
+	conflicts := ""
+	if c := b.Conflicts; c.PerMerged != nil {
+		conflicts = fmt.Sprintf(" · conflicts %d in %d PRs", c.Conflicted, c.Prs)
+	}
 	items := []string{
 		fmt.Sprintf("hand-over → merge p90 · → approval p90: today %s (n=%d), baseline %s (n=%d)", p90s(t.Handover), t.Handover.ToMerge.N, p90s(b.Handover), b.Handover.ToMerge.N),
 		fmt.Sprintf("baseline %s: parts %s · %s · %s · first pass %s · approval → merge p90 %s", baseline,
-			m.kzMoney(b.Cost.Tasks), m.kzMoney(b.Cost.Dispatcher), m.kzMoney(b.Cost.SiteManager), sizesText(b.FirstPass), p90Text(b.Handover.ApprovalToMerge)),
+			m.kzMoney(b.Cost.Tasks), m.kzMoney(b.Cost.Dispatcher), m.kzMoney(b.Cost.SiteManager), sizesText(b.FirstPass), p90Text(b.Handover.ApprovalToMerge)) + conflicts,
 		fmt.Sprintf("send-backs that changed nothing: %s today · %s baseline", sent(t.Handover), sent(b.Handover)),
 	}
 	if note := m.sendBackNote([]data.PulseDay{t, b}, pl.QueueSince); note != "" {
 		items = append(items, note)
 	}
-	items = append(items, fmt.Sprintf("approvals recorded: %d today, %d of %d in the baseline%s", t.Handover.ApprovalToMerge.N, b.Handover.ApprovalToMerge.N, b.Handover.ToMerge.N, backfilled))
+	items = append(items, fmt.Sprintf("approvals recorded: %d today%s, %d of %d in the baseline%s", t.Handover.ApprovalToMerge.N, todayBackfilled, b.Handover.ApprovalToMerge.N, b.Handover.ToMerge.N, backfilled))
 	var rows []string
 	for _, it := range items {
 		if last := len(rows) - 1; last >= 0 && 1+width(rows[last]+" · "+it) <= w {
