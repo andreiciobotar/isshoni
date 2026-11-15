@@ -14,7 +14,11 @@ import (
 
 // A stub records its pid and its start in a file under $STUBS once its TERM trap is in
 // place, and a received TERM in another. It runs until it is told to end.
+// It ignores USR2: the real supercronic takes it as "read the crontab again", and the container's
+// own crontab sends it to every process named supercronic, these stubs included, whenever a
+// schedule changes beside the tests (CI's container job).
 const stub = `#!/bin/sh
+trap '' USR2
 trap 'echo term >> "$STUBS/%[1]s.term"; exit 0' TERM
 echo $$ >> "$STUBS/%[1]s.pids"
 %[2]s
@@ -100,11 +104,38 @@ func (r *run) pids(name string) (pids []int) {
 	return pids
 }
 
+// dump logs what a failing wait needs: the script's stderr, the stub files, whether the script
+// still runs, the process table and, on Linux, the cgroup's pids counters.
+func (r *run) dump() {
+	r.t.Helper()
+	b, _ := os.ReadFile(r.stderr)
+	r.t.Logf("script stderr:\n%s", b)
+	files, _ := os.ReadDir(r.stubs)
+	for _, f := range files {
+		r.t.Logf("stubs/%s:\n%s", f.Name(), r.read(f.Name()))
+	}
+	select {
+	case err := <-r.done:
+		r.done <- err
+		r.t.Logf("script ended: %v", err)
+	default:
+		r.t.Logf("script still running, pid %d", r.cmd.Process.Pid)
+	}
+	ps, _ := exec.Command("ps", "-axo", "pid,ppid,pgid,stat,etime,command").CombinedOutput()
+	r.t.Logf("ps:\n%s", ps)
+	for _, f := range []string{"pids.current", "pids.peak", "pids.max", "pids.events"} {
+		if b, err := os.ReadFile("/sys/fs/cgroup/" + f); err == nil {
+			r.t.Logf("%s: %s", f, strings.TrimSpace(string(b)))
+		}
+	}
+}
+
 func (r *run) waitFor(what string, ok func() bool) {
 	r.t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for !ok() {
 		if time.Now().After(deadline) {
+			r.dump()
 			r.t.Fatalf("timed out waiting for %s", what)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -130,6 +161,7 @@ func (r *run) exit() int {
 		}
 		return 0
 	case <-time.After(15 * time.Second):
+		r.dump()
 		r.t.Fatal("the script did not end")
 		return -1
 	}
@@ -150,6 +182,11 @@ func (r *run) noStubLeft() {
 func TestServerIsRestartedWhenItDies(t *testing.T) {
 	r := start(t, true)
 	r.started("server", 1)
+	r.started("cron", 1)
+	// What the container's crontab sends every supercronic.
+	if err := syscall.Kill(r.pids("cron.pids")[0], syscall.SIGUSR2); err != nil {
+		t.Fatal(err)
+	}
 	if err := syscall.Kill(r.pids("server.pids")[0], syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}

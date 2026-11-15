@@ -82,7 +82,8 @@ func delta() factoryRepo {
 	slow.Waited, slow.StopKind, slow.StopSummary = ptr(int64(300)), "OVERTIME", "ran 3h of 2h: split it?"
 	wide.Waited, wide.StopKind = ptr(int64(7200)), "BLOCKED"
 	wide.StopSummary = "データベースの接続情報が見つかりません。どの環境のものを使えばよいですか？ 本番ではない方でお願いします。"
-	return factoryRepo{name: "delta-docs", path: "/r/delta", st: fstatus(5, file, link, bare, slow, wide, onDispatcher(), onTask())}
+	return factoryRepo{name: "delta-docs", path: "/r/delta", st: fstatus(5, file, link, bare, slow, wide, onDispatcher(), onTask(),
+		pausedFor("paused-fresh", 12*time.Minute, "login-flow", "api-keys"), pausedFor("paused-stale", 45*time.Minute, "login-flow"), prioritizedFor("rush-fix", 3*time.Minute))}
 }
 
 // onDispatcher and onTask are tasks blocked on someone else, each with a reason; the band leaves them out.
@@ -97,6 +98,22 @@ func onTask() data.FactoryTask {
 	x := ftask("docs-after-review", "blocked")
 	x.Waited, x.WaitsOn, x.StopKind = ptr(int64(900)), "design-review-of-docs", "BLOCKED" // 21 characters
 	x.StopSummary = "needs the design review to land first, then the docs can quote its final wording without guessing"
+	return x
+}
+
+// pausedFor is a task the site manager paused age ago, waiting on the slugs.
+func pausedFor(slug string, age time.Duration, waits ...string) data.FactoryTask {
+	x := ftask(slug, "blocked")
+	x.WaitsOn = strings.Join(waits, ", ")
+	x.Paused = &data.FactoryFlag{Since: fakeNow.Add(-age), WaitsOn: waits}
+	return x
+}
+
+// prioritizedFor is a task in motion the queue prioritized age ago.
+func prioritizedFor(slug string, age time.Duration) data.FactoryTask {
+	x := ftask(slug, "motion")
+	x.Session, x.Elapsed = "working", ptr(int64(600))
+	x.Prioritized = &data.FactoryFlag{Since: fakeNow.Add(-age)}
 	return x
 }
 
@@ -581,10 +598,104 @@ func TestFactoryBlockedOnSomeoneElseIsLighter(t *testing.T) {
 	}
 }
 
+func TestFactoryPausedLabelShowsAgeAndWaitedTasks(t *testing.T) {
+	m := factoryModel(false, 140, 60, factoryRepo{name: "m", st: fstatus(5,
+		pausedFor("under-a-minute", 20*time.Second, "a"), pausedFor("fresh", 12*time.Minute, "a", "b"),
+		pausedFor("nearly", 30*time.Minute-time.Second, "a"), pausedFor("stale", 30*time.Minute, "a"), pausedFor("older", 95*time.Minute, "a"))})
+	p, th := m.th.on(m.th.Bg), m.th
+	rows := m.fac.repos[0].st.Rows
+	cols := m.factoryCols(p, 140, rows)
+	for i, c := range []struct {
+		label string
+		col   color.Color
+	}{
+		{"paused 0m: waits a", th.Muted}, {"paused 12m: waits a, b", th.Muted}, {"paused 29m: waits a", th.Muted},
+		{"paused 30m: waits a", th.Yellow}, {"paused 1h35m: waits a", th.Yellow},
+	} {
+		got := m.taskRow(p, cols, rows[i], 140)[0]
+		if !strings.Contains(got, p.t("▲ ", c.col)) || !strings.Contains(got, p.t(c.label, c.col)) {
+			t.Errorf("want %q in %v: %q", c.label, c.col, got)
+		}
+	}
+	noAge := pausedFor("no-age", 0, "a")
+	noAge.Paused.Since = time.Time{}
+	if _, label, _ := m.phaseLook(noAge, true); label != "paused: waits a" {
+		t.Errorf("a pause without a time shows without an age: %q", label)
+	}
+	// only a blocked task shows as paused
+	moving := prioritizedFor("moving", 0)
+	moving.Prioritized, moving.Paused = nil, &data.FactoryFlag{Since: fakeNow.Add(-45 * time.Minute), WaitsOn: []string{"a"}}
+	if _, label, c := m.phaseLook(moving, false); label != "motion" || c != th.Blue {
+		t.Errorf("a paused flag on a task in motion changes its label or colour: %q", label)
+	}
+	// a task released but still declared paused reads as prioritized, muted, never as a stale pause
+	both := pausedFor("released", 45*time.Minute, "a")
+	both.Prioritized = &data.FactoryFlag{Since: fakeNow.Add(-2 * time.Minute)}
+	if _, label, c := m.phaseLook(both, true); label != "blocked · prioritized 2m" || c != th.Muted {
+		t.Errorf("both flags: %q in %v", label, c)
+	}
+	// a time in the future reads 0m
+	ahead, rush := pausedFor("ahead", -time.Hour, "a"), prioritizedFor("rush", -time.Hour)
+	if _, label, _ := m.phaseLook(ahead, true); label != "paused 0m: waits a" {
+		t.Errorf("a pause from the future: %q", label)
+	}
+	if _, label, _ := m.phaseLook(rush, true); label != "motion · prioritized 0m" {
+		t.Errorf("a prioritization from the future: %q", label)
+	}
+}
+
+func TestFactoryPrioritizedLabelIsTheShortPhaseNameAndAge(t *testing.T) {
+	review := prioritizedFor("in-review", 29*time.Minute)
+	review.Phase = "review"
+	noAge := prioritizedFor("no-age", 0)
+	noAge.Prioritized.Since = time.Time{}
+	for _, w := range []int{80, 100, 120} {
+		m := factoryModel(false, w, 60, factoryRepo{name: "m", st: fstatus(5, prioritizedFor("rush", 3*time.Minute), review, ftask("plain", "motion"))})
+		p, th := m.th.on(m.th.Bg), m.th
+		rows := m.fac.repos[0].st.Rows
+		cols := m.factoryCols(p, w, rows)
+		for i, c := range []struct {
+			label string
+			col   color.Color
+		}{{"motion · prioritized 3m", th.Blue}, {"review · prioritized 29m", th.Yellow}} {
+			if got := m.taskRow(p, cols, rows[i], w)[0]; !strings.Contains(got, p.t(c.label, c.col)) {
+				t.Errorf("%d columns: want %q in %v: %q", w, c.label, c.col, got)
+			}
+		}
+		if _, label, _ := m.phaseLook(rows[2], w >= 100); label != "motion" && label != "in motion" {
+			t.Errorf("%d columns: a task not prioritized keeps its label: %q", w, label)
+		}
+		if _, label, _ := m.phaseLook(noAge, w >= 100); label != "motion · prioritized" {
+			t.Errorf("%d columns: a flag without a time shows without an age: %q", w, label)
+		}
+	}
+}
+
+func TestFactoryPausedAndPrioritizedLabelsKeepTheTable(t *testing.T) {
+	long := strings.Repeat("x", 40)
+	cols := func(w int, whom string) factoryCols {
+		paused, review := pausedFor("docs-after-review", 45*time.Minute, whom), prioritizedFor("rush-fix", 29*time.Minute)
+		paused.Size, review.Phase = "medium", "review"
+		m := factoryModel(true, w, 40, factoryRepo{name: "m", st: fstatus(5, paused, review, ftask("api-rate-limits", "review"))})
+		return m.factoryCols(m.th.on(m.th.Bg), w, m.fac.repos[0].st.Rows)
+	}
+	for _, w := range []int{80, 100, 120} {
+		got, want := cols(w, long), cols(w, "a")
+		if got.phase < 2+width("review · prioritized 29m") {
+			t.Errorf("%d columns: PHASE %d cuts the prioritized label", w, got.phase)
+		}
+		got.phase, want.phase = 0, 0 // the label is cut to the cell
+		got.size, want.size = 0, 0   // SIZE is the first column to give way to a wider PHASE
+		if got != want || got.elapsed == 0 {
+			t.Errorf("%d columns: 40 characters of slugs give %+v, one short slug %+v", w, got, want)
+		}
+	}
+}
+
 func TestFactoryColsKeepTheTableWhenAWhomIsLong(t *testing.T) {
 	cols := func(w int, whom string) factoryCols {
 		x := onTask()
-		x.WaitsOn, x.Size = whom, "medium"
+		x.Slug, x.WaitsOn, x.Size = strings.Repeat("s", slugLeast), whom, "medium" // the least slug a clamped PHASE leaves
 		m := factoryModel(true, w, 40, factoryRepo{name: "m", st: fstatus(5, x, ftask("quiet-refactor", "motion"), ftask("api-rate-limits", "review"))})
 		return m.factoryCols(m.th.on(m.th.Bg), w, m.fac.repos[0].st.Rows)
 	}
@@ -1457,7 +1568,7 @@ func TestSnapshotFactory(t *testing.T) {
 	if n := fetchCount(t, dir); n != 1 {
 		t.Fatalf("the snapshot runs the fetch pass once, after the cached one: %d", n)
 	}
-	for _, want := range []string{"proj", "stacked", "cost-in-money", "in motion ▲▲●○○○◌ 3/6+1", "blocked on needs-an-a", "Needs the login task to land first.", "write-up.md", "needs-an-answer", "worktree cap  7", "[3 Factory ▲2]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"} {
+	for _, want := range []string{"proj", "stacked", "cost-in-money", "in motion ▲▲●○○○◌ 3/6+1", "paused 12m: waits nee", "Needs the login task to land first.", "write-up.md", "needs-an-answer", "worktree cap  7", "[3 Factory ▲2]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("snapshot lacks %q:\n%s", want, out)
 		}

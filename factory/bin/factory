@@ -922,6 +922,7 @@ def collect(repo, sessions, limit_hours, prs=None):
         needed = needed_branches(repo)
         prs = (ask_pull_requests(repo, needed)[0] if needed else {}) or {b: UNKNOWN_PR for b in needed}
     percent = nearing_percent()
+    prioritized = read_lander(repo)["prioritized"]
     rows = []
     for wt in repo.tasks:
         path, branch = wt["path"], wt["branch"]
@@ -958,7 +959,12 @@ def collect(repo, sessions, limit_hours, prs=None):
         row["last_commit"] = int(ts) if rc == 0 and ts.isdigit() else None
         row["pr_state"], row["pr_url"], row["pr_head"], row["pr_base"], row["pr_draft"] = prs.get(branch, UNKNOWN_PR)
         row["deliverable"] = declared.get(slug, {}).get("deliverable")
-        row["waits_on"] = (declared[slug].get("waits_on") or "human") if row["state"] == "blocked" else None
+        waits = declared.get(slug, {}).get("waits_on") or "human"
+        row["waits_on"] = (", ".join(waits) if isinstance(waits, list) else waits) if row["state"] == "blocked" else None
+        paused = row["state"] == "blocked" and declared[slug].get("paused") is True
+        row["paused"] = {"since": declared[slug]["ts"], "waits_on": waits if isinstance(waits, list) else [waits]} if paused else None
+        held = prioritized.get(slug)
+        row["prioritized"] = {"since": held} if held and now - (epoch(held) or 0) < RELEASE_HOLD_MINUTES * 60 else None
         since = epoch(declared.get(slug, {}).get("ts"))
         row["waited"] = None if since is None else max(0, int(now - since))
         row["phase"] = phase(row["pr_state"], mine if placed else None, row["state"])
@@ -1227,8 +1233,8 @@ def handed_over(repo):
     return any(r["state"] == "handed-over" and slug in here for slug, r in read_tasks(repo.root).items())
 
 
-def declare(repo, slug, role, state, deliverable=None, waits_on=None):
-    extra = {k: v for k, v in (("deliverable", deliverable), ("waits_on", waits_on)) if v}
+def declare(repo, slug, role, state, deliverable=None, waits_on=None, paused=False):
+    extra = {k: v for k, v in (("deliverable", deliverable), ("waits_on", waits_on), ("paused", paused)) if v}
     log("tasks", {**record(repo.root, slug, role, None, os.environ.get("CLAUDE_CODE_SESSION_ID")),
                   "state": state, **extra})
 
@@ -1407,7 +1413,9 @@ def cmd_status(args):
         ab = "?" if r["ahead"] is None else f"+{r['ahead']}/-{r['behind']}"
         changes = "?" if r["dirty"] is None else ("dirty" if r["dirty"] else "clean")
         pr = r["pr_state"] + (f" {r['pr_url']}" if r["pr_url"] else "")
-        flags = " ".join(f for f in ("overtime" if r["overtime"] else "", "nearing" if r["nearing"] else "", "stale" if r["stale"] else "") if f)
+        flags = " ".join(f for f in ("overtime" if r["overtime"] else "", "nearing" if r["nearing"] else "", "stale" if r["stale"] else "",
+                                          f"paused {age(epoch(r['paused']['since']), now)}: waits {', '.join(r['paused']['waits_on'])}" if r["paused"] else "",
+                                          f"prioritized {age(epoch(r['prioritized']['since']), now)}" if r["prioritized"] else "") if f)
         elapsed = "-" if r["elapsed"] is None else (
             f"{span(r['elapsed'])} / {span(r['limit'])}" if r["phase"] == "motion" else age(now - r["elapsed"], now))
         table.append([r["slug"], r["phase"], r["state"] or "-", r["branch"] or "(detached)", r["base"], r["session"], r["session_id"] or "-", elapsed, r["size"] or "-", changes, ab,
@@ -1658,11 +1666,15 @@ def cmd_state(args):
         raise Fail("state: run it from inside a task worktree")
     slug = os.path.basename(task["path"])
     deliverable = waits_on = None
+    if args.paused and (args.state != "blocked" or not args.deliverable):
+        raise Fail("state: --paused goes with blocked and the slugs it waits on")
     if args.state == "blocked":
         waits_on = args.deliverable
+        waited = waits_on.split(",") if waits_on else []
         others = [os.path.basename(t["path"]) for t in repo.tasks if t is not task]
-        if waits_on and waits_on not in ("human", "dispatcher", *others):
+        if waited and not all(w in (*others, *(() if len(waited) > 1 or args.paused else ("human", "dispatcher"))) for w in waited):
             raise Fail(f"state: blocked waits on human, dispatcher or the slug of another open task, not {waits_on}")
+        waits_on = waited if len(waited) > 1 or args.paused else waits_on
     elif (args.state == "handed-over") != bool(args.deliverable):
         raise Fail("state: " + ("handed-over needs a deliverable" if args.state == "handed-over" else "working takes none"))
     else:
@@ -1673,7 +1685,9 @@ def cmd_state(args):
             raise Fail(f"state: deliverable {deliverable} does not exist")
         if inside(deliverable, task["path"]):
             raise Fail(f"state: deliverable {deliverable} is inside the worktree, which clean removes")
-    declare(repo, slug, "lead", args.state, deliverable, waits_on)
+    declare(repo, slug, "lead", args.state, deliverable, waits_on, args.paused)
+    if args.paused:
+        task_event("TaskPaused", repo, slug, waits_on=waits_on)
     stated = args.state == "handed-over" and task["branch"] and config_value(repo, f"branch.{task['branch']}.factoryTest")
     if stated and stated != "none":
         repo.git("config", "factory.lastTest", stated)
@@ -1862,7 +1876,7 @@ LEAD_GRACE_MINUTES = 30
 LEAD_TOLD = "lead told at "
 WATCH_INTERVAL = 120
 HEALTH_SECONDS = 1800 - 60
-EVERY_TICK = {"busy-after-handover"}  # criteria the watch evaluates on every tick, not only on the health pass
+EVERY_TICK = {"busy-after-handover", "churning"}  # criteria the watch evaluates on every tick, not only on the health pass
 WATCH_TIMEOUT = 600
 MONITOR_TIMEOUT = 120
 MIN_LANDED = 5
@@ -1873,8 +1887,9 @@ CLASSES = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")
 RUN_SCHEMA = {"type": "object", "required": ["sent", "decisions"], "properties": {
     "sent": {"type": "boolean"},
     "decisions": {"type": "array", "items": {"type": "object", "required": ["id", "decision", "reason", "looked"], "properties": {
-        "id": {"type": "string"}, "decision": {"type": "string", "enum": ["escalated", "suppressed"]},
+        "id": {"type": "string"}, "decision": {"type": "string", "enum": ["escalated", "suppressed", "paused"]},
         "to": {"type": "string", "enum": ["dispatcher", "lead"]}, "reason": {"type": "string"},
+        "waits_on": {"type": "array", "items": {"type": "string"}},
         "looked": {"type": "array", "items": {"type": "string"}}}}}}}
 FIRED_KEYS = ("criterion", "escalate", "slug", "subject", "detail")
 
@@ -1993,9 +2008,14 @@ def since_start(evs, slug):
     return (mine, None) if last is None else (mine[last + 1:], mine[last])
 
 
+def on_tasks(r):
+    """Whether the row `r` is blocked on other tasks (slugs), not on the human or the dispatcher."""
+    return r["state"] == "blocked" and r["waits_on"] not in ("human", "dispatcher")
+
+
 def c_past_limit(p, _):
     return [(r["slug"], r["slug"], f"working for {age(p['now'] - r['elapsed'], p['now'])}")
-            for r in tasks(p) if r["overtime"]]
+            for r in tasks(p) if r["overtime"] and not on_tasks(r)]
 
 
 def c_nearing_limit(p, _):
@@ -2048,7 +2068,8 @@ def c_blocked_unanswered(p, threshold):
     for r in unfinished(phased(p)):
         ts = r["phase"] == "blocked" and declared_before(p, r, threshold * 60)
         if ts:
-            found.append((r["slug"], r["slug"], f"blocked {age(ts, p['now'])} ago"))
+            found.append((r["slug"], r["slug"], f"blocked {age(ts, p['now'])} ago"
+                          + (f", waiting for {r['waits_on']}" + (" (paused)" if r["paused"] else "") if on_tasks(r) else "")))
     return found
 
 
@@ -2059,6 +2080,28 @@ def c_handover_unacknowledged(p, threshold):
         if ts:
             found.append((r["slug"], r["slug"], f"handed over {age(ts, p['now'])} ago"))
     return found
+
+
+def churning(p):
+    """{slug: churn evidence} of the handed-over tasks already sent back by the queue whose pull request conflicts
+    again while other open tasks change the same files; it reads the tick's snapshot, and asks GitHub itself only when the tick took none."""
+    def make(p):
+        repo = p["repo"]
+        due = [s for s, r in p["declared"].items() if r["state"] == "handed-over" and queue_send_backs(repo, s)]
+        found = {}
+        for pr in (snapshot(repo) if p.get("snap") is None else p["snap"]) if due else []:
+            slug = task_slug(repo, pr)
+            if slug in due and (evidence := churn(repo, slug, pr)):
+                found[slug] = {**evidence, "pr": pr["number"]}
+        return found
+    return cached(p, "churn", make)
+
+
+def c_churning(p, _):
+    return [(slug, f"#{e['pr']}", f"sent back by the queue at {', '.join(e['sent_back'])}; conflicts again in "
+             f"{', '.join(e['files'])}; other open tasks change the same files: "
+             + "; ".join(f"{o['slug']} ({o['state']}) on {', '.join(o['files'])}" for o in e["others"]))
+            for slug, e in churning(p).items()]
 
 
 def descendants(table, pid):
@@ -2483,7 +2526,7 @@ CRITERIA = {  # name -> (function, whether it needs a threshold)
     "handover-unacknowledged": (c_handover_unacknowledged, True), "busy-after-handover": (c_busy_after_handover, True), "review-loops": (c_review_loops, True),
     "wrong-model": (c_wrong_model, False), "ci-red-handover": (c_ci_red_handover, False),
     "deep-stack": (c_deep_stack, True), "merged-not-cleaned": (c_merged_not_cleaned, True),
-    "lgtm-blocked": (c_lgtm_blocked, False), "base-merged": (c_base_merged, False),
+    "lgtm-blocked": (c_lgtm_blocked, False), "base-merged": (c_base_merged, False), "churning": (c_churning, False),
     "cost-outlier": (c_cost_outlier, True), "lead-heavy": (c_lead_heavy, True),
     "mix-shift": (c_mix_shift, True), "dearest-task": (c_dearest_task, True),
     "role-growing": (c_role_growing, True), "version-shift": (c_version_shift, True),
@@ -2548,7 +2591,7 @@ def fold(records):
                                 "cleared": False}
         elif f and "decision" in r and f["decision"] is None:
             f.update(decision=r["decision"], reason=r.get("reason"), by=r.get("by"), decided=r.get("ts"),
-                     to=r.get("to"), looked=r.get("looked"), run=r.get("run"))
+                     to=r.get("to"), looked=r.get("looked"), run=r.get("run"), waits_on=r.get("waits_on"))
         elif f and "outcome" in r:
             f["outcome"] = r["outcome"]
         elif f and r.get("cleared"):
@@ -2680,11 +2723,20 @@ def record_decisions(p, sent, result, run):
         fid, decision, reason = d.get("id"), d.get("decision"), d.get("reason")
         if not isinstance(fid, str) or fid not in by_id or fid in seen:
             continue
-        if decision not in ("escalated", "suppressed") or not isinstance(reason, str) or not reason.strip():
+        if decision not in ("escalated", "suppressed", "paused") or not isinstance(reason, str) or not reason.strip():
             continue
         f, to = by_id[fid], (d.get("to") or "dispatcher") if decision == "escalated" else None
         if decision == "escalated" and (to not in ("dispatcher", "lead") or result.get("sent") is not True):
             continue
+        waits = d.get("waits_on")
+        if decision == "paused":
+            try:
+                others = {o["slug"] for o in (churning(p).get(f["slug"]) or {}).get("others", [])} if f["criterion"] == "churning" else set()
+            except NotEvaluated:
+                others = set()
+            if result.get("sent") is not True or not isinstance(waits, list) or not waits \
+                    or not all(isinstance(w, str) and w in others for w in waits):
+                continue
         if (decision == "suppressed" and f["escalate"] == "always") or \
                 (to == "lead" and (f["escalate"] == "always" or f.get("lead_told") or not task_lead(p, f["slug"])[3])):
             continue
@@ -2692,7 +2744,7 @@ def record_decisions(p, sent, result, run):
         looked = d.get("looked")
         log_firing(p["repo"], id=fid, decision=decision, reason=reason.strip(), by="site-manager", run=run,
                    looked=[x for x in looked if isinstance(x, str)] if isinstance(looked, list) else [],
-                   **({"to": to} if to else {}))
+                   **({"to": to} if to else {}), **({"waits_on": waits} if decision == "paused" else {}))
 
 
 def notify(repo, f):
@@ -2789,7 +2841,7 @@ def cmd_watch(args):
             return 0
         watch_tick(args, repo)
         word = read_word(repo)
-        if handed_over(repo) or word["all"] or word["prs"]:  # last: the loop runs until health is next due
+        if handed_over(repo) or word["all"] or word["prs"] or paused_rows(repo):  # last: the loop runs until health is next due
             with repo_lock(repo, "lander") as free:
                 if free:
                     drain(repo, args.dispatcher, tick=True, deadline=read_lander(repo)["health"] + HEALTH_SECONDS)
@@ -2802,13 +2854,18 @@ def tick_picture(repo, fallback, criteria):
     `gather` whenever the sessions are listed."""
     p = {"now": time.time(), "repo": repo, "dispatcher": None, "dispatcher_why": "sessions not listed",
          "sessions": None, "rows": None, "declared": read_tasks(repo.root)}
-    if any(handed_over_before(p, c["threshold"]) for c in criteria):
-        settings = load_settings()
-        p["sessions"], p["lean_start"], p["monitor"] = list_sessions(), settings["lean_start"], settings["monitor"]
-        found, p["dispatcher_why"] = ((None, "cannot list sessions") if p["sessions"] is None
-                                      else find_dispatcher(p["sessions"], repo.root, fallback))
-        p["dispatcher"] = found and found["name"]
+    if any(handed_over_before(p, c["threshold"]) for c in criteria if c["threshold"]):
+        with_dispatcher(p, fallback)
     return p
+
+
+def with_dispatcher(p, fallback):
+    """List the sessions into the picture `p` and find the dispatcher as `gather` does."""
+    settings = load_settings()
+    p["sessions"], p["lean_start"], p["monitor"] = list_sessions(), settings["lean_start"], settings["monitor"]
+    found, p["dispatcher_why"] = ((None, "cannot list sessions") if p["sessions"] is None
+                                  else find_dispatcher(p["sessions"], p["repo"].root, fallback))
+    p["dispatcher"] = found and found["name"]
 
 
 def watch_tick(args, repo):
@@ -2817,7 +2874,7 @@ def watch_tick(args, repo):
     every = load_criteria()
     criteria = job_criteria(every, "watch")
     print(f"{now()} watch {os.path.basename(repo.root)}")
-    cheap_tick(repo, args.dispatcher)
+    snap = cheap_tick(repo, args.dispatcher)
     state = read_lander(repo)
     full = time.time() - state["health"] >= HEALTH_SECONDS
     if full:
@@ -2826,8 +2883,11 @@ def watch_tick(args, repo):
     else:
         criteria = [c for c in criteria if c["name"] in EVERY_TICK]
         p = tick_picture(repo, args.dispatcher, criteria)
-    orphaned = str(p["dispatcher_why"]).startswith("no dispatcher session")  # not a shared or missing name
+    p["snap"] = snap  # the tick's one `gh pr list`, for `churning`
     current, skipped = evaluate(p, criteria)
+    if current and not full and p["sessions"] is None:  # something fired between health passes: who is the dispatcher?
+        with_dispatcher(p, args.dispatcher)
+    orphaned = str(p["dispatcher_why"]).startswith("no dispatcher session")  # not a shared or missing name
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
     evaluated = {c["name"] for c in (every if full else criteria)} - {s["criterion"] for s in skipped}
@@ -2969,7 +3029,8 @@ def summarize(firings, misses):
         return n / d if d else None
     return {"escalated": len(escalated), "acted": acted, "ignored": ignored,
             "no_outcome": len(escalated) - acted - ignored,
-            "suppressed": sum(f["decision"] == "suppressed" for f in firings), "missed": len(misses),
+            "suppressed": sum(f["decision"] == "suppressed" for f in firings),
+            "paused": sum(f["decision"] == "paused" for f in firings), "missed": len(misses),
             "missed_suppressed": first, "missed_never_fired": len(misses) - first,
             "precision": ratio(acted, acted + ignored), "recall": ratio(acted, acted + len(misses))}
 
@@ -2989,8 +3050,38 @@ def cmd_firings(args):
     pct = {k: "-" if s[k] is None else f"{s[k]:.2f}" for k in ("precision", "recall")}
     told = sum(f["decision"] == "escalated" and f.get("to") == "lead" for f in firings)
     print(f"escalated {s['escalated']} (acted {s['acted']}, ignored {s['ignored']}, no outcome {s['no_outcome']}); "
-          f"to lead {told}; suppressed {s['suppressed']}; missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
+          f"to lead {told}; suppressed {s['suppressed']}; paused {s['paused']}; missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
           f"{s['missed_never_fired']} never fired); precision {pct['precision']}; recall {pct['recall']}")
+    return 0
+
+
+def pauses(repo):
+    """One dict per pause of this repository, oldest first, from the `TaskPaused`, `TaskPrioritized` and
+    `TaskPrioritizedEnd` events and the queue's send-back rows: slug, ts, waits_on, minutes (None while paused), the
+    send-backs before and after it, and how the priority ended (reason, minutes) or None."""
+    events = [e for e in repo_log("events", repo.root) or [] if e.get("event") in ("TaskPaused", "TaskPrioritized", "TaskPrioritizedEnd")]
+    found = []
+    for e in events:
+        if e["event"] != "TaskPaused":
+            continue
+        later = [x for x in events if x.get("slug") == e["slug"] and x["ts"] >= e["ts"]]
+        end = next((x for x in later if x["event"] == "TaskPrioritized"), None)
+        over = next((x for x in later if x["event"] == "TaskPrioritizedEnd" and end and x["ts"] >= end["ts"]), None)
+        sent = queue_send_backs(repo, e["slug"])
+        found.append({"slug": e["slug"], "ts": e["ts"], "waits_on": e.get("waits_on") or [],
+                      "minutes": end and end.get("paused_minutes"), "before": sum(t <= e["ts"] for t in sent),
+                      "after": sum(t > e["ts"] for t in sent), "ended": over and (over.get("reason"), over.get("minutes"))})
+    return found
+
+
+def cmd_pauses(args):
+    found = pauses(Repo())
+    for f in found:
+        ended = f"; prioritized {f['ended'][1]} min, ended {f['ended'][0]}" if f["ended"] else ""
+        print("  ".join([f["slug"], f["ts"], "still paused" if f["minutes"] is None else f"{f['minutes']} min",
+                         f"waited {','.join(f['waits_on'])}", f"send-backs before {f['before']}, after {f['after']}{ended}"]))
+    print(f"pauses {len(found)}; still paused {sum(f['minutes'] is None for f in found)}; "
+          f"minutes paused {sum(f['minutes'] or 0 for f in found)}; send-backs after a pause {sum(f['after'] for f in found)}")
     return 0
 
 
@@ -5278,13 +5369,15 @@ def stop_policy(kind, reason):
 
 def read_lander(repo):
     """lander.json: the stops the loop has reported (`stopped`) and those still inside their patience (`waiting`),
-    each by pull request number, and when health last ran."""
+    each by pull request number, when health last ran, and the tasks the queue serves first (`prioritized`: slug to
+    since)."""
     try:
         data = json.loads(repo_state(repo.root, "lander", "json").read_text())
     except (OSError, ValueError):
         data = None
     data = data if isinstance(data, dict) else {}
-    return {"stopped": data.get("stopped") or {}, "waiting": data.get("waiting") or {}, "health": data.get("health") or 0}
+    return {"stopped": data.get("stopped") or {}, "waiting": data.get("waiting") or {}, "health": data.get("health") or 0,
+            "prioritized": data.get("prioritized") or {}}
 
 
 def write_json(path, data):
@@ -5347,13 +5440,23 @@ def candidates(repo, snap):
 def lander_queue(repo, snap, word):
     """[(pr, permission)] of the pull requests of `snap` to work through, by number: those approved on GitHub (permission
     `{}`) and those on the human's word (`None`): every handed-over one while the window is open, and each number given.
-    A pull request whose base is the head of an open one waits for its base, silently."""
+    A pull request whose base is the head of an open one waits for its base, silently. While a task is prioritized
+    (released from a pause, inside RELEASE_HOLD_MINUTES) only its pull request is in the line, or nothing."""
     declared, heads = read_tasks(repo.root), {pr["headRefName"] for pr in snap}
     handed = {pr["number"] for pr in snap if declared.get(task_slug(repo, pr), {}).get("state") == "handed-over"}
     spoken = {int(n) for n in word["prs"]} | (handed if word["all"] else set())
     ready = spoken | {pr["number"] for pr in candidates(repo, snap)}
-    return [(pr, None if pr["number"] in spoken else {}) for pr in sorted(snap, key=lambda pr: pr["number"])
+    line = [(pr, None if pr["number"] in spoken else {}) for pr in sorted(snap, key=lambda pr: pr["number"])
             if pr["number"] in ready and pr["baseRefName"] not in heads]
+    first = queue_holders(repo)
+    return [x for x in line if task_slug(repo, x[0]) in first] if first else line
+
+
+def queue_holders(repo):
+    """{slug: when its hold ends (epoch seconds)} of the prioritized tasks still inside RELEASE_HOLD_MINUTES and open."""
+    prioritized = read_lander(repo)["prioritized"]
+    ends = {s: (epoch(since) or 0) + RELEASE_HOLD_MINUTES * 60 for s, since in prioritized.items()}
+    return {s: end for s, end in ends.items() if end > time.time() and s in open_tasks(repo, STATES[:3])} if prioritized else {}
 
 
 def waiting_since(state, n, pr, kind):
@@ -5408,7 +5511,11 @@ def send_back(repo, fallback, pr, slug, evidence):
     to_draft(repo, pr["headRefName"])
     if tech_lead_start(repo, fallback, pr, slug, evidence):
         return "tech lead"
-    said = (f"#{pr['number']} went back to you: {evidence}. Fix it on your branch (merge {repo.remote}/{repo.default} in), "
+    held = paused_for(repo, slug)
+    said = (f"#{pr['number']} is paused: it conflicts in {', '.join(conflicting_files(repo, pr))} while {', '.join(held)} are landing "
+            f"on the same files. Declare factory state blocked {','.join(held)} --paused, dispatch nothing, and wait: you are told "
+            "when the way is clear." if held else
+            f"#{pr['number']} went back to you: {evidence}. Fix it on your branch (merge {repo.remote}/{repo.default} in), "
             "re-review what you change, and hand over again: it is then merged by itself.")
     return tell_lead(repo, fallback, slug, "LANDER", said, f"factory: #{pr['number']} went back to {slug}")
 
@@ -5571,6 +5678,8 @@ def cmd_tech_lead(args):
             raise Fail(missing)
         learned = {}
         try:
+            if waited := paused_for(repo, slug):
+                return tech_lead_pause(repo, settings, args, waited)
             return tech_lead_run(repo, settings, args, learned)
         except Exception as e:
             reason = f"the run failed: {why(e)}"
@@ -5581,6 +5690,18 @@ def cmd_tech_lead(args):
                 print(f"#{n} tech lead: the record could not be written: {err}")
             print(f"#{n} tech lead stopped: {reason.splitlines()[0]}")
             return 1
+
+
+def tech_lead_pause(repo, settings, args, waited):
+    """The site manager paused this task: it waits for `waited`, blocked, and no model runs (the pull request is a draft
+    already). The script releases it when they have landed."""
+    slug, n = args.slug, args.pr
+    pr = gh_json(repo, dict, "pr", "view", str(n), "--json", "number,headRefOid")
+    declare(repo, slug, "tech-lead", "blocked", waits_on=waited, paused=True)
+    task_event("TaskPaused", repo, slug, waits_on=waited, files=conflicting_files(repo, pr), sent_back=len(queue_send_backs(repo, slug)))
+    log_tech_lead(repo, settings, slug, n, args.evidence, "paused", reason=f"waits for {', '.join(waited)}")
+    print(f"#{n} tech lead paused: waits for {', '.join(waited)}")
+    return 0
 
 
 def tech_lead_run(repo, settings, args, learned):
@@ -5736,6 +5857,8 @@ def report_stop(repo, fallback, pr, kind, line):
     sent_back = stop_policy(kind, line)[2] == "lead"
     files = {"files": conflicting_files(repo, pr)} if sent_back and kind == "conflict" else {}  # before a tech lead fetches
     if sent_back:
+        if kind != "conflict":
+            end_priority(repo, slug, "sent-back")
         to = send_back(repo, fallback, pr, slug, evidence(repo, n, kind, line))
     else:
         to = forward(repo, fallback, slug, "LANDER", f"#{n} stopped {kind}: {line}", lead=False)
@@ -5748,6 +5871,12 @@ def report_stop(repo, fallback, pr, kind, line):
     print(f"#{n} stopped {kind}: {line} (told {to or 'human'})")
 
 
+def awaits_decision(repo, pr, kind):
+    """Whether `pr` stopped on a conflict that churns and the site manager has not yet decided on its task."""
+    slug = task_slug(repo, pr)
+    return kind == "conflict" and bool(slug) and churn(repo, slug, pr) is not None and churning_decision(repo, slug) is None
+
+
 def settle(repo, fallback, stops):
     """Record the stops of a pass in lander.json and report those that are out of patience and new, once each: `waiting`
     keeps the others, `stopped` what was reported; a record of a pull request with no such stop now is dropped. A
@@ -5758,7 +5887,7 @@ def settle(repo, fallback, stops):
         old = state["stopped"].get(str(n)) or {}
         if kind == "handover" and old.get("head") == head or (old.get("head"), old.get("kind")) == (head, kind):
             stopped[str(n)] = old
-        elif time.time() - since < stop_policy(kind, line)[0]:
+        elif time.time() - since < max(stop_policy(kind, line)[0], CHURN_PATIENCE if awaits_decision(repo, pr, kind) else 0):
             waiting[str(n)] = {"head": head, "kind": kind, "since": since}
         else:
             stopped[str(n)] = {"head": head, "kind": kind, "text": line, "ts": now()}
@@ -5773,6 +5902,115 @@ def conflicting_files(repo, pr):
     empty list when it merges cleanly or git cannot tell (`update_branch` decides then)."""
     rc, out, _ = repo.git("merge-tree", "--write-tree", "--name-only", f"{repo.remote}/{repo.default}", pr["headRefOid"])
     return out.split("\n\n")[0].split()[1:] if rc == 1 else []
+
+
+CHURN_SEND_BACKS = 1
+CHURN_PATIENCE = 300
+RELEASE_HOLD_MINUTES = 24
+OPEN = ("working", "handed-over")
+
+
+def queue_send_backs(repo, slug):
+    """When the queue sent task `slug` back (the rows `send_back` writes), oldest first."""
+    return sorted(r["ts"] for r in read_log("tasks") if r.get("repo") == repo.root and r.get("slug") == slug
+                  and r.get("role") == "lander" and r.get("state") == "working")
+
+
+def open_tasks(repo, states=OPEN):
+    """{slug: state} of the tasks declared in `states` whose worktree is there and whose branch is not yet
+    in the default branch (a task whose pull request merged is not open, whatever its last declaration says)."""
+    branch = {os.path.basename(t["path"]): t["branch"] for t in repo.tasks}
+    return {s: r["state"] for s, r in read_tasks(repo.root).items() if r["state"] in states and branch.get(s)
+            and repo.git("merge-base", "--is-ancestor", branch[s], f"{repo.remote}/{repo.default}")[0] != 0}
+
+
+def churn(repo, slug, pr):
+    """None, or the evidence that task `slug` churns: the times the queue sent it back, the files its pull request `pr`
+    conflicts in now, and the other open tasks whose branch changes some of them (with those files). A branch that
+    cannot be read is left out."""
+    sent = queue_send_backs(repo, slug)
+    if len(sent) < CHURN_SEND_BACKS or not (files := conflicting_files(repo, pr)):
+        return None
+    branch, others = {os.path.basename(t["path"]): t["branch"] for t in repo.tasks}, []
+    for other, state in open_tasks(repo).items():
+        rc, out, _ = repo.git("diff", "--name-only", f"{repo.remote}/{repo.default}...{branch[other]}") if other != slug else (1, "", "")
+        if rc == 0 and (common := sorted(set(out.split()) & set(files))):
+            others.append({"slug": other, "state": state, "files": common})
+    return {"sent_back": sent, "files": files, "others": others} if others else None
+
+
+def churning_decision(repo, slug):
+    """The newest `churning` decision on `slug` logged since its last hand-over (a folded firing), or None."""
+    handed = max((r["ts"] for r in read_log("tasks") if r.get("repo") == repo.root and r.get("slug") == slug
+                  and r.get("state") == "handed-over"), default="")
+    mine = [f for f in fold(repo_log("firings", repo.root) or [])[0] if f["criterion"] == "churning"
+            and f["slug"] == slug and f["decision"] and f["decided"] >= handed]
+    return sorted(mine, key=lambda f: f["decided"])[-1] if mine else None
+
+
+def paused_for(repo, slug):
+    """The still open tasks that the site manager's `paused` decision on `slug` (since its last hand-over) waits for."""
+    decision, live = churning_decision(repo, slug), open_tasks(repo)
+    return [w for w in decision["waits_on"] or [] if w in live] if decision and decision["decision"] == "paused" else []
+
+
+def paused_rows(repo):
+    """{slug: its row} of the tasks whose worktree is there and whose last declaration is a pause."""
+    here = {os.path.basename(t["path"]) for t in repo.tasks}
+    return {s: r for s, r in read_tasks(repo.root).items() if s in here and r["state"] == "blocked" and r.get("paused") is True}
+
+
+def end_priority(repo, slug, reason):
+    """Drop `slug` from the tasks the queue serves first, with its `TaskPrioritizedEnd` event; whether it was there."""
+    state = read_lander(repo)
+    since = state["prioritized"].pop(slug, None)
+    if since is None:
+        return False
+    write_lander(repo, state)
+    task_event("TaskPrioritizedEnd", repo, slug, reason=reason, minutes=int((time.time() - (epoch(since) or time.time())) // 60))
+    return True
+
+
+def end_priorities(repo, fallback):
+    """End the priority of each task whose pull request merged, that left the open states, or whose hold ran out (the
+    dispatcher is told of that one)."""
+    live, declared = open_tasks(repo, STATES[:3]), read_tasks(repo.root)
+    branch = {os.path.basename(t["path"]): t["branch"] for t in repo.tasks}
+    for slug, since in read_lander(repo)["prioritized"].items():
+        if slug not in live:
+            end_priority(repo, slug, "merged" if declared.get(slug, {}).get("state") in STATES[:3] and branch.get(slug) and
+                         repo.git("merge-base", "--is-ancestor", branch[slug], f"{repo.remote}/{repo.default}")[0] == 0 else "gone")
+        elif time.time() - (epoch(since) or 0) >= RELEASE_HOLD_MINUTES * 60:
+            end_priority(repo, slug, "expired")
+            forward(repo, fallback, slug, "LANDER", f"{slug} ({live[slug]}) was served first for {RELEASE_HOLD_MINUTES} minutes "
+                    "and has not merged; the queue treats every pull request alike again", lead=False)
+
+
+def release_paused(repo, fallback):
+    """Once per pause (a row newer than the task's last `TaskPrioritized` event) for each paused task none of whose waited tasks is open any more: it is served first (`prioritized`, the
+    `TaskPrioritized` event) and its holder is told the way is clear: a tech lead run, else its lead."""
+    live = open_tasks(repo)
+    released = {e["slug"]: e["ts"] for e in repo_log("events", repo.root) or [] if e.get("event") == "TaskPrioritized"}
+    held = read_lander(repo)["prioritized"]  # the second guard: an event that could not be written must not release twice
+    for slug, row in paused_rows(repo).items():
+        waited = row["waits_on"] if isinstance(row.get("waits_on"), list) else []
+        if slug in held or row["ts"] <= released.get(slug, "") or any(w in live for w in waited):  # once per pause, even after the hold expired
+            continue
+        try:
+            pr = next(pr for pr in snapshot(repo) if task_slug(repo, pr) == slug)
+        except (NotEvaluated, StopIteration):
+            continue
+        state = read_lander(repo)
+        state["prioritized"][slug] = now()
+        write_lander(repo, state)
+        minutes = int((time.time() - (epoch(row["ts"]) or time.time())) // 60)
+        task_event("TaskPrioritized", repo, slug, waited=waited, paused_minutes=minutes)
+        joined = ", ".join(waited)
+        if not tech_lead_start(repo, fallback, pr, slug,
+                               f"the tasks it waited for ({joined}) have landed: merge {repo.remote}/{repo.default} in once and land"):
+            tell_lead(repo, fallback, slug, "LANDER",
+                      f"the way is clear: {joined} have landed. Declare factory state working, merge {repo.remote}/{repo.default} in once, "
+                      "re-review what the merge changed and hand over.", f"factory: #{pr['number']} is clear to go")
 
 
 def level(repo, task):
@@ -5838,6 +6076,7 @@ def lander_pass(repo, fallback, p, snap, line, updated):
         stop = attempt(repo, p, pr, permission)
         if stop is None:
             print(f"#{pr['number']} merged {pr['url']}")
+            end_priority(repo, task_slug(repo, pr), "merged")
             run_clean()
             pull_main(repo)
             return True, stops, set()
@@ -5893,6 +6132,8 @@ def drain(repo, fallback, tick=False, deadline=None):
     Ends when nothing merged and nothing is in flight, or at `deadline`; the numbers still stopped. With `tick` the
     comments and draft flags are looked at again every WATCH_INTERVAL."""
     stopped, updated, cheap_at, first = set(), {}, time.time(), True
+    end_priorities(repo, fallback)
+    release_paused(repo, fallback)
     while not (deadline and time.time() >= deadline):
         try:
             snap = snapshot(repo)
@@ -5906,6 +6147,8 @@ def drain(repo, fallback, tick=False, deadline=None):
             watch_snapshot(repo, fallback, snap)
             cheap_at = time.time()
         line = lander_queue(repo, snap, read_word(repo))
+        if first and (holders := queue_holders(repo)):
+            print("the queue serves " + ", ".join(f"{s} first until {time.strftime('%H:%M:%SZ', time.gmtime(end))}" for s, end in holders.items()))
         if not line and first and not tick:
             print("nothing ready")
         merged, stops, flight = lander_pass(repo, fallback, p, snap, line, updated)
@@ -5930,7 +6173,7 @@ def draft_picture(repo, snap):
 
 def cheap_tick(repo, fallback):
     """The part of every tick that costs one `gh pr list`: with a task working, blocked or handed over, take the open
-    pull requests once and look at them (`watch_snapshot`)."""
+    pull requests once and look at them (`watch_snapshot`); they are returned, None without them."""
     here = {os.path.basename(t["path"]) for t in repo.tasks}
     if not any(r["state"] in STATES[:3] and slug in here for slug, r in read_tasks(repo.root).items()):
         return
@@ -5939,6 +6182,7 @@ def cheap_tick(repo, fallback):
     except NotEvaluated as e:
         return print(f"comments: {e}")
     watch_snapshot(repo, fallback, snap)
+    return snap
 
 
 def watch_snapshot(repo, fallback, snap):
@@ -6008,6 +6252,7 @@ def parse_args(argv):
     clean.add_argument("--dry-run", action="store_true")
     state = sub.add_parser("state", help="declare the state of the task whose worktree this is (a lead runs it)")
     state.add_argument("state", choices=STATES[:3])
+    state.add_argument("--paused", action="store_true", help="with blocked and slugs: the lander's pause of a churning task, released by the script when they land")
     state.add_argument("deliverable", nargs="?", metavar="deliverable|whom",
                        help="with handed-over: a link, or a path outside the worktree; with blocked: whom it waits on, "
                             "human (default), dispatcher or the slug of another open task")
@@ -6058,6 +6303,7 @@ def parse_args(argv):
     miss.add_argument("--firing", help="the id of the firing that was suppressed or undecided")
     firings = sub.add_parser("firings", help="the firing log with precision and recall")
     firings.add_argument("--json", action="store_true")
+    sub.add_parser("pauses", help="the churning tasks the queue paused: how long, for whom, and the send-backs around each")
     merge = sub.add_parser("merge", help="merge handed-over pull requests that pass every check (no model takes part)")
     merge.add_argument("prs", nargs="*", type=int, metavar="pr")
     merge.add_argument("--all", action="store_true", help="every open pull request whose task is handed over")
@@ -6117,10 +6363,10 @@ def main(argv=None):
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "commands": cmd_commands, "ack": cmd_ack, "hook": cmd_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
-                "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "merge": cmd_merge,
-                "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander, "tech-lead": cmd_tech_lead, "build": cmd_build,
-                "schedule": cmd_schedule, "dispatcher": cmd_dispatcher, "wizard": cmd_wizard, "uninstall": cmd_uninstall,
-                "env": cmd_env, "settings": cmd_settings}[args.cmd](args)
+                "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "pauses": cmd_pauses,
+                "merge": cmd_merge, "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander,
+                "tech-lead": cmd_tech_lead, "build": cmd_build, "schedule": cmd_schedule, "dispatcher": cmd_dispatcher,
+                "wizard": cmd_wizard, "uninstall": cmd_uninstall, "env": cmd_env, "settings": cmd_settings}[args.cmd](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)
         return e.code

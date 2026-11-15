@@ -295,7 +295,7 @@ and decisions by status, and groups open issues by the first keyword topic that 
 `site_manager` is the site manager's record over every repository, read from
 the firing log (every month file) and counted as `factory firings` counts it
 (`docs/factory.md`, "Site manager"; a record without a `repo` counts nowhere): `escalated` firings and of those `acted`, `ignored` and `no_outcome`;
-`suppressed` firings; `missed` problems (`missed_suppressed` had fired and were
+`suppressed` firings; `paused` firings (a churning task the site manager paused: counted apart, outside precision and recall); `missed` problems (`missed_suppressed` had fired and were
 suppressed, `missed_never_fired` the rest); `precision` is `acted / (acted + ignored)` and
 `recall` is `acted / (acted + missed)`, each 0 to 1, or null with nothing to divide by.
 With `--since` it counts the firings that fired, and the misses recorded, at or after the
@@ -505,7 +505,11 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   another task says so in its row, with its reason beneath, and is not in the band), each
   with how long it has waited; when nothing waits it says so. The `3 Factory` tab carries
   `▲N` for the number waiting on every view (in a narrow header the live count then
-  shows as `● N`, without the word). It refreshes every 30 seconds while shown, every 2
+  shows as `● N`, without the word). A task the site manager paused reads
+  `paused 12m: waits a, b` in place of `blocked on a, b`, yellow from 30 minutes on (a
+  stale pause); a task the queue prioritizes reads `motion · prioritized 3m` (or
+  `review · …`, or `blocked · …` for a released task still declared paused) in the phase
+  column. It refreshes every 30 seconds while shown, every 2
   minutes otherwise, in two passes. The first, for every repository, is
   `factory status --json --cached` (10 s limit): it never contacts GitHub, so the rows
   show at once. The second, only while the view is shown, is

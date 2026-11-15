@@ -17,10 +17,11 @@ const (
 	meterCells  = 20 // beyond this many slots the meter is a bar
 	baseMax     = 24
 	prMax       = 24
-	phaseMax    = 24 // PHASE keeps more than this only when every column fits at it
+	phaseMax    = 26 // (glyph, space and the 24 cells of "review · prioritized 29m") PHASE keeps more than this only when every column fits at it
 	slugLeast   = 16
-	nameLeast   = 12 // cells the repository name keeps before the meter shrinks
-	bandDoLeast = 30 // cells the band's do cell needs to stay on its row
+	pausedStale = 30 * time.Minute // a pause this old is stale: the script's blocked-unanswered bound
+	nameLeast   = 12               // cells the repository name keeps before the meter shrinks
+	bandDoLeast = 30               // cells the band's do cell needs to stay on its row
 )
 
 // factoryBody is the factory view: what waits on the human, the settings line, then one
@@ -420,6 +421,24 @@ func (m *model) phaseLook(t data.FactoryTask, long bool) (glyph, label string, c
 	if t.Phase == "blocked" && !t.WaitsOnHuman() {
 		label = "blocked on " + t.WaitsOn
 	}
+	if f := t.Prioritized; f != nil {
+		label = phaseLabel(t.Phase, false) + " · prioritized"
+		if !f.Since.IsZero() {
+			label += " " + limitSpan(int64(max(0, m.now().Sub(f.Since)).Seconds()))
+		}
+	}
+	stalePause := false
+	if f := t.Paused; f != nil && t.Phase == "blocked" && t.Prioritized == nil { // a released task is still declared paused: prioritized wins
+		label = "paused"
+		if !f.Since.IsZero() {
+			age := max(0, m.now().Sub(f.Since))
+			label += " " + limitSpan(int64(age.Seconds()))
+			stalePause = age >= pausedStale
+		}
+		if len(f.WaitsOn) > 0 {
+			label += ": waits " + strings.Join(f.WaitsOn, ", ")
+		}
+	}
 	switch t.Phase {
 	case "motion":
 		glyph = "●"
@@ -432,6 +451,9 @@ func (m *model) phaseLook(t data.FactoryTask, long bool) (glyph, label string, c
 	case "merged":
 		return "✓", label, m.mergedColor()
 	case "blocked":
+		if stalePause {
+			return "▲", label, th.Yellow
+		}
 		if !t.WaitsOnHuman() {
 			return "▲", label, th.Muted // not waiting on you
 		}

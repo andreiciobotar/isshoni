@@ -3622,6 +3622,7 @@
   "ignored": 1,
   "no_outcome": 2,
   "suppressed": 4,
+  "paused": 0,
   "missed": 2,
   "missed_suppressed": 1,
   "missed_never_fired": 1,

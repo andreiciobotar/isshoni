@@ -453,7 +453,7 @@ def then(fid, hhmm, repo=ALPHA, **kw):
 
 
 class SiteManagerTests(Store):
-    EMPTY = {"escalated": 0, "acted": 0, "ignored": 0, "no_outcome": 0, "suppressed": 0, "missed": 0,
+    EMPTY = {"escalated": 0, "acted": 0, "ignored": 0, "no_outcome": 0, "suppressed": 0, "paused": 0, "missed": 0,
              "missed_suppressed": 0, "missed_never_fired": 0, "precision": None, "recall": None}
 
     def record(self, cutoff=None):
@@ -493,7 +493,7 @@ class SiteManagerTests(Store):
             # carried into the new month after its first record: older than the lines above, so the fold is by ts
             *(fired("f%d" % i, "2026-11-10T10:%02d:00Z" % i) for i in range(5, 8))])
         self.assertEqual(self.record(), {
-            "escalated": 6, "acted": 3, "ignored": 1, "no_outcome": 2, "suppressed": 2, "missed": 2,
+            "escalated": 6, "acted": 3, "ignored": 1, "no_outcome": 2, "suppressed": 2, "paused": 0, "missed": 2,
             "missed_suppressed": 1, "missed_never_fired": 1, "precision": 0.75, "recall": 0.6})
 
     def test_since_keeps_firings_and_misses_by_their_own_time(self):
@@ -560,7 +560,7 @@ class TechLeadTests(Store):
         self.log("techlead.jsonl", [came_back(t, "resolved", 1.5)])  # the legacy file and the month files are one log
         self.log("techlead-2026-11.jsonl", [
             came_back(t, "resolved", 2.0), came_back(t, "resolved", None), came_back(t, "escalated", 0.25),
-            came_back(t, "stopped", 3.0), came_back(t, "unstarted"), "not json"])
+            came_back(t, "stopped", 3.0), came_back(t, "unstarted"), came_back(t, "paused"), "not json"])  # a paused start is not counted
         self.assertEqual(self.record(), {**self.EMPTY, "came_back": 6, "resolved": 3, "escalated": 1, "stopped": 1,
                                          "unstarted": 1, "cost": 6.75, "cost_resolved": 3.5})
 

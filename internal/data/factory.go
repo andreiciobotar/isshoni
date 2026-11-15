@@ -53,6 +53,32 @@ type FactoryTask struct {
 	StopKind    string `json:"stop_kind"`    // QUESTION, BLOCKED or OVERTIME for a blocked task; empty when null
 	StopSummary string `json:"stop_summary"` // why it stopped; empty when null
 	WaitsOn     string `json:"waits_on"`     // a blocked task: human, dispatcher or a task's slug; empty when null
+
+	Paused      *FactoryFlag `json:"paused"`      // the site manager paused this blocked task; nil when not, or from a script before the field
+	Prioritized *FactoryFlag `json:"prioritized"` // the queue prioritizes this task: in motion, in review, or a still-blocked task just released; nil likewise
+}
+
+// FactoryFlag is a paused or prioritized mark. Since is the zero time when the script's
+// timestamp does not parse: the flag then shows without an age. WaitsOn is the paused
+// task's waited slugs, nil for a prioritized one.
+type FactoryFlag struct {
+	Since   time.Time
+	WaitsOn []string
+}
+
+// UnmarshalJSON reads {"since": "2026-11-14T19:00:00Z", "waits_on": ["a", "b"]}; a bad
+// since leaves Since zero rather than failing the status.
+func (f *FactoryFlag) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		Since   string   `json:"since"`
+		WaitsOn []string `json:"waits_on"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	since, _ := time.Parse(time.RFC3339, raw.Since)
+	*f = FactoryFlag{Since: since, WaitsOn: raw.WaitsOn}
+	return nil
 }
 
 // WaitsOnHuman says whether a blocked task waits on the human; an empty WaitsOn is a
