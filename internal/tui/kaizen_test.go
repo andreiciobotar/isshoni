@@ -104,6 +104,8 @@ func TestGoldenKaizen(t *testing.T) {
 		}, true},
 		{"kaizen-empty-80x24", 80, 24, pagePulse, func(*testing.T) *data.Kaizen { return &data.Kaizen{} }, true},
 		{"kaizen-few-100x30", 100, 30, pagePulse, func(t *testing.T) *data.Kaizen { return fewDoc(t) }, true},
+		{"kaizen-nomerge-140x40", 140, 40, pagePulse, func(t *testing.T) *data.Kaizen { return noMergeDoc(t) }, true},
+		{"kaizen-oneday-140x40", 140, 40, pagePulse, func(t *testing.T) *data.Kaizen { return oneDayDoc(t) }, true},
 		{"kaizen-wide-200x50", 200, 50, pagePulse, doc, false},
 		{"kaizen-narrow-60x20", 60, 20, pagePulse, doc, false},
 	} {

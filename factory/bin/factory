@@ -5149,7 +5149,7 @@ def cmd_uninstall(args):
 LAND_TEST_TIMEOUT = 1800
 LAND_TIMEOUT = 1800
 LAND_TOOLS = ("Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
-              "Bash(gh pr edit *)", "Bash(factory state working)", "Bash(factory overlap *)")
+              "Bash(gh pr edit *)", "Bash(factory overlap *)")
 ROLE_DENIED = ("Bash(gh pr merge*)", "Bash(gh pr review*)", "Bash(gh pr comment*)", "Bash(gh pr ready*)", "Bash(gh api*)",
                "Bash(gh repo*)", "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)",
                "Bash(git commit --amend*)", "Bash(git worktree*)")
@@ -5501,7 +5501,7 @@ class Landing:
         base = f"The base is {self.base} (remote {self.remote})." + (" The base has merged." if self.merged else "")
         brief = "\n".join([
             f"Your task slug is {self.slug}.", base, f"The reviewed head is {self.old_head}.",
-            "There is no pull request title, body file or retrospective file. Do not declare the hand-over.",
+            "There is no pull request title or body file.",
             "Edit files with the Edit tool. `gh` other than `pr view` and `pr edit` is not yours to run; merging, reviewing, "
             "commenting, forced pushes, rebases, amends and `git worktree` are denied.",
             f"The golden files this task means to change: {', '.join(task_files) or 'none'}. A generated file on this "
@@ -6204,14 +6204,29 @@ def build_run(repo, settings, args, spec, handover, learned):
     seconds = round(time.monotonic() - started)
     learned.update(session=session, head_before=old_head, seconds=seconds, cost_usd=cost)
     if verdict == "built" and not reason:
-        pr_state = pull_request(repo, branch)[0]
         checks = [(not git("status", "--porcelain"), "the worktree is not clean"),
                   (git("rev-parse", "--abbrev-ref", "HEAD") == branch, f"the worktree is not on {branch}"),
-                  (spec_hash(spec) == before, "the spec changed"),
-                  (pr_state == "open", f"cannot check for a pull request on {branch}" if pr_state == "unknown"
-                   else f"{branch} has no open pull request")]
-        reason = next((why for ok, why in checks if not ok), None)
+                  (spec_hash(spec) == before, "the spec changed")]
+        reason = next((why for ok, why in checks if not ok), None) or delivery_gap(repo, slug, branch, git)
     return "stopped" if reason else verdict, reason, text
+
+
+def delivery_gap(repo, slug, branch, git):
+    """Why a `built` run has delivered nothing, or None: an open pull request, or a report task's end: no pull request, the
+    report on disk and no commit the base lacks (the worktree is removed after acceptance, so a commit would be lost)."""
+    state = pull_request(repo, branch)[0]
+    report = STORE.expanduser() / "deliverables" / slug / "report.md"
+    if state == "open":
+        return None
+    if state == "unknown":
+        return f"cannot check for a pull request on {branch}"
+    if state != "none":
+        return f"{branch} has no open pull request"
+    if not report.exists():
+        return f"{branch} has no open pull request and no report at {report}"
+    base, merged = land_base(repo, branch)
+    ahead = int(git("rev-list", "--count", f"{repo.remote}/{repo.default if merged else base}..HEAD"))
+    return f"{branch} has commits and no pull request: a report task commits nothing" if ahead else None
 
 
 def report_stop(repo, fallback, pr, kind, line):
