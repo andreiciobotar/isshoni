@@ -21,7 +21,7 @@ Each firing has an `id`, a `criterion`, what it means (`what`), what the script 
 - `always`: pass it on. Do not judge it, do not look for reasons to drop it.
 - `judgment`: weigh the evidence, then decide.
 
-A firing about a task also carries `task` (phase, declared state, session state, time since its lead started and since its last commit, pull request, whether past its time limit, `worktree`, `branch`, `lead`: the lead's session name or null when it has none live, `pid`), `transcripts` (paths of the lead's transcript, then its subagents') and `transcript_tail`: the last things the lead said and did, with timestamps.
+A firing about a task also carries `task` (phase, declared state, session state, time since its lead started and since its last commit, pull request, whether past its time limit, `worktree`, `branch`, `lead`: the lead's session name, null when its session has no process (an idle lead is live), `pid`), `transcripts` (paths of the lead's transcript, then its subagents') and `transcript_tail`: the last things the lead said and did, with timestamps.
 
 When any firing is `judgment`, run `factory firings` first. If it shows the same condition escalated or suppressed earlier under another criterion (same task, same cause), suppress it with a reason naming the earlier id. One exception: the earlier one went to a lead and the condition is still there on a later run; that goes to the dispatcher (rule 5 below). A `detail` ending `suppressed earlier:` means the condition outlived a suppression by two hours; it is rarely noise.
 

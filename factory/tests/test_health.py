@@ -623,7 +623,7 @@ class Harness(Home):
         return [c for c in self.fake.calls if c[:2] == ["claude", "-p"]]
 
     def overtime(self, slug="x"):
-        return lead(slug, startedAt=int((self.clock - 3 * HOUR) * 1000))
+        return lead(slug, pid=4242, startedAt=int((self.clock - 3 * HOUR) * 1000))
 
     def tick(self, **kw):
         kw.setdefault("sessions", [DISPATCHER | {"name": "dispatcher-repo"}, self.overtime()])
@@ -793,7 +793,7 @@ class WatchTests(Harness):
                                         "last_commit": "?", "dirty": None, "ahead": None, "behind": None,
                                         "pr_state": "none", "pr_url": "", "limit": "2h", "size": None,
                                         "nearing": False, "overtime": True,
-                                        "worktree": f"{WT}/x", "branch": "worktree-x", "lead": "x", "pid": None})
+                                        "worktree": f"{WT}/x", "branch": "worktree-x", "lead": "x", "pid": 4242})
         self.assertEqual(sent["transcripts"], [str(path)])
         tail = sent["transcript_tail"]
         self.assertEqual(len(tail), 15)
@@ -1362,7 +1362,7 @@ class RoutingTests(Home):
 
     def test_a_lead_message_for_an_every_tick_finding_is_recorded_only_for_a_live_lead(self):
         sent = [{"id": "aaa", "escalate": "judgment", "slug": "x", "criterion": "busy-after-handover"}]
-        for label, session, recorded in (("live", lead("x"), 1), ("finished", lead("x", **FINISHED), 0), ("none", None, 0)):
+        for label, session, recorded in (("live", lead("x", pid=4242), 1), ("finished", lead("x", **FINISHED), 0), ("none", None, 0)):
             with self.subTest(label), mock.patch.object(factory, "log_firing") as log:
                 p = pic(rows=None, sessions=[session] if session else [])
                 factory.record_decisions(p, sent, {"sent": True, "decisions": [self.told_lead()]}, "r1")

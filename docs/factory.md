@@ -428,6 +428,8 @@ The script applies a valid decision, in this order, and tells the lead and the d
 - `escalated` on an `overrun`: the model's own `ESCALATION:` message goes to the dispatcher; the lead is told `passed to the human: declare factory state blocked human and wait`.
 - An `overrun` firing is cleared once decided, so a later ask is a new firing.
 
+The line for the lead goes to its session whenever it has a process, an idle one included, else to the dispatcher marked `(not delivered to its lead)`; the firing records `told` (`lead`, `dispatcher` or `nobody`).
+
 An ask costs at most one run. When the run fails, there is no dispatcher, or the decision is missing or invalid (an extension beyond `limits.extension_minutes`, alone or summed with earlier ones, included), the script decides once: `escalated`, `by: watch`, reason `the site manager did not decide: <why>`, tells the lead as for an escalation and the dispatcher (else a desktop notice) `ESCALATION` / `overrun undecided, the human decides: <the ask>`.
 
 **Outcome of an extension.** On the health pass, for each `extended` decision without an outcome: the task's `handed-over` declaration at or before `until` logs `kept`; otherwise `overran` once `until` has passed (or it was handed over later). `factory firing` does not take these. `isshoni kaizen --json` counts `extended`, `kept` and `overran` (see `isshoni.md`).

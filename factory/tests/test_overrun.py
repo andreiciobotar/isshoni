@@ -26,7 +26,7 @@ class Overrun(Harness):
         self.criteria_path.write_text(json.dumps([c for c in shipped if c["name"] == "run-stopped"]))
         factory.write_lander(SimpleNamespace(root=ROOT), {"health": NOW})  # every tick below is not a full pass
         self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "working", "ts": iso(STARTED + 60)}])
-        self.sessions = [DISPATCHER_NAME, lead("x", startedAt=STARTED * 1000)]
+        self.sessions = [DISPATCHER_NAME, lead("x", pid=4242, startedAt=STARTED * 1000)]
 
     def cli(self, *argv, **kw):
         with mock.patch.object(os, "getcwd", return_value=kw.pop("cwd", f"{WT}/x")):
@@ -35,11 +35,13 @@ class Overrun(Harness):
     def ask(self, text=ASK, **kw):
         return self.cli("overrun", text, **kw)
 
-    def decide(self, *decisions, sent=True, fail=False):
-        """The answers of the fake `claude`: the site manager's run says `decisions`; a courier run sends."""
+    def decide(self, *decisions, sent=True, fail=False, deaf=()):
+        """The answers of the fake `claude`: the site manager's run says `decisions`; a courier run sends, but not to
+        a session named in `deaf`."""
         def answer():
-            if "--json-schema" not in self.fake.calls[-1]:
-                return 0, json.dumps({"result": "sent"}), ""
+            call = self.fake.calls[-1]
+            if "--json-schema" not in call:
+                return (1, "", "no such session") if any(f"session named {n}. " in call[-1] for n in deaf) else (0, json.dumps({"result": "sent"}), "")
             return (1, "", "boom") if fail else reply([{"looked": ["factory status"], **d, "id": self.pending()} for d in decisions], sent)
         return {("claude", "-p"): answer}
 
@@ -47,7 +49,7 @@ class Overrun(Harness):
         return next(r["id"] for r in self.records() if r.get("criterion") in ("overrun", "run-stopped") and "decision" not in r)
 
     def watch(self, *decisions, **kw):
-        return self.cli("watch", answers=self.decide(*decisions, **{k: kw.pop(k) for k in ("sent", "fail") if k in kw}), **kw)
+        return self.cli("watch", answers=self.decide(*decisions, **{k: kw.pop(k) for k in ("sent", "fail", "deaf") if k in kw}), **kw)
 
     def runs(self):
         return [c for c in self.claude_runs() if "--json-schema" in c]
@@ -108,6 +110,60 @@ class AskTests(Overrun):
     def test_an_ask_is_cut_at_a_thousand_characters(self):
         self.ask("x" * 1500)
         self.assertEqual(len(self.records()[0]["detail"]), 1000)
+
+
+class IdleLeadTests(Overrun):
+    """A lead whose turn ended but whose process lives is reachable: the decision goes to it."""
+
+    def idle_lead(self, **kw):
+        return lead("x", startedAt=STARTED * 1000, pid=4242, status="idle", state="done", **kw)
+
+    def told(self):
+        return [r["told"] for r in self.records() if "told" in r]
+
+    def test_an_extension_reaches_an_idle_lead_and_the_firing_records_it(self):
+        self.ask()
+        self.sessions = [DISPATCHER_NAME, self.idle_lead()]
+        self.watch({"decision": "extended", "minutes": 20, "reason": "landing left"})
+        until = clock(STARTED + 140 * 60)
+        self.assertEqual(self.lines(), [
+            ("x", f"SITE MANAGER: x: extended 20 min, limit now {until}: landing left"),
+            ("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {until}, no answer needed: landing left")])
+        self.assertEqual(self.told(), ["lead"])
+
+    def test_a_pause_reaches_an_idle_lead_and_the_dispatcher_gets_its_line(self):
+        self.ask()
+        self.sessions = [DISPATCHER_NAME, self.idle_lead()]
+        self.watch({"decision": "paused", "waits_on": ["human"], "reason": "the human decides"})
+        self.assertEqual(self.lines(), [
+            ("x", "SITE MANAGER: x: paused: start no build run and end your turn; the human decides. the human decides"),
+            ("dispatcher-repo", "PAUSED: x: paused by the site manager, for the human: the human decides")])
+        self.assertEqual(self.told(), ["lead"])
+
+    def test_a_lead_without_a_process_leaves_one_line_for_the_dispatcher(self):
+        self.ask()
+        gone = {k: v for k, v in self.idle_lead().items() if k not in ("pid", "status")} | {"cwd": ROOT}
+        self.sessions = [DISPATCHER_NAME, gone]
+        self.watch({"decision": "extended", "minutes": 20, "reason": "landing left"}, deaf=["x"])
+        self.assertEqual(self.lines(), [
+            ("x", f"SITE MANAGER: x: extended 20 min, limit now {clock(STARTED + 140 * 60)}: landing left"),
+            ("dispatcher-repo", f"SITE MANAGER: x (not delivered to its lead): extended 20 min, limit now "
+                                f"{clock(STARTED + 140 * 60)}: landing left")])
+        self.assertEqual(self.told(), ["dispatcher"])
+
+    def test_nobody_reached_is_recorded(self):
+        p, f = pic(repo=SimpleNamespace(root=ROOT), sessions=[]) | {"dispatcher": "d"}, {"id": "aaa", "criterion": "overrun", "slug": "x"}
+        with mock.patch.object(factory, "forward", return_value=None) as forward, mock.patch.object(factory, "log_firing") as log:
+            factory.tell_decision(p, f, "extended", "r", 20, "2026-01-01T10:20:00Z")
+        self.assertEqual(forward.call_count, 1)
+        log.assert_called_once_with(p["repo"], id="aaa", told="nobody")
+
+    def test_task_lead_names_a_lead_with_a_process_idle_or_not(self):
+        p = pic(rows=[], sessions=[self.idle_lead()])
+        self.assertEqual(factory.task_lead(p, "x")[3], "x")
+        self.assertEqual(factory.firing_for_run(p, fired("f1", criterion="overrun") | {"what": ""})["task"]["lead"], "x")
+        p = pic(rows=[], sessions=[{k: v for k, v in self.idle_lead().items() if k not in ("pid", "status")}])
+        self.assertIsNone(factory.task_lead(p, "x")[3])
 
 
 class BoundTests(Overrun):
