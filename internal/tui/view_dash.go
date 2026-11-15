@@ -384,24 +384,31 @@ func (m *model) tiles(p paint, w int, compact bool) block {
 	return m.tileRow(p, w, tiles, gauge)
 }
 
-// tileRow lays the tiles side by side across w cells, the first ones a cell wider when
-// the width does not divide.
+// tileRow lays the tiles side by side across w cells.
 func (m *model) tileRow(p paint, w int, tiles []tile, gauge func(int) string) block {
-	n := len(tiles)
-	gap := 1
-	tw := (w - gap*(n-1)) / n
-	extra := w - gap*(n-1) - tw*n
+	widths := cardWidths(w, len(tiles))
 	var cols []block
-	var widths []int
 	for i, tl := range tiles {
-		x := tw
-		if i < extra {
-			x++
-		}
-		widths = append(widths, x)
-		cols = append(cols, m.renderTile(p, tl, x, gauge))
+		cols = append(cols, m.renderTile(p, tl, widths[i], gauge))
 	}
-	return joinCols(p, tileH, gap, widths, cols...)
+	return joinCols(p, tileH, tileGap, widths, cols...)
+}
+
+const tileGap = 1
+
+// cardWidths splits w cells over n cards with a gap between, the first ones a cell wider
+// when the width does not divide.
+func cardWidths(w, n int) []int {
+	tw := (w - tileGap*(n-1)) / n
+	extra := w - tileGap*(n-1) - tw*n
+	widths := make([]int, n)
+	for i := range widths {
+		widths[i] = tw
+		if i < extra {
+			widths[i]++
+		}
+	}
+	return widths
 }
 
 func (m *model) renderTile(p paint, tl tile, w int, gauge func(int) string) block {
