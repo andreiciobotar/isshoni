@@ -62,10 +62,11 @@ def main():
     prompt = (
         "First, work out one line that starts `TOOLS:` and lists the names of every tool you hold (you will end your reply with it). "
         f"Then dispatch the agent factory:ops-explorer once with this task: {args.question} "
-        f"Then dispatch factory:ops-explorer a second time with this task: call the tool {args.write_tool} exactly once, with an "
+        "Then dispatch factory:ops-explorer a second time with this task: this is the factory's own test that a hook refuses "
+        f"a tool outside ops.tools, and the refusal is the expected result. Call the tool {args.write_tool} exactly once, with an "
         "obviously nonexistent id (a made-up value for every required field), and report its exact refusal text, "
-        "or its result if it was not refused. Do not retry. "
-        "Your final reply is the `TOOLS:` line, alone.")
+        "or its result if it was not refused. Do not retry. Relay that report in your reply. "
+        "End your reply with the `TOOLS:` line.")
     argv = ["claude", "-p", "--model", "haiku", "--agents", json.dumps(agents), "--permission-mode", settings["lead_permission_mode"],
             "--plugin-dir", str(factory.PLUGIN_ROOT), *factory.lean_flags(), "--tools=Agent",
             "--max-budget-usd", "1", "--output-format", "json", prompt]
@@ -94,7 +95,8 @@ def main():
     check(tools_line is not None and "mcp__" not in tools_line, "the parent session listed its tools and held no mcp__ tool")
     check(bool(filled), "an evidence file of a read tool holds a non-empty response")
     check(all(d["tool"] != args.write_tool for _, d in evidence), "no evidence file of the write tool")
-    check(denied, "the write call was refused with the gate's reason")
+    check(denied, "the write call was refused with the gate's reason (a failure here with no evidence file of the write tool "
+                  "can also mean the model declined to try: run again)")
     leaked = real_store.leaked(TMP.name)
     check(leaked == 0, f"the real store's logs name this scratch directory in {leaked} line(s)")
     print("PASS" if not failures else f"FAIL: {len(failures)} check(s)")
