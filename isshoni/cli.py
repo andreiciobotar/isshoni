@@ -285,6 +285,31 @@ def _pulse_lines(pulse, cur):
             for label, f in figures]
 
 
+def _friction_lines(f, cur, subagents_only):
+    """The friction figures, one line each; `-` is unknown."""
+    m = lambda v, unpriced=0: "-" if v is None else money(v, cur, unpriced)  # noqa: E731
+    pct = lambda v, digits=0: "-" if v is None else "%.*f%%" % (digits, 100 * v)  # noqa: E731
+    d, r, c, w, q = f["dispatcher"], f["rework"], f["causes"], f["wakeups"], f["queue"]
+    stated = sum(v for k, v in c.items() if k != "unstated")
+    refused = ", ".join("%s %s (%d/%d, next %d calls %s)" % (x["role"], pct(x["share"], 1), x["guard"] + x["classifier"], x["bash"],
+                                                           f["refusals"]["after_calls"], m(x["after_cost"])) for x in f["refusals"]["roles"])
+    held, late = f["held"], f["late_conflicts"]
+    plural = lambda n, noun: "%d %s%s" % (n, noun, "" if n == 1 else "s")  # noqa: E731
+    return [
+        "dispatcher: %s per call (n=%d calls), median context %s" % (m(d["per_call"], d["unpriced_tokens"]), d["calls"], human(d["context_median"])),
+        "cost after the first review: %s of task cost (%s of %s, median %s per task, n=%d; subagents only %s)" % (
+            pct(r["share"]), m(r["cost"]), m(r["task_cost"]), m(r["per_task_median"]), r["n"], pct(subagents_only)),
+        "defect causes: %s (n=%d stated, %d unstated)" % (", ".join("%s %d" % (k, v) for k, v in c.items() if k != "unstated"), stated, c["unstated"]),
+        "refused bash calls: %s" % (refused or "none recorded"),
+        "lead prompts after hand-over: %d in %d tasks, %s after them, %s per prompt" % (w["prompts"], w["tasks"], m(w["cost"]), m(w["per_prompt"])),
+        "queue attempts per merged PR: " + ("no queue log yet" if q is None else "%s (n=%d: updates %d, re-runs %d, send-backs %d, stops %d), queue log since %s" % (
+            "-" if q["per_merged"] is None else "%.2f" % q["per_merged"], q["merged"], q["updated"], q["rerun"], q["sent_back"], q["stopped"], q["since"])),
+        "queue send-backs and pauses: " + ("send-backs %d, pauses %d, paused %d min, in %s" % (
+            *(sum(h[k] for h in held) for k in ("sent_back", "paused", "paused_minutes")), plural(len(held), "task")) if held else "none recorded"),
+        "late conflicts: %s, %d of %d PRs in git history" % (
+            "no queue log yet" if late["log_tasks"] is None else "%s in the queue log" % plural(late["log_tasks"], "task"), late["git_tasks"], late["git_prs"])]
+
+
 def print_modes(rows, cur):
     """The landed tasks of each mode by stated size (summary.by_mode) as plain text."""
     if not rows:
@@ -327,7 +352,7 @@ def cmd_kaizen(args):
         med("cost", lambda v: money(v, cur)), med("brief_to_pr_s", lambda v: fmt_duration(v * 1000)),
         med("pr_to_merge_s", lambda v: fmt_duration(v * 1000)), med("review_rounds", lambda v: "%g" % v),
         s["first_pass"]["yes"], s["first_pass"]["of"]))
-    for line in _pulse_lines(doc["pulse"], cur):
+    for line in (*_pulse_lines(doc["pulse"], cur), *_friction_lines(doc["friction"], cur, s["rework_share"])):
         print(line)
     for r in doc["repos"]:
         if r["prs"] != "ok":

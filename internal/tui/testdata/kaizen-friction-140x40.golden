@@ -1,0 +1,40 @@
+ Isshoni 一緒に  1 Dashboard  2 Agents  3 Factory [4 Kaizen] 5 Hanami                                            24h [7d] 30d  all   ○ idle 
+ Kaizen   Pulse [Friction] Flow  Anatomy  Board   ←→  · 20 landed of 24 tasks in 7d  · as of 11:00:00                                       
+                                                                                                                                            
+ DISPATCHER                     $0.18* / call  n=400 calls  median context 450.0k                                                           
+ COST AFTER THE FIRST REVIEW    40% of task cost  $48.00 of $120  median $2.50 / task  n=10  (subagents only: 9%)                           
+ DEFECT CAUSES                  spec 40% 2  brief 0  conflict 20% 1  scope 0  code 40% 2  n=5 stated · 20 unstated                          
+ REFUSED BASH CALLS             role          refused           guard  classifier  next 3 calls                                             
+                                lead          2.4% 12/500       10     2           $1.50                                                    
+                                coder         6.7% 20/300       12     8           $2.25                                                    
+                                explorer      - 1/0             1      0           $0.20                                                    
+                                dispatcher    0.0% 0/40         0      0           $0                                                       
+                                                                                                                                            
+ LEAD PROMPTS AFTER HAND-OVER   30 in 12 tasks  $14.20 after them  $0.47 / prompt                                                           
+ QUEUE ATTEMPTS / MERGED PR     1.00  n=3  updates 2 · re-runs 0 · send-backs 1 · stops 0  (queue log since 11-15 09:00)                    
+                                                                                                                                            
+ QUEUE SEND-BACKS AND PAUSES    task                                send-backs  pauses   paused                                             
+                                fixture-alpha/fx-held-00            10          1        14m                                                
+                                fixture-alpha/fx-held-01            9           0        -                                                  
+                                fixture-alpha/fx-held-02            8           1        14m                                                
+                                fixture-alpha/fx-held-03            7           0        -                                                  
+                                fixture-alpha/fx-held-04            6           1        14m                                                
+                                fixture-alpha/fx-held-05            5           0        -                                                  
+                                fixture-alpha/fx-held-06            4           1        14m                                                
+                                fixture-alpha/fx-held-07            3           0        -                                                  
+                                +2 more                                                                                                     
+                                                                                                                                            
+ LATE CONFLICTS                           task / file                    queue log  git history (backfill)                                  
+                                by task   fixture-alpha/fx-late-00       2          12                                                      
+                                          fixture-alpha/fx-late-01       2          11                                                      
+                                          fixture-alpha/fx-late-02       2          10                                                      
+                                          fixture-alpha/fx-late-03       1          9                                                       
+                                          fixture-alpha/fx-late-04       1          8                                                       
+                                          fixture-alpha/fx-late-05       1          7                                                       
+                                          fixture-alpha/fx-late-06       1          6                                                       
+                                          fixture-alpha/fx-late-07       1          5                                                       
+                                          +1 more                                                                                           
+                                by file   fixture-beta/src/mod0/main.go  1          9                                                       
+                                          fixture-beta/src/mod1/main.go  1          8                                                       
+ +5 more lines · ↓ to scroll                                                                                                                
+ ←→/hl kaizen page  ·  ↑↓/jk move  ·  r range  ·  tab next view  ·  ? help  ·  q quit                                                       

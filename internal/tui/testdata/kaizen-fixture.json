@@ -82,7 +82,8 @@
      "lander": 0.0,
      "other": 0.28
     },
-    "rework": 1.41
+    "rework": 1.41,
+    "after_review": 3.12
    },
    "review_rounds": 3,
    "first_pass": false,
@@ -149,7 +150,8 @@
      "lander": 0.0,
      "other": 0.32
     },
-    "rework": 1.94
+    "rework": 1.94,
+    "after_review": 4.18
    },
    "review_rounds": 4,
    "first_pass": false,
@@ -216,7 +218,8 @@
      "lander": 0.0,
      "other": 0.27
     },
-    "rework": 1.07
+    "rework": 1.07,
+    "after_review": 2.44
    },
    "review_rounds": 2,
    "first_pass": false,
@@ -337,7 +340,8 @@
      "lander": 0.0,
      "other": 0.34
     },
-    "rework": 1.79
+    "rework": 1.79,
+    "after_review": null
    },
    "review_rounds": 3,
    "first_pass": false,
@@ -391,7 +395,8 @@
      "lander": 0.0,
      "other": 0.3
     },
-    "rework": 0.99
+    "rework": 0.99,
+    "after_review": 2.28
    },
    "review_rounds": 2,
    "first_pass": false,
@@ -451,7 +456,8 @@
      "lander": 0.0,
      "other": 0.18
     },
-    "rework": 0.67
+    "rework": 0.67,
+    "after_review": 1.64
    },
    "review_rounds": 2,
    "first_pass": false,
@@ -518,7 +524,8 @@
      "lander": 0.0,
      "other": 0.3
     },
-    "rework": 1.41
+    "rework": 1.41,
+    "after_review": 3.12
    },
    "review_rounds": 3,
    "first_pass": false,
@@ -585,7 +592,8 @@
      "lander": 0.0,
      "other": 0.2
     },
-    "rework": 0.61
+    "rework": 0.61,
+    "after_review": null
    },
    "review_rounds": 2,
    "first_pass": false,
@@ -652,7 +660,8 @@
      "lander": 0.0,
      "other": 0.22
     },
-    "rework": 0.74
+    "rework": 0.74,
+    "after_review": 1.78
    },
    "review_rounds": 3,
    "first_pass": false,
@@ -712,7 +721,8 @@
      "lander": 0.0,
      "other": 0.18
     },
-    "rework": 0.0
+    "rework": 0.0,
+    "after_review": 0.3
    },
    "review_rounds": 1,
    "first_pass": true,
@@ -779,7 +789,8 @@
      "lander": 0.0,
      "other": 0.2
     },
-    "rework": 0.4
+    "rework": 0.4,
+    "after_review": 1.1
    },
    "review_rounds": 2,
    "first_pass": false,
@@ -846,7 +857,8 @@
      "lander": 0.0,
      "other": 0.24
     },
-    "rework": 0.95
+    "rework": 0.95,
+    "after_review": null
    },
    "review_rounds": 3,
    "first_pass": false,
@@ -913,7 +925,8 @@
      "lander": 0.0,
      "other": 0.16
     },
-    "rework": 0.0
+    "rework": 0.0,
+    "after_review": 0.3
    },
    "review_rounds": 1,
    "first_pass": true,
@@ -980,7 +993,8 @@
      "lander": 0.0,
      "other": 0.19
     },
-    "rework": 0.31
+    "rework": 0.31,
+    "after_review": 0.92
    },
    "review_rounds": 2,
    "first_pass": false,
@@ -1040,7 +1054,8 @@
      "lander": 0.0,
      "other": 0.17
     },
-    "rework": 0.0
+    "rework": 0.0,
+    "after_review": 0.3
    },
    "review_rounds": 1,
    "first_pass": true,
@@ -1107,7 +1122,8 @@
      "lander": 0.0,
      "other": 0.81
     },
-    "rework": 0.18
+    "rework": 0.18,
+    "after_review": null
    },
    "review_rounds": 2,
    "first_pass": false,
@@ -1174,7 +1190,8 @@
      "lander": 0.0,
      "other": 0.65
     },
-    "rework": 0.0
+    "rework": 0.0,
+    "after_review": 0.3
    },
    "review_rounds": 1,
    "first_pass": true,
@@ -1241,7 +1258,8 @@
      "lander": 0.2,
      "other": 0.5
     },
-    "rework": 0.0
+    "rework": 0.0,
+    "after_review": 0.3
    },
    "review_rounds": 1,
    "first_pass": true,
@@ -1308,7 +1326,8 @@
      "lander": 0.2,
      "other": 0.37
     },
-    "rework": 0.0
+    "rework": 0.0,
+    "after_review": 0.3
    },
    "review_rounds": 1,
    "first_pass": true,
@@ -1368,7 +1387,8 @@
      "lander": 0.2,
      "other": 0.28
     },
-    "rework": 0.0
+    "rework": 0.0,
+    "after_review": null
    },
    "review_rounds": 1,
    "first_pass": true,
@@ -1435,7 +1455,8 @@
      "lander": 0.0,
      "other": 0.25
     },
-    "rework": 0.0
+    "rework": 0.0,
+    "after_review": 0.3
    },
    "review_rounds": 1,
    "first_pass": true,
@@ -1495,7 +1516,8 @@
      "lander": 0.0,
      "other": 0.33
     },
-    "rework": 0.0
+    "rework": 0.0,
+    "after_review": 0.3
    },
    "review_rounds": 1,
    "first_pass": true,
@@ -1549,7 +1571,8 @@
      "lander": 0.0,
      "other": 0.51
     },
-    "rework": 0.0
+    "rework": 0.0,
+    "after_review": 0.3
    },
    "review_rounds": 1,
    "first_pass": true,
@@ -3724,6 +3747,245 @@
     "per_merged": null,
     "error": null
    }
+  }
+ },
+ "friction": {
+  "dispatcher": {
+   "calls": 400,
+   "cost": 72.0,
+   "per_call": 0.18,
+   "context_median": 450000,
+   "unpriced_tokens": 1200
+  },
+  "rework": {
+   "cost": 48.0,
+   "task_cost": 120.0,
+   "share": 0.4,
+   "per_task_median": 2.5,
+   "n": 10
+  },
+  "causes": {
+   "spec": 2,
+   "brief": 0,
+   "conflict": 1,
+   "scope": 0,
+   "code": 2,
+   "unstated": 20
+  },
+  "refusals": {
+   "after_calls": 3,
+   "roles": [
+    {
+     "role": "lead",
+     "bash": 500,
+     "guard": 10,
+     "classifier": 2,
+     "share": 0.024,
+     "after_cost": 1.5
+    },
+    {
+     "role": "coder",
+     "bash": 300,
+     "guard": 12,
+     "classifier": 8,
+     "share": 0.066667,
+     "after_cost": 2.25
+    },
+    {
+     "role": "explorer",
+     "bash": 0,
+     "guard": 1,
+     "classifier": 0,
+     "share": null,
+     "after_cost": 0.2
+    },
+    {
+     "role": "dispatcher",
+     "bash": 40,
+     "guard": 0,
+     "classifier": 0,
+     "share": 0.0,
+     "after_cost": 0.0
+    }
+   ]
+  },
+  "wakeups": {
+   "prompts": 30,
+   "tasks": 12,
+   "cost": 14.2,
+   "per_prompt": 0.473333
+  },
+  "queue": {
+   "since": "2026-11-15T09:00:00Z",
+   "merged": 3,
+   "updated": 2,
+   "rerun": 0,
+   "sent_back": 1,
+   "stopped": 0,
+   "per_merged": 1.0
+  },
+  "held": [
+   {
+    "repo": "fixture-alpha",
+    "slug": "fx-held-00",
+    "sent_back": 10,
+    "paused": 1,
+    "paused_minutes": 14,
+    "prioritized": 1
+   },
+   {
+    "repo": "fixture-alpha",
+    "slug": "fx-held-01",
+    "sent_back": 9,
+    "paused": 0,
+    "paused_minutes": 0,
+    "prioritized": 0
+   },
+   {
+    "repo": "fixture-alpha",
+    "slug": "fx-held-02",
+    "sent_back": 8,
+    "paused": 1,
+    "paused_minutes": 14,
+    "prioritized": 1
+   },
+   {
+    "repo": "fixture-alpha",
+    "slug": "fx-held-03",
+    "sent_back": 7,
+    "paused": 0,
+    "paused_minutes": 0,
+    "prioritized": 0
+   },
+   {
+    "repo": "fixture-alpha",
+    "slug": "fx-held-04",
+    "sent_back": 6,
+    "paused": 1,
+    "paused_minutes": 14,
+    "prioritized": 1
+   },
+   {
+    "repo": "fixture-alpha",
+    "slug": "fx-held-05",
+    "sent_back": 5,
+    "paused": 0,
+    "paused_minutes": 0,
+    "prioritized": 0
+   },
+   {
+    "repo": "fixture-alpha",
+    "slug": "fx-held-06",
+    "sent_back": 4,
+    "paused": 1,
+    "paused_minutes": 14,
+    "prioritized": 1
+   },
+   {
+    "repo": "fixture-alpha",
+    "slug": "fx-held-07",
+    "sent_back": 3,
+    "paused": 0,
+    "paused_minutes": 0,
+    "prioritized": 0
+   },
+   {
+    "repo": "fixture-alpha",
+    "slug": "fx-held-08",
+    "sent_back": 2,
+    "paused": 1,
+    "paused_minutes": 14,
+    "prioritized": 1
+   },
+   {
+    "repo": "fixture-alpha",
+    "slug": "fx-held-09",
+    "sent_back": 1,
+    "paused": 0,
+    "paused_minutes": 0,
+    "prioritized": 0
+   }
+  ],
+  "late_conflicts": {
+   "tasks": [
+    {
+     "repo": "fixture-alpha",
+     "slug": "fx-late-00",
+     "log": 2,
+     "git": 12
+    },
+    {
+     "repo": "fixture-alpha",
+     "slug": "fx-late-01",
+     "log": 2,
+     "git": 11
+    },
+    {
+     "repo": "fixture-alpha",
+     "slug": "fx-late-02",
+     "log": 2,
+     "git": 10
+    },
+    {
+     "repo": "fixture-alpha",
+     "slug": "fx-late-03",
+     "log": 1,
+     "git": 9
+    },
+    {
+     "repo": "fixture-alpha",
+     "slug": "fx-late-04",
+     "log": 1,
+     "git": 8
+    },
+    {
+     "repo": "fixture-alpha",
+     "slug": "fx-late-05",
+     "log": 1,
+     "git": 7
+    },
+    {
+     "repo": "fixture-alpha",
+     "slug": "fx-late-06",
+     "log": 1,
+     "git": 6
+    },
+    {
+     "repo": "fixture-alpha",
+     "slug": "fx-late-07",
+     "log": 1,
+     "git": 5
+    },
+    {
+     "repo": "fixture-alpha",
+     "slug": "fx-late-08",
+     "log": 1,
+     "git": 4
+    }
+   ],
+   "files": [
+    {
+     "repo": "fixture-beta",
+     "file": "src/mod0/main.go",
+     "log": 1,
+     "git": 9
+    },
+    {
+     "repo": "fixture-beta",
+     "file": "src/mod1/main.go",
+     "log": 1,
+     "git": 8
+    },
+    {
+     "repo": "fixture-beta",
+     "file": "src/mod2/main.go",
+     "log": 1,
+     "git": 7
+    }
+   ],
+   "log_tasks": 9,
+   "git_tasks": 9,
+   "git_prs": 14
   }
  }
 }
