@@ -365,8 +365,8 @@ class NewSpecTests(Scratch):
         self.tick()
         self.assertEqual(([f["id"] for f in self.fired()], self.site_runs()), (["n1"], []))
 
-    def test_a_task_whose_branch_merged_is_not_in_flight_and_one_with_no_commit_is(self):
-        self.task("alpha", spec="builds the thing", age=600)
+    def test_a_handed_over_task_whose_branch_merged_is_not_in_flight_and_one_with_no_commit_is(self):
+        self.task("alpha", state="handed-over", spec="builds the thing", age=600)
         self.commit("alpha", "g.txt", lines(BODY, 20, "from a"))
         self.task("beta")
         self.git("merge", "-q", "--no-edit", "worktree-alpha", cwd=self.root)
@@ -375,7 +375,7 @@ class NewSpecTests(Scratch):
         self.assertEqual(factory.in_flight(factory.Repo()), {"beta": "working"})
 
     def test_a_merged_task_gets_no_new_spec_look(self):
-        self.task("alpha", spec="builds the thing", age=600)
+        self.task("alpha", state="handed-over", spec="builds the thing", age=600)
         self.commit("alpha", "g.txt", lines(BODY, 20, "from a"))
         self.git("merge", "-q", "--no-edit", "worktree-alpha", cwd=self.root)
         self.git("push", "-q", "origin", "main", cwd=self.root)
@@ -383,6 +383,18 @@ class NewSpecTests(Scratch):
         self.task("beta", spec="rewrites the thing")
         self.tick()
         self.assertEqual(self.fired(), [])
+
+    def test_a_working_task_fast_forwarded_to_the_default_branch_is_still_looked_at_and_may_be_told(self):
+        self.task("alpha", spec="builds the thing", age=600)
+        self.main_moves("g.txt", lines(BODY, 20, "from main"))
+        self.git("merge", "-q", "--ff-only", "origin/main", cwd=f"{self.root}/.claude/worktrees/alpha")
+        self.task("beta", spec="rewrites the thing")
+        self.sees(tell=["alpha"], reason="beta rewrites the thing")
+        self.tick()
+        [f] = self.fired("new-spec")
+        self.assertIn("alpha (working", f["detail"])
+        [decision] = [r for r in self.records() if "decision" in r]
+        self.assertEqual((decision["decision"], decision["tell"]), ("told", ["alpha"]))
 
 
 class OutcomeTests(Scratch):
