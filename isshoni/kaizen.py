@@ -642,7 +642,8 @@ def _site_manager(records, cutoff):
     ratio = lambda n, d: round(n / d, 6) if d else None  # noqa: E731
     return {"escalated": len(escalated), "acted": acted, "ignored": ignored,
             "no_outcome": len(escalated) - acted - ignored,
-            "suppressed": sum(f["decision"] == "suppressed" for f in firings.values()), "missed": misses,
+            "suppressed": sum(f["decision"] == "suppressed" for f in firings.values()),
+            "paused": sum(f["decision"] == "paused" for f in firings.values()), "missed": misses,
             "missed_suppressed": suppressed_first, "missed_never_fired": misses - suppressed_first,
             "precision": ratio(acted, acted + ignored), "recall": ratio(acted, acted + misses)}
 
@@ -650,9 +651,11 @@ def _site_manager(records, cutoff):
 # ---- the tech lead ------------------------------------------------------------------
 
 def _tech_lead(records, cutoff, tasks):
-    """What came back from the merge queue in the window (a record of a build run is not one of those), how it ended, and
-    how often a landed task's lead was woken after the hand-over. A cost is the sum of the priced records, null when none is: never zero."""
-    mine = [r for r in records if r.get("kind") in (None, "merge") and (cutoff is None or (_ts(r) and _ts(r) >= cutoff))]
+    """What came back from the merge queue in the window (a record of a build run is not one of those, nor a paused start,
+    which resolved nothing), how it ended, and how often a landed task's lead was woken after the hand-over. A cost is the
+    sum of the priced records, null when none is: never zero."""
+    mine = [r for r in records if r.get("kind") in (None, "merge") and r.get("outcome") != "paused"
+            and (cutoff is None or (_ts(r) and _ts(r) >= cutoff))]
 
     def spent(rs):
         costs = [r["cost_usd"] for r in rs if isinstance(r.get("cost_usd"), (int, float)) and not isinstance(r["cost_usd"], bool)]
