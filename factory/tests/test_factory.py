@@ -410,7 +410,7 @@ class AckTests(unittest.TestCase):
 
 DEFAULT_SETTINGS = {
     "worktree_cap": 5, "reserve_percent": 10, "task_time_limit_hours": 2, "lead_permission_mode": "auto",
-    "lean_start": True, "mode": "single", "dispatchers": None, "lgtm_from_author": True, "tools": None, "monitor": None,
+    "lean_start": True, "dispatchers": None, "lgtm_from_author": True, "tools": None, "monitor": None,
     "models": {"dispatcher": "fable", "lead": "fable", "explorer": "haiku", "coder": "sonnet", "reviewer": "opus",
                "lander": "sonnet", "ops_explorer": "haiku", "site_manager": "sonnet", "courier": "haiku", "tech_lead": "opus"}}
 
@@ -491,7 +491,6 @@ task_time_limit_hours = 0.5
 [sessions]
 lead_permission_mode = "plan"
 lean_start = false
-mode = "team"
 dispatchers = ["dispatcher-a"]
 [merging]
 lgtm_from_author = false
@@ -502,7 +501,7 @@ monitor = "/bin/isshoni"
 ''')
         self.assertEqual(got, {
             "worktree_cap": 2, "reserve_percent": 25, "task_time_limit_hours": 0.5, "lead_permission_mode": "plan",
-            "lean_start": False, "mode": "team", "dispatchers": ["dispatcher-a"], "lgtm_from_author": False, "monitor": "/bin/isshoni",
+            "lean_start": False, "dispatchers": ["dispatcher-a"], "lgtm_from_author": False, "monitor": "/bin/isshoni",
             "tools": ["mcp__metrics__query", "mcp__logs__*"],
             "models": {"dispatcher": "opus", "lead": "claude-opus-4-1[1m]", "explorer": "sonnet", "coder": "haiku",
                        "reviewer": "fable", "lander": "claude-haiku-4-5", "ops_explorer": "opus", "site_manager": "opus",
@@ -523,8 +522,7 @@ monitor = "/bin/isshoni"
                 ("limits", "task_time_limit_hours", "true"), ("limits", "reserve_percent", "true"),
                 ("limits", "reserve_percent", "-1"), ("limits", "reserve_percent", "101"), ("limits", "reserve_percent", "2.5"),
                 ("limits", "reserve_percent", '"10"'), ("sessions", "lead_permission_mode", '"yolo"'),
-                ("sessions", "lean_start", '"yes"'), ("sessions", "lean_start", "1"), ("sessions", "mode", '"both"'),
-                ("sessions", "mode", '""'), ("sessions", "mode", "true"),
+                ("sessions", "lean_start", '"yes"'), ("sessions", "lean_start", "1"),
                 ("sessions", "dispatchers", '"a"'), ("sessions", "dispatchers", "[1]"), ("sessions", "dispatchers", '[""]'),
                 ("merging", "lgtm_from_author", '"no"'), ("merging", "lgtm_from_author", "0"),
                 ("ops", "tools", '["Bash"]'), ("ops", "tools", '["mcp__x"]'), ("ops", "tools", '["mcp____y"]'),
@@ -634,16 +632,19 @@ class SetTests(InStore):
             self.assertEqual(factory.set_setting("limits.worktree_cap", "5"), "set limits.worktree_cap = 5")  # the default, new file
             self.assertTrue((self.dir / "sub" / "settings.toml").exists())
 
-    def test_the_mode_is_set_like_its_neighbours(self):
-        self.assertEqual(self.set("sessions.mode", "team", text=None), 'set sessions.mode = "team"')
-        self.assertEqual(self.load()["mode"], "team")
-        self.assertEqual(self.set("sessions.mode", "single"), 'set sessions.mode = "single"')
-        self.assertEqual(self.load()["mode"], "single")
+    def test_the_retired_mode_key_still_loads_but_cannot_be_set(self):
+        for value in ("single", "team"):
+            factory.warned.clear()
+            settings = self.load(f'[sessions]\nmode = "{value}"\nlean_start = false\n')
+            self.assertEqual((settings["lean_start"], "mode" in settings), (False, False))
+            self.assertIn("unknown key sessions.mode, ignored", self.err)
+        with self.assertRaisesRegex(factory.Fail, "unknown setting 'sessions.mode'"):
+            factory.set_setting("sessions.mode", "team")
 
     def test_an_invalid_value_leaves_the_file_byte_identical(self):
         for key, value in (("limits.worktree_cap", "0"), ("limits.worktree_cap", "many"), ("models.coder", "sonet"),
                            ("sessions.lean_start", "maybe"), ("sessions.dispatchers", "a,b"), ("paths.monitor", " "),
-                           ("sessions.lead_permission_mode", "yolo"), ("sessions.mode", "both"), ("nope.key", "1"), ("limits.nope", "1")):
+                           ("sessions.lead_permission_mode", "yolo"), ("nope.key", "1"), ("limits.nope", "1")):
             with self.subTest(f"{key} {value}"):
                 self.path.write_text(HAND_EDITED)
                 with self.assertRaises(factory.Fail):
@@ -1128,6 +1129,8 @@ class ReserveTests(unittest.TestCase):
 class NewTests(unittest.TestCase):
     ARGS = ["new", "demo-task", "--brief", "do it", "--dispatcher", "d1"]
     OK = {("claude", "--bg"): (0, "backgrounded · 96dc4869 · demo-task\n", ""), ("git", "ls-remote"): (2, "", "")}
+    DENIED = ["Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
+              "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)"]
 
     def answers(self, entries, sessions=(), *extras, dispatcher="d1"):
         return repo_answers(entries, [dict(DISPATCHER, name=dispatcher), *sessions], *extras)
@@ -1143,40 +1146,38 @@ class NewTests(unittest.TestCase):
         want = ["claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
                 "--agents", fake.calls[-1][fake.calls[-1].index("--agents") + 1],
                 "--permission-mode", "auto", "--plugin-dir", plugin, "--strict-mcp-config",
-                "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}", "--append-system-prompt", lead,
+                "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}",
+                "--disallowedTools", *self.DENIED, "--append-system-prompt", lead,
                 "Your task slug is demo-task. Before each message to the dispatcher run `factory dispatcher`: "
                 "it prints its current session name (now d1). "
                 "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
                 "Your time limit is 120 minutes. Your brief follows.\n\ndo it"]
         self.assertEqual(fake.calls[-1], want)
 
-    def test_the_mode_reaches_the_argv_and_the_started_event(self):
-        roles = BIN.resolve().parent.parent / "roles"
-        single = (roles / "lead.md").read_text()
-        team = single + "\n\n" + (roles / "lead-team.md").read_text()
-        denied = ["Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
-                  "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)"]
-        cases = [([], {"mode": "team"}, "team"), (["--mode", "team"], {}, "team"),
-                 (["--mode", "single"], {"mode": "team"}, "single"), ([], {}, "single")]
-        for extra, settings, mode in cases:
-            for lean in (True, False):
-                with self.subTest(extra=extra, settings=settings, lean=lean), mock.patch.object(factory, "task_event") as event:
-                    code, _, err, fake = invoke(self.ARGS + extra, self.answers([], (), self.OK),
-                                                "[sessions]\n" + "".join(f"{k} = {json.dumps(v)}\n" for k, v in {**settings, "lean_start": lean}.items()))
-                    argv = fake.calls[-1]
-                    rules = argv.index("--append-system-prompt")
-                    self.assertEqual(code, 0, err)
-                    self.assertEqual(event.call_args.kwargs["mode"], mode)
-                    self.assertEqual(argv[rules + 1], team if mode == "team" else single)
-                    self.assertTrue(argv[-1].endswith("do it"))
-                    self.assertEqual(rules + 2, len(argv) - 1)
-                    self.assertEqual("--disallowedTools" in argv, mode == "team")
-                    if mode == "team":
-                        self.assertEqual(argv[rules - len(denied) - 1:rules], ["--disallowedTools", *denied])
+    def test_every_lead_gets_the_team_rules_the_denied_list_and_a_team_started_event(self):
+        rules_file = BIN.resolve().parent.parent / "roles" / "lead.md"
+        for lean in (True, False):
+            with self.subTest(lean=lean), mock.patch.object(factory, "task_event") as event:
+                code, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK), f"[sessions]\nlean_start = {json.dumps(lean)}\n")
+                argv = fake.calls[-1]
+                rules = argv.index("--append-system-prompt")
+                self.assertEqual(code, 0, err)
+                self.assertEqual(event.call_args.kwargs["mode"], "team")
+                self.assertEqual(argv[rules + 1], rules_file.read_text())
+                self.assertEqual(argv[rules - len(self.DENIED) - 1:rules], ["--disallowedTools", *self.DENIED])
+                self.assertEqual(rules + 2, len(argv) - 1)
+                self.assertTrue(argv[-1].endswith("do it"))
 
-    def test_a_mode_that_is_not_one_is_refused(self):
-        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
-            factory.parse_args(self.ARGS + ["--mode", "both"])
+    def test_there_is_no_mode_switch(self):
+        with self.assertRaises(SystemExit) as raised, redirect_stderr(io.StringIO()):
+            factory.parse_args(self.ARGS + ["--mode", "team"])
+        self.assertEqual(raised.exception.code, 2)
+        roles = BIN.resolve().parent.parent / "roles"
+        lead = (roles / "lead.md").read_text()
+        self.assertFalse((roles / "lead-team.md").exists())
+        self.assertIn("your tools refuse", lead)
+        self.assertIn("factory build", lead)
+        self.assertNotIn("lead-team", lead)
 
     def test_lean_start_off_launches_the_old_argv_without_listing_plugins(self):
         with mock.patch.object(factory.time, "time", return_value=1794610677):
@@ -1186,7 +1187,7 @@ class NewTests(unittest.TestCase):
         self.assertEqual(fake.calls[-1], [
             "claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
             "--agents", fake.calls[-1][fake.calls[-1].index("--agents") + 1],
-            "--permission-mode", "auto", "--plugin-dir", plugin, "--append-system-prompt", lead,
+            "--permission-mode", "auto", "--plugin-dir", plugin, "--disallowedTools", *self.DENIED, "--append-system-prompt", lead,
             "Your task slug is demo-task. Before each message to the dispatcher run `factory dispatcher`: "
                 "it prints its current session name (now d1). "
             "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
@@ -1240,7 +1241,7 @@ class NewTests(unittest.TestCase):
         argv = fake.calls[-1]
         self.assertEqual(argv[argv.index("--model") + 1], "opus")
         self.assertEqual(started, [("TaskStarted", "demo-task", {
-            "base": "main", "lead_model": "opus", "mode": "single",
+            "base": "main", "lead_model": "opus", "mode": "team",
             "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet", "ops-explorer": "haiku", "reviewer": "opus"}})])
         started.clear()
         with mock.patch.object(factory, "task_event", lambda kind, repo, slug, **kw: started.append((kind, slug, kw))):
@@ -2527,9 +2528,9 @@ print(os.environ["FAKE_LSOF"])
     def git(self, *args):
         return subprocess.run(["git", *args], cwd=self.repo, env=self.env, check=True, capture_output=True, text=True).stdout
 
-    def factory(self, *args, env=None, cwd=None):
+    def factory(self, *args, env=None, cwd=None, input=None):
         return subprocess.run([sys.executable, str(BIN), *args], cwd=cwd or self.repo, env={**self.env, **(env or {})},
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, input=input)
 
     def test_new_status_clean(self):
         p = self.factory("new", "demo-task", "--brief", "build it")
@@ -2641,6 +2642,36 @@ print(os.environ["FAKE_LSOF"])
         self.assertEqual((row["state"], row["deliverable"], row["phase"]), ("handed-over", "https://x/y", "review"))
         p = self.factory("state", "working", cwd=self.repo)
         self.assertEqual(p.returncode, 2)
+
+    def test_a_task_started_single_before_the_change_finishes_as_it_started(self):
+        store = self.home / ".claude/factory"
+        month = time.strftime("%Y-%m", time.gmtime())
+        started = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "repo": str(self.repo), "role": "dispatcher",
+                   "model": None, "version": "0.1.0", "session": "sid-d", "event": "TaskStarted", "base": "main",
+                   "lead_model": "fable"}
+        old = {"old-single": {"mode": "single"}, "old-silent": {}}  # a task of the first kind and one from before `mode` was recorded
+        store.mkdir(parents=True)
+        (store / f"events-{month}.jsonl").write_text("".join(json.dumps({**started, "slug": s, **extra}) + "\n" for s, extra in old.items()))
+        retro = json.dumps({"defects": [], "slowed": ["x"], "rules_missing": [], "rules_dead_weight": [], "brief_questions": []})
+        for slug in old:
+            self.git("worktree", "add", "-q", "-b", f"worktree-{slug}", f".claude/worktrees/{slug}")
+            wt = self.repo / ".claude/worktrees" / slug
+            for args, stdin in ((("state", "working"), None), (("state", "blocked"), None), (("state", "working"), None),
+                                (("commands", "test", "true"), None), (("feedback", "decide", "kept the rules. Why: it started single"), None),
+                                (("retro",), retro), (("state", "handed-over", f"https://example.com/pull/{slug}"), None)):
+                with self.subTest(slug=slug, args=args):
+                    p = self.factory(*args, cwd=wt, input=stdin)
+                    self.assertEqual((p.returncode, p.stderr), (0, ""))
+        rows = {r["slug"]: r for r in json.loads(self.factory("status", "--json").stdout)["rows"]}
+        self.assertEqual({s: rows[s]["state"] for s in old}, {"old-single": "handed-over", "old-silent": "handed-over"})
+
+        self.assertEqual(self.factory("new", "new-team", "--brief", "build it").returncode, 0)
+        (self.home / ".claude/projects").mkdir()
+        kaizen = subprocess.run([sys.executable, str(BIN.parent.parent.parent / "bin" / "isshoni"), "kaizen", "--json", "--cached",
+                                 "--factory-dir", str(store)], env=self.env, capture_output=True, text=True)
+        self.assertEqual(kaizen.returncode, 0, kaizen.stderr)
+        modes = {t["slug"]: t["mode"] for t in json.loads(kaizen.stdout)["tasks"]}
+        self.assertEqual(modes, {"old-single": "single", "old-silent": "single", "new-team": "team"})
 
     def test_a_file_inside_the_worktree_is_refused(self):
         self.git("worktree", "add", "-q", "-b", "worktree-demo-task", ".claude/worktrees/demo-task")
