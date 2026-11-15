@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest import mock
 
-from test_factory import LEAN_SETTINGS, ROOT, factory
+from test_factory import DISPATCHER, LEAN_SETTINGS, ROOT, factory
 from test_health import NOW, SchedHarness, iso
 
 CHECKS = {"read": "mcp__metrics__query: errors in the last 10m", "fine": "0 errors", "alarm": "any error", "done": "served reaches 30"}
@@ -94,7 +94,8 @@ class StartTests(OpsHarness):
             self.assertEqual(self.start(name)[0], 2, name)
         self.assertEqual(self.start()[0], 0)
         self.assertIn("a watch named w exists", self.start()[2])
-        for kw in ({"every": 0}, {"until": "0m"}, {"until": "2001-01-01T00:00:00Z"}, {"until": "soon"}, {"budget": "0"}, {"budget": "-1"}):
+        for kw in ({"every": 0}, {"until": "0m"}, {"until": "2001-01-01T00:00:00Z"}, {"until": "soon"}, {"budget": "0"}, {"budget": "-1"},
+                   {"budget": "inf"}, {"budget": "nan"}):
             code, _, err = self.start("v", **kw)
             self.assertEqual((code, (self.store / "ops" / "v").exists()), (2, False), kw)
 
@@ -122,6 +123,14 @@ class StartTests(OpsHarness):
         for leaf in ("watch.json", "notes.md"):
             self.assertEqual(stat.S_IMODE((self.store / "ops" / "w" / leaf).stat().st_mode), 0o600)
         self.assertTrue(self.plist().exists())
+
+    def test_a_write_never_follows_a_planted_temporary_name(self):
+        self.start()
+        victim = self.home / "victim"
+        victim.write_text("mine")
+        (self.store / "ops" / "w" / "watch.json.tmp").symlink_to(victim)
+        self.cli("ops", "stop", "w")
+        self.assertEqual((victim.read_text(), self.watch()["state"]), ("mine", "stopped"))
 
     def test_it_never_replaces_an_installed_job(self):
         self.put_plist(marker="mine")
@@ -200,6 +209,14 @@ class LookTests(OpsHarness):
         self.assertEqual((self.watch()["missed"], self.ops_records()[-1]["late_seconds"]), (3, 3 * EVERY))
         self.assertIn(f"3 look(s) missed between {iso(NOW + EVERY)} and {iso(NOW + 4 * EVERY)}: the tick did not run", self.notes())
         self.assertNotIn("notify:", out)
+
+    def test_a_gap_shorter_than_the_tick_is_not_a_miss(self):
+        self.cli("ops", "stop", "w")
+        self.cli("ops", "start", "f", "goal", "--every", "30s", "--until", "6h", "--budget", "5")
+        self.tick()
+        self.tick(at=NOW + 120)
+        self.assertEqual((self.sessions_run, self.watch("f")["missed"], self.ops_records()[-1]["late_seconds"]), (2, 0, 90))
+        self.assertEqual([r for r in self.ops_records() if r["outcome"] == "missed"], [])
 
     def test_no_evidence_is_could_not_look_whatever_the_model_says(self):
         _, out, _ = self.tick({"outcome": "alarm", "evidence": 0, "verdict": "met"})
@@ -321,6 +338,18 @@ class LookTests(OpsHarness):
         self.tick({"cost": None})
         w = self.watch()
         self.assertEqual((self.ops_records()[0]["cost_usd"], w["spent_usd"], w["unpriced_ticks"]), (None, 0.0, 1))
+        self.assertNotIn("reserved_usd", json.loads(self.cli("ops", "list", "--json")[1])["watches"][0])
+
+    def test_an_unpriced_look_counts_its_cap_against_the_budget(self):
+        self.cli("ops", "stop", "w")
+        self.cli("ops", "start", "b", "goal", "--every", "10s", "--until", "6h", "--budget", "1")
+        self.tick({"cost": None})
+        self.tick({"cost": None}, at=NOW + 10)
+        self.assertEqual([c[c.index("--max-budget-usd") + 1] for c in self.ops_runs()], ["0.5", "0.5"])
+        w = self.watch("b")
+        self.assertEqual((w["state"], w["spent_usd"], w["reserved_usd"]), ("out-of-budget", 0.0, 1.0))
+        _, out, _ = self.tick(at=NOW + 20)
+        self.assertEqual(self.sessions_run, 2)
 
     def test_stop_ends_the_looks_and_a_stop_during_a_look_stays(self):
         code, out, _ = self.cli("ops", "stop", "w")
@@ -332,6 +361,17 @@ class LookTests(OpsHarness):
         self.start("x")
         self.tick({"hook": lambda: self.cli("ops", "stop", "x"), "outcome": "done"})
         self.assertEqual((self.watch("x")["state"], self.watch("x")["verdict"]), ("stopped", None))
+
+    def test_a_stop_during_the_inform_stays(self):
+        stop = lambda: (self.cli("ops", "stop", "w"), (0, json.dumps({"result": "sent"}), ""))[1]
+        self.tick({"outcome": "alarm"}, answers={COURIER: stop})
+        self.assertEqual((self.watch()["state"], self.sessions_run), ("stopped", 1))
+
+    def test_a_watch_stopped_by_an_earlier_look_is_not_looked_at(self):
+        self.clock += 1
+        self.start("w2")
+        self.tick({"hook": lambda: self.cli("ops", "stop", "w2")})
+        self.assertEqual((self.sessions_run, self.watch("w2")["state"]), (1, "stopped"))
 
     def test_the_stop_works_inside_a_session(self):
         os.environ["CLAUDECODE"] = "1"
@@ -379,6 +419,12 @@ class ScheduleTests(OpsHarness):
         _, out, _ = self.orphan_tick()
         self.assertTrue(self.plist().exists())
         self.assertNotIn("removing the schedule", out)
+
+    def test_an_active_watch_keeps_the_job_when_the_dispatcher_session_ends(self):
+        stdin = json.dumps({"hook_event_name": "SessionEnd", "session_id": "sid-d", "cwd": ROOT, "reason": "other"})
+        with mock.patch.object(factory.sys, "stdin", io.StringIO(stdin)):
+            self.cli("hook", sessions=[DISPATCHER | {"name": "dispatcher-repo"}])
+        self.assertTrue(self.plist().exists())
 
     def test_a_stopped_watch_does_not(self):
         self.cli("ops", "stop", "w")

@@ -11,6 +11,7 @@ import html
 import http.server
 import itertools
 import json
+import math
 import os
 import plistlib
 import queue
@@ -2969,8 +2970,8 @@ def ops_private(path, text, append=False):
     """Write `text` to `path` for the owner only (folders 0700, file 0600): replacing the file whole and atomically, or as one appended write."""
     path.parent.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.parent.mkdir(mode=0o700, exist_ok=True)
-    target = path if append else path.with_name(path.name + ".tmp")
-    with os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC), 0o600), "w") as f:
+    fd, target = (os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), path) if append else tempfile.mkstemp(dir=path.parent)
+    with os.fdopen(fd, "w") as f:
         f.write(text)
     if not append:
         os.replace(target, path)
@@ -3014,14 +3015,14 @@ def ops_start(args):
     until = t + duration(args.until, "--until") if re.fullmatch(r"\d+[smhd]", args.until) else epoch(args.until)
     if until is None or until <= t:
         raise Fail("ops: --until takes a duration (6h) or a UTC time in the future (2026-11-15T15:00:00Z)")
-    if not args.budget > 0:
-        raise Fail("ops: --budget takes a positive number of dollars")
+    if not (math.isfinite(args.budget) and args.budget > 0):
+        raise Fail("ops: --budget takes a positive, finite number of dollars")
     repo = Repo()
     if not ops_servers(load_settings()["tools"], repo.root):
         raise Fail("ops: ops.tools resolves no server for this repository: there is nothing to read through")
     w = {"name": args.name, "repo": repo.root, "goal": args.goal, "state": "watching", "verdict": None, "started": now(),
          "until": iso(until), "every_seconds": every, "ticks": 0, "missed": 0, "last_look": None, "next_look": now(),
-         "spent_usd": 0.0, "unpriced_ticks": 0, "budget_usd": args.budget, "notes": str(ops_file(args.name, "notes.md")),
+         "spent_usd": 0.0, "reserved_usd": 0.0, "unpriced_ticks": 0, "budget_usd": args.budget, "notes": str(ops_file(args.name, "notes.md")),
          "checks": None}
     ops_save(w)
     ops_note(w, f"# Ops watch {args.name}\nGoal: {args.goal}\nStarted: {w['started']}\nUntil: {w['until']}\n"
@@ -3082,12 +3083,20 @@ def ops_inform(repo, w, event, saw, tell=True):
         print(f"ops watch {w['name']}: no dispatcher was told")
 
 
-def ops_move(repo, w, state, event, saw):
-    """Change the state of the watch: note it, save it, then inform."""
+def ops_move(w, state, event, saw, informs):
+    """Change the state of the watch and note it; the inform is queued, to go out after the save."""
     w["state"], w["next_look"] = state, w["next_look"] if state in OPS_ACTIVE else None
     ops_note(w, f"- {now()} state: {state}")
-    ops_save(w)
-    ops_inform(repo, w, event, saw)
+    informs.append((event, saw, True))
+
+
+def ops_spent(w):
+    """What the watch has used of its budget: the priced looks and the caps of the unpriced ones."""
+    return w["spent_usd"] + w.get("reserved_usd", 0.0)
+
+
+def ops_used(w):
+    return f"${ops_spent(w):.2f} of ${w['budget_usd']:.2f} spent or reserved"
 
 
 def ops_argv(repo, w, final, cap):
@@ -3126,20 +3135,24 @@ def ops_run(repo, w, final, cap):
 def ops_look(repo, w):
     """One look of the watch `w`, which is due: the steps of docs/factory.md, "Watching production"."""
     name, begun = w["name"], time.time()
-    late = int(begun - (epoch(w["next_look"]) or begun))
-    if late >= w["every_seconds"]:
-        count = late // w["every_seconds"]
+    late, step, informs = int(begun - (epoch(w["next_look"]) or begun)), max(w["every_seconds"], WATCH_INTERVAL), []
+    if late >= step:
+        count = late // step
         w["missed"] += count
         log("ops", {"ts": now(), "repo": repo.root, "watch": name, "outcome": "missed", "count": count,
                     "from": w["next_look"], "to": iso(begun)})
         ops_note(w, f"- {now()} {count} look(s) missed between {w['next_look']} and {iso(begun)}: "
                     "the tick did not run (machine asleep, off, or busy)")
-    final, remaining = begun >= epoch(w["until"]), w["budget_usd"] - w["spent_usd"]
+    final, remaining = begun >= epoch(w["until"]), w["budget_usd"] - ops_spent(w)
     if remaining <= 0:
-        return ops_move(repo, w, "out-of-budget", "out of budget", f"${w['spent_usd']:.2f} of ${w['budget_usd']:.2f} spent")
+        ops_move(w, "out-of-budget", "out of budget", ops_used(w), informs)
+        return ops_finish(repo, w, informs)
     out, reason, cost, session, turns, folder, n = {}, None, 0.0, None, None, None, 0
     if ops_servers(load_settings()["tools"], repo.root):
-        out, reason, cost, session, turns, folder, n = ops_run(repo, w, final, min(float(OPS_TICK_BUDGET), remaining))
+        cap = min(float(OPS_TICK_BUDGET), remaining)
+        out, reason, cost, session, turns, folder, n = ops_run(repo, w, final, cap)
+        if cost is None:
+            w["reserved_usd"] = round(w.get("reserved_usd", 0.0) + cap, 6)
         w["spent_usd"], w["unpriced_ticks"] = round(w["spent_usd"] + (cost or 0), 6), w["unpriced_ticks"] + (cost is None)
     else:
         reason = "ops.tools names no configured server"
@@ -3162,14 +3175,21 @@ def ops_look(repo, w):
         w["state"], w["next_look"] = "stopped", None
     elif outcome == "done" or final:
         w["verdict"] = verdict if verdict in OPS_VERDICTS and (outcome == "done" or n) else "inconclusive"
-        ops_move(repo, w, "ended", f"ended: {w['verdict']}", saw if outcome == "done" else f"the end time came: {saw}")
+        ops_move(w, "ended", f"ended: {w['verdict']}", saw if outcome == "done" else f"the end time came: {saw}", informs)
     elif outcome == "alarm" and w["state"] != "alarmed":
-        ops_move(repo, w, "alarmed", "alarm", saw)
+        ops_move(w, "alarmed", "alarm", saw, informs)
     elif outcome == "could-not-look" and not again:
-        ops_inform(repo, w, "could not look", saw, tell=False)
-    if w["state"] in OPS_ACTIVE and w["spent_usd"] >= w["budget_usd"]:
-        ops_move(repo, w, "out-of-budget", "out of budget", f"${w['spent_usd']:.2f} of ${w['budget_usd']:.2f} spent")
+        informs.append(("could not look", saw, False))
+    if w["state"] in OPS_ACTIVE and ops_spent(w) >= w["budget_usd"]:
+        ops_move(w, "out-of-budget", "out of budget", ops_used(w), informs)
+    ops_finish(repo, w, informs)
+
+
+def ops_finish(repo, w, informs):
+    """Save the watch, then send what the look queued: nothing is saved after an inform."""
     ops_save(w)
+    for event, saw, tell in informs:
+        ops_inform(repo, w, event, saw, tell)
 
 
 def ops_tick(repo):
@@ -3177,7 +3197,8 @@ def ops_tick(repo):
     the lander's whole loop. One watch failing is printed and does not stop the next."""
     with repo_lock(repo, "ops") as free:
         for w in reversed(ops_active(repo)) if free else ():
-            if (epoch(w.get("next_look")) or 0) > time.time():
+            w = ops_read(w["name"])  # an earlier look may have stopped it
+            if not w or w.get("state") not in OPS_ACTIVE or (epoch(w.get("next_look")) or 0) > time.time():
                 continue
             try:
                 ops_look(repo, w)
