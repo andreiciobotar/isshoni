@@ -99,6 +99,8 @@ class Sim:
             if m:
                 n = int(m[1])
                 return 0, json.dumps([[review(sha=self.prs[n]["head"], n=n)]]), ""
+            if "/stacks" in a[-1]:
+                return 0, "[]", ""
             if a[-1].endswith("/permission"):
                 return 0, json.dumps({"permission": "write"}), ""
         if a[:3] == ["git", "merge-base", "--is-ancestor"] and a[4] in {p["head"] for p in self.prs.values()}:
