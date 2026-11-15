@@ -360,7 +360,7 @@ class CriteriaTests(Home):
                                             criteria)
         self.assertEqual(firings, [])
         names = {s["criterion"] for s in skipped}
-        self.assertEqual(names, {c["name"] for c in criteria} - {"ci-red-default", "lgtm-blocked", "churning"})
+        self.assertEqual(names, {c["name"] for c in criteria} - {"ci-red-default", "lgtm-blocked", "churning", "run-stopped"})
         why = {s["criterion"]: s["why"] for s in skipped}
         self.assertIn("sessions cannot be listed", why["past-limit"])
         self.assertIn("no agent files", why["wrong-model"])
@@ -776,7 +776,7 @@ class WatchTests(Harness):
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["to"]["enum"],
                          ["dispatcher", "lead"])
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["decision"]["enum"],
-                         ["escalated", "suppressed", "paused"])
+                         ["escalated", "suppressed", "paused", "extended"])
         head, _, body = argv[-1].partition("\n\n")
         self.assertEqual(head, f"Job: watch. Repo: {ROOT}. The dispatcher's session name is dispatcher-repo.")
         [sent] = json.loads(body)
