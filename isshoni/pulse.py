@@ -261,13 +261,12 @@ def _verdicts(today, baseline):
     return {k: _verdict(t[k], b[k], k != "first_pass") for k in t}
 
 
-def build(factory_dir, tasks, by_task, sessions, prices, queue, cutoff=None, now=None, cached=False):
+def build(factory_dir, tasks, by_task, sessions, prices, queue, baseline, now=None, cached=False):
     """The `pulse` of the document. `tasks`: every task, with its pull request; `by_task`: its records by store;
-    `queue`: `read_queue`'s records. `cutoff`: the range's start, which sets the baseline. `cached`: the caches only, no git and no gh."""
+    `queue`: `read_queue`'s records. `baseline`: when the baseline's first day starts (`baseline_start`). `cached`: the caches only, no git and no gh."""
     today, tz = _zone(now)
     day = lambda ts: ts.astimezone(tz).date()  # noqa: E731
-    merge_times = [at for t in tasks for at in [transcript.parse_ts(t["pr"]["merged"]) if t["pr"] else None] if at]
-    first_day = day(baseline_start(cutoff, now, merge_times))
+    first_day = day(baseline)
     baseline_dates = [first_day + timedelta(days=i) for i in range((today - first_day).days)]
     dates = [*baseline_dates, today]
     merged = {d: [] for d in dates}
@@ -283,18 +282,18 @@ def build(factory_dir, tasks, by_task, sessions, prices, queue, cutoff=None, now
     first = {id(t): kaizen._handed_over(by_task[(t["repo_path"], t["slug"])]) for rows in merged.values() for t, _ in rows}
     wanted = [(t["repo_path"], t["pr"]["number"], at) for rows in merged.values() for t, at in rows
               if first[id(t)] and first[id(t)] <= at and (t["repo_path"], t["pr"]["number"]) not in queued]
-    approved = _approvals(factory_dir, wanted, cached)
+    github = _approvals(factory_dir, wanted, cached)
     pull_requests = {}
     for rows in merged.values():
         for t, _ in rows:
             pull_requests.setdefault(t["repo_path"], []).append(t["pr"]["number"])
-    merges, merge_errors = _merges(factory_dir, pull_requests, cached)
+    merges, git_errors = _merges(factory_dir, pull_requests, cached)
     spend = _spent_by_day(sessions, tasks, prices, dates, tz)
 
     def approval(t):
         """(time, from GitHub) of a task's approval, or None."""
         key = (t["repo_path"], t["pr"]["number"])
-        a, backfilled = (queued[key], False) if key in queued else (approved.get(key), True)
+        a, backfilled = (queued[key], False) if key in queued else (github.get(key), True)
         a = transcript.parse_ts(a)
         return (a, backfilled) if a else None
 
@@ -329,7 +328,7 @@ def build(factory_dir, tasks, by_task, sessions, prices, queue, cutoff=None, now
             "conflicts": {
                 "prs": len(mine), "base_merges": sum(len(e["base_merges"]) for e in mine), "conflicted": conflicted,
                 "per_merged": round(conflicted / len(mine), 6) if mine else None,
-                "error": next((merge_errors[k] for t, _ in rows for k in [(t["repo_path"], t["pr"]["number"])] if k in merge_errors), None)}}
+                "error": next((git_errors[k] for t, _ in rows for k in [(t["repo_path"], t["pr"]["number"])] if k in git_errors), None)}}
 
     today_figures, baseline_figures = figures([today]), figures(baseline_dates)
     return {"queue_since": _iso(since), "today": today_figures, "baseline": baseline_figures,

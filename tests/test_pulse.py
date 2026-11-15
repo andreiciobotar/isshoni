@@ -185,8 +185,8 @@ class SinceTests(PulseStore):
         self.assertEqual(pulse.sessions_from(datetime(2026, 11, 1, tzinfo=timezone.utc), baseline, [started]), datetime(2026, 11, 1, tzinfo=timezone.utc))
 
     def test_the_baseline_of_the_range_is_loaded_back_to_its_first_midnight(self):
-        self.task("p1", 1, self.at(13), self.at(12), started=self.at(-60))
-        loose(self.projects, "in", ALPHA, [(self.at(-47), "claude-fable-5-2", 1)], title="dispatcher-alpha")  # 1h after the midnight 3 days back
+        self.task("p1", 1, self.at(13), self.at(12), started=self.at(-7))
+        loose(self.projects, "in", ALPHA, [(self.at(-47.9), "claude-fable-5-2", 1)], title="dispatcher-alpha")  # 6 minutes after the midnight 3 days back, before the task started and before the cutoff
         loose(self.projects, "out", ALPHA, [(self.at(-80), "claude-fable-5-2", 1)], title="dispatcher-alpha")
         self.assertEqual(self.loaded("--since", "3d"), {"p-in"})
 

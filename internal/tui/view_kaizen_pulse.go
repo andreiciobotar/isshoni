@@ -95,6 +95,8 @@ func (m *model) dayLines(p paint, w int) block {
 			return th.Green, th.Green
 		case v != nil && *v == "worse":
 			return th.Orange, th.Orange
+		case v != nil:
+			return th.Muted, th.Muted
 		}
 		return th.Muted, th.Text
 	}
@@ -194,7 +196,7 @@ func (m *model) pulseRows(pl *data.Pulse, wide bool) []pulseRow {
 		if s == nil {
 			return nil
 		}
-		return ptrTo(float64(*s))
+		return new(float64(*s))
 	}
 	yesOf := func(r data.PulseRate) string {
 		if r.Of == 0 {
@@ -239,7 +241,7 @@ func (m *model) pulseRows(pl *data.Pulse, wide bool) []pulseRow {
 	}
 	rows = append(rows, lead("first pass", "first pass", func(d data.PulseDay) *float64 {
 		if r := pass(d); r.Of > 0 {
-			return ptrTo(float64(r.Yes) / float64(r.Of))
+			return new(float64(r.Yes) / float64(r.Of))
 		}
 		return nil
 	}, func(d data.PulseDay) pulseCol {
@@ -342,12 +344,10 @@ func pulseDelta(today, base *float64, verdict *string, points bool) string {
 		return fmt.Sprintf("%s %.0f pts", arrow, math.Abs(d)*100)
 	}
 	if *base == 0 {
-		return arrow + " 100%"
+		return arrow // a change from zero has no relative size
 	}
 	return fmt.Sprintf("%s %.0f%%", arrow, math.Abs(d / *base * 100))
 }
-
-func ptrTo[T any](v T) *T { return &v }
 
 // sendBackNote says why send-backs show "-": the queue log did not cover a period.
 func (m *model) sendBackNote(periods []data.PulseDay, since *string) string {

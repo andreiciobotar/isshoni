@@ -766,7 +766,7 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     summary["by_mode"] = _by_mode([t for t in tasks if t["landed"]])
     tech_lead = _tech_lead(tech, cutoff, tasks)
     queue = pulse.read_queue(factory_dir)
-    pulse_doc = pulse.build(factory_dir, everyone, by_task, sessions, prices, queue, cutoff, now, cached)
+    pulse_doc = pulse.build(factory_dir, everyone, by_task, sessions, prices, queue, baseline, now, cached)
     friction_doc = friction.build(factory_dir, tasks, by_task, sessions, mine, prices, cutoff, queue, tech_sessions)
     for t in everyone:
         for private in [k for k in t if k.startswith("_")]:

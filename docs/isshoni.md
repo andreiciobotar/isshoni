@@ -153,7 +153,7 @@ pull request, n = merged), `first_pass` (all sizes, n = their `of`), `approval_t
 n) and `conflicts` (per merged pull request, n = `prs`). Each is `null` when today or the baseline has
 no value; `"few"` when either n is under 5 (`PULSE_MIN_N`); `"same"` when today is within 10% of the
 baseline (both zero is same); else `"better"` or `"worse"`, a higher first pass being better and a
-lower value on the others. The Pulse page and the text output both show this word. The lead duration
+lower value on the others. The Pulse page colours by it (better green, worse orange, same and few grey) and the text output prints it. The lead duration
 is approval to merge, the factory's part; the human's wait (`to_approval`, `to_merge`) is detail
 and never judged. The text output prints the heading and the four lead figures, the approval to merge median in place of the old hand-over to merge p90 line. The keys:
 - `cost` (`tasks`, `dispatcher`, `site_manager`, `unpriced_tokens`, `per_merged`): the all-in cost per

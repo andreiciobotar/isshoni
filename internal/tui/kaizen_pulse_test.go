@@ -201,6 +201,24 @@ func TestPulseColourFollowsTheVerdict(t *testing.T) {
 	}
 }
 
+func TestPulseDeltaFromAZeroBaselineIsTheArrowAlone(t *testing.T) {
+	zero := func(p *data.Pulse) {
+		p.Baseline.Cost.PerMerged = new(0.0)
+		p.Verdicts.Cost = new("worse")
+	}
+	band := pulseBand(t, 140, zero)
+	if strings.Contains(band, "↑ 100%") || !strings.Contains(band, "↑ ") {
+		t.Errorf("a change from zero has an arrow and no percent:\n%s", band)
+	}
+	m := fakeModel(false, 140, 100)
+	doc := kaizenDoc(t)
+	zero(doc.Pulse)
+	setKaizen(m, doc, pagePulse)
+	if !strings.Contains(m.Render(), m.th.on(m.th.Bg).b("↑", m.th.Orange)) {
+		t.Error("the arrow keeps the verdict's colour")
+	}
+}
+
 func TestPulseSparklineHasACellPerDayAndADotForNoValue(t *testing.T) {
 	out := pulseBand(t, 140, nil)
 	row := lineWith(t, out, "approval → merge, median")
