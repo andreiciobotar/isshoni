@@ -49,7 +49,7 @@ Factory: `make wizard` in the clone checks the tools, builds the dashboard, inst
 /factory:dispatch
 ```
 
-Describe a task; ask for progress whenever you like. By default leads run unattended on Fable in `auto` permission mode, five tasks at a time per repository, one of them held for emergencies, each against a time limit set by its size (45 min, 90 min or 2 h) ([settings](docs/factory.md#settings)).
+The factory works on any GitHub repository and runs whatever tests that repository uses ([your own repository](docs/factory.md#using-it-on-your-own-repository)). Describe a task; ask for progress whenever you like. By default leads run unattended on Fable in `auto` permission mode, five tasks at a time per repository, one of them held for emergencies, each against a time limit set by its size (45 min, 90 min or 2 h) ([settings](docs/factory.md#settings)). Each role's model is set under `[models]` in `~/.claude/factory/settings.toml`.
 
 Optional:
 
@@ -62,15 +62,15 @@ Optional:
 <p align="center">
   <picture>
     <source media="(max-width: 600px)" srcset="assets/diagrams/factory-narrow.svg">
-    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief; it starts one lead per task in its own worktree. The lead has an explorer, a coder and a reviewer work until the reviewer approves. The lander tests and pushes a pull request, a draft until it is handed over, green and free of conflicts. You approve; a script merges approved pull requests to main in order. What conflicts or goes red there goes to a tech lead, which resolves it and hands over again, and asks the lead only if behaviour would change. A site manager watches and tells the dispatcher or a lead. Every task leaves feedback and a retrospective; the dispatcher proposes rule edits, you decide. Models are defaults.">
+    <img src="assets/diagrams/factory-wide.svg" width="100%" alt="You give the dispatcher a brief; it starts one task per brief, two sessions in one worktree. The lead writes the spec, judges the result and reports, with an explorer for its questions, and hands the spec to the tech lead. The tech lead builds: an explorer reads, a coder writes, a reviewer checks until it approves, and a lander tests and pushes a pull request, a draft until it is handed over, green and free of conflicts. You approve; a script merges approved pull requests to main in order. What conflicts or fails a check there goes back to the tech lead, which resolves it and hands over again, and asks the lead only if behaviour would change. Your comments on the pull request reach the lead. A site manager watches, and tells the dispatcher when main is red or the lead. Every task leaves feedback and a retrospective; the dispatcher proposes rule edits, you decide. Models are defaults.">
   </picture>
 </p>
 
+Every task is two sessions: the lead (Fable) checks the brief, writes the spec, judges the result and reports; the tech lead (Opus) builds from the spec with explorers, coders, reviewers and the lander ([Tech lead](docs/factory.md#tech-lead)).
+
 A lead asks you only what it cannot decide itself; comment on its pull request and it answers or acts. The pull request is a draft until it is handed over, green and free of conflicts. Nothing merges without you: approve with a review (or a comment `lgtm`), and a script merges what you approved, in order.
 
-What the merge queue cannot merge cleanly goes to a tech lead (Opus): it resolves the conflict, notes it on the pull request and hands over again, and wakes the lead only when the resolution would change the behaviour that was asked for.
-
-In team mode (`factory new --mode team`) the lead writes the spec and judges the result, and a tech lead session runs the coders, reviewers and lander ([Team mode](docs/factory.md#team-mode)).
+What the merge queue finds conflicting or with a failed check goes back to the tech lead: it resolves it, notes it on the pull request and hands over again, waking the lead only if the resolution would change the behaviour asked for. A check that fails before hand-over is part of the build: nobody is messaged, the pull request stays a draft. A red main is the site manager's to report to the dispatcher.
 
 <p align="center">
   <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap and its reserve">
