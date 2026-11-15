@@ -12,7 +12,7 @@ from subprocess import CompletedProcess
 from types import SimpleNamespace
 from unittest import mock
 
-from test_factory import factory, stub_popen
+from test_factory import RealReviewStarted, factory, stub_popen
 
 TARGET = "me/widgets"
 ISSUE_URL = f"https://github.com/{TARGET}/issues/41"
@@ -153,6 +153,11 @@ class TickTests(Store):
         self.tick().assert_not_called()
         self.assertEqual(len(self.reviews()), 1)
 
+    def test_a_test_that_reaches_the_real_spawn_of_a_review_fails(self):
+        self.put("tasks", 1, slug="a")
+        with self.assertRaises(RealReviewStarted):
+            factory.review_tick(SimpleNamespace(root=self.root))
+
     def test_a_failing_tick_prints_and_goes_on(self):
         self.put("tasks", 1, slug="a")
         out = io.StringIO()
@@ -212,7 +217,8 @@ class Session(Store):
         with mock.patch.object(factory, "run", self.fake), mock.patch.object(factory, "load_identity", lambda: self.identity), \
                 mock.patch.object(factory, "app_token", self.token), redirect_stdout(io.StringIO()) as out:
             code = factory.review_run(SimpleNamespace(root=self.root), settings)
-        [record] = self.reviews()
+        [started, record] = self.reviews()
+        self.assertEqual((started["outcome"], started["ts"], started["folder"]), ("started", record["ts"], record["folder"]))
         return code, record, out.getvalue()
 
     def gh_calls(self):
@@ -287,6 +293,40 @@ class RunTests(Session):
         self.assertIn("input/issues.json: absent", argv[-1])
         self.assertEqual(self.gh_calls(), [])
 
+    def test_no_mcp_whatever_lean_start_says(self):
+        for lean in ("true", "false"):
+            with self.subTest(lean_start=lean):
+                self.settings_file(f"[sessions]\nlean_start = {lean}\n")
+                argv = factory.review_argv(factory.load_settings(), self.tmp, "p")
+                self.assertEqual(argv.count("--strict-mcp-config"), 1)
+
+    def test_the_session_cannot_reach_github(self):
+        self.run_review()
+        [env] = [e for c, e in zip(self.calls, self.envs) if c[:2] == ["claude", "-p"]]
+        self.assertEqual(env["GH_TOKEN"], "unavailable")
+        self.assertEqual({k: v for k, v in env.items() if k in factory.lockdown_exports()}, factory.lockdown_exports())
+
+    def test_a_started_record_alone_is_not_due_for_a_period(self):
+        self.put("tasks", 0.1, slug="a")
+        self.put("reviews", 0.5, outcome="started", folder="/f")
+        self.assertFalse(factory.review_decide(factory.load_settings())[0])
+        self.assertEqual([r["outcome"] for r in self.reviews()], ["started"])
+
+    def test_a_started_record_is_not_the_last_run(self):
+        self.put("reviews", 5, outcome="ran")
+        self.put("reviews", 3, outcome="started", folder="/f")
+        self.put("tasks", 4, slug="a")
+        self.assertEqual(factory.review_since(self.reviews()), self.reviews()[0]["ts"])
+        self.assertTrue(factory.review_decide(factory.load_settings())[0])
+
+    def test_a_folder_that_cannot_be_made_fails_with_the_reason(self):
+        self.store.mkdir(parents=True, exist_ok=True)
+        (self.store / "deliverables").write_text("a file where the folder should go")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(factory.review_run(SimpleNamespace(root=self.root), factory.load_settings()), 1)
+        self.assertEqual([(r["outcome"], r.get("reason", "")[:30]) for r in self.reviews()],
+                         [("started", ""), ("failed", "the review failed: NotADirecto")])
+
     def test_the_prompt_names_the_previous_report(self):
         _, first, _ = self.run_review()
         self.calls.clear()
@@ -298,7 +338,7 @@ class RunTests(Session):
     def test_an_exception_still_leaves_a_record(self):
         with mock.patch.object(factory, "run", side_effect=RuntimeError("boom")), redirect_stdout(io.StringIO()):
             self.assertEqual(factory.review_run(SimpleNamespace(root=self.root), factory.load_settings()), 1)
-        [r] = self.reviews()
+        [_, r] = self.reviews()
         self.assertEqual((r["outcome"], r["reason"]), ("failed", "the review failed: RuntimeError: boom"))
 
     def test_cmd_review_by_hand_prints_the_decision(self):
@@ -318,7 +358,7 @@ class RunTests(Session):
         with mock.patch.object(factory, "run", self.fake), mock.patch.object(factory, "Repo", lambda: SimpleNamespace(root=self.root)), \
                 redirect_stdout(out):
             self.assertEqual(factory.main(["review", "--run"]), 0)
-        self.assertEqual([r["outcome"] for r in self.reviews()], ["ran"])
+        self.assertEqual([r["outcome"] for r in self.reviews()], ["started", "ran"])
 
     def test_a_second_review_cannot_start_while_one_runs(self):
         with factory.file_lock(self.store / "review.lock"), mock.patch.object(factory, "Repo", lambda: SimpleNamespace(root=self.root)), \
@@ -383,6 +423,7 @@ class ScanTests(Store):
         for text, kind in ((f"see {self.tmp}/notes", "a path under a home directory"),
                            ("in /Users/alice/code/x", "a path under a home directory"),
                            ("under /home/bob/src", "a path under a home directory"),
+                           ("in ~/code/x", "a path under a home directory"),
                            ("the Gizmos repo", "the name of another repository"),
                            ("me/gizmos broke", "the name of another repository"),
                            ("the prodmetrics server", "a host or MCP server name"),
@@ -390,6 +431,14 @@ class ScanTests(Store):
                            ("at 10.20.30.40 it", "an IPv4 address")):
             with self.subTest(text):
                 self.assertEqual(self.held(text), kind)
+
+    def test_a_repository_seen_only_in_the_firings_or_ops_log_is_found(self):
+        for name in ("firings", "ops"):
+            with self.subTest(name=name):
+                self.put(name, 1, repo=f"/elsewhere/only-{name}")
+                remotes = {self.root: ("me", "widgets"), f"/elsewhere/only-{name}": ("me", f"only{name}")}
+                with mock.patch.object(factory, "remote_repo", lambda cwd=None: remotes.get(cwd)):
+                    self.assertEqual(self.held(f"the only{name} repo"), "the name of another repository")
 
     def test_the_target_and_ordinary_words_pass(self):
         for text in ("the widgets repo, me/widgets", "version 1.2.3 of a gizmos-free thing", "in the repo directory",
@@ -491,7 +540,7 @@ class PostTests(Session):
         with mock.patch.object(factory, "run", self.fake), mock.patch.object(factory, "load_identity", lambda: self.identity), \
                 mock.patch.object(factory, "app_token", side_effect=factory.Fail("no token", 1)), redirect_stdout(io.StringIO()):
             factory.review_run(SimpleNamespace(root=self.root), factory.load_settings())
-        self.assertEqual(self.reviews()[0]["held"], [{"file": "1.md", "why": "no token"}])
+        self.assertEqual(self.reviews()[-1]["held"], [{"file": "1.md", "why": "no token"}])
         self.assertEqual(self.gh_calls(), [])
 
     def test_a_proposal_that_cites_nothing_says_none(self):
@@ -541,6 +590,28 @@ class MirrorTests(Store):
         factory.review_mirror(issues)
         self.assertEqual(len(list(factory.read_log("feedback"))), written)
         self.assertEqual(self.status(), {"a": "accepted", "b": "done", "c": "rejected", "d": "open"})
+
+    def test_mirror_lines_say_who_wrote_them_and_are_read_as_before(self):
+        factory.review_mirror([self.issue(1, "OPEN", True, "aaaaaaaaaaaa")])
+        [line] = [r for r in factory.read_log("feedback") if "status" in r]
+        self.assertEqual((line["status"], line["by"]), ("accepted", "kaizen-review"))
+        folded = {e["id"][0]: e["status"] for e in factory.fold_feedback(factory.read_log("feedback"))}
+        self.assertEqual(folded["a"], "accepted")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            factory.main(["feedback", "--status", "accepted"])
+        self.assertRegex(out.getvalue(), r"^aaaaaaaaaaaa  accepted  ")
+
+    def test_mirror_lines_are_not_activity(self):
+        self.put("reviews", 3, outcome="ran")
+        factory.review_mirror([self.issue(1, "OPEN", True, "aaaaaaaaaaaa")])
+        self.assertFalse(factory.review_decide(factory.load_settings())[0])
+        self.assertEqual(self.reviews()[-1]["outcome"], "skipped")
+
+    def test_a_status_set_by_hand_is_activity(self):
+        self.put("reviews", 3, outcome="ran")
+        self.put("feedback", 0.01, id="aaaaaaaaaaaa", status="done")
+        self.assertTrue(factory.review_decide(factory.load_settings())[0])
 
     def test_the_run_mirrors_after_it_fetches(self):
         gh = mock.Mock(return_value=(0, json.dumps([self.issue(1, "CLOSED", False, "aaaaaaaaaaaa")]), ""))

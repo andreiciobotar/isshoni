@@ -1908,11 +1908,12 @@ def cmd_retro(args):
     return 0
 
 
-def set_feedback(prefix, status, pr=None):
+def set_feedback(prefix, status, pr=None, by=None):
     found = [e["id"] for e in read_feedback() if e["id"].startswith(prefix)]
     if len(found) != 1:
         raise Fail(f"feedback: {'no entry' if not found else 'several entries'} matches {prefix!r}")
-    log("feedback", {"id": found[0], "ts": now(), "status": status, **({"pr": pr} if pr else {})})
+    log("feedback", {"id": found[0], "ts": now(), "status": status, **({"pr": pr} if pr else {}),
+                      **({"by": by} if by else {})})
 
 
 def cmd_feedback(args):
@@ -4464,15 +4465,22 @@ def app_token(identity, name):
     return token
 
 
-def identity_exports():
-    """({name: value}, why): the exports that make git and gh act as the App; empty when no identity applies.
-    Whatever else happens the lock-down comes back (exit 1, with the reason): git must not reach the human's credentials."""
+def lockdown_exports():
+    """The exports that cut git and gh off from the human's credentials: no token, the stored credential helper reset
+    (a helper that hands out `GH_TOKEN`, which is unavailable here), ssh remotes rewritten to https."""
     values = {"GH_TOKEN": "unavailable", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "4"}
     credential, rewrite = "credential.https://github.com.helper", "url.https://github.com/.insteadOf"
     helper = "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f"
     for i, (key, value) in enumerate(((credential, ""), (credential, helper), (rewrite, "git@github.com:"),
                                       (rewrite, "ssh://git@github.com/"))):
         values[f"GIT_CONFIG_KEY_{i}"], values[f"GIT_CONFIG_VALUE_{i}"] = key, value
+    return values
+
+
+def identity_exports():
+    """({name: value}, why): the exports that make git and gh act as the App; empty when no identity applies.
+    Whatever else happens the lock-down comes back (exit 1, with the reason): git must not reach the human's credentials."""
+    values = lockdown_exports()
     try:
         found = acting_identity()
         if not found:
@@ -6637,6 +6645,7 @@ REVIEW_ACTIVITY = ("tasks", "feedback", "retros", "queue", "techlead", "comments
 REVIEW_SECTIONS = {"proposal": ("Problem", "What the role lacked", "Proposal", "Evidence", "Number"),
                    "evidence": ("Evidence",), "check": ("Number",)}
 REVIEW_RUNGS = ("owner", "authority", "information", "judgement", "mechanism")
+REVIEW_BY = "kaizen-review"  # the `by` of the outbox lines the mirror writes: they are not activity
 REVIEW_LABELS = ("kaizen", "kaizen:accepted")
 REVIEW_DENIED = ("Bash(gh *)", "Bash(git push *)", "Bash(git commit *)", "Bash(curl *)", "Bash(factory *)")
 REVIEW_FIELDS = "number,title,body,state,labels,comments"
@@ -6662,7 +6671,7 @@ def review_decide(settings):
     if last is not None and last + hours * 3600 > time.time():
         return False, f"not due: the last review ({records[-1].get('outcome')}) was at {stamp(records[-1])}"
     since = review_since(records)
-    if any(stamp(r) > since for name in REVIEW_ACTIVITY for r in read_log(name, since)):
+    if any(stamp(r) > since and r.get("by") != REVIEW_BY for name in REVIEW_ACTIVITY for r in read_log(name, since)):
         return True, f"due: there was activity since {since}"
     log("reviews", {"ts": now(), "outcome": "skipped", "reason": f"no activity since {since}"})
     return False, f"skipped: no activity since {since}"
@@ -6722,12 +6731,12 @@ def review_mirror(issues):
         for prefix in re.findall(r"[0-9a-f]{6,}", cites[1]) if cites and status else ():
             if any(e["id"].startswith(prefix) and e["status"] != status for e in read_feedback()):
                 with contextlib.suppress(Fail):
-                    set_feedback(prefix, status)
+                    set_feedback(prefix, status, by=REVIEW_BY)
 
 
 def review_patterns(target, settings):
     """[(the kind of detail, its pattern)] that a public proposal must not hold: see docs/factory.md."""
-    roots = {r["repo"] for name in REVIEW_ACTIVITY for r in read_log(name) if isinstance(r.get("repo"), str)}
+    roots = {r["repo"] for name in (*REVIEW_ACTIVITY, "firings", "ops") for r in read_log(name) if isinstance(r.get("repo"), str)}
     others = {n for n in (remote_repo(root) for root in roots) if n and "/".join(n).lower() != target.lower()}
     hosts = load_hosts()
     names = {OPS_TOOL_RE.fullmatch(t)[1] for t in settings["tools"] or []} | set(hosts) \
@@ -6736,7 +6745,7 @@ def review_patterns(target, settings):
     def words(ws):
         return re.compile(r"(?<![\w-])(?:" + "|".join(re.escape(w) for w in ws) + r")(?![\w-])", re.I) if ws else None
     return [(kind, p) for kind, p in (
-        ("a path under a home directory", re.compile(re.escape(str(Path.home())) + r"|/(?:Users|home)/[^/\s]+/")),
+        ("a path under a home directory", re.compile(re.escape(str(Path.home())) + r"|/(?:Users|home)/[^/\s]+/|~/[\w.-]")),
         ("the name of another repository", words({w for o, n in others for w in (n, f"{o}/{n}")})),
         ("a host or MCP server name", words(names)),
         ("an IPv4 address", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"))) if p]
@@ -6815,7 +6824,7 @@ def review_post(target, settings, folder, issues, started):
 def review_argv(settings, folder, prompt):
     """The review session's launch command, the one place another runner would plug in. It reads anywhere and writes
     only under `folder`; the flags cannot stop `python3` from writing elsewhere, the charter says so."""
-    lean = [*lean_flags(), "--disable-slash-commands"] if settings["lean_start"] else []
+    lean = [*lean_flags(), "--disable-slash-commands"] if settings["lean_start"] else ["--strict-mcp-config"]
     return ["claude", "-p", "--model", settings["models"]["kaizen_review"], "--permission-mode", "dontAsk", *lean,
             "--tools=Read,Grep,Glob,Bash,Write", "--allowedTools", "Read", "Grep", "Glob", "Bash", f"Edit(/{folder}/**)",
             "--disallowedTools", *REVIEW_DENIED, *SETTINGS_ISOLATION, "--max-budget-usd", REVIEW_BUDGET,
@@ -6829,11 +6838,12 @@ def review_run(repo, settings):
     records = sorted(read_log("reviews"), key=stamp)
     since = review_since(records)
     folder = STORE.expanduser().resolve() / "deliverables" / f"kaizen-review-{re.sub('[-:]', '', started)}"
-    for d in ("scripts", "evidence", "proposals", *(["input"] if target else [])):
-        (folder / d).mkdir(parents=True)
+    log("reviews", {"ts": started, "outcome": "started", "folder": str(folder)})  # a run that dies leaves this: not due for a period
     session = cost = reason = None
     posted, held, issues, blocked = [], [], [], None
     try:
+        for d in ("scripts", "evidence", "proposals", *(["input"] if target else [])):
+            (folder / d).mkdir(parents=True)
         if target:
             rc, out, blocked = review_gh(target, "issue", "list", "--state", "all", "--label", "kaizen", "--limit", "200",
                                          "--json", REVIEW_FIELDS)
@@ -6847,7 +6857,8 @@ def review_run(repo, settings):
         prompt = (f"Time now: {started}. Since: {since}. Store: {STORE.expanduser()}. Your folder: {folder}. Previous report: "
                   f"{previous if previous.is_file() else 'none'}. input/issues.json: "
                   f"{'present' if (folder / 'input' / 'issues.json').exists() else 'absent'}.")
-        rc, out, _ = run(review_argv(settings, folder, prompt), cwd=repo.root, timeout=REVIEW_TIMEOUT, group=True)
+        rc, out, _ = run(review_argv(settings, folder, prompt), cwd=repo.root, timeout=REVIEW_TIMEOUT, group=True,
+                         env={**os.environ, **lockdown_exports()})
         try:
             doc = json.loads(out)
         except ValueError:

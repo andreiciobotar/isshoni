@@ -37,6 +37,22 @@ def _guarded_write_text(path, content):
 
 factory.write_text = _guarded_write_text
 
+
+class RealReviewStarted(BaseException):
+    """Not an Exception: `review_tick` prints and goes on after one, which would let the test pass."""
+
+
+_spawn = factory.spawn
+
+
+def _guarded_spawn(argv, cwd, out_path):
+    if "review" in argv:
+        raise RealReviewStarted(f"a test is about to start a real review (a paid session): {argv}")
+    _spawn(argv, cwd, out_path)
+
+
+factory.spawn = _guarded_spawn
+
 ROOT = "/repo"
 WT = f"{ROOT}/.claude/worktrees"
 DAY = 86400
