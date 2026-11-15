@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"image/color"
 	"strings"
 	"testing"
 
@@ -51,37 +52,61 @@ func oneDayDoc(t testing.TB) *data.Kaizen {
 	return d
 }
 
-func TestPulseBandRowsAndFigures(t *testing.T) {
+// bandOf is the band: the page up to the tile row.
+func bandOf(out string) string { return out[:strings.Index(out, "LANDED")] }
+
+// cardRow is the text of the card whose label is label, on the row-th line from the label's.
+func cardRow(t *testing.T, out, label string, row int) string {
+	t.Helper()
+	lines := strings.Split(out, "\n")
+	for i, l := range lines {
+		if idx := strings.Index(l, label); idx >= 0 {
+			rs := []rune(lines[i+row])[len([]rune(l[:idx])):]
+			seg := string(rs)
+			if end := strings.Index(seg, "▌"); end >= 0 {
+				seg = seg[:end]
+			}
+			return strings.TrimSpace(seg)
+		}
+	}
+	t.Fatalf("no card %q:\n%s", label, out)
+	return ""
+}
+
+func TestPulseBandCardsAndFigures(t *testing.T) {
 	out := pulseBand(t, 140, nil)
 	for _, want := range []string{
-		"TODAY AGAINST THE 7 DAYS BEFORE", "today 11-14", "11-07 to 11-13", "each day, today last",
-		"all-in cost / merged PR $10.25 n=12 ↓ 27% $14.00* n=50",
-		"tasks · dispatcher · site manager $100 · $20.25 · $2.25 $600 · $90.00 · $10.00",
-		"first pass 50% 6/12 ↓ 34 pts 84% 42/50",
-		"small · medium · large · unstated 3/4 · 1/3 · 0/1 · 2/4 19/21 · 12/17 · 3/4 · 8/8",
-		"approval → merge, median 2m30s n=6 p90 4m00s ≈ 2m40s n=30 p90 7m00s",
-		"hand-over → merge · → approval, p90 36m44s · 30m00s n=11 55m00s · 40m00s n=46",
-		"send-backs that changed nothing 1 of 3 -",
-		"conflicted base merges / PR 0.36 4 in 11 PRs ↑ 179% 0.13 6 in 46 PRs",
+		"TODAY AGAINST THE 7 DAYS BEFORE",
+		"$10.25 n=12", "↓ 27% vs $14.00* n=50", "$100 · $20.25 · $2.25",
+		"50% 6/12", "↓ 34 pts vs 84% 42/50", "3/4 · 1/3 · 0/1 · 2/4",
+		"2m30s n=6", "≈ vs 2m40s n=30", "p90 4m00s",
+		"0.36 n=11", "↑ 179% vs 0.13 n=46", "4 in 11 PRs",
+		// the faint block: what the cards leave out, the baseline's figures among it
+		"hand-over → merge p90 · → approval p90: today 36m44s · 30m00s (n=11), baseline 55m00s · 40m00s (n=46)",
+		"baseline 11-07 to 11-13: parts $600 · $90.00 · $10.00 · first pass 19/21 · 12/17 · 3/4 · 8/8 · approval → merge p90 7m00s",
+		"send-backs that changed nothing: 1 of 3 today · - baseline · send-backs: the queue log starts 11-14",
+		"approvals recorded: 6 today, 30 of 46 in the baseline (8 backfilled)",
 	} {
 		if !strings.Contains(squeeze(out), want) {
 			t.Errorf("the band lacks %q:\n%s", want, out)
 		}
 	}
-	lineWith(t, out, "send-backs: the queue log starts 11-14", " · approvals backfilled: 2 today, 8 in the baseline") // one note line
+	if strings.Count(out, "▌ all-in cost") != 1 || !strings.Contains(squeeze(out), "approval → merge, median") {
+		t.Errorf("four cards:\n%s", out)
+	}
 	if strings.Index(out, "TODAY AGAINST") > strings.Index(out, "LANDED") {
 		t.Errorf("the band is above the tiles:\n%s", out)
 	}
-	for _, gone := range []string{"yesterday", "(git history)", "approval → merge p90", "conflicted base merges 4"} {
+	for _, gone := range []string{"yesterday", "(git history)", "approvals backfilled"} {
 		if strings.Contains(out, gone) {
 			t.Errorf("%q is for a one-day baseline or gone:\n%s", gone, out)
 		}
 	}
 }
 
-func TestPulseTitleAndHeadsFollowTheBaseline(t *testing.T) {
+func TestPulseTitleFollowsTheBaseline(t *testing.T) {
 	one := pulseFrame(t, oneDayDoc(t), 140)
-	for _, want := range []string{"TODAY AGAINST YESTERDAY", "yesterday 11-13"} {
+	for _, want := range []string{"TODAY AGAINST YESTERDAY", "baseline 11-13: parts"} {
 		if !strings.Contains(one, want) {
 			t.Errorf("one-day baseline lacks %q:\n%s", want, one)
 		}
@@ -96,49 +121,43 @@ func TestPulseTitleAndHeadsFollowTheBaseline(t *testing.T) {
 }
 
 func TestPulseTodayWithNothingMergedShowsDashesAndTheSpend(t *testing.T) {
-	out := squeeze(pulseFrame(t, noMergeDoc(t), 140))
+	out := squeeze(bandOf(pulseFrame(t, noMergeDoc(t), 140)))
 	for _, want := range []string{
-		"all-in cost / merged PR - n=0 $14.00* n=50",
-		"tasks · dispatcher · site manager $100 · $20.25 · $2.25",
-		"first pass - n=0 84% 42/50",
-		"approval → merge, median - n=0 2m40s n=30",
-		"conflicted base merges / PR - n=0 0.13 6 in 46 PRs",
+		"- n=0", "vs $14.00* n=50", "$100 · $20.25 · $2.25",
+		"vs 84% 42/50", "vs 2m40s n=30", "vs 0.13 n=46",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the band lacks %q:\n%s", want, out)
 		}
 	}
-	if strings.ContainsAny(out[:strings.Index(out, "LANDED")], "↑↓≈") {
+	if strings.ContainsAny(out, "↑↓≈") {
 		t.Errorf("no delta without a verdict:\n%s", out)
 	}
 }
 
 func TestPulseUnknownsAreDashesNeverZero(t *testing.T) {
-	out := pulseBand(t, 140, func(p *data.Pulse) {
+	out := squeeze(pulseBand(t, 140, func(p *data.Pulse) {
 		d := &p.Baseline
 		d.Merged = 0
 		d.Cost.PerMerged, d.Conflicts.PerMerged = nil, nil
 		d.FirstPass.Small.Of = 0
 		d.Handover.ToMerge.P90S = nil
 		p.QueueSince = nil
-	})
-	for row, tail := range map[string]string{
-		"all-in cost / merged PR":         "- n=0",
-		"small · medium":                  "3/4 · 1/3 · 0/1 · 2/4 - · 12/17 · 3/4 · 8/8",
-		"hand-over → merge ·":             "36m44s · 30m00s n=11 - · 40m00s",
-		"send-backs that changed nothing": "1 of 3 -",
-		"conflicted base merges / PR":     "4 in 11 PRs - n=46",
+	}))
+	for _, want := range []string{
+		"vs - n=0", "vs - n=46",
+		"baseline - · 40m00s (n=46)",
+		"first pass - · 12/17 · 3/4 · 8/8",
+		"1 of 3 today · - baseline",
+		"send-backs: no queue log yet",
 	} {
-		if got := strings.Join(strings.Fields(lineWith(t, out, row)), " "); !strings.Contains(got, tail) {
-			t.Errorf("%s: want %q in %q", row, tail, got)
+		if !strings.Contains(out, want) {
+			t.Errorf("the band lacks %q:\n%s", want, out)
 		}
-	}
-	if !strings.Contains(out, "send-backs: no queue log yet") {
-		t.Errorf("no queue log is said once under the table:\n%s", out)
 	}
 	if out := pulseBand(t, 140, func(p *data.Pulse) {
 		p.Baseline.Handover.SentBack, p.Baseline.Handover.SentBackUnchanged = ptr(0), ptr(0)
-	}); !strings.Contains(out, "0 of 0") || strings.Contains(out, "send-backs: the queue log") {
+	}); !strings.Contains(out, "0 of 0 baseline") || strings.Contains(out, "send-backs: the queue log") {
 		t.Errorf("a recorded zero is shown as zero, with no note:\n%s", out)
 	}
 }
@@ -171,9 +190,9 @@ func TestPulseColourFollowsTheVerdict(t *testing.T) {
 		edit(doc.Pulse)
 		m := fakeModel(false, 140, 100)
 		setKaizen(m, doc, pagePulse)
-		return strings.Contains(m.Render(), paint(m, fig))
+		return strings.Contains(bandOf(m.Render()), paint(m, fig))
 	}
-	on := func(m *model) paint { return m.th.on(m.th.Bg) }
+	on := func(m *model) paint { return m.th.on(m.th.Surface) }
 	orange := func(m *model, s string) string { return on(m).b(s, m.th.Orange) }
 	green := func(m *model, s string) string { return on(m).b(s, m.th.Green) }
 	muted := func(m *model, s string) string { return on(m).b(s, m.th.Muted) }
@@ -195,16 +214,36 @@ func TestPulseColourFollowsTheVerdict(t *testing.T) {
 	if !has(all("same"), muted, "≈") {
 		t.Error("same is a muted ≈")
 	}
-	text := func(m *model, s string) string { return on(m).t(s, m.th.Text) }
-	for _, v := range []string{"few", "same"} {
+	// the card's left bar takes the verdict's colour; muted for same, few and none
+	stripe := func(col func(*model) color.Color) func(*model, string) string {
+		return func(m *model, s string) string { return on(m).t(s, col(m)) }
+	}
+	if !has(keep, stripe(func(m *model) color.Color { return m.th.Green }), "▌") || !has(keep, stripe(func(m *model) color.Color { return m.th.Orange }), "▌") {
+		t.Error("the bar is green for better and orange for worse")
+	}
+	if has(all("few"), stripe(func(m *model) color.Color { return m.th.Orange }), "▌") || has(all("same"), stripe(func(m *model) color.Color { return m.th.Orange }), "▌") ||
+		!has(all("few"), stripe(func(m *model) color.Color { return m.th.Muted }), "▌") {
+		t.Error("the bar is muted for few and same")
+	}
+	// today's strip cell: the verdict's colour for better and worse, the text colour (not muted) for the rest
+	cell := func(edit func(*data.Pulse), col func(*model) color.Color) bool {
 		for _, g := range "▁▂▃▄▅▆▇█" {
-			if has(all(v), text, strings.Repeat(string(g), 2)) {
-				t.Errorf("with %s today's sparkline cell is muted, not text: %q", v, g)
+			if has(edit, stripe(col), strings.Repeat(string(g), 2)) {
+				return true
 			}
 		}
+		return false
 	}
-	// the human's waiting never colours: the hand-over rows have no colour
-	if has(func(*data.Pulse) {}, orange, "36m44s") || has(func(*data.Pulse) {}, green, "36m44s") {
+	for _, v := range []string{"few", "same"} {
+		if !cell(all(v), func(m *model) color.Color { return m.th.Text }) {
+			t.Errorf("with %s today's strip cell is in the text colour", v)
+		}
+	}
+	if !cell(all("better"), func(m *model) color.Color { return m.th.Green }) || !cell(all("worse"), func(m *model) color.Color { return m.th.Orange }) {
+		t.Error("today's strip cell takes the verdict's colour")
+	}
+	// the human's waiting never colours
+	if has(keep, orange, "36m44s") || has(keep, green, "36m44s") {
 		t.Error("hand-over → merge is not coloured")
 	}
 }
@@ -222,15 +261,14 @@ func TestPulseDeltaFromAZeroBaselineIsTheArrowAlone(t *testing.T) {
 	doc := kaizenDoc(t)
 	zero(doc.Pulse)
 	setKaizen(m, doc, pagePulse)
-	if !strings.Contains(m.Render(), m.th.on(m.th.Bg).b("↑", m.th.Orange)) {
+	if !strings.Contains(m.Render(), m.th.on(m.th.Surface).b("↑", m.th.Orange)) {
 		t.Error("the arrow keeps the verdict's colour")
 	}
 }
 
-func TestPulseSparklineHasACellPerDayAndADotForNoValue(t *testing.T) {
+func TestPulseStripHasACellPerDayAndADotForNoValue(t *testing.T) {
 	out := pulseBand(t, 140, nil)
-	row := lineWith(t, out, "approval → merge, median")
-	cells := []rune(strings.TrimSpace(row[strings.LastIndex(row, "p90 7m00s")+len("p90 7m00s"):]))
+	cells := []rune(cardRow(t, out, "approval → merge, median", 3))
 	if len(cells) != 16 || cells[0] != '·' || cells[1] != '·' || cells[14] == '·' || cells[15] != cells[14] {
 		t.Errorf("eight days of two cells, the first without a value, today last: %q", string(cells))
 	}
@@ -243,36 +281,42 @@ func TestPulseSparklineHasACellPerDayAndADotForNoValue(t *testing.T) {
 		t.Errorf("the largest day fills the cell: %q", string(cells))
 	}
 	if strings.ContainsAny(strings.Split(pulseBand(t, 60, nil), "\n")[2], "▁▂▃▄▅▆▇█·") {
-		t.Error("narrow has no sparkline")
+		t.Error("narrow has no strip")
 	}
 }
 
-func TestPulseSparklineShowsAt100OneGapAfterTheBaseline(t *testing.T) {
-	row := lineWith(t, pulseBand(t, 100, nil), "approval → merge, median")
-	tail := row[strings.LastIndex(row, "p90 7m00s")+len("p90 7m00s"):]
-	if !strings.HasPrefix(tail, " ") || strings.HasPrefix(tail, "  ") || len([]rune(strings.TrimSpace(tail))) < 4 {
-		t.Errorf("at 100 the sparkline starts one gap after the baseline and has four cells or more: %q", tail)
+func TestPulseStripCaptionAppearsBelowThreeDaysWithData(t *testing.T) {
+	only := func(k int) func(*data.Pulse) {
+		return func(p *data.Pulse) {
+			for i := range p.Days {
+				if i >= k {
+					p.Days[i].Cost.PerMerged = nil
+				}
+			}
+		}
+	}
+	for _, w := range []int{140, 100} {
+		two := cardRow(t, pulseBand(t, w, only(2)), "all-in cost", 3)
+		if !strings.HasSuffix(two, "2 of 8 days with data") {
+			t.Errorf("at %d with data on 2 of 8 days the strip says so: %q", w, two)
+		}
+		if three := cardRow(t, pulseBand(t, w, only(3)), "all-in cost", 3); strings.Contains(three, "days with data") {
+			t.Errorf("at %d with data on 3 of 8 days there is no caption: %q", w, three)
+		}
 	}
 }
 
-func TestPulseBandIsAtMostElevenLinesAtWideAndNothingExceedsTheWidth(t *testing.T) {
-	lines := strings.Split(pulseBand(t, 140, nil), "\n")
-	first, tiles := 0, 0
-	for i, l := range lines {
-		if strings.Contains(l, "TODAY AGAINST") {
-			first = i
-		}
-		if strings.Contains(l, "LANDED") {
-			tiles = i
-		}
-	}
-	if n := tiles - first; n > 11 {
-		t.Errorf("the band at 140 is %d lines, want at most 11", n)
-	}
-	for _, w := range []int{60, 100, 140} {
-		for _, l := range strings.Split(pulseBand(t, w, nil), "\n") {
-			if ansi.StringWidth(l) > w {
-				t.Errorf("at %d: line wider than the window: %q", w, l)
+func TestPulseCardsHaveNoCutAtWideWidths(t *testing.T) {
+	for _, w := range []int{100, 120, 140, 200} {
+		for name, doc := range map[string]*data.Kaizen{"fixture": kaizenDoc(t), "no merge": noMergeDoc(t), "one day": oneDayDoc(t)} {
+			out := bandOf(pulseFrame(t, doc, w))
+			if strings.Contains(out, "…") {
+				t.Errorf("%s at %d: something is cut:\n%s", name, w, out)
+			}
+			for _, l := range strings.Split(out, "\n") {
+				if ansi.StringWidth(l) > w {
+					t.Errorf("%s at %d: wider than the window: %q", name, w, l)
+				}
 			}
 		}
 	}

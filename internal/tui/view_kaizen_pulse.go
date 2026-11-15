@@ -210,34 +210,37 @@ func (m *model) pulseCard(p paint, r pulseRow, detail string, w int) block {
 // saying so, and gives up days to make room for it, or all of them below 4 cells.
 func (m *model) pulseStrip(sp paint, days []*float64, w int, today color.Color) string {
 	days = days[max(0, len(days)-pulseSparkMax):]
-	cells := func(room int) []*float64 {
+	last := func(room int) ([]*float64, int) { // the newest days that fit room, and cells a day
 		per := 1 + btoi(2*len(days) <= room)
-		return days[max(0, len(days)-room/per):]
+		return days[max(0, len(days)-room/per):], per
 	}
-	shown := cells(w)
-	valued := func(ds []*float64) (k int) {
-		for _, d := range ds {
-			k += btoi(d != nil)
-		}
-		return k
-	}
-	captionOf := func(ds []*float64) string { return fmt.Sprintf("%d of %d days with data", valued(ds), len(ds)) }
+	shown, per := last(w)
 	caption := ""
-	if valued(shown) < 3 {
-		shown = cells(w - 1 - width(captionOf(shown)))
-		caption = captionOf(shown)
+	if k := valued(shown); k < 3 {
+		caption = fmt.Sprintf("%d of %d days with data", k, len(shown))
+		if room := w - 1 - width(caption); room >= 4 {
+			shown, per = last(room)
+			caption = fmt.Sprintf("%d of %d days with data", valued(shown), len(shown))
+		} else {
+			shown = nil
+		}
 	}
-	per := 1 + btoi(2*len(shown) <= w)
 	spark := ""
 	if len(shown)*per >= 4 {
 		spark = sp.spark(shown, per, m.th.Muted, today)
-		if caption != "" {
-			spark += sp.sp(1)
-		}
-	} else if caption == "" {
-		return ""
+	}
+	if spark != "" && caption != "" {
+		spark += sp.sp(1)
 	}
 	return spark + sp.t(caption, m.th.Faint)
+}
+
+// valued is how many of the days have a value.
+func valued(days []*float64) (k int) {
+	for _, d := range days {
+		k += btoi(d != nil)
+	}
+	return k
 }
 
 func btoi(b bool) int {

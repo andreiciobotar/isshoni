@@ -1,15 +1,15 @@
  Isshoni 一緒に  1 Dashboard  2 Agents  3 Factory [4 Kaizen] 5 Ops  6 Hanami                                     24h [7d] 30d  all   ○ idle 
  Kaizen  [Pulse] Friction  Flow  Anatomy  Board   ←→  · 20 landed of 24 tasks in 7d  · as of 11:00:00                                       
- TODAY AGAINST THE 7 DAYS BEFORE       today 11-14                     11-07 to 11-13         each day, today last                          
- all-in cost / merged PR               $10.25  n=12           ↓ 27%    $14.00*  n=50          ▇▇██████▆▆▆▆▅▅▅▅                              
-   tasks · dispatcher · site manager   $100 · $20.25 · $2.25           $600 · $90.00 · $10.00                                               
- first pass                            50%  6/12              ↓ 34 pts 84%  42/50             ██▇▇▆▆▇▇▇▇▇▇▆▆▅▅                              
-   small · medium · large · unstated   3/4 · 1/3 · 0/1 · 2/4           19/21 · 12/17 · 3/4 · 8/8                                            
- approval → merge, median              2m30s  n=6  p90 4m00s  ≈        2m40s  n=30  p90 7m00s ··██▇▇▆▆▇▇▅▅▆▆▆▆                              
-   hand-over → merge · → approval, p90 36m44s · 30m00s  n=11           55m00s · 40m00s  n=46                                                
-   send-backs that changed nothing     1 of 3                          -                                                                    
- conflicted base merges / PR           0.36  4 in 11 PRs      ↑ 179%   0.13  6 in 46 PRs      ▁▁▄▄▃▃▄▄▃▃▄▄▄▄██                              
- send-backs: the queue log starts 11-14 09:00 · approvals backfilled: 2 today, 8 in the baseline                                            
+ TODAY AGAINST THE 7 DAYS BEFORE                                                                                                            
+▌ all-in cost / merged PR           ▌ first pass                       ▌ approval → merge, median         ▌ conflicted base merges / PR     
+▌ $10.25  n=12                      ▌ 50%  6/12                        ▌ 2m30s  n=6                       ▌ 0.36  n=11                      
+▌ ↓ 27% vs $14.00* n=50             ▌ ↓ 34 pts vs 84% 42/50            ▌ ≈ vs 2m40s n=30                  ▌ ↑ 179% vs 0.13 n=46             
+▌ ▇▇██████▆▆▆▆▅▅▅▅                  ▌ ██▇▇▆▆▇▇▇▇▇▇▆▆▅▅                 ▌ ··██▇▇▆▆▇▇▅▅▆▆▆▆                 ▌ ▁▁▄▄▃▃▄▄▃▃▄▄▄▄██                
+▌ $100 · $20.25 · $2.25             ▌ 3/4 · 1/3 · 0/1 · 2/4            ▌ p90 4m00s                        ▌ 4 in 11 PRs                     
+ hand-over → merge p90 · → approval p90: today 36m44s · 30m00s (n=11), baseline 55m00s · 40m00s (n=46)                                      
+ baseline 11-07 to 11-13: parts $600 · $90.00 · $10.00 · first pass 19/21 · 12/17 · 3/4 · 8/8 · approval → merge p90 7m00s                  
+ send-backs that changed nothing: 1 of 3 today · - baseline · send-backs: the queue log starts 11-14 09:00                                  
+ approvals recorded: 6 today, 30 of 46 in the baseline (8 backfilled)                                                                       
                                                                                                                                             
 ▌ LANDED                ▌ COST / TASK           ▌ OVERHEAD              ▌ BRIEF → PR           ▌ PR → MERGE           ▌ FIRST PASS          
 ▌ 20                    ▌ $6.20                 ▌ $2.06                 ▌ 25m50s               ▌ 5m45s                ▌ 7/19                

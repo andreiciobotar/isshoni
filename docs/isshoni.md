@@ -153,7 +153,7 @@ pull request, n = merged), `first_pass` (all sizes, n = their `of`), `approval_t
 n) and `conflicts` (per merged pull request, n = `prs`). Each is `null` when today or the baseline has
 no value; `"few"` when either n is under 5 (`PULSE_MIN_N`); `"same"` when today is within 10% of the
 baseline (both zero is same); else `"better"` or `"worse"`, a higher first pass being better and a
-lower value on the others. The Pulse page colours by it (better green, worse orange, same and few grey) and the text output prints it. The lead duration
+lower value on the others. From 100 columns the Pulse page shows the four lead figures as cards, each with its delta, its verdict colour (better green, worse orange, same and few grey), a strip with a cell or two for each day (today last, in the verdict's colour or the text colour) and one detail line, and a faint block under them with the figures the cards leave out; below 100 columns it shows a row for each figure and its detail. The text output prints the verdict. The lead duration
 is approval to merge, the factory's part; the human's wait (`to_approval`, `to_merge`) is detail
 and never judged. The text output prints the heading and the four lead figures, the approval to merge median in place of the old hand-over to merge p90 line. The keys:
 - `cost` (`tasks`, `dispatcher`, `site_manager`, `unpriced_tokens`, `per_merged`): the all-in cost per
