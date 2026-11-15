@@ -1,0 +1,40 @@
+ Isshoni 一緒に  1 Dashboard  2 Agents  3 Factory [4 Kaizen] 5 Hanami                                            24h [7d] 30d  all   ○ idle 
+ Kaizen  [Pulse] Friction  Flow  Anatomy  Board   ←→  · 20 landed of 24 tasks in 7d  · as of 11:00:00                                       
+ TODAY AGAINST THE 7 DAYS BEFORE      today 11-14                      11-07 to 11-13              each day, today last                     
+ all-in cost / merged PR              -  n=0                           $14.00*  n=50               ▇███▆▆▅·                                 
+   tasks · dispatcher · site manager  $100 · $20.25 · $2.25            $600 · $90.00 · $10.00                                               
+ first pass                           -  n=0                           84%  42/50                  █▇▆▇▇▇▆·                                 
+   small · medium · large · unstated  - · - · - · -                    19/21 · 12/17 · 3/4 · 8/8                                            
+ approval → merge, median             -  n=0                           2m40s  n=30                 ·█▇▆▇▅▆·                                 
+   approval → merge p90               -                                7m00s  n=30                                                          
+   hand-over → merge p90              -                                55m00s  n=46                                                         
+   hand-over → approval p90           -                                40m00s  n=30                                                         
+   send-backs that changed nothing    -                                -                                                                    
+ conflicted base merges / PR          -  n=0                           0.13  n=46                  ▁█▆▇▆██·                                 
+   conflicted base merges             -                                6 in 46 PRs                                                          
+ send-backs: the queue log starts 11-14 09:00                                                                                               
+ approvals backfilled: 0 today, 8 in the baseline                                                                                           
+                                                                                                                                            
+▌ LANDED                ▌ COST / TASK           ▌ OVERHEAD              ▌ BRIEF → PR           ▌ PR → MERGE           ▌ FIRST PASS          
+▌ 20                    ▌ $6.20                 ▌ $2.06                 ▌ 25m50s               ▌ 5m45s                ▌ 7/19                
+▌ 3 in flight           ▌ ↓ 44% vs earlier 10   ▌ 20 landed             ▌ ↓ 61% vs earlier 10  ▌ ↓ 47% vs earlier 10  ▌ rework 9% of cost   
+ overhead: $38.40 dispatcher + $2.70 site manager over 20 landed tasks                                                                      
+                                                                                                                                            
+ ✦ 4 landed first-pass in a row · fx-quiet-refactor   ✦ record low cost: $2.31 · fx-quiet-refactor                                          
+                                                                                                                                            
+╭─ cost per task ────────────────────────────────────────────────────╮ ╭─ brief → pull request ────────────────────────────────────────────╮
+│ $11.20 ▂▂ ▇▇    ██    ▄▄                                           │ │ 55m00s ▃ ▆   ▁ █   ▂                                              │
+│        ██ ██ ██ ██    ██    ▂▂       ▄▄                            │ │        █ █ ▅ █ █ ▃ █                                              │
+│  $6.20 ██·██·██·██·▆▆·██·██·██·▅▅·██·██·▄▄·▆▆·▅▅·················· │ │ 25m50s █·█·█·█·█·█·█·▅·▂···▃·▆··································· │
+│        ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ▆▆ ▅▅ ▃▃ ★     │ │        █ █ █ █ █ █ █ █ █ ▇ █ █ ▅ █ ▅ ▄ ▃ ▂ ▂ ▁                    │
+│        ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██    │ │        █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █                    │
+│        ──────────────────▲───────────────────────▲──────────────── │ │        ──────────────▲───────────────▲─────────────────────────── │
+│        v0.1.0            v0.2.0                  v0.3.0            │ │        v0.1.0        v0.2.0          v0.3.0                       │
+│ latest $2.31 · median $6.20                                        │ │ latest 12m00s · median 25m50s                                     │
+╰────────────────────────────────────────────────────────────────────╯ ╰───────────────────────────────────────────────────────────────────╯
+╭─ review rounds ────────────────────────────────────────────────────╮ ╭─ pull request → merge ────────────────────────────────────────────╮
+│ 4    ██                                                            │ │ 15m00s ▅     █                                                    │
+│   ▆▆ ██    ▆▆    ▆▆    ▆▆       ▆▆                                 │ │        █ ▅   █     █       ▃                                      │
+│ 2 ██·██·▄▄·██·▄▄·██·▄▄·██····▄▄·██····▄▄····▄▄···················· │ │        █ █ ▃ █   ▅ █   ▅   █     ▁                                │
+ +20 more lines · ↓ to scroll                                                                                                               
+ ←→/hl kaizen page  ·  ↑↓/jk move  ·  r range  ·  tab next view  ·  ? help  ·  q quit                                                       

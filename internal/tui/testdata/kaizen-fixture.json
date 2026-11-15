@@ -3644,6 +3644,8 @@
   "queue_since": "2026-11-14T09:00:00Z",
   "today": {
    "date": "2026-11-14",
+   "to": "2026-11-14",
+   "days": 1,
    "merged": 12,
    "cost": {
     "tasks": 100.5,
@@ -3672,14 +3674,17 @@
    },
    "handover": {
     "to_merge": {
+     "p50_s": 1200,
      "p90_s": 2204,
      "n": 11
     },
     "to_approval": {
+     "p50_s": 900,
      "p90_s": 1800,
      "n": 6
     },
     "approval_to_merge": {
+     "p50_s": 150,
      "p90_s": 240,
      "n": 6
     },
@@ -3695,58 +3700,535 @@
     "error": null
    }
   },
-  "yesterday": {
-   "date": "2026-11-13",
-   "merged": 5,
+  "baseline": {
+   "date": "2026-11-07",
+   "to": "2026-11-13",
+   "days": 7,
+   "merged": 50,
    "cost": {
-    "tasks": 60.0,
-    "dispatcher": 9.5,
-    "site_manager": 1.0,
+    "tasks": 600,
+    "dispatcher": 90,
+    "site_manager": 10,
     "unpriced_tokens": 1200,
-    "per_merged": 14.1
+    "per_merged": 14.0
    },
    "first_pass": {
     "small": {
-     "yes": 2,
-     "of": 2
+     "yes": 19,
+     "of": 21
     },
     "medium": {
-     "yes": 0,
-     "of": 0
+     "yes": 12,
+     "of": 17
     },
     "large": {
-     "yes": 0,
-     "of": 0
+     "yes": 3,
+     "of": 4
     },
     "unstated": {
-     "yes": 1,
-     "of": 3
+     "yes": 8,
+     "of": 8
     }
    },
    "handover": {
     "to_merge": {
-     "p90_s": 600,
-     "n": 5
+     "p50_s": 1500,
+     "p90_s": 3300,
+     "n": 46
     },
     "to_approval": {
-     "p90_s": null,
-     "n": 0
+     "p50_s": 1020,
+     "p90_s": 2400,
+     "n": 30
     },
     "approval_to_merge": {
-     "p90_s": null,
-     "n": 0
+     "p50_s": 160,
+     "p90_s": 420,
+     "n": 30
     },
-    "approvals_backfilled": 0,
+    "approvals_backfilled": 8,
     "sent_back": null,
     "sent_back_unchanged": null
    },
    "conflicts": {
-    "prs": 0,
-    "base_merges": 0,
-    "conflicted": 0,
-    "per_merged": null,
+    "prs": 46,
+    "base_merges": 37,
+    "conflicted": 6,
+    "per_merged": 0.130435,
     "error": null
    }
+  },
+  "days": [
+   {
+    "date": "2026-11-07",
+    "to": "2026-11-07",
+    "days": 1,
+    "merged": 4,
+    "cost": {
+     "tasks": 50,
+     "dispatcher": 8,
+     "site_manager": 1,
+     "unpriced_tokens": 0,
+     "per_merged": 14.75
+    },
+    "first_pass": {
+     "small": {
+      "yes": 2,
+      "of": 2
+     },
+     "medium": {
+      "yes": 1,
+      "of": 1
+     },
+     "large": {
+      "yes": 0,
+      "of": 0
+     },
+     "unstated": {
+      "yes": 1,
+      "of": 1
+     }
+    },
+    "handover": {
+     "to_merge": {
+      "p50_s": 1500,
+      "p90_s": 2400,
+      "n": 4
+     },
+     "to_approval": {
+      "p50_s": 1100,
+      "p90_s": 1700,
+      "n": 0
+     },
+     "approval_to_merge": {
+      "p50_s": null,
+      "p90_s": null,
+      "n": 0
+     },
+     "approvals_backfilled": 0,
+     "sent_back": null,
+     "sent_back_unchanged": null
+    },
+    "conflicts": {
+     "prs": 4,
+     "base_merges": 3,
+     "conflicted": 0,
+     "per_merged": 0.0,
+     "error": null
+    }
+   },
+   {
+    "date": "2026-11-08",
+    "to": "2026-11-08",
+    "days": 1,
+    "merged": 7,
+    "cost": {
+     "tasks": 100,
+     "dispatcher": 14,
+     "site_manager": 1.5,
+     "unpriced_tokens": 1200,
+     "per_merged": 16.5
+    },
+    "first_pass": {
+     "small": {
+      "yes": 3,
+      "of": 3
+     },
+     "medium": {
+      "yes": 2,
+      "of": 3
+     },
+     "large": {
+      "yes": 0,
+      "of": 0
+     },
+     "unstated": {
+      "yes": 1,
+      "of": 1
+     }
+    },
+    "handover": {
+     "to_merge": {
+      "p50_s": 1500,
+      "p90_s": 3000,
+      "n": 6
+     },
+     "to_approval": {
+      "p50_s": 1000,
+      "p90_s": 2100,
+      "n": 5
+     },
+     "approval_to_merge": {
+      "p50_s": 200,
+      "p90_s": 480,
+      "n": 5
+     },
+     "approvals_backfilled": 1,
+     "sent_back": null,
+     "sent_back_unchanged": null
+    },
+    "conflicts": {
+     "prs": 6,
+     "base_merges": 5,
+     "conflicted": 1,
+     "per_merged": 0.166667,
+     "error": null
+    }
+   },
+   {
+    "date": "2026-11-09",
+    "to": "2026-11-09",
+    "days": 1,
+    "merged": 9,
+    "cost": {
+     "tasks": 125,
+     "dispatcher": 18,
+     "site_manager": 2,
+     "unpriced_tokens": 0,
+     "per_merged": 16.111111
+    },
+    "first_pass": {
+     "small": {
+      "yes": 3,
+      "of": 4
+     },
+     "medium": {
+      "yes": 2,
+      "of": 3
+     },
+     "large": {
+      "yes": 1,
+      "of": 1
+     },
+     "unstated": {
+      "yes": 1,
+      "of": 1
+     }
+    },
+    "handover": {
+     "to_merge": {
+      "p50_s": 1700,
+      "p90_s": 3300,
+      "n": 8
+     },
+     "to_approval": {
+      "p50_s": 1100,
+      "p90_s": 2500,
+      "n": 6
+     },
+     "approval_to_merge": {
+      "p50_s": 180,
+      "p90_s": 420,
+      "n": 6
+     },
+     "approvals_backfilled": 2,
+     "sent_back": null,
+     "sent_back_unchanged": null
+    },
+    "conflicts": {
+     "prs": 8,
+     "base_merges": 7,
+     "conflicted": 1,
+     "per_merged": 0.125,
+     "error": null
+    }
+   },
+   {
+    "date": "2026-11-10",
+    "to": "2026-11-10",
+    "days": 1,
+    "merged": 8,
+    "cost": {
+     "tasks": 110,
+     "dispatcher": 16,
+     "site_manager": 2,
+     "unpriced_tokens": 0,
+     "per_merged": 16.0
+    },
+    "first_pass": {
+     "small": {
+      "yes": 3,
+      "of": 3
+     },
+     "medium": {
+      "yes": 3,
+      "of": 3
+     },
+     "large": {
+      "yes": 0,
+      "of": 1
+     },
+     "unstated": {
+      "yes": 1,
+      "of": 1
+     }
+    },
+    "handover": {
+     "to_merge": {
+      "p50_s": 1400,
+      "p90_s": 3100,
+      "n": 7
+     },
+     "to_approval": {
+      "p50_s": 950,
+      "p90_s": 2200,
+      "n": 5
+     },
+     "approval_to_merge": {
+      "p50_s": 150,
+      "p90_s": 360,
+      "n": 5
+     },
+     "approvals_backfilled": 2,
+     "sent_back": null,
+     "sent_back_unchanged": null
+    },
+    "conflicts": {
+     "prs": 7,
+     "base_merges": 6,
+     "conflicted": 1,
+     "per_merged": 0.142857,
+     "error": null
+    }
+   },
+   {
+    "date": "2026-11-11",
+    "to": "2026-11-11",
+    "days": 1,
+    "merged": 10,
+    "cost": {
+     "tasks": 100,
+     "dispatcher": 15,
+     "site_manager": 1.5,
+     "unpriced_tokens": 0,
+     "per_merged": 11.65
+    },
+    "first_pass": {
+     "small": {
+      "yes": 4,
+      "of": 4
+     },
+     "medium": {
+      "yes": 2,
+      "of": 3
+     },
+     "large": {
+      "yes": 1,
+      "of": 1
+     },
+     "unstated": {
+      "yes": 2,
+      "of": 2
+     }
+    },
+    "handover": {
+     "to_merge": {
+      "p50_s": 1300,
+      "p90_s": 3000,
+      "n": 9
+     },
+     "to_approval": {
+      "p50_s": 900,
+      "p90_s": 2000,
+      "n": 6
+     },
+     "approval_to_merge": {
+      "p50_s": 170,
+      "p90_s": 400,
+      "n": 6
+     },
+     "approvals_backfilled": 1,
+     "sent_back": null,
+     "sent_back_unchanged": null
+    },
+    "conflicts": {
+     "prs": 9,
+     "base_merges": 7,
+     "conflicted": 1,
+     "per_merged": 0.111111,
+     "error": null
+    }
+   },
+   {
+    "date": "2026-11-12",
+    "to": "2026-11-12",
+    "days": 1,
+    "merged": 6,
+    "cost": {
+     "tasks": 65,
+     "dispatcher": 9,
+     "site_manager": 1,
+     "unpriced_tokens": 0,
+     "per_merged": 12.5
+    },
+    "first_pass": {
+     "small": {
+      "yes": 2,
+      "of": 2
+     },
+     "medium": {
+      "yes": 1,
+      "of": 2
+     },
+     "large": {
+      "yes": 1,
+      "of": 1
+     },
+     "unstated": {
+      "yes": 1,
+      "of": 1
+     }
+    },
+    "handover": {
+     "to_merge": {
+      "p50_s": 1600,
+      "p90_s": 3400,
+      "n": 6
+     },
+     "to_approval": {
+      "p50_s": 1050,
+      "p90_s": 2300,
+      "n": 4
+     },
+     "approval_to_merge": {
+      "p50_s": 120,
+      "p90_s": 300,
+      "n": 4
+     },
+     "approvals_backfilled": 1,
+     "sent_back": null,
+     "sent_back_unchanged": null
+    },
+    "conflicts": {
+     "prs": 6,
+     "base_merges": 4,
+     "conflicted": 1,
+     "per_merged": 0.166667,
+     "error": null
+    }
+   },
+   {
+    "date": "2026-11-13",
+    "to": "2026-11-13",
+    "days": 1,
+    "merged": 6,
+    "cost": {
+     "tasks": 50,
+     "dispatcher": 10,
+     "site_manager": 1,
+     "unpriced_tokens": 0,
+     "per_merged": 10.166667
+    },
+    "first_pass": {
+     "small": {
+      "yes": 2,
+      "of": 3
+     },
+     "medium": {
+      "yes": 1,
+      "of": 2
+     },
+     "large": {
+      "yes": 0,
+      "of": 0
+     },
+     "unstated": {
+      "yes": 1,
+      "of": 1
+     }
+    },
+    "handover": {
+     "to_merge": {
+      "p50_s": 1500,
+      "p90_s": 3200,
+      "n": 6
+     },
+     "to_approval": {
+      "p50_s": 1000,
+      "p90_s": 2200,
+      "n": 4
+     },
+     "approval_to_merge": {
+      "p50_s": 140,
+      "p90_s": 330,
+      "n": 4
+     },
+     "approvals_backfilled": 1,
+     "sent_back": null,
+     "sent_back_unchanged": null
+    },
+    "conflicts": {
+     "prs": 6,
+     "base_merges": 5,
+     "conflicted": 1,
+     "per_merged": 0.166667,
+     "error": null
+    }
+   },
+   {
+    "date": "2026-11-14",
+    "to": "2026-11-14",
+    "days": 1,
+    "merged": 12,
+    "cost": {
+     "tasks": 100.5,
+     "dispatcher": 20.25,
+     "site_manager": 2.25,
+     "unpriced_tokens": 0,
+     "per_merged": 10.25
+    },
+    "first_pass": {
+     "small": {
+      "yes": 3,
+      "of": 4
+     },
+     "medium": {
+      "yes": 1,
+      "of": 3
+     },
+     "large": {
+      "yes": 0,
+      "of": 1
+     },
+     "unstated": {
+      "yes": 2,
+      "of": 4
+     }
+    },
+    "handover": {
+     "to_merge": {
+      "p50_s": 1200,
+      "p90_s": 2204,
+      "n": 11
+     },
+     "to_approval": {
+      "p50_s": 900,
+      "p90_s": 1800,
+      "n": 6
+     },
+     "approval_to_merge": {
+      "p50_s": 150,
+      "p90_s": 240,
+      "n": 6
+     },
+     "approvals_backfilled": 2,
+     "sent_back": 3,
+     "sent_back_unchanged": 1
+    },
+    "conflicts": {
+     "prs": 11,
+     "base_merges": 9,
+     "conflicted": 4,
+     "per_merged": 0.363636,
+     "error": null
+    }
+   }
+  ],
+  "verdicts": {
+   "cost": "better",
+   "first_pass": "worse",
+   "approval_to_merge": "same",
+   "conflicts": "worse"
   }
  },
  "friction": {
