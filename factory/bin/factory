@@ -11,6 +11,7 @@ import html
 import http.server
 import itertools
 import json
+import math
 import os
 import plistlib
 import queue
@@ -248,6 +249,7 @@ SETTINGS = (
     Setting("models", "lander", "sonnet", a_model,
             'The lander: the build run\'s subagent, also the headless run of `factory land` (next run). Default "sonnet".'),
     Setting("models", "site_manager", "sonnet", a_model, 'The watch tick\'s judge. Next tick. Default "sonnet".'),
+    Setting("models", "ops_watch", "sonnet", a_model, 'The judge of one look of an ops watch (the reads are the ops explorer\'s). Next look. Default "sonnet".'),
     Setting("models", "ops_explorer", "haiku", a_model, 'The ops explorer, which reads production through MCP servers. Takes effect for the next lead, build or tech lead run started. Default "haiku".'),
     Setting("models", "courier", "haiku", a_model, 'Carries pull request comments to a lead. Next tick. Default "haiku".'),
     Setting("models", "tech_lead", "opus", a_model, 'Resolves a pull request that came back from the merge queue and runs every task\'s build. Its next run. Default "opus".'),
@@ -1864,7 +1866,7 @@ def follow_dispatcher(p):
     if event != "SessionEnd":
         schedule_install(repo, backend)
     elif p.get("reason") != "clear" and not find_dispatcher([s for s in sessions if s is not me], repo.root)[0] \
-            and not handed_over(repo):
+            and not handed_over(repo) and not ops_active(repo):
         schedule_remove(repo, backend)
 
 
@@ -1953,6 +1955,27 @@ SITE_MANAGER_TOOLS = (
     "Bash(gh pr view *)", "Bash(gh pr checks *)", "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(gh run list *)",
     "Bash(claude agents --json --all)")
 SITE_MANAGER_TURNS = 30
+OPS_ROLE = PLUGIN_ROOT / "roles" / "ops-watch.md"
+OPS_TICK_TURNS = 15
+OPS_TICK_BUDGET = "0.50"
+OPS_TICK_TIMEOUT = 300
+OPS_ACTIVE = ("watching", "alarmed")
+OPS_VERDICTS = ("met", "not-met", "inconclusive")
+OPS_OUTCOMES = ("fine", "alarm", "done", "could-not-look")
+OPS_CHECKS = ("read", "fine", "alarm", "done")
+OPS_NOTES_KEPT = 20
+OPS_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+OPS_ENTRY_RE = re.compile(r"- \d{4}-\d\d-\d\dT\S+Z ")
+OPS_KEYS = ("name", "repo", "goal", "state", "verdict", "started", "until", "every_seconds", "ticks", "missed", "last_look",
+            "next_look", "spent_usd", "unpriced_ticks", "budget_usd", "notes")
+OPS_SCHEMA = {"type": "object", "required": ["outcome", "saw"], "properties": {
+    "outcome": {"enum": list(OPS_OUTCOMES)},
+    "saw": {"type": "string", "description": "at most 300 characters, with the numbers read"},
+    "verdict": {"enum": list(OPS_VERDICTS), "description": "with done, and on the final look"},
+    "checks": {"type": "object", "required": list(OPS_CHECKS), "properties": {
+        "read": {"type": "string", "description": "which tool and query, exactly"},
+        "fine": {"type": "string"}, "alarm": {"type": "string", "description": "what is clearly failing"},
+        "done": {"type": "string", "description": "what ends the watch, or 'the end time'"}}}}}
 SITE_MANAGER_BUDGET = "1.50"
 SETTINGS_ISOLATION = ("--setting-sources", "")
 RESURFACE_MINUTES = 120
@@ -2915,10 +2938,268 @@ def stale_lines(repo):
     return lines
 
 
+# ---- ops watch --------------------------------------------------------------
+
+def iso(ts):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+def duration(text, flag):
+    found = re.fullmatch(r"(\d+)([smhd])", text)
+    if not found or not int(found[1]):
+        raise Fail(f"ops: {flag} takes a duration such as 90s, 10m, 6h or 2d, got {text!r}")
+    return int(found[1]) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[found[2]]
+
+
+def ops_file(name, leaf):
+    return STORE.expanduser() / "ops" / name / leaf
+
+
+def ops_private(path, text, append=False):
+    """Write `text` to `path` for the owner only (folders 0700, file 0600): replacing the file whole and atomically, or as one appended write."""
+    path.parent.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    fd, target = (os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), path) if append else tempfile.mkstemp(dir=path.parent)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    if not append:
+        os.replace(target, path)
+
+
+def ops_save(w):
+    ops_private(ops_file(w["name"], "watch.json"), json.dumps(w, indent=1))
+
+
+def ops_note(w, text):
+    ops_private(Path(w["notes"]), text + "\n", append=True)
+
+
+def ops_read(name):
+    """The state of the watch `name`, None when it cannot be read."""
+    try:
+        w = json.loads(ops_file(name, "watch.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return w if isinstance(w, dict) else None
+
+
+def ops_watches():
+    """Every watch in the store, newest first."""
+    found = (ops_read(p.parent.name) for p in (STORE.expanduser() / "ops").glob("*/watch.json"))
+    return sorted((w for w in found if w), key=lambda w: str(w.get("started")), reverse=True)
+
+
+def ops_active(repo):
+    return [w for w in ops_watches() if w.get("repo") == repo.root and w.get("state") in OPS_ACTIVE]
+
+
+def ops_start(args):
+    if os.environ.get("CLAUDECODE"):
+        raise Fail("only the human starts a watch: run this in your own terminal")
+    if not OPS_NAME_RE.fullmatch(args.name):
+        raise Fail(f"ops: a name is lowercase letters, digits and hyphens, not starting with a hyphen, got {args.name!r}")
+    if ops_read(args.name):
+        raise Fail(f"ops: a watch named {args.name} exists")
+    every, t = duration(args.every, "--every"), time.time()
+    until = t + duration(args.until, "--until") if re.fullmatch(r"\d+[smhd]", args.until) else epoch(args.until)
+    if until is None or until <= t:
+        raise Fail("ops: --until takes a duration (6h) or a UTC time in the future (2026-11-15T15:00:00Z)")
+    if not (math.isfinite(args.budget) and args.budget > 0):
+        raise Fail("ops: --budget takes a positive, finite number of dollars")
+    repo = Repo()
+    if not ops_servers(load_settings()["tools"], repo.root):
+        raise Fail("ops: ops.tools resolves no server for this repository: there is nothing to read through")
+    w = {"name": args.name, "repo": repo.root, "goal": args.goal, "state": "watching", "verdict": None, "started": now(),
+         "until": iso(until), "every_seconds": every, "ticks": 0, "missed": 0, "last_look": None, "next_look": now(),
+         "spent_usd": 0.0, "reserved_usd": 0.0, "unpriced_ticks": 0, "budget_usd": args.budget, "notes": str(ops_file(args.name, "notes.md")),
+         "checks": None}
+    ops_save(w)
+    ops_note(w, f"# Ops watch {args.name}\nGoal: {args.goal}\nStarted: {w['started']}\nUntil: {w['until']}\n"
+                f"Every: {every} s\nBudget: ${args.budget:.2f}\n")
+    try:
+        backend = scheduler()
+        if not backend.status(job_label(repo.root))[0]:
+            schedule_install(repo, backend)
+    except Fail as e:
+        print(f"factory: schedule: {e}", file=sys.stderr)
+    print(f"watch {args.name} started; its first look is on the next tick. Notes: {w['notes']}")
+    return 0
+
+
+def ops_stop(args):
+    w = ops_read(args.name)
+    if w is None:
+        raise Fail(f"ops: no watch named {args.name}")
+    if w["state"] in OPS_ACTIVE:
+        w["state"], w["next_look"] = "stopped", None
+        ops_note(w, f"- {now()} state: stopped by the human")
+        ops_save(w)
+    print(f"watch {args.name}: {w['state']}")
+    return 0
+
+
+def ops_list(args):
+    watches = ops_watches()
+    if args.json:
+        print(json.dumps({"watches": [{k: w.get(k) for k in OPS_KEYS} for w in watches]}, indent=2))
+        return 0
+    t, table = time.time(), []
+    for w in watches:
+        last = w.get("last_look")
+        ago = age(epoch(last["ts"]), t) if last else None
+        table.append([w["name"], w["state"] + (f" ({w['verdict']})" if w.get("verdict") else ""),
+                      f"{ago}{'' if ago == 'now' else ' ago'} {last['outcome']}: {last['saw'][:60]}" if last else "-",
+                      w.get("next_look") or "-",
+                      f"${w['spent_usd']:.2f}/${w['budget_usd']:.2f}" + (f" +{w['unpriced_ticks']} unpriced" if w.get("unpriced_ticks") else ""),
+                      w["notes"]])
+    widths = [max(len(row[i]) for row in table) for i in range(6)] if table else []
+    for row in table:
+        print("  ".join(c.ljust(n) for c, n in zip(row, widths)).rstrip())
+    return 0
+
+
+def cmd_ops(args):
+    return {"start": ops_start, "list": ops_list, "stop": ops_stop}[args.action](args)
+
+
+def ops_inform(repo, w, event, saw, tell=True):
+    """One line to the desktop and, with `tell` and a live dispatcher session, to it; a failure is printed, never retried."""
+    head, said = f"OPS WATCH {w['name']}", f"{event} - {' '.join(saw.split())[:200]} (notes: {w['notes']})"
+    argv = notify_argv(f"factory: ops watch {w['name']}", f"{event} - {' '.join(saw.split())[:200]}")
+    if not (argv and run(argv)[0] == 0):
+        print(f"notify: {head}: {said}")
+    if tell and forward(repo, None, w["name"], head, said, lead=False) is None:
+        print(f"ops watch {w['name']}: no dispatcher was told")
+
+
+def ops_move(w, state, event, saw, informs):
+    """Change the state of the watch and note it; the inform is queued, to go out after the save."""
+    w["state"], w["next_look"] = state, w["next_look"] if state in OPS_ACTIVE else None
+    ops_note(w, f"- {now()} state: {state}")
+    informs.append((event, saw, True))
+
+
+def ops_spent(w):
+    """What the watch has used of its budget: the priced looks and the caps of the unpriced ones."""
+    return w["spent_usd"] + w["reserved_usd"]
+
+
+def ops_used(w):
+    return f"${ops_spent(w):.2f} of ${w['budget_usd']:.2f} spent or reserved"
+
+
+def ops_argv(repo, w, final, cap):
+    settings = load_settings()
+    entries = [line for line in Path(w["notes"]).read_text().splitlines() if OPS_ENTRY_RE.match(line)][-OPS_NOTES_KEPT:]
+    checks = json.dumps(w["checks"], indent=1) if w.get("checks") else "none yet: this is the first look, set the checks"
+    prompt = (f"Watch: {w['name']}\nGoal: {w['goal']}\nNow: {now()}\nUntil: {w['until']}\nFinal look: {'yes' if final else 'no'}\n"
+              f"Checks: {checks}\nThe last {OPS_NOTES_KEPT} entries of the notes, oldest first:\n" + "\n".join(entries))
+    return ["claude", "-p", "--model", settings["models"]["ops_watch"],
+            "--agents", json.dumps({OPS_AGENT: agent_definitions(settings, repo.root)[OPS_AGENT]}),
+            "--permission-mode", "dontAsk", "--plugin-dir", str(PLUGIN_ROOT), "--strict-mcp-config",
+            *(lean_flags()[1:] if settings["lean_start"] else []), "--tools=Agent", "--allowedTools", f"Agent({OPS_AGENT})",
+            *SETTINGS_ISOLATION, "--max-turns", str(OPS_TICK_TURNS), "--max-budget-usd", str(round(cap, 4)),
+            "--output-format", "json", "--json-schema", json.dumps(OPS_SCHEMA), "--append-system-prompt", OPS_ROLE.read_text(), prompt]
+
+
+def ops_run(repo, w, final, cap):
+    """One session: (its output, why that is unusable or None, cost or None, session id, turns, evidence folder, evidence files)."""
+    rc, text, _ = run(ops_argv(repo, w, final, cap), cwd=repo.root, timeout=OPS_TICK_TIMEOUT, group=True)
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        doc = None
+    doc = doc if isinstance(doc, dict) else {}
+    out, cost, session, turns = doc.get("structured_output"), doc.get("total_cost_usd"), doc.get("session_id"), doc.get("num_turns")
+    usable = rc == 0 and isinstance(out, dict) and out.get("outcome") in OPS_OUTCOMES and isinstance(out.get("saw"), str)
+    session = session if isinstance(session, str) and re.fullmatch(r"[\w-]+", session) else None
+    folder = session and STORE.expanduser() / "deliverables" / f"session-{session}" / "evidence"
+    return (out if usable else {}, None if usable else "timed out" if rc == 124 else f"exit {rc}" if rc
+            else f"no usable output (subtype {doc.get('subtype')})",
+            cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None, session,
+            turns if isinstance(turns, int) and not isinstance(turns, bool) else None, folder,
+            len(list(folder.glob("*.json"))) if folder else 0)
+
+
+def ops_look(repo, w):
+    """One look of the watch `w`, which is due: the steps of docs/factory.md, "Watching production"."""
+    name, begun = w["name"], time.time()
+    late, step, informs = int(begun - (epoch(w["next_look"]) or begun)), max(w["every_seconds"], WATCH_INTERVAL), []
+    if late >= step:
+        count = late // step
+        w["missed"] += count
+        log("ops", {"ts": now(), "repo": repo.root, "watch": name, "outcome": "missed", "count": count,
+                    "from": w["next_look"], "to": iso(begun)})
+        ops_note(w, f"- {now()} {count} look(s) missed between {w['next_look']} and {iso(begun)}: "
+                    "the tick did not run (machine asleep, off, or busy)")
+    final, remaining = begun >= epoch(w["until"]), w["budget_usd"] - ops_spent(w)
+    if remaining <= 0:
+        ops_move(w, "out-of-budget", "out of budget", ops_used(w), informs)
+        return ops_finish(repo, w, informs)
+    out, reason, cost, session, turns, folder, n = {}, None, 0.0, None, None, None, 0
+    if ops_servers(load_settings()["tools"], repo.root):
+        cap = min(float(OPS_TICK_BUDGET), remaining)
+        out, reason, cost, session, turns, folder, n = ops_run(repo, w, final, cap)
+        if cost is None:
+            w["reserved_usd"] = round(w["reserved_usd"] + cap, 6)
+        w["spent_usd"], w["unpriced_ticks"] = round(w["spent_usd"] + (cost or 0), 6), w["unpriced_ticks"] + (cost is None)
+    else:
+        reason = "ops.tools names no configured server"
+    checks = out.get("checks")
+    if not w.get("checks") and n and isinstance(checks, dict) and all(isinstance(checks.get(k), str) and checks[k].strip() for k in OPS_CHECKS):
+        w["checks"] = {k: checks[k] for k in OPS_CHECKS}
+        ops_note(w, "## Checks\n" + "\n".join(f"- {k}: {v}" for k, v in w["checks"].items()) + "\n")
+    outcome, saw = (out["outcome"], out["saw"]) if not reason and n and w.get("checks") else (
+        "could-not-look", reason or ("no read succeeded" if not n else "no checks were set"))
+    saw = saw[:300]
+    again = (w.get("last_look") or {}).get("outcome") == "could-not-look"
+    w["ticks"] += 1
+    w["last_look"] = {"ts": now(), "outcome": outcome, "saw": saw, "late_seconds": late}
+    w["next_look"] = iso(time.time() + w["every_seconds"])
+    ops_note(w, f"- {now()} {outcome}: {saw} [evidence: {n} file(s){f' in {folder}' if n else ''}]")
+    log("ops", {"ts": now(), "repo": repo.root, "watch": name, "tick": w["ticks"], "outcome": outcome, "saw": saw, "cost_usd": cost,
+                "seconds": round(float(time.time() - begun), 1), "turns": turns, "session": session, "evidence": n, "late_seconds": late})
+    verdict = out.get("verdict")
+    if (ops_read(name) or w)["state"] == "stopped":  # the human stopped it during the look
+        w["state"], w["next_look"] = "stopped", None
+    elif outcome == "done" or final:
+        w["verdict"] = verdict if verdict in OPS_VERDICTS and (outcome == "done" or n) else "inconclusive"
+        ops_move(w, "ended", f"ended: {w['verdict']}", saw if outcome == "done" else f"the end time came: {saw}", informs)
+    elif outcome == "alarm" and w["state"] != "alarmed":
+        ops_move(w, "alarmed", "alarm", saw, informs)
+    elif outcome == "could-not-look" and not again:
+        informs.append(("could not look", saw, False))
+    if w["state"] in OPS_ACTIVE and ops_spent(w) >= w["budget_usd"]:
+        ops_move(w, "out-of-budget", "out of budget", ops_used(w), informs)
+    ops_finish(repo, w, informs)
+
+
+def ops_finish(repo, w, informs):
+    """Save the watch, then send what the look queued: nothing is saved after an inform."""
+    ops_save(w)
+    for event, saw, tell in informs:
+        ops_inform(repo, w, event, saw, tell)
+
+
+def ops_tick(repo):
+    """The looks that are due, each watch of this repository in turn, under a lock of their own: the watch lock is held for
+    the lander's whole loop. One watch failing is printed and does not stop the next."""
+    with repo_lock(repo, "ops") as free:
+        for w in reversed(ops_active(repo)) if free else ():
+            w = ops_read(w["name"])  # an earlier look may have stopped it
+            if not w or w.get("state") not in OPS_ACTIVE or (epoch(w.get("next_look")) or 0) > time.time():
+                continue
+            try:
+                ops_look(repo, w)
+            except Exception as e:
+                print(f"ops watch {w.get('name')}: {why(e)}")
+
+
 def cmd_watch(args):
     """One scheduled tick at a time per repository: cron starts one every two minutes, whatever the last one still does.
     The lander's loop runs last, while a task is handed over or the human's word stands."""
     repo = Repo()
+    ops_tick(repo)
     with repo_lock(repo, "watch") as free:
         if not free:
             print("watch: a tick is already running")
@@ -3005,7 +3286,7 @@ def watch_tick(args, repo):
         run_site_manager(p, send)
     if not full:
         return 0
-    if orphaned and "dispatcher-missing" not in {s["criterion"] for s in skipped} and not handed_over(repo):
+    if orphaned and "dispatcher-missing" not in {s["criterion"] for s in skipped} and not handed_over(repo) and not ops_active(repo):
         print(f"no dispatcher session for {repo.root}: removing the schedule", flush=True)  # launchd kills this process in remove
         schedule_remove(repo, scheduler())
     last, digests = last_digest(repo.root), job_criteria(every, "digest")
@@ -4448,8 +4729,8 @@ def verify_app(identity):
 PLUGIN = "factory@factory"
 SOURCE = "andreiciobotar/isshoni"
 # The names the factory writes at the top of its home; uninstall removes these and nothing else there.
-HOME_FILE_RE = re.compile(r"settings\.(toml|json)|watch\.log|identity|specs|deliverables|dashboard|hosts\.json|\.settings-.*\.tmp"
-                          r"|(events|tasks|feedback|firings|retros)(-\d{4}-\d\d)?\.jsonl")
+HOME_FILE_RE = re.compile(r"settings\.(toml|json)|watch\.log|identity|specs|deliverables|ops|dashboard|hosts\.json|\.settings-.*\.tmp"
+                          r"|(events|tasks|feedback|firings|retros|ops)(-\d{4}-\d\d)?\.jsonl")
 # The other names the factory writes there, which uninstall leaves: the cache, the courier's notes, the logs
 # written through `log` that HOME_FILE_RE does not list, and the per-repository files of `repo_state` with their
 # temporary files. `strangers` is what matches neither.
@@ -6220,6 +6501,8 @@ def drain(repo, fallback, tick=False, deadline=None):
     end_priorities(repo, fallback)
     release_paused(repo, fallback)
     while not (deadline and time.time() >= deadline):
+        if tick:
+            ops_tick(repo)  # a pass can wait on checks for the whole interval to the next health run
         try:
             snap = snapshot(repo)
             p = gather(repo, None)
@@ -6375,6 +6658,16 @@ def parse_args(argv):
     health.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
     watch = sub.add_parser("watch", help="the scheduled tick: evaluate, log, and send what is new to the site manager")
     watch.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
+    ops = sub.add_parser("ops", help="a watch over a running system: start, list or stop (looks run on the watch tick)")
+    actions = ops.add_subparsers(dest="action", required=True)
+    begin = actions.add_parser("start", help="the human starts a watch from a terminal")
+    begin.add_argument("name")
+    begin.add_argument("goal")
+    begin.add_argument("--every", required=True, metavar="DURATION", help="the gap between looks: 90s, 10m, 6h, 2d")
+    begin.add_argument("--until", required=True, metavar="DURATION|TIME", help="the hard end: a duration or a UTC time (2026-11-15T15:00:00Z)")
+    begin.add_argument("--budget", required=True, type=float, metavar="USD", help="what the looks may cost in all")
+    actions.add_parser("list", help="every watch in the store, newest first").add_argument("--json", action="store_true")
+    actions.add_parser("stop", help="stop a watch").add_argument("name")
     digest = sub.add_parser("digest", help="the site manager's digest of where the money goes, now rather than when due")
     digest.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
     digest.add_argument("--dry-run", action="store_true", help="print the findings; log nothing, start no model")
@@ -6458,7 +6751,7 @@ def main(argv=None):
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "commands": cmd_commands, "ack": cmd_ack, "hook": cmd_hook, "ops-hook": cmd_ops_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
-                "digest": cmd_digest, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "pauses": cmd_pauses,
+                "digest": cmd_digest, "ops": cmd_ops, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "pauses": cmd_pauses,
                 "merge": cmd_merge, "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander,
                 "tech-lead": cmd_tech_lead, "build": cmd_build, "schedule": cmd_schedule, "dispatcher": cmd_dispatcher,
                 "wizard": cmd_wizard, "uninstall": cmd_uninstall, "env": cmd_env, "settings": cmd_settings}[args.cmd](args)
