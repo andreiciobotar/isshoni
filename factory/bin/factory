@@ -248,7 +248,8 @@ SETTINGS = (
     Setting("models", "reviewer", "opus", a_model, 'The build run\'s reviewer. Takes effect at the next build run. Default "opus".'),
     Setting("models", "lander", "sonnet", a_model,
             'The lander: the build run\'s subagent, also the headless run of `factory land` (next run). Default "sonnet".'),
-    Setting("models", "site_manager", "sonnet", a_model, 'The watch tick\'s judge. Next tick. Default "sonnet".'),
+    Setting("models", "site_manager", "opus", a_model,
+            'The watch tick\'s judge, which also decides overruns. Next tick. Default "opus"; a settings file that names "sonnet" keeps it: `factory settings set models.site_manager opus`.'),
     Setting("models", "ops_watch", "sonnet", a_model, 'The judge of one look of an ops watch (the reads are the ops explorer\'s). Next look. Default "sonnet".'),
     Setting("models", "ops_explorer", "haiku", a_model, 'The ops explorer, which reads production through MCP servers. Takes effect for the next lead, build or tech lead run started. Default "haiku".'),
     Setting("models", "courier", "haiku", a_model, 'Carries pull request comments to a lead. Next tick. Default "haiku".'),
@@ -258,6 +259,8 @@ SETTINGS = (
             "Percent of the cap held back for critical tasks, rounded up, never the last slot. Default 10.", toml_arg),
     Setting("limits", "task_time_limit_hours", 2, positive_number,
             "Hours a task may run before it is overtime; a decimal is fine. Default 2.", toml_arg),
+    Setting("limits", "extension_minutes", 60, positive_number,
+            "The most minutes the site manager may add to one task's limit in total; beyond it the human decides. Default 60.", toml_arg),
     Setting("sessions", "lead_permission_mode", "auto", permission_mode,
             f"The permission mode of every lead ({', '.join(PERMISSION_MODES)}). Default \"auto\"."),
     Setting("sessions", "lean_start", True, boolean,
@@ -618,10 +621,11 @@ def brief_size(brief):
     return None
 
 
-def task_limit(size, limit_hours):
-    """The one place a task's time limit, in seconds, is computed: the size's, never above the setting."""
+def task_limit(size, limit_hours, extra_minutes=0):
+    """The one place a task's time limit, in seconds, is computed: the size's, never above the setting, plus the
+    minutes the site manager granted."""
     ceiling = limit_hours * 3600
-    return int(min(SIZE_LIMIT_MINUTES[size] * 60, ceiling) if size in SIZE_LIMIT_MINUTES else ceiling)
+    return int(min(SIZE_LIMIT_MINUTES[size] * 60, ceiling) if size in SIZE_LIMIT_MINUTES else ceiling) + int(extra_minutes * 60)
 
 
 def nearing_percent():
@@ -952,6 +956,22 @@ def base_counts(repo, base, prs):
     return not (pr[0] == "merged" and pr[3] == repo.default)
 
 
+def task_size(repo, branch):
+    size = repo.git("config", "--get", f"branch.{branch}.factorySize")[1].strip() if branch else ""
+    return size if size in SIZE_LIMIT_MINUTES else None
+
+
+def extended(repo):
+    """The folded firings of this repository that the site manager decided `extended`."""
+    return [f for f in fold(repo_log("firings", repo.root) or [])[0] if f["decision"] == "extended"]
+
+
+def extensions(granted, slug, started):
+    """What `extended` granted to `slug` at or after `started` (epoch seconds; None: any time), oldest first."""
+    return [{"minutes": f["minutes"], "by": f["by"], "reason": f["reason"], "decided": f["decided"]}
+            for f in granted if f["slug"] == slug and (started is None or (epoch(f["decided"]) or 0) >= started)]
+
+
 def collect(repo, sessions, limit_hours, prs=None):
     """One row per task worktree; `sessions` is None when they cannot be listed. `prs` is the batch of `pull_requests`,
     asked for here (always from GitHub) when the caller has none."""
@@ -963,6 +983,7 @@ def collect(repo, sessions, limit_hours, prs=None):
         prs = (ask_pull_requests(repo, needed)[0] if needed else {}) or {b: UNKNOWN_PR for b in needed}
     percent = nearing_percent()
     prioritized = read_lander(repo)["prioritized"]
+    granted = extended(repo)
     rows = []
     for wt in repo.tasks:
         path, branch = wt["path"], wt["branch"]
@@ -981,9 +1002,9 @@ def collect(repo, sessions, limit_hours, prs=None):
         started = session.get("startedAt") if session else None
         row["elapsed"] = int(now - started / 1000) if started else None
         running = bool(session) and not finished(session)
-        size = repo.git("config", "--get", f"branch.{branch}.factorySize")[1].strip() if branch else ""
-        row["size"] = size if size in SIZE_LIMIT_MINUTES else None
-        row["limit"] = task_limit(row["size"], limit_hours)
+        row["size"] = task_size(repo, branch)
+        row["extensions"] = extensions(granted, slug, started and started / 1000)
+        row["limit"] = task_limit(row["size"], limit_hours, sum(e["minutes"] for e in row["extensions"]))
         row["state"] = declared.get(slug, {}).get("state")
         timed = running and row["elapsed"] is not None
         row["overtime"] = timed and row["elapsed"] > row["limit"]
@@ -1456,8 +1477,9 @@ def cmd_status(args):
         flags = " ".join(f for f in ("overtime" if r["overtime"] else "", "nearing" if r["nearing"] else "", "stale" if r["stale"] else "",
                                           f"paused {age(epoch(r['paused']['since']), now)}: waits {', '.join(r['paused']['waits_on'])}" if r["paused"] else "",
                                           f"prioritized {age(epoch(r['prioritized']['since']), now)}" if r["prioritized"] else "") if f)
+        more = f" (+{sum(e['minutes'] for e in r['extensions'])}m {r['extensions'][-1]['by']})" if r["extensions"] else ""
         elapsed = "-" if r["elapsed"] is None else (
-            f"{span(r['elapsed'])} / {span(r['limit'])}" if r["phase"] == "motion" else age(now - r["elapsed"], now))
+            f"{span(r['elapsed'])} / {span(r['limit'])}{more}" if r["phase"] == "motion" else age(now - r["elapsed"], now))
         table.append([r["slug"], r["phase"], r["state"] or "-", r["branch"] or "(detached)", r["base"], r["session"], r["session_id"] or "-", elapsed, r["size"] or "-", changes, ab,
                       age(r["last_commit"], now), pr, flags])
     widths = [max(len(row[i]) for row in table) for i in range(len(table[0]))]
@@ -1698,12 +1720,31 @@ def clean_agent(repo, agent, sessions, files, dry_run):
         print(f"kept branch {agent['branch']}: {err.strip()}")
 
 
-def cmd_state(args):
-    repo = Repo()
+def here_task(repo, command):
+    """The task whose worktree the working directory is in."""
     cwd = os.path.realpath(os.getcwd())
     task = next((t for t in repo.tasks if inside(cwd, t["path"])), None)
     if not task:
-        raise Fail("state: run it from inside a task worktree")
+        raise Fail(f"{command}: run it from inside a task worktree")
+    return task
+
+
+def cmd_overrun(args):
+    """A lead past its limit, or stuck, asks: a firing the watch sends to the site manager on its next tick."""
+    repo = Repo()
+    slug, text = os.path.basename(here_task(repo, "overrun")["path"]), args.text.strip()[:1000]
+    if not text:
+        raise Fail("overrun: the text is empty")
+    if any(a["slug"] == slug for a in pending_asks(fold(repo_log("firings", repo.root) or [])[0])):
+        raise Fail(f"overrun: an ask for {slug} is pending; the site manager decides within a watch tick", code=1)
+    fire(repo, {"criterion": "overrun", "escalate": "judgment", "slug": slug, "subject": slug, "detail": text})
+    print(f"{slug}: asked; the site manager decides within a tick, the answer arrives as SITE MANAGER: {slug}")
+    return 0
+
+
+def cmd_state(args):
+    repo = Repo()
+    task = here_task(repo, "state")
     slug = os.path.basename(task["path"])
     deliverable = waits_on = None
     if args.paused and (args.state != "blocked" or not args.deliverable):
@@ -1946,6 +1987,7 @@ def cmd_log(args):
 FACTORY = Path(__file__).resolve()
 CRITERIA_PATH = PLUGIN_ROOT / "criteria.json"
 ROLE_PATH = PLUGIN_ROOT / "roles" / "site-manager.md"
+GUIDANCE_PATH = PLUGIN_ROOT / "roles" / "site-manager-cases.md"
 SITE_MANAGER_TOOLS = (
     "Read", "Grep", "Glob", "SendMessage", "ToolSearch",
     "Bash(factory status)", "Bash(factory status *)", "Bash(factory health)", "Bash(factory health *)",
@@ -1983,7 +2025,7 @@ LEAD_GRACE_MINUTES = 30
 LEAD_TOLD = "lead told at "
 WATCH_INTERVAL = 120
 HEALTH_SECONDS = 1800 - 60
-EVERY_TICK = {"busy-after-handover", "churning"}  # criteria the watch evaluates on every tick, not only on the health pass
+EVERY_TICK = {"busy-after-handover", "churning", "run-stopped"}  # criteria the watch evaluates on every tick, not only on the health pass
 WATCH_TIMEOUT = 600
 MONITOR_TIMEOUT = 120
 MIN_LANDED = 5
@@ -1994,11 +2036,14 @@ CLASSES = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")
 RUN_SCHEMA = {"type": "object", "required": ["sent", "decisions"], "properties": {
     "sent": {"type": "boolean"},
     "decisions": {"type": "array", "items": {"type": "object", "required": ["id", "decision", "reason", "looked"], "properties": {
-        "id": {"type": "string"}, "decision": {"type": "string", "enum": ["escalated", "suppressed", "paused"]},
+        "id": {"type": "string"}, "decision": {"type": "string", "enum": ["escalated", "suppressed", "paused", "extended"]},
+        "minutes": {"type": "integer", "minimum": 1},
         "to": {"type": "string", "enum": ["dispatcher", "lead"]}, "reason": {"type": "string"},
         "waits_on": {"type": "array", "items": {"type": "string"}},
         "looked": {"type": "array", "items": {"type": "string"}}}}}}}
 FIRED_KEYS = ("criterion", "escalate", "slug", "subject", "detail")
+ASKS = ("overrun", "run-stopped")  # what the site manager is woken for on every tick, and the criteria of its extended and `human` decisions
+OVERRUN_WHAT = "A lead asked for more time, or help, on a task that is past its limit or not converging; `detail` is its ask."
 
 
 class NotEvaluated(Exception):
@@ -2209,6 +2254,30 @@ def c_churning(p, _):
              f"{', '.join(e['files'])}; other open tasks change the same files: "
              + "; ".join(f"{o['slug']} ({o['state']}) on {', '.join(o['files'])}" for o in e["others"]))
             for slug, e in churning(p).items()]
+
+
+def build_runs(repo):
+    """{slug: the build run records of the `techlead` log for this repository, oldest first}."""
+    runs = {}
+    for r in sorted((r for r in read_log("techlead") if r.get("repo") == repo.root and r.get("kind") == "build"), key=stamp):
+        runs.setdefault(r.get("slug"), []).append(r)
+    return runs
+
+
+def c_run_stopped(p, _):
+    """Needs only `declared`, `repo.tasks` and the `techlead` log, so the watch can run it on every tick."""
+    here = {os.path.basename(t["path"]) for t in p["repo"].tasks}
+    decided = {f["subject"] for f in fold(repo_log("firings", p["repo"].root) or [])[0]
+               if f["criterion"] == "run-stopped" and f["decision"] == "paused"}  # a stopped run paused once is not fired again
+    found = []
+    for slug, runs in build_runs(p["repo"]).items():
+        if slug in here and p["declared"].get(slug, {}).get("state") == "working" and runs[-1].get("outcome") == "stopped" \
+                and f"{slug}/run{len(runs)}" not in decided:
+            stopped = sum(r.get("outcome") == "stopped" for r in runs)
+            costs = [r["cost_usd"] for r in runs if isinstance(r.get("cost_usd"), (int, float))]
+            found.append((slug, f"{slug}/run{len(runs)}", f"{runs[-1].get('reason') or 'no reason'}; {stopped} of {len(runs)} build runs "
+                          f"ended stopped, cost {f'{sum(costs):.2f} USD' if costs else 'unpriced'}"))
+    return found
 
 
 def descendants(table, pid):
@@ -2637,7 +2706,7 @@ CRITERIA = {  # name -> (function, whether it needs a threshold)
     "cost-outlier": (c_cost_outlier, True), "lead-heavy": (c_lead_heavy, True),
     "mix-shift": (c_mix_shift, True), "dearest-task": (c_dearest_task, True),
     "role-growing": (c_role_growing, True), "version-shift": (c_version_shift, True),
-    "lead-authoring": (c_lead_authoring, True),
+    "lead-authoring": (c_lead_authoring, True), "run-stopped": (c_run_stopped, False),
 }
 
 
@@ -2698,12 +2767,18 @@ def fold(records):
                                 "cleared": False}
         elif f and "decision" in r and f["decision"] is None:
             f.update(decision=r["decision"], reason=r.get("reason"), by=r.get("by"), decided=r.get("ts"),
-                     to=r.get("to"), looked=r.get("looked"), run=r.get("run"), waits_on=r.get("waits_on"))
+                     to=r.get("to"), looked=r.get("looked"), run=r.get("run"), waits_on=r.get("waits_on"),
+                     minutes=r.get("minutes"), until=r.get("until"))
         elif f and "outcome" in r:
             f["outcome"] = r["outcome"]
         elif f and r.get("cleared"):
             f["cleared"] = True
     return list(firings.values()), misses
+
+
+def pending_asks(firings):
+    """The `overrun` firings (folded) no decision has been made on and that are not cleared."""
+    return [f for f in firings if f["criterion"] == "overrun" and f["decision"] is None and not f["cleared"]]
 
 
 def log_firing(repo, **fields):
@@ -2792,6 +2867,12 @@ def firing_for_run(p, f):
                        "overtime": row["overtime"], "worktree": path, "branch": row["branch"], "lead": lead, "pid": pid}
     elif path:
         out["task"] = {"worktree": path, "lead": lead, "pid": pid}
+    if f["criterion"] in ASKS:
+        _, used, left = extension_state(p, f["slug"], session)
+        out["runs"] = [{"ts": r.get("ts"), "outcome": r.get("outcome"), "reason": r.get("reason"), "cost_usd": r.get("cost_usd"),
+                        "minutes": None if r.get("seconds") is None else round(r["seconds"] / 60)}
+                       for r in build_runs(p["repo"]).get(f["slug"], [])]
+        out["extended_minutes"], out["extension_left_minutes"] = used, left
     if path:
         paths = transcripts(session)
         out["transcripts"] = [str(t) for t in paths]
@@ -2801,6 +2882,14 @@ def firing_for_run(p, f):
         if tail is not None:
             out["transcript_tail"] = tail
     return out
+
+
+def extension_state(p, slug, session):
+    """(the session's start in epoch seconds or None, minutes granted to `slug` since, minutes still allowed)."""
+    started = session and session.get("startedAt")
+    started = started / 1000 if isinstance(started, (int, float)) and not isinstance(started, bool) else None
+    used = sum(e["minutes"] for e in extensions(extended(p["repo"]), slug, started))
+    return started, used, load_settings()["extension_minutes"] - used
 
 
 def site_manager_argv(p, firings, job="watch"):
@@ -2819,7 +2908,34 @@ def site_manager_argv(p, firings, job="watch"):
             "--disallowedTools", "Edit", "Write", "NotebookEdit", *SETTINGS_ISOLATION,
             "--max-turns", str(SITE_MANAGER_TURNS), "--max-budget-usd", SITE_MANAGER_BUDGET,
             "--output-format", "json", "--json-schema", json.dumps(RUN_SCHEMA),
-            "--append-system-prompt", ROLE_PATH.read_text(), prompt]
+            "--append-system-prompt", f"{ROLE_PATH.read_text()}\n\n{GUIDANCE_PATH.read_text()}", prompt]
+
+
+def grant(p, slug, minutes):
+    """The ISO time an extension of `minutes` would move the limit of `slug` to; None when it is not allowed: not a
+    positive integer, over what `limits.extension_minutes` leaves, or no session start to count from."""
+    repo = p["repo"]
+    started, used, left = extension_state(p, slug, task_lead(p, slug)[2])
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 0 < minutes <= left or started is None:
+        return None
+    branch = next((t["branch"] for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
+    return iso(started + task_limit(task_size(repo, branch), load_settings()["task_time_limit_hours"], used + minutes))
+
+
+def tell_decision(p, f, decision, reason, minutes=None, until=None):
+    """The lines the script sends after a decision on an overrun, or a pause: the lead (if it is live), then once the
+    dispatcher; on an escalated overrun the model's own message is the dispatcher's."""
+    repo, slug, clock = p["repo"], f["slug"], (until or "")[11:16] + "Z"
+    if f.get("criterion") != "overrun" and not (decision == "paused" and f.get("criterion") in ASKS):
+        return
+    said = {"extended": f"extended {minutes} min, limit now {clock}: {reason}",
+            "paused": f"paused: start no build run and end your turn; the human decides. {reason}",
+            "escalated": f"passed to the human: declare factory state blocked human and wait. {reason}"}[decision]
+    to = task_lead(p, slug)[3] and forward(repo, p["dispatcher"], slug, "SITE MANAGER", said)
+    heard = {"extended": ("SITE MANAGER", f"{slug}: extended {minutes} min to {clock}, no answer needed: {reason}"),
+             "paused": ("PAUSED", f"{slug}: paused by the site manager, for the human: {reason}")}.get(decision)
+    if heard and to != "dispatcher":
+        forward(repo, p["dispatcher"], slug, *heard, lead=False)
 
 
 def record_decisions(p, sent, result, run):
@@ -2830,15 +2946,26 @@ def record_decisions(p, sent, result, run):
         fid, decision, reason = d.get("id"), d.get("decision"), d.get("reason")
         if not isinstance(fid, str) or fid not in by_id or fid in seen:
             continue
-        if decision not in ("escalated", "suppressed", "paused") or not isinstance(reason, str) or not reason.strip():
+        if decision not in ("escalated", "suppressed", "paused", "extended") or not isinstance(reason, str) or not reason.strip():
             continue
         f, to = by_id[fid], (d.get("to") or "dispatcher") if decision == "escalated" else None
-        if decision == "escalated" and (to not in ("dispatcher", "lead") or result.get("sent") is not True):
+        crit = f.get("criterion")
+        ask, waits, minutes, until = crit in ASKS, d.get("waits_on"), d.get("minutes"), None
+        if decision == "extended":
+            until = crit == "overrun" and grant(p, f["slug"], minutes)
+            if not until:
+                continue
+        if decision == "escalated" and (to not in ("dispatcher", "lead") or result.get("sent") is not True
+                                        or (crit == "overrun" and to != "dispatcher")):
             continue
-        waits = d.get("waits_on")
-        if decision == "paused":
+        if decision == "suppressed" and crit == "overrun":
+            continue
+        if decision == "paused" and ask:
+            if waits != ["human"]:
+                continue
+        elif decision == "paused":
             try:
-                others = {o["slug"] for o in (churning(p).get(f["slug"]) or {}).get("others", [])} if f["criterion"] == "churning" else set()
+                others = {o["slug"] for o in (churning(p).get(f["slug"]) or {}).get("others", [])} if crit == "churning" else set()
             except NotEvaluated:
                 others = set()
             if result.get("sent") is not True or not isinstance(waits, list) or not waits \
@@ -2849,9 +2976,42 @@ def record_decisions(p, sent, result, run):
             continue
         seen.add(fid)
         looked = d.get("looked")
+        if decision == "paused" and ask:
+            declare(p["repo"], f["slug"], "site-manager", "blocked", waits_on=waits, paused=True)
+            task_event("TaskPaused", p["repo"], f["slug"], waits_on=waits)
         log_firing(p["repo"], id=fid, decision=decision, reason=reason.strip(), by="site-manager", run=run,
                    looked=[x for x in looked if isinstance(x, str)] if isinstance(looked, list) else [],
-                   **({"to": to} if to else {}), **({"waits_on": waits} if decision == "paused" else {}))
+                   **({"to": to} if to else {}), **({"waits_on": waits} if decision == "paused" else {}),
+                   **({"minutes": minutes, "until": until} if decision == "extended" else {}))
+        tell_decision(p, f, decision, reason.strip(), minutes, until)
+
+
+def settle_extensions(p):
+    """On the full pass: an `extended` decision without an outcome is `kept` when the task handed over by the time it
+    gave, `overran` when it handed over later or that time has passed."""
+    repo, handed = p["repo"], {}
+    for r in sorted((r for r in read_log("tasks") if r.get("repo") == repo.root and r.get("state") == "handed-over"), key=stamp):
+        handed.setdefault(r.get("slug"), []).append(stamp(r))
+    for f in (f for f in extended(repo) if not f["outcome"]):
+        first = next((t for t in handed.get(f["slug"], []) if t >= f["decided"]), None)
+        outcome = "kept" if first and first <= f["until"] else "overran" if first or p["now"] > epoch(f["until"]) else None
+        if outcome:
+            log_firing(repo, id=f["id"], outcome=outcome)
+
+
+def settle_asks(p, send, why):
+    """An `overrun` firing is cleared once the tick that sent it is over, so a later ask is a new firing. One the site
+    manager left undecided is decided here, once: escalated to the human, the lead and the dispatcher told."""
+    repo = p["repo"]
+    folded = {f["id"]: f for f in fold(repo_log("firings", repo.root) or [])[0]}
+    for f in (f for f in send if f["criterion"] == "overrun"):
+        if folded[f["id"]]["decision"] is None:
+            reason = f"the site manager did not decide: {why}"
+            log_firing(repo, id=f["id"], decision="escalated", by="watch", to="dispatcher", reason=reason)
+            tell_decision(p, f, "escalated", reason)
+            tell_lead(repo, p["dispatcher"], f["slug"], "ESCALATION", f"{f['slug']}: overrun undecided, the human decides: {f['detail']}",
+                      f"factory: {f['slug']} overrun undecided", lead=False)
+        log_firing(repo, id=f["id"], cleared=True)
 
 
 def notify(repo, f):
@@ -3206,7 +3366,7 @@ def cmd_watch(args):
             return 0
         watch_tick(args, repo)
         word = read_word(repo)
-        if handed_over(repo) or word["all"] or word["prs"] or paused_rows(repo):  # last: the loop runs until health is next due
+        if handed_over(repo) or word["all"] or word["prs"] or any("human" not in (r.get("waits_on") or []) for r in paused_rows(repo).values()):  # last: the loop runs until health is next due
             with repo_lock(repo, "lander") as free:
                 if free:
                     drain(repo, args.dispatcher, tick=True, deadline=read_lander(repo)["health"] + HEALTH_SECONDS)
@@ -3250,14 +3410,15 @@ def watch_tick(args, repo):
         p = tick_picture(repo, args.dispatcher, criteria)
     p["snap"] = snap  # the tick's one `gh pr list`, for `churning`
     current, skipped = evaluate(p, criteria)
-    if current and not full and p["sessions"] is None:  # something fired between health passes: who is the dispatcher?
+    folded = fold(repo_log("firings", repo.root) or [])[0]
+    asks = pending_asks(folded)  # a lead's ask goes to the site manager on the next tick, not the next full pass
+    if (current or asks) and not full and p["sessions"] is None:  # something fired between health passes: who is the dispatcher?
         with_dispatcher(p, args.dispatcher)
     orphaned = str(p["dispatcher_why"]).startswith("no dispatcher session")  # not a shared or missing name
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
     evaluated = {c["name"] for c in (every if full else criteria)} - {s["criterion"] for s in skipped}
-    opened = {(f["criterion"], f["subject"]): f
-              for f in fold(repo_log("firings", repo.root) or [])[0] if not f["cleared"]}
+    opened = {(f["criterion"], f["subject"]): f for f in folded if not f["cleared"]}
     for key, f in opened.items():
         if key[0] in evaluated and not any((c["criterion"], c["subject"]) == key for c in current):
             log_firing(repo, id=f["id"], cleared=True)
@@ -3275,6 +3436,8 @@ def watch_tick(args, repo):
             send.append(fire(repo, f))
         elif old["decision"] is None and full:  # between health passes only new findings are sent
             send.append({**f, "id": old["id"], "lead_told": LEAD_TOLD in old["detail"]})
+    send += [{**{k: a[k] for k in ("id", *FIRED_KEYS)}, "what": OVERRUN_WHAT} for a in asks]
+    failure, undecided = None, "its decision was missing or not valid"
     if not send:
         print("nothing new")
     elif orphaned or p["dispatcher"] is None or any(f["criterion"] == "dispatcher-missing" for f in current):
@@ -3282,10 +3445,18 @@ def watch_tick(args, repo):
             if f["criterion"] == "dispatcher-missing":
                 notify(repo, f)
         report(repo, send)
+        undecided = f"no dispatcher to ask: {p['dispatcher_why']}"
     else:
-        run_site_manager(p, send)
+        try:
+            run_site_manager(p, send)
+        except Fail as e:
+            failure = undecided = e
+    settle_asks(p, send, undecided)
+    if failure:
+        raise failure
     if not full:
         return 0
+    settle_extensions(p)
     if orphaned and "dispatcher-missing" not in {s["criterion"] for s in skipped} and not handed_over(repo) and not ops_active(repo):
         print(f"no dispatcher session for {repo.root}: removing the schedule", flush=True)  # launchd kills this process in remove
         schedule_remove(repo, scheduler())
@@ -3389,13 +3560,16 @@ def summarize(firings, misses):
     acted = sum(f["outcome"] == "acted" for f in escalated)
     ignored = sum(f["outcome"] == "ignored" for f in escalated)
     first = sum(bool(m.get("firing")) for m in misses)
+    given = [f for f in firings if f["decision"] == "extended"]
 
     def ratio(n, d):
         return n / d if d else None
     return {"escalated": len(escalated), "acted": acted, "ignored": ignored,
             "no_outcome": len(escalated) - acted - ignored,
             "suppressed": sum(f["decision"] == "suppressed" for f in firings),
-            "paused": sum(f["decision"] == "paused" for f in firings), "missed": len(misses),
+            "paused": sum(f["decision"] == "paused" for f in firings),
+            "extended": len(given), "kept": sum(f["outcome"] == "kept" for f in given), "overran": sum(f["outcome"] == "overran" for f in given),
+            "missed": len(misses),
             "missed_suppressed": first, "missed_never_fired": len(misses) - first,
             "precision": ratio(acted, acted + ignored), "recall": ratio(acted, acted + len(misses))}
 
@@ -3407,7 +3581,8 @@ def cmd_firings(args):
         print(json.dumps({"firings": firings, "misses": misses, "summary": s}, indent=2))
         return 0
     for f in firings:
-        decision = f"{f['decision']} to lead" if f.get("to") == "lead" else f["decision"] or "undecided"
+        decision = f"{f['decision']} to lead" if f.get("to") == "lead" else (
+            f"extended {f['minutes']} min until {f['until']}" if f["decision"] == "extended" else f["decision"] or "undecided")
         print("  ".join([f["id"], f["ts"], f["criterion"], f["subject"], decision,
                          f["outcome"] or "-", "cleared" if f["cleared"] else "open", f["reason"] or "-"]))
     for m in misses:
@@ -3415,7 +3590,8 @@ def cmd_firings(args):
     pct = {k: "-" if s[k] is None else f"{s[k]:.2f}" for k in ("precision", "recall")}
     told = sum(f["decision"] == "escalated" and f.get("to") == "lead" for f in firings)
     print(f"escalated {s['escalated']} (acted {s['acted']}, ignored {s['ignored']}, no outcome {s['no_outcome']}); "
-          f"to lead {told}; suppressed {s['suppressed']}; paused {s['paused']}; missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
+          f"to lead {told}; suppressed {s['suppressed']}; paused {s['paused']}; "
+          f"extended {s['extended']} (kept {s['kept']}, overran {s['overran']}, no outcome {s['extended'] - s['kept'] - s['overran']}); missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
           f"{s['missed_never_fired']} never fired); precision {pct['precision']}; recall {pct['recall']}")
     return 0
 
@@ -5885,10 +6061,10 @@ def send_back(repo, fallback, pr, slug, evidence):
     return tell_lead(repo, fallback, slug, "LANDER", said, f"factory: #{pr['number']} went back to {slug}")
 
 
-def tell_lead(repo, fallback, slug, head, said, title):
+def tell_lead(repo, fallback, slug, head, said, title, lead=True):
     """`head: slug: said` to the lead of `slug`, else the dispatcher, else the human on this machine: "lead",
-    "dispatcher" or "human"."""
-    to = forward(repo, fallback, slug, head, said)
+    "dispatcher" or "human". Without `lead` the dispatcher is the first to try (`head: said`)."""
+    to = forward(repo, fallback, slug, head, said, lead=lead)
     if to is None:
         argv = notify_argv(title, said)
         if not (argv and run(argv)[0] == 0):
@@ -6143,6 +6319,8 @@ def cmd_build(args):
     repo, settings = Repo(), load_settings()
     if missing := tech_lead_missing(repo, slug):
         raise Fail(missing)
+    if (row := paused_rows(repo).get(slug)) and not args.run:
+        raise Fail(f"paused: {row.get('role')} waits on {', '.join(row.get('waits_on') or [])}; factory state working once it is lifted", code=1)
     with repo_lock(repo, f"tech-lead-{slug}") as free:
         if not free:
             raise Fail(f"a tech lead run is already going for {slug}")
@@ -6375,7 +6553,7 @@ def release_paused(repo, fallback):
     held = read_lander(repo)["prioritized"]  # the second guard: an event that could not be written must not release twice
     for slug, row in paused_rows(repo).items():
         waited = row["waits_on"] if isinstance(row.get("waits_on"), list) else []
-        if slug in held or row["ts"] <= released.get(slug, "") or any(w in live for w in waited):  # once per pause, even after the hold expired
+        if slug in held or row["ts"] <= released.get(slug, "") or "human" in waited or any(w in live for w in waited):  # once per pause, even after the hold expired
             continue
         try:
             pr = next(pr for pr in snapshot(repo) if task_slug(repo, pr) == slug)
@@ -6637,6 +6815,8 @@ def parse_args(argv):
     state.add_argument("deliverable", nargs="?", metavar="deliverable|whom",
                        help="with handed-over: a link, or a path outside the worktree; with blocked: whom it waits on, "
                             "human (default), dispatcher or the slug of another open task")
+    overrun = sub.add_parser("overrun", help="ask the site manager for more time, or help, on the task whose worktree this is (a lead runs it, once)")
+    overrun.add_argument("text", help="what is done, what is left, why it is slow, what you would do with more time")
     commands = sub.add_parser("commands", help="state or print the test and golden commands of a task (a lead runs it in its worktree)")
     commands.add_argument("which", nargs="?", choices=("test", "golden"))
     commands.add_argument("value", nargs="?", metavar="command|none", help="record it for this task; none: there is none")
@@ -6764,7 +6944,7 @@ def main(argv=None):
             if args.cmd == "hook":
                 return 0
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
-        return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "commands": cmd_commands, "ack": cmd_ack, "hook": cmd_hook, "ops-hook": cmd_ops_hook,
+        return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "overrun": cmd_overrun, "commands": cmd_commands, "ack": cmd_ack, "hook": cmd_hook, "ops-hook": cmd_ops_hook,
                 "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "ops": cmd_ops, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "pauses": cmd_pauses,
                 "merge": cmd_merge, "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander,
