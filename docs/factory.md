@@ -655,6 +655,7 @@ Undo: `factory uninstall` uninstalls the App and removes `identity/`; you delete
 | `MONITOR_TIMEOUT` | 120 | the monitor's `isshoni` |
 | `COMMENT_TIMEOUT` | 120 | the courier run (`claude -p`) |
 | `WATCH_TIMEOUT` | 600 | the site manager run (`claude -p`) |
+| `OPS_TICK_TIMEOUT` | 300 | one look of an ops watch (`claude -p`) |
 | `LAND_TEST_TIMEOUT` | 1800 | the test command before a push, and `make build` in the wizard |
 | `LAND_TIMEOUT` | 1800 | the lander of `factory land` (`claude -p`) |
 

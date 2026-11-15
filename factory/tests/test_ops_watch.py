@@ -342,12 +342,12 @@ class LookTests(OpsHarness):
 
     def test_an_unpriced_look_counts_its_cap_against_the_budget(self):
         self.cli("ops", "stop", "w")
-        self.cli("ops", "start", "b", "goal", "--every", "10s", "--until", "6h", "--budget", "1")
+        self.cli("ops", "start", "b", "goal", "--every", "10s", "--until", "6h", "--budget", "0.75")
         self.tick({"cost": None})
         self.tick({"cost": None}, at=NOW + 10)
-        self.assertEqual([c[c.index("--max-budget-usd") + 1] for c in self.ops_runs()], ["0.5", "0.5"])
+        self.assertEqual([c[c.index("--max-budget-usd") + 1] for c in self.ops_runs()], ["0.5", "0.25"])
         w = self.watch("b")
-        self.assertEqual((w["state"], w["spent_usd"], w["reserved_usd"]), ("out-of-budget", 0.0, 1.0))
+        self.assertEqual((w["state"], w["spent_usd"], w["reserved_usd"]), ("out-of-budget", 0.0, 0.75))
         _, out, _ = self.tick(at=NOW + 20)
         self.assertEqual(self.sessions_run, 2)
 

@@ -3092,7 +3092,7 @@ def ops_move(w, state, event, saw, informs):
 
 def ops_spent(w):
     """What the watch has used of its budget: the priced looks and the caps of the unpriced ones."""
-    return w["spent_usd"] + w.get("reserved_usd", 0.0)
+    return w["spent_usd"] + w["reserved_usd"]
 
 
 def ops_used(w):
@@ -3152,7 +3152,7 @@ def ops_look(repo, w):
         cap = min(float(OPS_TICK_BUDGET), remaining)
         out, reason, cost, session, turns, folder, n = ops_run(repo, w, final, cap)
         if cost is None:
-            w["reserved_usd"] = round(w.get("reserved_usd", 0.0) + cap, 6)
+            w["reserved_usd"] = round(w["reserved_usd"] + cap, 6)
         w["spent_usd"], w["unpriced_ticks"] = round(w["spent_usd"] + (cost or 0), 6), w["unpriced_ticks"] + (cost is None)
     else:
         reason = "ops.tools names no configured server"
