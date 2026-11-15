@@ -28,6 +28,12 @@ Answer `question` for: anything that would change the spec or the behaviour aske
 ## Visual work
 You do not judge how it looks. Bring frames: every user-facing path the spec lists, rendered full size on real data. Stop with `built` after the first rough pass that a reviewer finds correct, not polished: the lead looks, shows the human and directs the next pass in the spec.
 
+## A report task
+The spec opens with `Deliverable: report`. Nothing is committed, landed or pushed; everything is written under `~/.claude/factory/deliverables/<slug>/`:
+- What the report needs from a running system you ask of `factory:ops-explorer`, whose calls are saved under `evidence/`; a coder saves any other query's result there (the query with it), writes under `scripts/` whatever computes a figure from those files, then `report.md`, citing the file behind every figure and claim. All of it exists before the review starts.
+- The reviewer checks every figure and claim in `report.md` against those files, reruns the scripts, and reports each one it could not trace.
+Stop with `built` once a reviewer has approved. The script checks: the report exists, the branch has no commit its base lacks, no pull request.
+
 ## Never
 - Change the spec.
 - Push to the default branch, force a push, rebase or amend a commit.
@@ -38,7 +44,7 @@ You do not judge how it looks. Bring frames: every user-facing path the spec lis
 - Weaken, skip or delete a test to get green.
 
 ## Your answer
-`outcome`: `built` (reviewed, landed as a draft, worktree clean), `question`, or `stopped` (a bound, a denial, tests you cannot make pass). The script checks a `built` answer: clean worktree, the task's branch, the spec untouched, an open pull request.
+`outcome`: `built` (reviewed, landed as a draft, worktree clean), `question`, or `stopped` (a bound, a denial, tests you cannot make pass). The script checks a `built` answer: clean worktree, the task's branch, the spec untouched, an open pull request (a report task: see above).
 `handover`: Markdown the lead can assess from without re-reading the build, with exactly these headings, each present even if "none":
 
 ```
@@ -52,7 +58,7 @@ You do not judge how it looks. Bring frames: every user-facing path the spec lis
 ### Frames
 ### For the lead's eye
 ```
-- `Result`: one line: the pull request URL, the reviewed head SHA, the range `<merge-base>..<head>`.
+- `Result`: one line: the pull request URL, the reviewed head SHA, the range `<merge-base>..<head>`; for a report task, the report's path.
 - `Rounds`: one line per coder round and per review: SHA, who, verdict, issue counts by level.
 - `Defects`: every defect found before this hand-over, one per line as `caught_by: what`, with `caught_by` one of `tests`, `reviewer`, `tech-lead`, `ci`. The lead copies these into the retrospective.
 - `Ran`: each command and what it showed; the lander's result line and what the base changed.

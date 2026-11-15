@@ -43,7 +43,7 @@ A subagent starts from zero: every brief states the goal, the scope, the spec fi
    - **Simplicity:** what the design deleted or left out to stay small, and what could still be deleted.
    - **Operability:** how someone installs, runs, observes and undoes this.
    For each item say what you verified, how, and what remains unverified. Put what you find into the spec and another run, or record it as a known limit. This list is a floor; add what the task calls for.
-5. **Hand over.** When the assessment holds, write two files beside the spec, once each. `<slug>.pr.md` is the pull request body described below. `<slug>.retro.json` is the retrospective, this JSON object (lists may be empty, strings must not be; `caught_by` is one of `tests`, `reviewer`, `lead`, `ci`, `human`, and the hand-over's defects keep theirs, a `tech-lead` catch filed as `reviewer`, never as `lead`; your own are `lead`; `cause`, optional, is one of `spec` (the spec was wrong or silent), `brief` (the brief was), `conflict` (a merge of the base), `scope` (the scope changed mid-task), `code` (the code missed what the spec said)):
+5. **Hand over.** When the assessment holds, write two files beside the spec, once each (a report task: see below). `<slug>.pr.md` is the pull request body described below. `<slug>.retro.json` is the retrospective, this JSON object (lists may be empty, strings must not be; `caught_by` is one of `tests`, `reviewer`, `lead`, `ci`, `human`, and the hand-over's defects keep theirs, a `tech-lead` catch filed as `reviewer`, never as `lead`; your own are `lead`; `cause`, optional, is one of `spec` (the spec was wrong or silent), `brief` (the brief was), `conflict` (a merge of the base), `scope` (the scope changed mid-task), `code` (the code missed what the spec said)):
    ```json
    {"defects": [{"caught_by": "reviewer", "what": "...", "cause": "spec"}],
     "slowed": ["..."], "rules_missing": ["..."], "rules_dead_weight": ["..."], "brief_questions": ["..."]}
@@ -66,6 +66,14 @@ The human should be able to decide to merge in one or two minutes. Write as if e
 4. **Verified:** one line: tests, the review verdict, what you checked on real data.
 5. **Not verified / risks:** one line, or "none".
 A stacked pull request starts with "Stacked on #N". Everything else goes below, collapsed in `<details>`: the spec's path (not its text: the pull request is public, the spec is not), your full quality assessment, test output. Keep the visible part under about 120 words.
+
+## A report task
+When the brief asks for a report (an investigation, an audit, a measurement), the deliverable is `~/.claude/factory/deliverables/<slug>/report.md`, and the task makes no commit and no pull request. Everything above holds, except:
+- **Plan.** The shape of the work is often unknown: find it with explorers first. An ops explorer's saved files are evidence; what a plain explorer tells you is scoping, and the build gathers again whatever the report rests on. The spec opens with `Deliverable: report` and states the questions the report answers, the sources and how each is reached, the evidence files already saved, and what stays out.
+- **Evidence.** Every figure and claim rests on a file beside the report: an ops explorer's file or another saved query result under `evidence/`, or a script under `scripts/` that computes it from those. They exist before review, never in a throwaway script under a tmp directory, and the report cites them by path.
+- **Build.** `factory build` as for any task: the tech lead has the evidence gathered, the scripts and the report written, and a reviewer check every figure and claim against the files. Nothing is landed: `built` means the report exists and the branch has no commit and no pull request.
+- **Assessment.** Yours to answer: do the conclusions follow from the evidence, what was not looked at, what a reader could misread, can someone rerun it. The items about code apply only where they mean something.
+- **Hand over.** No `<slug>.pr.md` and no `gh pr edit`. Write the retrospective, then `factory retro < <path>`, `factory state handed-over ~/.claude/factory/deliverables/<slug>/report.md`, and `DONE:` with the report's path, its answer in two or three lines, the verdict and what is unverified. The human accepts it by word: nothing is merged and nothing comes back from the lander.
 
 ## Talking to the dispatcher
 Before each message to the dispatcher run `factory dispatcher`: it prints the dispatcher's current session name, which can change. Use `SendMessage` to that name (load it with `ToolSearch` first if needed); if the command exits 1, treat the message as undeliverable. The first line starts with one of these, then your slug, then (for the first three) the reason in a few words:
