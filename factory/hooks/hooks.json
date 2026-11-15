@@ -105,8 +105,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/factory\" ops-hook",
-            "timeout": 10
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/factory\" ops-hook || exit 2",
+            "timeout": 60
           }
         ]
       }
@@ -128,7 +128,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/factory\" ops-hook",
-            "timeout": 10
+            "timeout": 60
           }
         ]
       }
