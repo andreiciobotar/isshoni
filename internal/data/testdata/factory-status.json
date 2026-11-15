@@ -16,7 +16,7 @@
       "waited": 5400, "stop_kind": null, "stop_summary": null,
       "elapsed": 252, "overtime": true, "dirty": false, "behind": 0, "ahead": 2,
       "head": "def", "last_commit": 1794647916, "pr_state": "open", "pr_url": "https://github.com/o/r/pull/12", "pr_head": "h", "pr_base": "b", "pr_draft": false,
-      "phase": "review", "stale": true
+      "phase": "review", "stale": true, "paused": null, "prioritized": {"since": "2099-12-31T23:57:00Z"}
     },
     {
       "slug": "needs-an-answer", "branch": "worktree-needs-an-answer", "path": "/r/.claude/worktrees/needs-an-answer",
@@ -43,7 +43,7 @@
       "waited": 120, "stop_kind": "BLOCKED", "stop_summary": "Needs the login task to land first.", "waits_on": "needs-an-answer",
       "elapsed": 90, "overtime": false, "dirty": false, "behind": 0, "ahead": 0,
       "head": "ccc", "last_commit": 1794645000, "pr_state": "none", "pr_url": "", "pr_head": "", "pr_base": "",
-      "phase": "blocked", "stale": false
+      "phase": "blocked", "stale": false, "paused": {"since": "2099-12-31T23:48:00Z", "waits_on": ["needs-an-answer"]}
     }
   ],
   "cap": 7, "reserve": 1, "open": 5, "in_motion": 3, "blocked": 2, "in_review": 1, "merged": 0, "settled": 1,
