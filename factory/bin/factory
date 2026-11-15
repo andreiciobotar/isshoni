@@ -116,10 +116,10 @@ def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
     child, one that starts children of its own, runs in a process group of its own, which a timeout or a signal to
     this script kills whole; any other child stays in the script's group and only it is killed on a timeout.
     A signal that arrives while the child starts is held until the child is known, then ends it.
-    `gh` acts as the App when an identity is installed, and a call that is slow or fails is logged to gh-YYYY-MM.jsonl.
+    `gh` acts as the App when an identity is installed (unless the caller's `env` brings a `GH_TOKEN`), and a call that is slow or fails is logged to gh-YYYY-MM.jsonl.
     A `claude` child gets no `ANTHROPIC_LOG`: its debug logging would share the stdout that is read as JSON."""
     timeout = timeout or (GH_TIMEOUT if argv[0] == "gh" else RUN_TIMEOUT)
-    if argv[0] == "gh":
+    if argv[0] == "gh" and "GH_TOKEN" not in (env or {}):
         try:
             if found := acting_identity(cwd):
                 env = {**os.environ, "GH_TOKEN": app_token(*found)}
@@ -211,6 +211,10 @@ def a_model(v):
     return None if ok else (f': "{v}" is not a model (an alias: {", ".join(ALIASES)}; or a full id starting claude-)')
 
 
+def issues_repo(v):
+    return None if v == "" or isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", v) else ' must be empty or "owner/name"'
+
+
 def name_list(v):
     return None if isinstance(v, list) and all(isinstance(i, str) and i.strip() for i in v) else " must be a list of strings"
 
@@ -252,6 +256,7 @@ SETTINGS = (
             'The watch tick\'s judge, which also decides overruns. Next tick. Default "opus"; a settings file that names "sonnet" keeps it: `factory settings set models.site_manager opus`.'),
     Setting("models", "ops_watch", "sonnet", a_model, 'The judge of one look of an ops watch (the reads are the ops explorer\'s). Next look. Default "sonnet".'),
     Setting("models", "ops_explorer", "haiku", a_model, 'The ops explorer, which reads production through MCP servers. Takes effect for the next lead, build or tech lead run started. Default "haiku".'),
+    Setting("models", "kaizen_review", "fable", a_model, 'The kaizen review session (one fresh run per review). Next review. Default "fable".'),
     Setting("models", "courier", "haiku", a_model, 'Carries pull request comments to a lead. Next tick. Default "haiku".'),
     Setting("models", "tech_lead", "opus", a_model, 'Resolves a pull request that came back from the merge queue and runs every task\'s build. Its next run. Default "opus".'),
     Setting("limits", "worktree_cap", 5, int_in(1), "Open task worktrees at most, the dashboard's c key edits it. Default 5.", toml_arg),
@@ -271,6 +276,10 @@ SETTINGS = (
             "Whether an `lgtm` comment by the pull request's author counts as the human's word. Default true.", toml_arg),
     Setting("ops", "tools", None, ops_tool_list,
             "The MCP tools the ops explorer may call, read-only ones only. Unset by default: no MCP tools.", json_arg),
+    Setting("kaizen", "review_hours", 1, int_in(0),
+            "Hours between kaizen reviews, counted from the last one of any outcome; 0 turns the review off. Default 1.", toml_arg),
+    Setting("kaizen", "issues_repo", "", issues_repo,
+            'The repository (owner/name, the App\'s owner) that gets each kaizen proposal as an issue. Empty: nothing is posted. Default empty.'),
     Setting("paths", "monitor", None, nonempty,
             "The isshoni command the cost criteria and the digest run; the wizard's cost step sets it. Unset by default."),
 )
@@ -1169,7 +1178,7 @@ def prune(name):
     n = int(now()[:4]) * 12 + int(now()[5:7]) - 1 - KEEP_MONTHS
     cutoff = f"{n // 12:04d}-{n % 12 + 1:02d}"
     try:
-        while name != "retros" and (files := log_files(name)) and files[0][0] < cutoff:
+        while name not in ("retros", "reviews") and (files := log_files(name)) and files[0][0] < cutoff:
             for r in CARRY.get(name, lambda _: [])(files):
                 append(f"{name}-{now()[:7]}", r)
             files[0][1].unlink()
@@ -1940,6 +1949,14 @@ def cmd_retro(args):
     return 0
 
 
+def set_feedback(prefix, status, pr=None, by=None):
+    found = [e["id"] for e in read_feedback() if e["id"].startswith(prefix)]
+    if len(found) != 1:
+        raise Fail(f"feedback: {'no entry' if not found else 'several entries'} matches {prefix!r}")
+    log("feedback", {"id": found[0], "ts": now(), "status": status, **({"pr": pr} if pr else {}),
+                      **({"by": by} if by else {})})
+
+
 def cmd_feedback(args):
     if args.since is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}Z)?", args.since):
         raise Fail(f"feedback: --since is YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD, got {args.since!r}")
@@ -1958,10 +1975,7 @@ def cmd_feedback(args):
             raise Fail(f"feedback decide: one line of what and why, 1 to {DECISION_MAX} characters (got {len(text)})")
         print(*file_feedback([f"{DECISION} {text}"], tags()))
     elif args.action == "set":
-        found = [e["id"] for e in read_feedback() if e["id"].startswith(args.id)]
-        if len(found) != 1:
-            raise Fail(f"feedback: {'no entry' if not found else 'several entries'} matches {args.id!r}")
-        log("feedback", {"id": found[0], "ts": now(), "status": args.status, **({"pr": args.pr} if args.pr else {})})
+        set_feedback(args.id, args.status, args.pr)
     else:
         entries = [e for e in read_feedback() if (not args.status or e["status"] == args.status)
                    and (not args.kind or e["kind"] == args.kind) and (args.since is None or str(e.get("ts", "")) > args.since)]
@@ -3496,6 +3510,7 @@ def cmd_watch(args):
     The lander's loop runs last, while a task is handed over or the human's word stands."""
     repo = Repo()
     ops_tick(repo)
+    review_tick(repo)
     with repo_lock(repo, "watch") as free:
         if not free:
             print("watch: a tick is already running")
@@ -3673,10 +3688,10 @@ def run_site_manager(p, send, job="watch"):
 def cmd_firing(args):
     repo = Repo()
     f = find_firing(repo.root, args.id)
-    if f["decision"] != "escalated":
+    if f["decision"] not in ("escalated", None):
         raise Fail(f"firing: {f['id']} was not escalated, so it has no outcome")
     log_firing(repo, id=f["id"], outcome=args.action)
-    print(f"{f['id']}: {args.action}")
+    print(f"{f['id']}: {args.action}" + (" (its decision is not logged yet)" if f["decision"] is None else ""))
     return 0
 
 
@@ -4772,15 +4787,22 @@ def app_token(identity, name):
     return token
 
 
-def identity_exports():
-    """({name: value}, why): the exports that make git and gh act as the App; empty when no identity applies.
-    Whatever else happens the lock-down comes back (exit 1, with the reason): git must not reach the human's credentials."""
+def lockdown_exports():
+    """The exports that cut git and gh off from the human's credentials: no token, the stored credential helper reset
+    (a helper that hands out `GH_TOKEN`, which is unavailable here), ssh remotes rewritten to https."""
     values = {"GH_TOKEN": "unavailable", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "4"}
     credential, rewrite = "credential.https://github.com.helper", "url.https://github.com/.insteadOf"
     helper = "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f"
     for i, (key, value) in enumerate(((credential, ""), (credential, helper), (rewrite, "git@github.com:"),
                                       (rewrite, "ssh://git@github.com/"))):
         values[f"GIT_CONFIG_KEY_{i}"], values[f"GIT_CONFIG_VALUE_{i}"] = key, value
+    return values
+
+
+def identity_exports():
+    """({name: value}, why): the exports that make git and gh act as the App; empty when no identity applies.
+    Whatever else happens the lock-down comes back (exit 1, with the reason): git must not reach the human's credentials."""
+    values = lockdown_exports()
     try:
         found = acting_identity()
         if not found:
@@ -5052,11 +5074,11 @@ PLUGIN = "factory@factory"
 SOURCE = "andreiciobotar/isshoni"
 # The names the factory writes at the top of its home; uninstall removes these and nothing else there.
 HOME_FILE_RE = re.compile(r"settings\.(toml|json)|watch\.log|identity|specs|deliverables|ops|dashboard|hosts\.json|\.settings-.*\.tmp"
-                          r"|(events|tasks|feedback|firings|retros|ops)(-\d{4}-\d\d)?\.jsonl")
+                          r"|(events|tasks|feedback|firings|retros|reviews|ops)(-\d{4}-\d\d)?\.jsonl")
 # The other names the factory writes there, which uninstall leaves: the cache, the courier's notes, the logs
 # written through `log` that HOME_FILE_RE does not list, and the per-repository files of `repo_state` with their
 # temporary files. `strangers` is what matches neither.
-STORE_WRITTEN_RE = re.compile(r"cache|comments|tech-lead\.log|(gh|comments|techlead|queue)-\d{4}-\d\d\.jsonl|(hosts|settings)\.json\.tmp"
+STORE_WRITTEN_RE = re.compile(r"cache|comments|tech-lead\.log|review\.(log|lock)|(gh|comments|techlead|queue)-\d{4}-\d\d\.jsonl|(hosts|settings)\.json\.tmp"
                               r"|[a-z]+-.+-[0-9a-f]{8}\.(json|lock)(\.tmp)?")  # the last is every name repo_state() makes
 Step = collections.namedtuple("Step", "name purpose optional state act recheck", defaults=(False,))
 
@@ -6094,10 +6116,14 @@ def write_word(repo, word):
     write_json(repo_state(repo.root, "word", "json"), word)
 
 
-@contextlib.contextmanager
 def repo_lock(repo, name):
     """Hold the lock `name` ("lander" or "watch") of this repository; yields whether it was free."""
-    path = repo_state(repo.root, name, "lock")
+    return file_lock(repo_state(repo.root, name, "lock"))
+
+
+@contextlib.contextmanager
+def file_lock(path):
+    """Hold a non-blocking lock on `path`; yields whether it was free."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         try:
@@ -6973,6 +6999,258 @@ def cmd_lander(args):
         return 1 if drain(repo, args.dispatcher) else 0
 
 
+# ---- kaizen review ----------------------------------------------------------
+
+REVIEW_ROLE = PLUGIN_ROOT / "roles" / "kaizen-review.md"
+REVIEW_TIMEOUT = 1200
+REVIEW_BUDGET = "3.00"
+REVIEW_ACTIVITY = ("tasks", "feedback", "retros", "queue", "techlead", "comments", "events")  # not reviews, gh, ops, firings
+REVIEW_SECTIONS = {"proposal": ("Problem", "What the role lacked", "Proposal", "Evidence", "Number"),
+                   "evidence": ("Evidence",), "check": ("Number",)}
+REVIEW_RUNGS = ("owner", "authority", "information", "judgement", "mechanism")
+REVIEW_BY = "kaizen-review"  # the `by` of the outbox lines the mirror writes: they are not activity
+REVIEW_LABELS = ("kaizen", "kaizen:accepted")
+REVIEW_DENIED = ("Bash(gh *)", "Bash(git push *)", "Bash(git commit *)", "Bash(curl *)", "Bash(factory *)")
+REVIEW_FIELDS = "number,title,body,state,labels,comments"
+
+
+def review_lock():
+    return file_lock(STORE.expanduser() / "review.lock")
+
+
+def review_since(records):
+    """The start of the last review that ran, else 24 hours ago."""
+    ran = [stamp(r) for r in records if r.get("outcome") == "ran"]
+    return max(ran, default=None) or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 86400))
+
+
+def review_decide(settings):
+    """Whether a review is due and has something to look at, from the stored records alone: (go, one line). A review
+    that is due with no activity is recorded as `skipped` here, so a quiet store gets one record per period."""
+    hours, records = settings["review_hours"], sorted(read_log("reviews"), key=stamp)
+    if hours == 0:
+        return False, "off: kaizen.review_hours is 0"
+    last = epoch(stamp(records[-1])) if records else None
+    if last is not None and last + hours * 3600 > time.time():
+        return False, f"not due: the last review ({records[-1].get('outcome')}) was at {stamp(records[-1])}"
+    since = review_since(records)
+    if any(stamp(r) > since and r.get("by") != REVIEW_BY for name in REVIEW_ACTIVITY for r in read_log(name, since)):
+        return True, f"due: there was activity since {since}"
+    log("reviews", {"ts": now(), "outcome": "skipped", "reason": f"no activity since {since}"})
+    return False, f"skipped: no activity since {since}"
+
+
+def review_tick(repo):
+    """Start the review when it is due, detached, and return at once: a review outlasts a watch tick."""
+    try:
+        with review_lock() as free:
+            go = free and review_decide(load_settings())[0]
+        if go:
+            spawn([sys.executable, str(Path(__file__).resolve()), "review", "--run"], repo.root, STORE.expanduser() / "review.log")
+    except Exception as e:
+        print(f"review: {why(e)}")
+
+
+def cmd_review(args):
+    """The decision, in one line, and the review itself when it is due; `--run` runs without deciding."""
+    repo, settings = Repo(), load_settings()
+    with review_lock() as free:
+        if not free:
+            raise Fail("a review is already running", 1)
+        go, line = (True, "running") if args.run else review_decide(settings)
+        print(f"review: {line}")
+        return 0 if not go else review_run(repo, settings)
+
+
+def json_list(text):
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None
+    return value if isinstance(value, list) else None
+
+
+def review_gh(target, *args):
+    """`gh` against `target` ("owner/name") as the App, with a token for that repository, never as another login:
+    (returncode, stdout, the first line of stderr when it failed)."""
+    owner, name = target.split("/")
+    try:
+        identity = load_identity()
+        if not (identity and identity.get("bot_login") and identity["owner"].lower() == owner.lower()):
+            return 1, "", f"no App identity for {owner}"
+        rc, out, err = run(["gh", *args, "--repo", target], env={**os.environ, "GH_TOKEN": app_token(identity, name)})
+    except Exception as e:
+        return 1, "", why(e)
+    return rc, out, (err.strip().splitlines() or [f"gh exited {rc}"])[0] if rc else ""
+
+
+def review_mirror(issues):
+    """Each issue's state onto the outbox entries its footer cites, only where the status differs."""
+    for issue in issues:
+        labels = {l.get("name") for l in issue.get("labels") or [] if isinstance(l, dict)}
+        status = (("done" if issue.get("state") == "CLOSED" else "accepted") if "kaizen:accepted" in labels
+                  else "rejected" if issue.get("state") == "CLOSED" else None)
+        cites = re.search(r"Cites: ([^\n·]*)", str(issue.get("body")))
+        for prefix in re.findall(r"[0-9a-f]{6,}", cites[1]) if cites and status else ():
+            if any(e["id"].startswith(prefix) and e["status"] != status for e in read_feedback()):
+                with contextlib.suppress(Fail):
+                    set_feedback(prefix, status, by=REVIEW_BY)
+
+
+def review_patterns(target, settings):
+    """[(the kind of detail, its pattern)] that a public proposal must not hold: see docs/factory.md."""
+    roots = {r["repo"] for name in (*REVIEW_ACTIVITY, "firings", "ops") for r in read_log(name) if isinstance(r.get("repo"), str)}
+    others = {n for n in (remote_repo(root) for root in roots) if n and "/".join(n).lower() != target.lower()}
+    hosts = load_hosts()
+    names = {OPS_TOOL_RE.fullmatch(t)[1] for t in settings["tools"] or []} | set(hosts) \
+        | {str(e.get("target")).split("@")[-1] for e in hosts.values() if isinstance(e, dict) and e.get("target")}
+
+    def words(ws):
+        return re.compile(r"(?<![\w-])(?:" + "|".join(re.escape(w) for w in ws) + r")(?![\w-])", re.I) if ws else None
+    return [(kind, p) for kind, p in (
+        ("a path under a home directory", re.compile(re.escape(str(Path.home())) + r"|/(?:Users|home)/[^/\s]+/|~/[\w.-]")),
+        ("the name of another repository", words({w for o, n in others for w in (n, f"{o}/{n}")})),
+        ("a host or MCP server name", words(names)),
+        ("an IPv4 address", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"))) if p]
+
+
+def review_parse(text, issues):
+    """(kind, fields, the sections it needs) of a proposal file; ValueError(why it is held) when it is not the shape."""
+    m = re.fullmatch(r"---\n(.*?)\n---\n(.*)", text, re.S)
+    if not m:
+        raise ValueError("no front matter")
+    fields = {k.strip(): re.sub(r"\s{2,}#.*", "", v).strip() for k, _, v in (l.partition(":") for l in m[1].splitlines())}
+    kind = fields.get("kind")
+    if kind not in REVIEW_SECTIONS:
+        raise ValueError(f"unknown kind {kind!r}")
+    if not fields.get("role"):
+        raise ValueError("no role")
+    if not re.fullmatch(r"\[[^\]]*\]", fields.get("cites", "")):
+        raise ValueError("cites is not a list")
+    if kind == "proposal":
+        if not 0 < len(fields.get("title", "")) <= 80:
+            raise ValueError("the title is missing or over 80 characters")
+        if fields.get("rung") not in REVIEW_RUNGS:
+            raise ValueError(f"unknown rung {fields.get('rung')!r}")
+    elif not fields.get("issue", "").isdigit() or int(fields["issue"]) not in {i.get("number") for i in issues}:
+        raise ValueError(f"issue {fields.get('issue')!r} is not in input/issues.json")
+    sections = {h.strip(): b.strip() for h, b in re.findall(r"^## ([^\n]+)\n(.*?)(?=^## |\Z)", m[2], re.M | re.S)}
+    for h in REVIEW_SECTIONS[kind]:
+        if not sections.get(h):
+            raise ValueError(f"the section {h} is missing or empty")
+    return kind, fields, {h: sections[h] for h in REVIEW_SECTIONS[kind]}
+
+
+def review_labels(target):
+    """Create the labels that are missing; the first error line, or None."""
+    rc, out, err = review_gh(target, "label", "list", "--limit", "200", "--json", "name")
+    have = json_list(out)
+    if rc or have is None:
+        return err if rc else "the label list is not JSON"
+    for name in REVIEW_LABELS:
+        if name not in {l.get("name") for l in have if isinstance(l, dict)}:
+            rc, _, err = review_gh(target, "label", "create", name)
+            if rc:
+                return err
+    return None
+
+
+def review_post(target, settings, folder, issues, started):
+    """Check, scan and post each file in proposals/: ([{"file", "issue", "kind"}], [{"file", "why"}]). A refusal or a
+    bad file holds that file only; held files stay in the folder."""
+    posted, held, patterns, labels = [], [], review_patterns(target, settings), None
+    for path in sorted((folder / "proposals").glob("*.md")):
+        try:
+            kind, fields, sections = review_parse(path.read_text(), issues)
+            cites = re.findall(r"[0-9a-f]+", fields["cites"])
+            foot = " · ".join([f"Role: {fields['role']}", *([f"Rung: {fields['rung']}"] if kind == "proposal" else []),
+                               f"Cites: {', '.join(cites) or 'none'}", f"Review: {started}"])
+            body = "\n\n".join(f"## {h}\n{t}" for h, t in sections.items()) + f"\n\n{foot}"
+            if found := next((k for k, p in patterns if p.search(f"{fields.get('title', '')}\n{body}")), None):
+                raise ValueError(f"it holds {found}")
+            if kind == "proposal":
+                labels = review_labels(target) or "" if labels is None else labels
+                if labels:
+                    raise ValueError(f"labels: {labels}")
+                rc, out, err = review_gh(target, "issue", "create", "--title", fields["title"], "--body", body, "--label", "kaizen")
+            else:
+                rc, out, err = review_gh(target, "issue", "comment", fields["issue"], "--body", body)
+            if rc:
+                raise ValueError(err)
+            number = fields["issue"] if kind != "proposal" else (re.search(r"/issues/(\d+)", out) or [None, None])[1]
+            posted.append({"file": path.name, "issue": number and int(number), "kind": kind})
+        except (ValueError, OSError) as e:
+            held.append({"file": path.name, "why": str(e)})
+    return posted, held
+
+
+def review_argv(settings, folder, prompt):
+    """The review session's launch command, the one place another runner would plug in. It reads anywhere and writes
+    only under `folder`; the flags cannot stop `python3` from writing elsewhere, the charter says so."""
+    lean = [*lean_flags(), "--disable-slash-commands"] if settings["lean_start"] else ["--strict-mcp-config"]
+    return ["claude", "-p", "--model", settings["models"]["kaizen_review"], "--permission-mode", "dontAsk", *lean,
+            "--tools=Read,Grep,Glob,Bash,Write", "--allowedTools", "Read", "Grep", "Glob", "Bash", f"Edit(/{folder}/**)",
+            "--disallowedTools", *REVIEW_DENIED, *SETTINGS_ISOLATION, "--max-budget-usd", REVIEW_BUDGET,
+            "--output-format", "json", "--append-system-prompt", REVIEW_ROLE.read_text(), prompt]
+
+
+def review_run(repo, settings):
+    """One review, under its lock: a fresh session, then the checks and posts the script does on what it wrote. Ends in a
+    `reviews` record whatever happens; exit code 0 when it ran."""
+    started, begun, target = now(), time.monotonic(), settings["issues_repo"]
+    records = sorted(read_log("reviews"), key=stamp)
+    since = review_since(records)
+    folder = STORE.expanduser().resolve() / "deliverables" / f"kaizen-review-{re.sub('[-:]', '', started)}"
+    log("reviews", {"ts": started, "outcome": "started", "folder": str(folder)})  # a run that dies leaves this: not due for a period
+    session = cost = reason = None
+    posted, held, issues, blocked = [], [], [], None
+    try:
+        for d in ("scripts", "evidence", "proposals", *(["input"] if target else [])):
+            (folder / d).mkdir(parents=True)
+        if target:
+            rc, out, blocked = review_gh(target, "issue", "list", "--state", "all", "--label", "kaizen", "--limit", "200",
+                                         "--json", REVIEW_FIELDS)
+            if not rc and (issues := json_list(out)) is not None:
+                write_json(folder / "input" / "issues.json", issues)
+                review_mirror(issues)
+            else:
+                issues, blocked = [], blocked or "the issue list is not JSON"
+        last = next((r for r in reversed(records) if r.get("outcome") == "ran"), {})
+        previous = Path(last.get("folder", "")) / "report.md"
+        prompt = (f"Time now: {started}. Since: {since}. Store: {STORE.expanduser()}. Your folder: {folder}. Previous report: "
+                  f"{previous if previous.is_file() else 'none'}. input/issues.json: "
+                  f"{'present' if (folder / 'input' / 'issues.json').exists() else 'absent'}.")
+        rc, out, _ = run(review_argv(settings, folder, prompt), cwd=repo.root, timeout=REVIEW_TIMEOUT, group=True,
+                         env={**os.environ, **lockdown_exports()})
+        try:
+            doc = json.loads(out)
+        except ValueError:
+            doc = None
+        doc = doc if isinstance(doc, dict) else {}
+        number = doc.get("total_cost_usd")
+        session, cost = doc.get("session_id"), number if isinstance(number, (int, float)) and not isinstance(number, bool) else None
+        reason = (f"reached {REVIEW_TIMEOUT // 60} minutes" if rc == 124
+                  else f"reached {float(REVIEW_BUDGET):g} USD" if doc.get("subtype") == "error_max_budget_usd"
+                  else "the session ended with an error" if rc != 0 or doc.get("is_error")
+                  else None if (folder / "report.md").is_file() else "the session wrote no report.md")
+        if not reason and target:
+            if blocked:
+                held = [{"file": p.name, "why": blocked} for p in sorted((folder / "proposals").glob("*.md"))]
+            else:
+                posted, held = review_post(target, settings, folder, issues, folder.name.removeprefix("kaizen-review-"))
+            with open(folder / "report.md", "a") as f:
+                f.write(f"\n\nScript record: posted {len(posted)}, held {len(held)}"
+                        + "".join(f"; held {h['file']}: {h['why']}" for h in held) + "\n")
+    except Exception as e:
+        reason = f"the review failed: {why(e)}"
+    log("reviews", {"ts": started, "outcome": "failed" if reason else "ran", **({"reason": reason} if reason else {}),
+                    "folder": str(folder), "since": since, "cost_usd": cost, "seconds": round(time.monotonic() - begun, 1),
+                    "session": session, "posted": posted, "held": held})
+    print(f"review: {'failed: ' + reason if reason else 'ran'}; {'unpriced' if cost is None else f'{cost:.2f} USD'}; "
+          f"{len(posted)} posted, {len(held)} held; {folder}")
+    return 1 if reason else 0
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog="factory", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -7029,8 +7307,10 @@ def parse_args(argv):
     change.add_argument("id")
     change.add_argument("status", choices=STATUSES)
     change.add_argument("--pr")
-    show = sub.add_parser("log", help="print stored events or retrospectives, oldest first")
-    show.add_argument("name", choices=("events", "retros"))
+    review = sub.add_parser("review", help="the kaizen review: say whether one is due and run it if so; --run skips the decision")
+    review.add_argument("--run", action="store_true", help="run a review now, in the foreground, whether or not one is due")
+    show = sub.add_parser("log", help="print stored events, retrospectives or kaizen reviews, oldest first")
+    show.add_argument("name", choices=("events", "retros", "reviews"))
     show.add_argument("--since", metavar="TS")
     show.add_argument("--until", metavar="TS")
     health = sub.add_parser("health", help="evaluate the criteria and print what fires (read-only)")
@@ -7130,7 +7410,7 @@ def main(argv=None):
                 return 0
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
         return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "overrun": cmd_overrun, "commands": cmd_commands, "ack": cmd_ack, "hook": cmd_hook, "ops-hook": cmd_ops_hook,
-                "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "health": cmd_health, "watch": cmd_watch,
+                "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "review": cmd_review, "health": cmd_health, "watch": cmd_watch,
                 "digest": cmd_digest, "ops": cmd_ops, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "pauses": cmd_pauses,
                 "merge": cmd_merge, "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander,
                 "tech-lead": cmd_tech_lead, "build": cmd_build, "schedule": cmd_schedule, "dispatcher": cmd_dispatcher,
