@@ -8,8 +8,9 @@
 `start` sets up <n> runs under <dir>, each in its own scratch repository and FACTORY_HOME (a bare origin, a checkout, a
 `gh` shim answering from local git), starts each `factory build` detached with the real model, and returns at once.
 `wait` blocks until every run has ended or the seconds (default 540) pass: exit 3 while some still run. When all ended
-it prints one line per run and the total cost, and exits 0 only if every run is `built` with no reason, started at
-least two subagents (a coder and a reviewer) and has no `Stop` event of its session with background tasks."""
+it prints one line per run and the total cost, and exits 0 only if every run has an answer (no reason), started at
+least two subagents (a coder and a reviewer), has no `Stop` event of its session with background tasks, and, when not
+`built`, shows `denied` in its hand-over file (the known landing denial of `factory state working`)."""
 import argparse
 import json
 import os
@@ -179,8 +180,13 @@ def judge(run):
     events = [e for e in rows(home, "events") if e.get("session") == rec["session"]]
     starts = sum(e.get("event") == "SubagentStart" for e in events)
     tasks = [e.get("background_tasks") for e in events if e.get("event") == "Stop"]
-    ok = rec["outcome"] == "built" and rec["reason"] is None
+    ok = rec["reason"] is None
     line = f"{run.name}: outcome={rec['outcome']} reason={rec['reason']} cost_usd={rec['cost_usd']} seconds={rec['seconds']}"
+    if rec["outcome"] != "built":
+        handover = home / "specs" / CHECKOUT / f"{SLUG}.handover.md"
+        denied = next((l for l in handover.read_text().splitlines() if "denied" in l), None) if handover.exists() else None
+        line += f" stopped_by={denied[:160] if denied else None}"
+        ok = ok and denied is not None
     if events:
         line += f" subagent_starts={starts} background_tasks={tasks}"
         ok = ok and starts >= 2 and not any(t for t in tasks if t)
