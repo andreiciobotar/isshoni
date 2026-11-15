@@ -15,7 +15,7 @@ import (
 const (
 	brand         = "Isshoni"
 	brandKanji    = "一緒に"
-	kanjiMinWidth = 130
+	kanjiMinWidth = 136
 )
 
 // View renders the current frame.
@@ -69,6 +69,8 @@ func (m *model) frame() []string {
 		body = m.factoryBody(p, w, bh)
 	case m.view == viewKaizen:
 		body = m.kaizenBody(p, w, bh)
+	case m.view == viewOps:
+		body = m.opsBody(p, w, bh)
 	default:
 		body = m.dashBody(p, w, bh)
 	}
@@ -107,6 +109,12 @@ func (m *model) header(p paint) string {
 				badge = fmt.Sprintf(" ▲%d", n)
 			}
 		}
+		if v == viewOps && m.view != viewOps && m.opsAlarmed() > 0 {
+			badge = fmt.Sprintf(" ▲%d", m.opsAlarmed())
+			if m.w < 110 {
+				txt = fmt.Sprintf("%d", n) // the badge takes the eye's place: at 60 columns the bar has no room for both
+			}
+		}
 		if m.view == v {
 			if th.NoColor {
 				if compact {
@@ -122,7 +130,7 @@ func (m *model) header(p paint) string {
 		}
 		return bar.t(" "+txt, th.Muted) + bar.b(badge, th.Orange) + bar.t(" ", th.Muted)
 	}
-	tabs := tab(1, "Dashboard", viewDashboard, "Dash") + tab(2, "Agents", viewAgents, "Agents") + tab(3, "Factory", viewFactory, "Factory") + tab(4, "Kaizen", viewKaizen, "Kaizen") + tab(5, "Hanami", viewHanami, "✿") // a blossom below 110 columns, where the bar has no room for a fifth word
+	tabs := tab(1, "Dashboard", viewDashboard, "Dash") + tab(2, "Agents", viewAgents, "Agents") + tab(3, "Factory", viewFactory, "Factory") + tab(4, "Kaizen", viewKaizen, "Kaizen") + tab(5, "Ops", viewOps, "◉") + tab(6, "Hanami", viewHanami, "✿") // an eye and a blossom below 110 columns, where the bar has no room for a fifth and a sixth word
 
 	var chips []string
 	for i, r := range ranges {
@@ -205,6 +213,8 @@ func (m *model) subheader(p paint) string {
 		left = m.factorySubheader(p)
 	case m.view == viewKaizen:
 		left = m.kaizenSubheader(p)
+	case m.view == viewOps:
+		left = m.opsSubheader(p)
 	case m.view == viewHanami:
 		left = m.hanamiSubheader(p)
 	case m.view == viewAgents:
