@@ -826,7 +826,7 @@ func TestFactoryBandDoCellWrapsWhenNarrowAndTruncates(t *testing.T) {
 	}
 }
 
-// At 80 columns five tabs leave the badge no room beside "N live": the word goes, the count stays.
+// At 80 columns six tabs leave the badge no room beside "N live": the word goes, the count stays.
 func TestFactoryTabBadgeKeepsTheLiveCountAt80Columns(t *testing.T) {
 	for _, n := range []int{0, 7, 12, 123} {
 		for _, v := range []viewID{viewDashboard, viewFactory} {
@@ -1014,15 +1014,15 @@ func TestFactoryAnimatesOnlyWhileSomethingMoves(t *testing.T) {
 
 func TestFactoryViewKeys(t *testing.T) {
 	m := fakeModel(true, 120, 40)
-	for _, want := range []viewID{viewAgents, viewFactory, viewKaizen, viewHanami, viewDashboard} {
+	for _, want := range []viewID{viewAgents, viewFactory, viewKaizen, viewOps, viewHanami, viewDashboard} {
 		send(m, "tab")
 		if m.view != want {
 			t.Fatalf("tab -> %v, want %v", m.view, want)
 		}
 	}
-	send(m, "shift+tab", "shift+tab")
+	send(m, "shift+tab", "shift+tab", "shift+tab")
 	if m.view != viewKaizen {
-		t.Fatalf("shift+tab twice from the dashboard, past hanami -> %v", m.view)
+		t.Fatalf("shift+tab three times from the dashboard, past hanami and ops -> %v", m.view)
 	}
 	send(m, "1", "3")
 	if m.view != viewFactory {
@@ -1038,15 +1038,15 @@ func TestFactoryViewKeys(t *testing.T) {
 
 	bare := New(Options{Static: true})
 	bare.loading = false
-	for _, want := range []viewID{viewAgents, viewFactory, viewKaizen, viewHanami, viewDashboard} {
+	for _, want := range []viewID{viewAgents, viewFactory, viewKaizen, viewOps, viewHanami, viewDashboard} {
 		send(bare, "tab")
 		if bare.view != want || bare.toast.text != "" {
 			t.Fatalf("tab without sessions: got %v, want %v, toast %q", bare.view, want, bare.toast.text)
 		}
 	}
-	send(bare, "shift+tab", "shift+tab", "shift+tab", "shift+tab", "shift+tab")
+	send(bare, "shift+tab", "shift+tab", "shift+tab", "shift+tab", "shift+tab", "shift+tab")
 	if bare.view != viewDashboard {
-		t.Fatalf("shift+tab five times: %v", bare.view)
+		t.Fatalf("shift+tab six times: %v", bare.view)
 	}
 }
 
