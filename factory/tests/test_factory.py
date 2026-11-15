@@ -527,6 +527,7 @@ monitor = "/bin/isshoni"
                 ("merging", "lgtm_from_author", '"no"'), ("merging", "lgtm_from_author", "0"),
                 ("ops", "tools", '["Bash"]'), ("ops", "tools", '["mcp__x"]'), ("ops", "tools", '["mcp____y"]'),
                 ("ops", "tools", '"mcp__x__y"'), ("ops", "tools", "[1]"),
+                ("ops", "tools", '["mcp__a__q*"]'), ("ops", "tools", '["mcp__a__*x"]'),
                 ("paths", "monitor", '""'), ("paths", "monitor", "3")):
             with self.subTest(f"{table}.{key} = {bad}"):
                 with self.assertRaises(factory.Fail) as raised:
@@ -1058,7 +1059,20 @@ class OpsHookTests(InStore):
         self.assertEqual(doc, {"server": "metrics", "tool": "mcp__metrics__query", "input": payload["tool_input"],
                                "response": payload["tool_response"], "agent_id": "a1", "session_id": "s1"})
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+        for level in (path.parent, path.parent.parent, path.parent.parent.parent):
+            self.assertEqual(stat.S_IMODE(level.stat().st_mode), 0o700, level)
+
+    def test_a_folder_that_exists_keeps_its_mode(self):
+        (self.dir / "deliverables").mkdir(mode=0o755)
+        (self.dir / "deliverables").chmod(0o755)
+        self.hook(self.post())
+        self.assertEqual(stat.S_IMODE((self.dir / "deliverables").stat().st_mode), 0o755)
+
+    def test_a_relative_home_refuses_the_ops_explorer_and_nobody_else(self):
+        with mock.patch.object(factory, "STORE", Path("relative/home")):
+            self.assertEqual(self.hook(self.pre("mcp__metrics__query"))[0:2], (2, ""))
+            self.assertEqual(self.hook(self.post())[0:2], (2, ""))
+            self.assertEqual(self.hook({**self.pre("mcp__x__y"), "agent_type": "factory:coder"}), (0, "", ""))
 
     def test_a_task_worktree_names_the_folder_by_its_slug(self):
         _, out, _ = self.hook(self.post(cwd="/repo/.claude/worktrees/demo-task"))

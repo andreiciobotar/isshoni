@@ -219,7 +219,7 @@ def name_list(v):
     return None if isinstance(v, list) and all(isinstance(i, str) and i.strip() for i in v) else " must be a list of strings"
 
 
-OPS_TOOL_RE = re.compile(r"mcp__((?:(?!__).)+)__.+")
+OPS_TOOL_RE = re.compile(r"mcp__((?:(?!__).)+)__(\*|[^*]+)")
 
 
 def ops_tool_list(v):
@@ -253,7 +253,7 @@ SETTINGS = (
     Setting("models", "lander", "sonnet", a_model,
             'The lander: the lead\'s subagent, also the headless run of `factory land` (next run). Default "sonnet".'),
     Setting("models", "site_manager", "sonnet", a_model, 'The watch tick\'s judge. Next tick. Default "sonnet".'),
-    Setting("models", "ops_explorer", "haiku", a_model, 'The ops explorer, which reads production through MCP servers. Takes effect for the next lead started. Default "haiku".'),
+    Setting("models", "ops_explorer", "haiku", a_model, 'The ops explorer, which reads production through MCP servers. Takes effect for the next lead, build or tech lead run started. Default "haiku".'),
     Setting("models", "courier", "haiku", a_model, 'Carries pull request comments to a lead. Next tick. Default "haiku".'),
     Setting("models", "tech_lead", "opus", a_model, 'Resolves a pull request that came back from the merge queue and, in team mode, runs a task\'s build. Its next run. Default "opus".'),
     Setting("limits", "worktree_cap", 5, int_in(1), "Open task worktrees at most, the dashboard's c key edits it. Default 5.", toml_arg),
@@ -1810,7 +1810,9 @@ def save_evidence(p):
     """Write the MCP call of the hook payload `p` to its evidence file and return the path (see docs/factory.md, "Reading production")."""
     server = OPS_TOOL_RE.fullmatch(p["tool_name"])[1]
     folder = STORE.expanduser() / "deliverables" / (tags(p)["slug"] or f"session-{p['session_id']}") / "evidence"
-    os.makedirs(folder, mode=0o700, exist_ok=True)
+    folder.parents[2].mkdir(parents=True, exist_ok=True)
+    for level in (folder.parents[1], folder.parents[0], folder):
+        level.mkdir(mode=0o700, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     path = folder / f"{stamp}-{p['tool_name']}-{str(p.get('tool_use_id'))[-8:]}.json"
     doc = {"ts": now(), "server": server, "tool": p["tool_name"], "input": p.get("tool_input"),
@@ -1827,6 +1829,8 @@ def cmd_ops_hook(args):
         p = json.loads(sys.stdin.read())
         if p.get("agent_type") != OPS_AGENT:
             return 0
+        if not STORE.expanduser().is_absolute():
+            raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
         event, tool = p["hook_event_name"], p["tool_name"]
         if event == "PreToolUse":
             allowed = any(tool == t or t.endswith("__*") and tool.startswith(t[:-1]) for t in load_settings()["tools"] or ())
@@ -6450,7 +6454,7 @@ def parse_args(argv):
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        if not STORE.expanduser().is_absolute():
+        if not STORE.expanduser().is_absolute() and args.cmd != "ops-hook":  # which refuses only the ops explorer's calls
             if args.cmd == "hook":
                 return 0
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
