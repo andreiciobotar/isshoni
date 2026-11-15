@@ -13,23 +13,38 @@ run reaches them for real. The parent session is started the way a task's sessio
 Checks: the parent held no `mcp__` tool; at least one evidence file of a read tool has a non-empty `response`; no evidence
 file of the write tool; the write call was refused with the gate's reason. It prints counts, paths and pass or fail,
 never what a response says. Exit 1 on any failure. It refuses a scratch home under the real ~/.claude; the scratch
-directory stays for inspection."""
+directory stays for inspection.
+
+    python3 factory/tests/live_ops_explorer.py --read-tool mcp__metrics__query --slow-gate --question "..."
+
+`--slow-gate` (no `--write-tool` needed) proves that a gate that stalls blocks the call. Once the agents are built, the
+scratch `settings.toml` is replaced by a FIFO nobody writes to, so the gate's real first step, reading the settings,
+waits until its own deadline. Checks, on the stream-json records of the harness only: no evidence file; every call of a
+read tool came back as an error carrying the gate's stderr line; none came back as a success. It prints how long each
+call was held (from the call event to its result event, as this script received them)."""
 import argparse
 import importlib.machinery
 import importlib.util
 import json
 import os
+import signal
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import real_store
 
 ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
 ap.add_argument("--read-tool", action="append", required=True, metavar="mcp__server__tool")
-ap.add_argument("--write-tool", required=True, metavar="mcp__server__tool")
+ap.add_argument("--write-tool", metavar="mcp__server__tool")
 ap.add_argument("--question", required=True)
+ap.add_argument("--slow-gate", action="store_true", help="prove that a stalled gate blocks the call (see above)")
 args = ap.parse_args()
+if not args.slow_gate and not args.write_tool:
+    ap.error("--write-tool is required without --slow-gate")
 
 TMP = Path(tempfile.mkdtemp(prefix="ops-live-")).resolve()
 os.environ["FACTORY_HOME"] = str(TMP / "home")  # before the script reads it
@@ -50,6 +65,72 @@ def check(ok, what):
         failures.append(what)
 
 
+def session_argv(settings, agents, prompt, *flags):
+    return ["claude", "-p", "--model", "haiku", "--agents", json.dumps(agents), "--permission-mode", settings["lead_permission_mode"],
+            "--plugin-dir", str(factory.PLUGIN_ROOT), *factory.lean_flags(), "--tools=Agent",
+            "--max-budget-usd", "1", *flags, prompt]
+
+
+def stream_events(argv, timeout=900):
+    """Run `claude` in a group of its own and return its stream-json events, each with the time this script received it."""
+    events = []
+    with subprocess.Popen(argv, cwd=str(CHECKOUT), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                          start_new_session=True) as p:
+        stop = threading.Timer(timeout, lambda: os.killpg(p.pid, signal.SIGKILL))
+        stop.start()
+        try:
+            for line in p.stdout:
+                try:
+                    events.append((time.monotonic(), json.loads(line)))
+                except ValueError:
+                    pass
+        finally:
+            stop.cancel()
+            try:
+                os.killpg(p.pid, signal.SIGKILL)  # nothing of the session outlives this script
+            except OSError:  # the group is already gone
+                pass
+    return events
+
+
+def text_of(content):
+    return content if isinstance(content, str) else " ".join(b.get("text", "") for b in content or [] if isinstance(b, dict))
+
+
+def slow_gate(home, settings, agents):
+    prompt = (f"Dispatch the agent factory:ops-explorer once with this task: {args.question} "
+              "It answers by calling one of its read tools exactly once; it reports the tool's exact result, or its exact refusal "
+              "text. It does not retry. Relay its report in your reply.")
+    (home / "settings.toml").unlink()
+    os.mkfifo(home / "settings.toml")  # nobody opens the write end: reading the settings waits until the gate's own deadline
+    events = stream_events(session_argv(settings, agents, prompt, "--output-format", "stream-json", "--verbose"))
+    called = {}  # tool_use_id -> time of the call event
+    results = []  # (tool_use_id, is_error, text, time)
+    for at, e in events:
+        for b in (e.get("message") or {}).get("content") or []:
+            if not isinstance(b, dict):
+                continue
+            if e["type"] == "assistant" and b.get("type") == "tool_use" and b["name"] in args.read_tool:
+                called[b["id"]] = at
+            if e["type"] == "user" and b.get("type") == "tool_result":
+                results.append((b["tool_use_id"], b.get("is_error"), text_of(b.get("content")), at))
+    mine = [r for r in results if r[0] in called]
+    line = "factory: ops-hook ran out of time"
+    print(f"scratch: {TMP}\nevents: {len(events)}; calls of a read tool: {len(called)}; their results: {len(mine)}")
+    for tid, _, _, at in mine:
+        print(f"  call {tid[-8:]} held {at - called[tid]:.1f}s (the gate gives itself {factory.OPS_HOOK_DEADLINE}s)")
+    files = list((home / "deliverables").glob("*/evidence/*.json"))
+    print("checks:")
+    check(bool(called), "the ops explorer called a read tool")
+    check(not files, f"no evidence file ({len(files)})")
+    check(bool(mine) and all(err and line in text for _, err, text, _ in mine), "every call's result is an error carrying the gate's stderr line")
+    check(not any(not err for _, err, _, _ in mine), "no call came back as a success")
+    leaked = real_store.leaked(TMP.name)
+    check(leaked == 0, f"the real store's logs name this scratch directory in {leaked} line(s)")
+    print("PASS" if not failures else f"FAIL: {len(failures)} check(s)")
+    return 1 if failures else 0
+
+
 def main():
     home = TMP / "home"
     home.mkdir()
@@ -59,6 +140,8 @@ def main():
     servers = agents["factory:ops-explorer"].get("mcpServers", [])
     if not servers:
         sys.exit("none of the read tools names a server configured here (claude mcp add): nothing to prove")
+    if args.slow_gate:
+        return slow_gate(home, settings, agents)
     prompt = (
         "First, work out one line that starts `TOOLS:` and lists the names of every tool you hold (you will end your reply with it). "
         f"Then dispatch the agent factory:ops-explorer once with this task: {args.question} "
@@ -67,9 +150,7 @@ def main():
         "obviously nonexistent id (a made-up value for every required field), and report its exact refusal text, "
         "or its result if it was not refused. Do not retry. Relay that report in your reply. "
         "End your reply with the `TOOLS:` line.")
-    argv = ["claude", "-p", "--model", "haiku", "--agents", json.dumps(agents), "--permission-mode", settings["lead_permission_mode"],
-            "--plugin-dir", str(factory.PLUGIN_ROOT), *factory.lean_flags(), "--tools=Agent",
-            "--max-budget-usd", "1", "--output-format", "json", prompt]
+    argv = session_argv(settings, agents, prompt, "--output-format", "json")
     rc, out, err = factory.run(argv, cwd=str(CHECKOUT), timeout=900, group=True)
     try:
         doc = json.loads(out)

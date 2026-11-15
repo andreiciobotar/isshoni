@@ -5,10 +5,12 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -985,7 +987,10 @@ class OpsHookTests(InStore):
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(sys, "stdin", io.StringIO(payload if isinstance(payload, str) else json.dumps(payload))), \
                 redirect_stdout(out), redirect_stderr(err):
-            code = factory.main(["ops-hook"])
+            try:
+                code = factory.main(["ops-hook"])
+            finally:
+                signal.alarm(0)  # main() arms the gate's deadline; this process is not the gate
         return code, out.getvalue(), err.getvalue()
 
     def pre(self, tool, **extra):
@@ -1032,6 +1037,21 @@ class OpsHookTests(InStore):
         self.path.mkdir()
         code, out, err = self.hook(self.pre("mcp__metrics__query"), None)
         self.assertEqual((code, out), (2, ""))
+
+    def test_a_gate_that_waits_for_its_input_blocks_the_call_after_its_deadline(self):
+        started = time.monotonic()
+        proc = subprocess.Popen([sys.executable, str(BIN), "ops-hook"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env={**os.environ, "FACTORY_HOME": str(self.dir)})
+        stop = threading.Timer(factory.OPS_HOOK_DEADLINE + 5, proc.kill)  # a gate without a deadline fails the test, it does not hang it
+        stop.start()
+        self.addCleanup(stop.cancel)
+        with proc.stdin, proc.stdout, proc.stderr:  # stdin stays open: nobody writes, nobody closes
+            err = proc.stderr.read()  # ends when the gate does
+            proc.wait()
+        took = time.monotonic() - started
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(err, "factory: ops-hook ran out of time: the call is blocked, or its result was not saved: do not use it\n")
+        self.assertTrue(factory.OPS_HOOK_DEADLINE - 0.5 <= took < factory.OPS_HOOK_DEADLINE + 3, took)
 
     def post(self, **extra):
         return {"hook_event_name": "PostToolUse", "agent_type": self.OPS, "agent_id": "a1", "session_id": "s1",

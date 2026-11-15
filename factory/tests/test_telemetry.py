@@ -801,12 +801,19 @@ class HooksJsonTests(unittest.TestCase):
                                        "SubagentStop", "Notification", "PermissionRequest", "PermissionDenied", "PreToolUse",
                                        "PostToolUse"})
         for name, groups in events.items():
-            want = [(None, "hook")] if name not in ("PreToolUse", "PostToolUse") else [("mcp__.*", "ops-hook")]
-            if name == "PostToolUse":
-                want.insert(0, ("SendMessage|SubagentHandback", "hook"))
+            want = {"PreToolUse": [("mcp__.*", "ops-hook || exit 2", 60)],  # a gate that cannot start must block
+                    "PostToolUse": [("SendMessage|SubagentHandback", "hook", 10), ("mcp__.*", "ops-hook", 60)],
+                    }.get(name, [(None, "hook", 10)])
             self.assertEqual([(g.get("matcher"), g["hooks"]) for g in groups], [
-                (matcher, [{"type": "command", "timeout": 10, "command": f'"${{CLAUDE_PLUGIN_ROOT}}/bin/factory" {command}'}])
-                for matcher, command in want], name)
+                (matcher, [{"type": "command", "timeout": timeout, "command": f'"${{CLAUDE_PLUGIN_ROOT}}/bin/factory" {command}'}])
+                for matcher, command, timeout in want], name)
+
+    def test_the_harness_waits_far_longer_than_the_gate_gives_itself(self):
+        for group in json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"].values():
+            for g in group:
+                for hook in g["hooks"]:
+                    if "ops-hook" in hook["command"]:
+                        self.assertGreaterEqual(hook["timeout"], 6 * factory.OPS_HOOK_DEADLINE, hook["command"])
 
 
 if __name__ == "__main__":

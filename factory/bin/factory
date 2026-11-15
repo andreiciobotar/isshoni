@@ -528,6 +528,7 @@ AGENT_KEYS = ("name", "description", "model", "tools", "skills")
 
 CLAUDE_JSON = Path("~/.claude.json")
 OPS_AGENT = "factory:ops-explorer"
+OPS_HOOK_DEADLINE = 5  # seconds the ops-hook gives itself; the harness lets a call run when a hook outlives its own timeout
 
 
 def mcp_servers(path, *keys):
@@ -6451,8 +6452,17 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
+def ops_hook_out_of_time(_signum, _frame):
+    os.write(2, b"factory: ops-hook ran out of time: the call is blocked, or its result was not saved: do not use it\n")
+    os._exit(2)
+
+
 def main(argv=None):
-    args = parse_args(sys.argv[1:] if argv is None else argv)
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["ops-hook"]:  # first of all: a gate that is slow must block the call, not let it run
+        signal.signal(signal.SIGALRM, ops_hook_out_of_time)
+        signal.alarm(OPS_HOOK_DEADLINE)
+    args = parse_args(argv)
     try:
         if not STORE.expanduser().is_absolute() and args.cmd != "ops-hook":  # which refuses only the ops explorer's calls
             if args.cmd == "hook":
