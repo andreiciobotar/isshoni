@@ -102,7 +102,7 @@ How to use a look: you are given facts and what changed since the last look. Mos
 - When you cannot tell, pass it to the human with what you found. A pause costs the human a minute; a wrong extension costs a build run.
 - `extension_left_minutes` is the human's ceiling. What does not fit under it is the human's decision: escalate.
 
-**Score (to 2026-11-15):** fired 2; escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 0; missed 0.
+**Score (to 2026-11-15):** fired 2; extended 2 (1 kept, 1 overran, 0 no outcome); escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 0; missed 0.
 
 ### Cases
 1. `report-tasks` (2026-11-15). Built and reviewed, half a minute past the limit, assessment and hand-over left. Asking the dispatcher took four minutes for ten minutes of work. Decided: extended 17 min. Outcome: handed over within it. Lesson: only hand-over left is the clearest extension there is.
@@ -115,7 +115,7 @@ How to use a look: you are given facts and what changed since the last look. Mos
 ## run-stopped
 **What:** A build run ended `stopped` on a task still `working`. The firing names its reason and how many of the task's runs ended `stopped`, with their cost; the row's `runs` list them.
 **Why it matters:** A stopped run spends money and loses the work it started; a call on a one-off costs the lead a turn.
-**What it has looked like:** The script fires it on every tick, with no threshold. It fired once in two days, escalated, acted on. `pulse-band-visual` (2026-11-15): six build runs, 16.62 USD, three ending `stopped` (overrun case 4).
+**What it has looked like:** The script fires it on every tick, with no threshold. It fired once in two days, escalated, acted on. `pulse-band-visual` (2026-11-15): six build runs, 16.62 USD, five ending `stopped` (overrun case 4).
 **A good call:** Decide by the overrun cases (case 6 is the usual cause): `suppressed`, `escalated` to the lead (one instruction) or the dispatcher, or `paused` for the human. The script tells the lead and the dispatcher about `paused`; you message nobody for it.
 **Score (to 2026-11-15):** fired 1; escalated 1 (acted 1, ignored 0, no outcome 0); suppressed 0; missed 0.
 
@@ -177,7 +177,7 @@ How to use a look: you are given facts and what changed since the last look. Mos
 ## ended-undeclared
 **What:** A lead's session ended without it declaring a hand-over or a block: a task declared `working` with no live lead session and no build run holding its lock. Seen on the tick it happens.
 **Why it matters:** The task stands still and nobody knows; the lead may be a tech lead run, or may have been handing over a minute ago.
-**What it has looked like:** The script used to fire this after 10 minutes of nothing, on the full pass. It fired 3 times in two days: 2 acted on, 1 ignored. `kaizen-review-role` (2026-11-15) fired at 15:22:43Z, "active 47m ago", seen 47 minutes after its lead went; escalated, acted on.
+**What it has looked like:** The script used to fire this after 10 minutes of nothing, on the full pass. It fired 3 times in two days: 2 acted on, 1 ignored. `kaizen-review-role` (2026-11-15) fired at 15:22:43Z, "active 47m ago", seen 47 minutes after its lead went; escalated, acted on. `kaizen-review-role`'s lead session went at 13:33:49Z while its build run held the lock until 14:54:10Z; the firing waits for the run to end, and the row shows `session: none` before that.
 **A good call:** Escalate, unless the tail shows the hand-over was under way minutes ago. A headless session in a task's worktree while the task is `working` by role `lander` or `tech-lead` is a tech lead run (bounded at 30 minutes; a build run, started by the lead's `factory build`, at 90 minutes, and its lead waits on it, idle: neither is a stray nor ended): never messaged.
 **Score (to 2026-11-15):** fired 3; escalated 3 (acted 2, ignored 1, no outcome 0); suppressed 0; missed 0.
 

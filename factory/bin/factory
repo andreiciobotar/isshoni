@@ -3748,8 +3748,9 @@ def cmd_firings(args):
     for name, e in s["entries"].items():
         if e["fired"] or e["missed"]:
             precision = "-" if e["precision"] is None else f"{e['precision']:.2f}"
+            more = "".join(f"; {k} {e[k]}" for k in ("extended", "told", "paused") if e[k])
             print(f"{name}: fired {e['fired']}; escalated {e['escalated']} (acted {e['acted']}, ignored {e['ignored']}, no outcome {e['no_outcome']}); "
-                  f"to lead {e['to_lead']}; suppressed {e['suppressed']}; missed {e['missed']}; precision {precision}")
+                  f"to lead {e['to_lead']}; suppressed {e['suppressed']}{more}; missed {e['missed']}; precision {precision}")
     pct = {k: "-" if s[k] is None else f"{s[k]:.2f}" for k in ("precision", "recall")}
     told = sum(f["decision"] == "escalated" and f.get("to") == "lead" for f in firings)
     print(f"escalated {s['escalated']} (acted {s['acted']}, ignored {s['ignored']}, no outcome {s['no_outcome']}); "

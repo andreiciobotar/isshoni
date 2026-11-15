@@ -195,6 +195,7 @@ class OutcomeTests(Overrun):
         self.full_pass()
         self.assertEqual(self.outcome(), ["overran"])
         self.assertIn("extended 1 (kept 0, overran 1, no outcome 0)", self.cli("firings")[1])
+        self.assertIn("overrun: fired 1; escalated 0 (acted 0, ignored 0, no outcome 0); to lead 0; suppressed 0; extended 1; missed 0;", self.cli("firings")[1])
         summary = json.loads(self.cli("firings", "--json")[1])["summary"]
         self.assertEqual((summary["extended"], summary["kept"], summary["overran"]), (1, 0, 1))
 

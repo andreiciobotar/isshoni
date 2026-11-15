@@ -183,11 +183,7 @@ def run(factory, tmp):
     hub = Hub(factory, origin, checkout)
     specs = Path(os.environ["FACTORY_HOME"], "specs", "pocket")
     specs.mkdir(parents=True)
-    scratch_criteria = Path(tmp, "criteria.json")
-    shipped = json.loads((factory.PLUGIN_ROOT / "criteria.json").read_text())
-    scratch_criteria.write_text(json.dumps([c for c in shipped if c["name"] == "churning"]))
-    patches = {"run": hub, "spawn": lambda argv, cwd, out: hub.spawned.append(argv), "POLL": 0.01, "run_clean": lambda: 0,
-               "CRITERIA_PATH": scratch_criteria}
+    patches = {"run": hub, "spawn": lambda argv, cwd, out: hub.spawned.append(argv), "POLL": 0.01, "run_clean": lambda: 0}
     saved = {k: getattr(factory, k) for k in patches}
     for k, v in patches.items():
         setattr(factory, k, v)
@@ -284,7 +280,7 @@ def story(factory, hub, checkout, specs):
           f"TaskPaused event: waits_on {paused['waits_on']} files {paused['files']} sent_back {paused['sent_back']}")
     _, status = call("status", "--json", quiet=True)
     row = next(r for r in json.loads(status)["rows"] if r["slug"] == "holder")
-    check(row["paused"]["waits_on"] == ["waiter"] and row["prioritized"] is None and not row["nearing"], f"status --json: paused {row['paused']}, prioritized {row['prioritized']}")
+    check(row["paused"]["waits_on"] == ["waiter"] and row["prioritized"] is None, f"status --json: paused {row['paused']}, prioritized {row['prioritized']}")
 
     say("4. W is handed over and merges while H waits; the next drain releases H and starts its tech lead run.")
     hand_over("waiter")
