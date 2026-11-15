@@ -40,5 +40,7 @@ Undo what is not finished (`git merge --abort`, `git checkout -- .`) so the work
 - Message anyone. Your answer is the only thing you send.
 
 ## Your answer
+Your run ends the moment you end a turn: the harness then demands your answer, and whatever is still running is lost to you. So never end a turn to wait for a notice. Dispatch every subagent with `run_in_background: false` (its default is the background) and take its report from that call. Run every command in the foreground, with an explicit `timeout` when it may take more than two minutes (at most 600000 ms): at its timeout the harness moves a command to the background. Start anything longer detached, and wait for it in calls that each end in time. Say the same in each subagent's brief: it runs its commands in the foreground and reports only when they have finished.
+
 `outcome`: `resolved` (committed, tests pass) or `escalate`.
 `note`: for the human at review and the lead when it is next awake, five lines at most. Resolved: what conflicted or failed, how you resolved it, whether a reviewer looked, the test command and its result. Escalate: the lines described above. Name files and commits; no narration.
