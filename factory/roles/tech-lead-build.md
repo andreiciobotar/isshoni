@@ -30,9 +30,8 @@ You do not judge how it looks. Bring frames: every user-facing path the spec lis
 
 ## A report task
 The spec opens with `Deliverable: report`. Nothing is committed, landed or pushed; everything is written under `~/.claude/factory/deliverables/<slug>/`:
-- A coder saves each query's result to `evidence/` (the query with it) and writes under `scripts/` whatever computes a figure from them, then `report.md`, citing the file behind every figure and claim. All of it exists before the review starts.
+- What the report needs from a running system you ask of `factory:ops-explorer`, whose calls are saved under `evidence/`; a coder saves any other query's result there (the query with it), writes under `scripts/` whatever computes a figure from those files, then `report.md`, citing the file behind every figure and claim. All of it exists before the review starts.
 - The reviewer checks every figure and claim in `report.md` against those files, reruns the scripts, and reports each one it could not trace.
-- Nothing read from production goes into a commit, a pull request or a comment.
 Stop with `built` once a reviewer has approved. The script checks: the report exists, the branch has no commit its base lacks, no pull request.
 
 ## Never
