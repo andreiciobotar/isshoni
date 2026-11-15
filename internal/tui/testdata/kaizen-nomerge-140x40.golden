@@ -7,9 +7,8 @@
 ▌ ▇▇██████▆▆▆▆▅▅··                  ▌ ██▇▇▆▆▇▇▇▇▇▇▆▆··                 ▌ ··██▇▇▆▆▇▇▅▅▆▆··                 ▌ ▁▁██▆▆▇▇▆▆████··                
 ▌ $100 · $20.25 · $2.25             ▌ - · - · - · -                    ▌ p90 -                            ▌ -                               
  hand-over → merge p90 · → approval p90: today - · - (n=0), baseline 55m00s · 40m00s (n=46)                                                 
- baseline 11-07 to 11-13: parts $600 · $90.00 · $10.00 · first pass 19/21 · 12/17 · 3/4 · 8/8 · approval → merge p90 7m00s · conflicts 6 in 
- 46 PRs                                                                                                                                     
- send-backs that changed nothing: - today · - baseline · send-backs: the queue log starts 11-14 09:00                                       
+ baseline 11-07 to 11-13: parts $600 · $90.00 · $10.00 · first pass 19/21 · 12/17 · 3/4 · 8/8 · approval → merge p90 7m00s                  
+ baseline conflicts 6 in 46 PRs · send-backs that changed nothing: - today · - baseline · send-backs: the queue log starts 11-14 09:00      
  approvals recorded: 0 today, 30 of 46 in the baseline (8 backfilled)                                                                       
                                                                                                                                             
 ▌ LANDED                ▌ COST / TASK           ▌ OVERHEAD              ▌ BRIEF → PR           ▌ PR → MERGE           ▌ FIRST PASS          
@@ -36,5 +35,6 @@
 │   ██ ██ ██ ██ ██ ██ ██ ██ ▂▂ ██ ██ ▂▂ ██ ▂▂ ██ ▂▂ ▂▂ ▂▂ ▂▂         │ │  5m45s █·█·█·█·▅·█·█·█·█·▃·█·▅·▁·█·▄···▇···▃····················· │
 │   ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██         │ │        █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ▇ █ ▅                    │
 │   ──────────────────▲───────────────────────▲───────────────────── │ │        ──────────────▲───────────────▲─────────────────────────── │
- +17 more lines · ↓ to scroll                                                                                                               
+│   v0.1.0            v0.2.0                  v0.3.0                 │ │        v0.1.0        v0.2.0          v0.3.0                       │
+ +16 more lines · ↓ to scroll                                                                                                               
  ←→/hl kaizen page  ·  ↑↓/jk move  ·  r range  ·  tab next view  ·  ? help  ·  q quit                                                       

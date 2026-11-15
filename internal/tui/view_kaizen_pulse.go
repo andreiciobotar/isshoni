@@ -276,16 +276,15 @@ func (m *model) pulseBlock(pl *data.Pulse, w int) []string {
 	if b.Days != 1 {
 		baseline += " to " + shortDate(b.To)
 	}
-	conflicts := ""
-	if c := b.Conflicts; c.PerMerged != nil {
-		conflicts = fmt.Sprintf(" · conflicts %d in %d PRs", c.Conflicted, c.Prs)
-	}
 	items := []string{
 		fmt.Sprintf("hand-over → merge p90 · → approval p90: today %s (n=%d), baseline %s (n=%d)", p90s(t.Handover), t.Handover.ToMerge.N, p90s(b.Handover), b.Handover.ToMerge.N),
 		fmt.Sprintf("baseline %s: parts %s · %s · %s · first pass %s · approval → merge p90 %s", baseline,
-			m.kzMoney(b.Cost.Tasks), m.kzMoney(b.Cost.Dispatcher), m.kzMoney(b.Cost.SiteManager), sizesText(b.FirstPass), p90Text(b.Handover.ApprovalToMerge)) + conflicts,
-		fmt.Sprintf("send-backs that changed nothing: %s today · %s baseline", sent(t.Handover), sent(b.Handover)),
+			m.kzMoney(b.Cost.Tasks), m.kzMoney(b.Cost.Dispatcher), m.kzMoney(b.Cost.SiteManager), sizesText(b.FirstPass), p90Text(b.Handover.ApprovalToMerge)),
 	}
+	if c := b.Conflicts; c.PerMerged != nil {
+		items = append(items, fmt.Sprintf("baseline conflicts %d in %d PRs", c.Conflicted, c.Prs))
+	}
+	items = append(items, fmt.Sprintf("send-backs that changed nothing: %s today · %s baseline", sent(t.Handover), sent(b.Handover)))
 	if note := m.sendBackNote([]data.PulseDay{t, b}, pl.QueueSince); note != "" {
 		items = append(items, note)
 	}

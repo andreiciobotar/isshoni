@@ -83,8 +83,8 @@ func TestPulseBandCardsAndFigures(t *testing.T) {
 		"0.36 n=11", "↑ 179% vs 0.13 n=46", "4 in 11 PRs",
 		// the faint block: what the cards leave out, the baseline's figures among it
 		"hand-over → merge p90 · → approval p90: today 36m44s · 30m00s (n=11), baseline 55m00s · 40m00s (n=46)",
-		"baseline 11-07 to 11-13: parts $600 · $90.00 · $10.00 · first pass 19/21 · 12/17 · 3/4 · 8/8 · approval → merge p90 7m00s · conflicts 6 in",
-		"46 PRs",
+		"baseline 11-07 to 11-13: parts $600 · $90.00 · $10.00 · first pass 19/21 · 12/17 · 3/4 · 8/8 · approval → merge p90 7m00s",
+		"baseline conflicts 6 in 46 PRs",
 		"send-backs that changed nothing: 1 of 3 today · - baseline · send-backs: the queue log starts 11-14",
 		"approvals recorded: 6 today (2 backfilled), 30 of 46 in the baseline (8 backfilled)",
 	} {

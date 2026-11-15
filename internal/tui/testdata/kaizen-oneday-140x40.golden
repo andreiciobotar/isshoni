@@ -7,7 +7,7 @@
 ▌ ████ 2 of 2 days with data        ▌ ██▆▆ 2 of 2 days with data       ▌ ████ 2 of 2 days with data       ▌ ▄▄██ 2 of 2 days with data      
 ▌ $100 · $20.25 · $2.25             ▌ 3/4 · 1/3 · 0/1 · 2/4            ▌ p90 4m00s                        ▌ 4 in 11 PRs                     
  hand-over → merge p90 · → approval p90: today 36m44s · 30m00s (n=11), baseline 53m20s · 36m40s (n=6)                                       
- baseline 11-13: parts $50.00 · $10.00 · $1.00 · first pass 2/3 · 1/2 · - · 1/1 · approval → merge p90 5m30s · conflicts 1 in 6 PRs         
+ baseline 11-13: parts $50.00 · $10.00 · $1.00 · first pass 2/3 · 1/2 · - · 1/1 · approval → merge p90 5m30s · baseline conflicts 1 in 6 PRs
  send-backs that changed nothing: 1 of 3 today · - baseline · send-backs: the queue log starts 11-14 09:00                                  
  approvals recorded: 6 today (2 backfilled), 4 of 6 in the baseline (1 backfilled)                                                          
                                                                                                                                             
