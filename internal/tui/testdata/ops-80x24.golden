@@ -1,24 +1,24 @@
  Isshoni 1 Dash 2 Agents 3 Factory 4 Kaizen [5 ◉] 6 ✿   24h [7d] 30d all ○ idle 
  Ops  11 watches · 1 alarmed · 1 out of budget · updated 0s ago                 
+ ● disk-pressure  alarmed · infra      next look in 8m · every 10m · ends in 9h 
+   goal   watch the free space on the database host                             
+   last   2m ago · alarm · disk at 94% on /var/lib/db, up 1% in ten minutes     
+   spend  $0.90 of $3.00       notes /home/dev/store/ops/disk-pressure/notes.md 
+                                                                                
  ● pr60-logs  watching · app           next look in 4m · every 10m · ends in 4h 
    goal   watch the logs to make sure PR60 did what it should                   
    last   6m ago · fine · 0 errors, 412 requests                        6 looks 
    spend  $0.42 of $5.00           notes /home/dev/store/ops/pr60-logs/notes.md 
                                                                                 
- ● nightly-backup  watching · inf…  next look in 2m · every 30m · ends in 1h30m 
+ ● nightly-backup  watching · infra                 next look in 2m · every 30m 
    goal   check that the nightly backup finishes and every volume verifies      
-   last   9m ago · fine · 2 of 3 volumes … · 2m late  10 looks · 3 looks missed 
+   last   9m ago · fine · 2 of 3 volumes verified, t… · 2m late  3 looks missed 
    spend  $1.37 of $4.00 · 2 looks unpriced  notes …ops/nightly-backup/notes.md 
                                                                                 
- ● disk-pressure  alarmed · infra      next look in 8m · every 10m · ends in 9h 
-   goal   watch the free space on the database host                             
-   last   2m ago · alarm · disk at 94% on /var/lib/db, up 1% in ten …  18 looks 
-   spend  $0.90 of $3.00       notes /home/dev/store/ops/disk-pressure/notes.md 
-                                                                                
- ● cert-renewal  ended: met · app                                      every 1h 
-   goal   confirm the certificate renews before it expires                      
-   last   3h ago · done · certificate renewed, expires in 89 days      12 looks 
-   spend  $0.31 of $2.00        notes /home/dev/store/ops/cert-renewal/notes.md 
+ ● fresh-watch  watching · lib          next look in 4m · every 5m · ends in 1h 
+   goal   watch the first hour of the new release                               
+   last   no look yet                                                   0 looks 
+   spend  $0 of $1.50            notes /home/dev/store/ops/fresh-watch/notes.md 
                                                                                 
  +35 more lines · ↓ to scroll                                                   
  ↑↓/jk move  ·  tab next view  ·  ? help  ·  q quit                             

@@ -109,6 +109,12 @@ func (m *model) header(p paint) string {
 				badge = fmt.Sprintf(" ▲%d", n)
 			}
 		}
+		if v == viewOps && m.view != viewOps && m.opsAlarmed() > 0 {
+			badge = fmt.Sprintf(" ▲%d", m.opsAlarmed())
+			if m.w < 110 {
+				txt = fmt.Sprintf("%d", n) // the badge takes the eye's place: at 60 columns the bar has no room for both
+			}
+		}
 		if m.view == v {
 			if th.NoColor {
 				if compact {

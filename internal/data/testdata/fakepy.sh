@@ -1,6 +1,6 @@
 #!/bin/sh
 # Stand-in for `python3 -m isshoni <cmd> [id] --json ...` and for `python3 <root>/factory/bin/factory status --json`
-# and `... ops list --json` (prints $STUBDIR/ops.json; a file ops.err is the stderr of a factory with no ops command, exit 2).
+# and `... ops list --json` (prints $STUBDIR/ops.json; a file ops.err is its stderr, exit 2 or the number in ops.exit).
 # Logs each call to $STUBDIR/calls; a factory or kaizen call without --cached (the pass that may ask GitHub) is also
 # logged to $STUBDIR/fetches. A file named fail or hang in $STUBDIR makes every call fail or never return; fetch-fail
 # and fetch-hang do so only for calls without --cached. $STUBDIR/sessions.json, status.json and kaizen.json, when
@@ -32,8 +32,8 @@ if [ -n "$factory" ]; then
 	exit
 fi
 if [ "$2" = ops ]; then
-	echo "ops $PWD" >> "$STUBDIR/calls"
-	[ -e "$STUBDIR/ops.err" ] && { cat "$STUBDIR/ops.err" >&2; exit 2; }
+	echo "ops $PWD $2 $3 $4" >> "$STUBDIR/calls"
+	[ -e "$STUBDIR/ops.err" ] && { cat "$STUBDIR/ops.err" >&2; exit "$(cat "$STUBDIR/ops.exit" 2>/dev/null || echo 2)"; }
 	fetch=; stop "factory: boom"
 	printjson ops.json ops.json
 	echo '{"watches":[]}'

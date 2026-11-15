@@ -50,7 +50,11 @@ func (m *model) opsSubheader(p paint) string {
 	th, o := m.th, &m.ops
 	out := p.b("Ops", th.Text)
 	if n := len(o.watches); !o.doneAt.IsZero() && (o.err == "" || n > 0) {
-		out += p.t("  "+opsCount(n, "watch", "watches"), th.Muted)
+		count := fmt.Sprintf("%d watches", n)
+		if n == 1 {
+			count = "1 watch"
+		}
+		out += p.t("  "+count, th.Muted)
 		var alarmed, broke int
 		for _, wt := range o.watches {
 			switch wt.State {
@@ -68,21 +72,25 @@ func (m *model) opsSubheader(p paint) string {
 		}
 	}
 	switch {
+	case o.err != "" && len(o.watches) > 0:
+		out += p.t(" · stale, from "+ago(m.now().Sub(o.okAt))+" ago", th.Yellow)
 	case o.busy:
 		out += p.t(" · "+spin(m.spinFrame())+" reading", th.Blue)
-	case o.err != "" && len(o.watches) > 0:
-		out += p.t(" · stale", th.Yellow)
-	case o.err == "" && !o.doneAt.IsZero():
-		out += p.t(" · updated "+ago(m.now().Sub(o.doneAt))+" ago", th.Faint)
+	case o.err == "" && !o.okAt.IsZero():
+		out += p.t(" · updated "+ago(m.now().Sub(o.okAt))+" ago", th.Faint)
 	}
 	return out
 }
 
-func opsCount(n int, one, many string) string {
-	if n == 1 {
-		return "1 " + one
+// opsAlarmed is the number of alarmed watches the last good load found; none once a reload has failed.
+func (m *model) opsAlarmed() int {
+	n := 0
+	for _, wt := range m.ops.watches {
+		if wt.State == "alarmed" && m.ops.err == "" {
+			n++
+		}
 	}
-	return fmt.Sprintf("%d %s", n, many)
+	return n
 }
 
 // opsSpan is a span to the minute, to the second under a minute.
@@ -93,8 +101,8 @@ func opsSpan(d time.Duration) string {
 	return limitSpan(int64(d.Seconds()))
 }
 
-// opsIn says when an ISO time is: "<label> in 4m" ahead of now, "<label> overdue 3m" behind it, "<label> <raw>" when it does not parse.
-func opsIn(label, raw string, now time.Time) string {
+// opsIn says when an ISO time is: "<label> in 4m" ahead of now, "<past> 3m" behind it, "<label> <raw>" when it does not parse.
+func opsIn(label, past, raw string, now time.Time) string {
 	t, err := time.Parse(time.RFC3339, raw)
 	switch {
 	case err != nil:
@@ -102,7 +110,7 @@ func opsIn(label, raw string, now time.Time) string {
 	case t.After(now):
 		return label + " in " + opsSpan(t.Sub(now))
 	}
-	return label + " overdue " + opsSpan(now.Sub(t))
+	return past + " " + opsSpan(now.Sub(t))
 }
 
 // opsLook is the state word of a watch and its colour; a state this dashboard does not know is shown as it came.
@@ -126,6 +134,47 @@ func (m *model) opsLook(wt data.OpsWatch) (string, color.Color) {
 	return wt.State, th.Muted
 }
 
+// opsHead is the first line of a watch: its name, state word and repository, and the schedule at the right. When
+// the line is too narrow the schedule gives way first (its tail, then the repository), then the name is cut:
+// the state word is never lost.
+func (m *model) opsHead(p paint, wt data.OpsWatch, w int) string {
+	th, now := m.th, m.now()
+	word, col := m.opsLook(wt)
+	parts := []string{"every " + opsSpan(time.Duration(wt.EverySeconds)*time.Second)}
+	if wt.NextLook != nil {
+		parts = []string{opsIn("next look", "next look overdue", *wt.NextLook, now), parts[0], opsIn("ends", "past its end by", wt.Until, now)}
+	}
+	left := func(name string, repo bool) string {
+		out := p.sp(1) + p.t("●", col) + p.sp(1) + p.b(name, th.Text) + p.sp(2) + p.t(word, col)
+		if repo {
+			out += p.t(" · "+filepath.Base(wt.Repo), th.Muted)
+		}
+		return out
+	}
+	try := func(repo bool, k int) (string, bool) {
+		l, right := left(wt.Name, repo), ""
+		if k > 0 {
+			right = p.t(strings.Join(parts[:k], " · "), th.Muted)
+		}
+		if width(l)+max(0, 2+width(right))+1 > w {
+			return "", false
+		}
+		if right == "" {
+			return l, true
+		}
+		return l + p.sp(w-1-width(l)-width(right)) + right, true
+	}
+	for _, c := range []struct {
+		repo bool
+		k    int
+	}{{true, len(parts)}, {true, max(1, len(parts)-1)}, {true, 1}, {false, 1}, {false, 0}} {
+		if line, ok := try(c.repo, c.k); ok {
+			return line
+		}
+	}
+	return left(trunc(wt.Name, max(1, w-1-3-2-width(word))), false)
+}
+
 // opsBlock is one watch: its state and schedule, goal, last look and spend.
 func (m *model) opsBlock(p paint, wt data.OpsWatch, w int) block {
 	th, now := m.th, m.now()
@@ -136,15 +185,8 @@ func (m *model) opsBlock(p paint, wt data.OpsWatch, w int) block {
 		return left + p.sp(max(2, w-1-width(left)-width(right))) + right
 	}
 	dot := p.t(" · ", th.Faint)
-	looks := func(n int) string { return opsCount(n, "look", "looks") }
 
-	word, col := m.opsLook(wt)
-	head := p.sp(1) + p.t("●", col) + p.sp(1) + p.b(wt.Name, th.Text) + p.sp(2) + p.t(word, col) + p.t(" · "+filepath.Base(wt.Repo), th.Muted)
-	every := "every " + opsSpan(time.Duration(wt.EverySeconds)*time.Second)
-	if wt.NextLook != nil {
-		every = opsIn("next look", *wt.NextLook, now) + " · " + every + " · " + opsIn("ends", wt.Until, now)
-	}
-	lines := block{side(head, p.t(every, th.Muted))}
+	lines := block{m.opsHead(p, wt, w)}
 
 	for i, l := range wrapCapped(wt.Goal, w-11, 2) {
 		lead := p.sp(10)
@@ -154,9 +196,14 @@ func (m *model) opsBlock(p paint, wt data.OpsWatch, w int) block {
 		lines = append(lines, lead+p.t(l, th.Text))
 	}
 
-	counts := p.t(looks(wt.Ticks), th.Muted)
+	// the facts of the last look at the right; the looks run go first when the line is too narrow, then the saw is cut
+	missed := ""
 	if wt.Missed > 0 {
-		counts += dot + p.t(looks(wt.Missed)+" missed", th.Yellow)
+		missed = p.t(plural(wt.Missed, "look")+" missed", th.Yellow)
+	}
+	counts := p.t(plural(wt.Ticks, "look"), th.Muted)
+	if missed != "" {
+		counts += dot + missed
 	}
 	last := label("last") + p.t("no look yet", th.Faint)
 	if l := wt.LastLook; l != nil {
@@ -178,7 +225,14 @@ func (m *model) opsBlock(p paint, wt data.OpsWatch, w int) block {
 			late = opsSpan(time.Duration(l.LateSeconds)*time.Second) + " late"
 			lateW = 3 + width(late)
 		}
-		if room := w - 1 - width(counts) - 2 - width(last) - 3 - lateW; l.Saw != "" && room > 0 {
+		sawW := 0
+		if l.Saw != "" {
+			sawW = 3 + width(l.Saw)
+		}
+		if width(last)+sawW+lateW+2+width(counts)+1 > w {
+			counts = missed
+		}
+		if room := w - 1 - max(0, 2+width(counts)) - width(last) - 3 - lateW; l.Saw != "" && room > 0 {
 			last += dot + p.t(trunc(l.Saw, room), th.Text)
 		}
 		if late != "" {
@@ -187,13 +241,13 @@ func (m *model) opsBlock(p paint, wt data.OpsWatch, w int) block {
 	}
 	lines = append(lines, side(last, counts))
 
-	spent := Money(wt.SpentUSD, m.prices.Currency)
+	spent := Money(wt.SpentUSD, "USD")
 	if wt.SpentUSD == 0 && wt.UnpricedTicks > 0 {
-		spent = fmt.Sprintf("unpriced (%s)", looks(wt.UnpricedTicks))
+		spent = fmt.Sprintf("unpriced (%s)", plural(wt.UnpricedTicks, "look"))
 	}
-	spend := label("spend") + p.t(spent+" of "+Money(wt.BudgetUSD, m.prices.Currency), th.Text)
+	spend := label("spend") + p.t(spent+" of "+Money(wt.BudgetUSD, "USD"), th.Text)
 	if wt.SpentUSD != 0 && wt.UnpricedTicks > 0 {
-		spend += dot + p.t(looks(wt.UnpricedTicks)+" unpriced", th.Yellow)
+		spend += dot + p.t(plural(wt.UnpricedTicks, "look")+" unpriced", th.Yellow)
 	}
 	notes := ""
 	if room := w - 1 - width(spend) - 2 - len("notes "); wt.Notes != "" && room > 0 {

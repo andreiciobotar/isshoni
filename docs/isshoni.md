@@ -585,19 +585,26 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   shimmers for three seconds each time Pulse is shown or new numbers arrive; the tiles
   count up and the columns grow while new numbers arrive (never in a snapshot).
 - **Ops:** the ops watches on this machine, from what `factory ops list --json` prints
-  (cwd the checkout the dashboard runs from, 10 s limit), in the command's order, one block
-  each: its state (`watching`, `alarmed`, `ended: met|not met|inconclusive`, `stopped`,
-  `out of budget`) and repository, when its next look is due (`overdue` when late), its
-  interval and when it ends, its goal, its last look with how late it ran, the looks run
-  and missed, what it spent against its budget (`unpriced` for looks that had no price,
-  never `$0`) and the path of its notes. It is read-only: nothing on the tab starts, stops
-  or changes a watch. It loads when the tab is shown and every 30 seconds while shown, never
-  two at once, and not at all off it; the sub-header counts the watches (`alarmed` and
-  `out of budget` ones named) and says how old the answer is. If a reload fails the watches
-  stay under one red line saying why and the sub-header says `stale`. With a factory that has
-  no `ops` command the page says `⚠ this factory has no ops command yet`; with no watch it
-  says how to start one from your terminal. `↑` `↓` scroll. Below 110 columns the tab is an
-  eye, `5 ◉`. `--snapshot ops` loads once and renders.
+  (cwd the checkout the dashboard runs from, 10 s limit), one block each, alarmed ones
+  first, then the other active ones (`watching`), then the rest (out of budget, ended,
+  stopped), each group in the command's order. A block: its state (`watching`, `alarmed`,
+  `ended: met|not met|inconclusive`, `stopped`, `out of budget`) and repository, when its
+  next look is due (`overdue` when late), its interval and when it ends (`past its end by`
+  when it is past), its goal, its last look with how late it ran, the looks run and missed,
+  what it spent against its budget in dollars (`unpriced` for looks that had no price,
+  never `$0`) and the path of its notes. On a narrow terminal the state word is kept first:
+  the end of the schedule goes, then the interval, then the repository, then the name is
+  cut; on the last-look line the looks run go before the text it saw is cut. It is
+  read-only: nothing on the tab starts, stops or changes a watch. It loads at start, every
+  2 minutes while another tab is shown and every 30 seconds while this one is (and when
+  the tab is shown), never two at once. The tab label carries `▲N` for the number of
+  alarmed watches while another tab is shown (no badge when the last reload failed). The
+  sub-header counts the watches (`alarmed` and `out of budget` ones named) and says how
+  old the answer is. If a reload fails the watches stay under one red line saying why and
+  the sub-header says `stale, from 5m ago`. With a factory that has no `ops` command the
+  page says `⚠ this factory has no ops command yet`; with no watch it says how to start
+  one from your terminal. `↑` `↓` scroll. Below 110 columns the tab is an eye, `5 ◉`
+  (`5 ▲N` with the badge). `--snapshot ops` loads once and renders.
 
 A session is live when its transcript changed in the last 30 seconds or so. Agents keep
 one colour and one order everywhere: main, coder, reviewer, explorer, lander, then the rest.
@@ -696,7 +703,7 @@ Parsing a transcript is slow, so parsed sessions are cached, one file per transc
 
 ## Shutdown
 
-The dashboard starts three kinds of child process, each in its own process group (`groupCmd` in `internal/data/runner.go`): the monitor calls (`python3 -m isshoni sessions|session|agents|kaizen`, 2 minutes), `factory status --json` (10 s cached, 25 s with a fetch), `factory ops list --json` (10 s, while the Ops tab is shown) and the event stream `isshoni events --follow` (while the Hanami tab or follow mode needs it). A cancel or timeout kills the whole group with SIGKILL, so what the child started (`gh`, `git`) goes with it, and waits at most 1 s for its pipes. Under `--serve`, key `d` starts a fourth, `claude attach <name>` (`attach` in `cmd/isshoni-tui/serve.go`, see above): it does not go through `groupCmd`, has no timeout because it waits on a human, and ends when the human detaches or the connection ends, on which it gets SIGHUP and a kill 2 s later. Nothing else is started and nothing is written to disk except the caches below.
+The dashboard starts three kinds of child process, each in its own process group (`groupCmd` in `internal/data/runner.go`): the monitor calls (`python3 -m isshoni sessions|session|agents|kaizen`, 2 minutes), `factory status --json` (10 s cached, 25 s with a fetch), `factory ops list --json` (10 s) and the event stream `isshoni events --follow` (while the Hanami tab or follow mode needs it). A cancel or timeout kills the whole group with SIGKILL, so what the child started (`gh`, `git`) goes with it, and waits at most 1 s for its pipes. Under `--serve`, key `d` starts a fourth, `claude attach <name>` (`attach` in `cmd/isshoni-tui/serve.go`, see above): it does not go through `groupCmd`, has no timeout because it waits on a human, and ends when the human detaches or the connection ends, on which it gets SIGHUP and a kill 2 s later. Nothing else is started and nothing is written to disk except the caches below.
 
 What ends the children, by how the dashboard stops:
 

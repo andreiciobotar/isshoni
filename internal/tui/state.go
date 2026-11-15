@@ -1130,7 +1130,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.ensureDetail(s.ID))
 		}
 		cmds = append(cmds, m.fetchLive()...)
-		cmds = append(cmds, m.refreshFactory(0))
+		cmds = append(cmds, m.refreshFactory(0), m.loadOps(opsIdleEvery))
 
 	case agentsMsg:
 		if msg.gen != m.loadGen {
@@ -1214,7 +1214,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.agentsDirty && !m.agentsBusy && now.Sub(m.agentsAt) >= agentsEvery {
 			cmds = append(cmds, m.loadAgentsCmd())
 		}
-		cmds = append(cmds, m.refreshFactory(factoryEvery), m.loadOps(opsEvery))
+		cmds = append(cmds, m.refreshFactory(factoryEvery), m.loadOps(m.opsTickEvery()))
 
 	case attachMsg:
 		if msg.err != nil {

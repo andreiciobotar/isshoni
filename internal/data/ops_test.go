@@ -47,8 +47,8 @@ func TestOpsWatchesDecodesTheContract(t *testing.T) {
 	if b.Verdict == nil || *b.Verdict != "met" || b.LastLook != nil || b.NextLook != nil || b.State != "ended" {
 		t.Fatalf("the ended watch: %+v", b)
 	}
-	if log, _ := os.ReadFile(filepath.Join(dir, "calls")); !strings.HasPrefix(string(log), "ops ") || !strings.Contains(string(log), "/") {
-		t.Fatalf("one ops call: %q", log)
+	if log, _ := os.ReadFile(filepath.Join(dir, "calls")); string(log) != "ops "+r.Root+" ops list --json\n" {
+		t.Fatalf("one `ops list --json` call in the root %s: %q", r.Root, log)
 	}
 }
 
@@ -74,6 +74,14 @@ func TestOpsWatchesErrors(t *testing.T) {
 			}
 		})
 	}
+	t.Run("argparse text with another exit status", func(t *testing.T) {
+		r, dir := factoryStub(t)
+		writeStub(t, dir, "ops.err", string(noOps))
+		writeStub(t, dir, "ops.exit", "1")
+		if _, err := r.OpsWatches(context.Background()); err == nil || !strings.HasPrefix(err.Error(), "error: argument cmd: invalid choice: 'ops'") {
+			t.Fatalf("only exit status 2 is \"no ops command\": %v", err)
+		}
+	})
 	t.Run("missing script", func(t *testing.T) {
 		r, _ := factoryStub(t)
 		r.Root = t.TempDir()
