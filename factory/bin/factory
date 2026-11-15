@@ -3548,10 +3548,10 @@ def run_site_manager(p, send, job="watch"):
 def cmd_firing(args):
     repo = Repo()
     f = find_firing(repo.root, args.id)
-    if f["decision"] != "escalated":
+    if f["decision"] not in ("escalated", None):
         raise Fail(f"firing: {f['id']} was not escalated, so it has no outcome")
     log_firing(repo, id=f["id"], outcome=args.action)
-    print(f"{f['id']}: {args.action}")
+    print(f"{f['id']}: {args.action}" + (" (its decision is not logged yet)" if f["decision"] is None else ""))
     return 0
 
 
