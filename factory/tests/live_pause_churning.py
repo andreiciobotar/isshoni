@@ -183,7 +183,8 @@ def run(factory, tmp):
     hub = Hub(factory, origin, checkout)
     specs = Path(os.environ["FACTORY_HOME"], "specs", "pocket")
     specs.mkdir(parents=True)
-    patches = {"run": hub, "spawn": lambda argv, cwd, out: hub.spawned.append(argv), "POLL": 0.01, "run_clean": lambda: 0}
+    patches = {"run": hub, "spawn": lambda argv, cwd, out: hub.spawned.append(argv), "POLL": 0.01, "run_clean": lambda: 0,
+               "review_tick": lambda *_: None}
     saved = {k: getattr(factory, k) for k in patches}
     for k, v in patches.items():
         setattr(factory, k, v)
