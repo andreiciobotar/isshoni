@@ -61,7 +61,7 @@ class Scratch(Harness):
         os.chdir(self.root)
         self.addCleanup(os.chdir, before)
         factory.write_lander(SimpleNamespace(root=self.root), {"health": NOW})  # every tick is between full passes
-        self.prs, self.calls = [], []
+        self.prs, self.calls, self.leads = [], [], []
         self.answer = lambda: reply()
 
     def git(self, *args, cwd):
@@ -99,7 +99,7 @@ class Scratch(Harness):
         self.git("commit", "-q", "-m", f"main {name}", cwd=self.root)
 
     def cli(self, *argv):
-        base = repo_answers([], [DISPATCHER | {"name": "dispatcher-repo", "cwd": self.root}])
+        base = repo_answers([], [DISPATCHER | {"name": "dispatcher-repo", "cwd": self.root}, *self.leads])
         base[("claude", "-p")] = lambda: self.answer()
         base[BATCH] = (0, "[]", "")
         base[("gh", "pr", "list")] = lambda: (0, json.dumps([PR] if "--head" in self.fake.calls[-1] else self.prs), "")
@@ -268,6 +268,55 @@ class CollisionTests(Scratch):
         self.tick()
         self.assertEqual((len(self.fired()), len(self.site_runs())), (1, 1))
 
+    def test_a_decided_firing_fires_again_on_the_next_tick_when_a_new_file_conflicts(self):
+        self.task("alpha")
+        self.task("beta")
+        self.commit("alpha", "f.txt", lines(BODY, 5, "from a"))
+        self.commit("beta", "f.txt", lines(BODY, 5, "from b"))
+        self.sees()
+        self.tick()
+        self.commit("alpha", "g.txt", lines(BODY, 7, "from a"))
+        self.commit("beta", "g.txt", lines(BODY, 7, "from b"))
+        self.tick()
+        self.assertEqual([f["files"] for f in self.fired()], [["f.txt"], ["f.txt", "g.txt"]])
+
+    def test_a_decided_conflict_that_clears_and_comes_back_in_the_same_files_is_not_fired_again(self):
+        self.task("alpha")
+        self.task("beta")
+        self.commit("alpha", "f.txt", lines(BODY, 5, "from a"))
+        self.commit("beta", "f.txt", lines(BODY, 5, "from b"))
+        self.sees()
+        self.tick()
+        self.commit("beta", "f.txt", BODY)  # beta's net change is gone: no conflict
+        self.tick()
+        self.assertEqual([r.get("cleared") for r in self.records() if "cleared" in r], [True])
+        self.commit("beta", "f.txt", lines(BODY, 5, "from b"))
+        self.tick()
+        self.assertEqual((len(self.fired()), len(self.site_runs())), (1, 1))
+
+    def test_an_escalation_to_a_lead_on_a_collision_is_not_a_decision(self):
+        path = self.task("alpha")
+        self.task("beta")
+        self.leads = [{"sessionId": "sid-a", "name": "alpha", "cwd": path, "kind": "background", "state": "working"}]
+        self.commit("alpha", "f.txt", lines(BODY, 5, "from a"))
+        self.commit("beta", "f.txt", lines(BODY, 5, "from b"))
+        self.answer = lambda: reply([{"id": json.loads(self.fake.calls[-1][-1].partition("\n\n")[2])[0]["id"], "decision": "escalated",
+                                      "to": "lead", "reason": "tell alpha", "looked": []}])
+        self.tick()
+        self.assertEqual((len(self.site_runs()), [r for r in self.records() if "decision" in r]), (1, []))
+
+    def test_what_the_default_branch_already_breaks_is_not_a_task_and_pull_request_pair_s(self):
+        self.task("alpha")
+        self.commit("alpha", "f.txt", lines(BODY, 5, "from a"))
+        self.git("worktree", "add", "-q", "-b", "elsewhere", f"{self.home}/elsewhere", "main", cwd=self.root)
+        self.write(f"{self.home}/elsewhere", "f.txt", lines(BODY, 5, "from the pull request"))
+        self.git("add", "f.txt", cwd=f"{self.home}/elsewhere")
+        self.git("commit", "-q", "-m", "pr", cwd=f"{self.home}/elsewhere")
+        self.prs = [open_pr(7, "elsewhere", self.git("rev-parse", "elsewhere", cwd=self.root))]
+        self.main_moves("f.txt", lines(BODY, 5, "from main"))
+        self.tick()
+        self.assertEqual([f["subject"] for f in self.fired()], ["alpha~main"])  # not alpha~#7: both already conflict with main there
+
 
 class NewSpecTests(Scratch):
     def test_the_newer_spec_fires_once_and_the_finding_is_delivered(self):
@@ -299,6 +348,38 @@ class NewSpecTests(Scratch):
     def test_a_task_without_a_spec_or_another_task_to_compare_fires_nothing(self):
         self.task("alpha")
         self.task("beta", spec="two")
+        self.tick()
+        self.assertEqual(self.fired(), [])
+
+    def test_a_decided_new_spec_firing_that_was_cleared_is_not_fired_again_for_a_new_task(self):
+        self.task("alpha", spec="builds the thing", age=600)
+        self.commit("alpha", "g.txt", lines(BODY, 20, "from a"))
+        self.task("beta", spec="rewrites the thing")
+        self.seed("firings", [{"ts": iso(self.clock - 60), "repo": self.root, "id": "n1", "criterion": "new-spec", "escalate": "judgment",
+                               "slug": "beta", "subject": "beta", "detail": "d"},
+                              {"ts": iso(self.clock - 30), "repo": self.root, "id": "n1", "decision": "told", "by": "site-manager",
+                               "reason": "r", "tell": ["beta"]},
+                              {"ts": iso(self.clock - 20), "repo": self.root, "id": "n1", "cleared": True}])
+        self.task("gamma")
+        self.tick()
+        self.assertEqual(([f["id"] for f in self.fired()], self.site_runs()), (["n1"], []))
+
+    def test_a_task_whose_branch_merged_is_not_in_flight_and_one_with_no_commit_is(self):
+        self.task("alpha", spec="builds the thing", age=600)
+        self.commit("alpha", "g.txt", lines(BODY, 20, "from a"))
+        self.task("beta")
+        self.git("merge", "-q", "--no-edit", "worktree-alpha", cwd=self.root)
+        self.git("push", "-q", "origin", "main", cwd=self.root)
+        self.git("fetch", "-q", "origin", cwd=self.root)
+        self.assertEqual(factory.in_flight(factory.Repo()), {"beta": "working"})
+
+    def test_a_merged_task_gets_no_new_spec_look(self):
+        self.task("alpha", spec="builds the thing", age=600)
+        self.commit("alpha", "g.txt", lines(BODY, 20, "from a"))
+        self.git("merge", "-q", "--no-edit", "worktree-alpha", cwd=self.root)
+        self.git("push", "-q", "origin", "main", cwd=self.root)
+        self.git("fetch", "-q", "origin", cwd=self.root)
+        self.task("beta", spec="rewrites the thing")
         self.tick()
         self.assertEqual(self.fired(), [])
 
@@ -365,6 +446,14 @@ class OutcomeTests(Scratch):
         self.seed("queue", queue[3:])
         factory.settle_collisions({"repo": repo})
         self.assertEqual([f["outcome"] for f in factory.fold(self.records())[0]], ["collided", "collided", None])
+
+    def test_collided_is_reached_by_a_full_pass_watch_tick(self):
+        self.told_firing("f1", "alpha", files=["f.txt"])
+        self.seed("queue", [{"ts": iso(self.clock), "repo": self.root, "slug": "alpha", "pr": 1, "head": "h", "step": "sent-back",
+                             "kind": "conflict", "files": ["f.txt"]}])
+        factory.write_lander(SimpleNamespace(root=self.root), {"health": 0})  # the next tick is a full pass
+        self.tick()
+        self.assertEqual([f["outcome"] for f in factory.fold(self.records())[0]], ["collided"])
 
     def test_firings_prints_the_counts_and_told_is_not_an_escalation(self):
         for fid in ("t1", "t2", "t3", "t4", "t5"):

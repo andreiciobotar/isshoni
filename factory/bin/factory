@@ -2305,9 +2305,18 @@ def decided_firings(p, criterion):
 
 
 def in_flight(repo):
-    """{slug: state} of the tasks declared working or handed-over whose worktree is there, a task with no commit yet included."""
-    here = {os.path.basename(t["path"]) for t in repo.tasks}
-    return {s: r["state"] for s, r in read_tasks(repo.root).items() if r["state"] in OPEN and s in here}
+    """{slug: state} of the tasks declared working or handed-over whose worktree is there, a task with no commit yet included
+    but not one already merged. A merged branch and an untouched one are both ancestors of the default branch; the untouched one
+    still sits at the commit its reflog says it was created from."""
+    branch = {os.path.basename(t["path"]): t["branch"] for t in repo.tasks}
+
+    def merged(name):
+        if repo.git("merge-base", "--is-ancestor", name, f"{repo.remote}/{repo.default}")[0] != 0:
+            return False
+        created = repo.git("reflog", "show", "--format=%H", name)[1].split()
+        return bool(created) and created[-1] != repo.git("rev-parse", name)[1].strip()
+
+    return {s: r["state"] for s, r in read_tasks(repo.root).items() if r["state"] in OPEN and s in branch and not merged(branch[s])}
 
 
 def task_sides(repo, tasks):
@@ -2347,7 +2356,8 @@ def c_collision(p, _):
     for a, b in collision_pairs(p, sides):
         files = conflicting_refs(repo, a["ref"], b["ref"])
         for side in (a, b) if b["state"] != "default branch" and files else ():  # the default branch's own conflicts are reported under their own subject
-            stale.setdefault(side["ref"], set(conflicting_refs(repo, default, side["ref"])))
+            if side["ref"] not in stale:
+                stale[side["ref"]] = set(conflicting_refs(repo, default, side["ref"]))
             files = [f for f in files if f not in stale[side["ref"]]]
         subject = f"{a['name']}~{b['name']}"
         if not files or set(files) <= set((decided.get(subject) or {}).get("files") or []):
