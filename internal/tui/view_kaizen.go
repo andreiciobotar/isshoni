@@ -40,6 +40,8 @@ func (m *model) kaizenLines(p paint, w, h int) block {
 		lines = block{p.sp(1) + p.t("⚠ "+trunc(k.err, w-4), th.Red), ""}
 	}
 	switch k.page {
+	case pageFriction:
+		return append(lines, m.frictionLines(p, w)...)
 	case pageFlow:
 		return append(lines, m.flowLines(p, w)...)
 	case pageAnatomy:
@@ -65,17 +67,25 @@ func (m *model) kaizenSubheader(p paint) string {
 			out += p.on(mix(th.Bg, th.Purple, 0.3)).b(" "+name+" ", th.Purple)
 		}
 	}
-	out += p.t("  ←→", th.Faint)
-	if d := k.doc; d != nil && m.w >= 100 {
-		out += p.t(fmt.Sprintf("  · %d landed of %d tasks in %s", d.Summary.Landed, d.Summary.Tasks, ranges[k.doneRange].label), th.Muted)
-	}
+	hint := p.t("  ←→", th.Faint)
+	var tail string
 	switch {
 	case k.busy:
-		out += p.t("  · "+spin(m.spinFrame())+" reading", th.Blue)
+		tail = p.t("  · "+spin(m.spinFrame())+" reading", th.Blue)
 	case !k.doneAt.IsZero():
-		out += p.t("  · as of "+k.doneAt.Local().Format("15:04:05"), th.Faint)
+		tail = p.t("  · as of "+k.doneAt.Local().Format("15:04:05"), th.Faint)
 	}
-	return out
+	var landed string
+	if d := k.doc; d != nil && m.w >= 100 {
+		landed = p.t(fmt.Sprintf("  · %d landed of %d tasks in %s", d.Summary.Landed, d.Summary.Tasks, ranges[k.doneRange].label), th.Muted)
+	}
+	// The page names keep the line: the arrows (the footer has them) go first, then the landed count. The header keeps 3 cells.
+	for _, rest := range []string{hint + landed + tail, landed + tail} {
+		if width(out)+width(rest) <= m.w-3 {
+			return out + rest
+		}
+	}
+	return out + tail
 }
 
 // ---- shared pieces ----------------------------------------------------------------

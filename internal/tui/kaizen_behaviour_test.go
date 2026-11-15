@@ -48,8 +48,12 @@ func TestKaizenViewKeys(t *testing.T) {
 func TestKaizenPagesAndScroll(t *testing.T) {
 	m := kaizenModel(t, true, 80, 24, pagePulse)
 	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	if m.kz.page != pageFlow {
+	if m.kz.page != pageFriction {
 		t.Fatalf("→ -> %v", m.kz.page)
+	}
+	send(m, "l")
+	if m.kz.page != pageFlow {
+		t.Fatalf("l -> %v", m.kz.page)
 	}
 	send(m, "l")
 	if m.kz.page != pageAnatomy {
@@ -89,7 +93,7 @@ func TestKaizenPagesAndScroll(t *testing.T) {
 	if dash.kz.page != pagePulse {
 		t.Fatal("←→ turn the page only in the kaizen view")
 	}
-	for _, name := range []string{"Pulse", "Flow", "Board"} {
+	for _, name := range []string{"Pulse", "Friction", "Flow", "Anatomy", "Board"} {
 		if !strings.Contains(plain(m), name) {
 			t.Fatalf("the sub-header names the page %s", name)
 		}
@@ -324,6 +328,16 @@ func TestKaizenFramesFitEverySize(t *testing.T) {
 	long.Outbox.Entries[0].Text = strings.Repeat("a-very-long-word-without-spaces", 8)
 	docs["long"] = long
 	docs["few anatomy"] = fewAnatomyDoc(t)
+	noFriction := kaizenDoc(t)
+	noFriction.Friction = nil
+	docs["no friction"] = noFriction
+	bare := kaizenDoc(t)
+	bare.Friction = &data.Friction{}
+	docs["bare friction"] = bare
+	longFriction := kaizenDoc(t)
+	longFriction.Friction.Held[0].Slug = strings.Repeat("長い", 40)
+	longFriction.Friction.LateConflicts.Files[0].File = strings.Repeat("a/very-long-path", 12)
+	docs["long friction"] = longFriction
 	for name, doc := range docs {
 		for _, sz := range sizes {
 			for _, nc := range []bool{false, true} {
@@ -1013,7 +1027,7 @@ func TestSnapshotKaizen(t *testing.T) {
 	py, _ := filepath.Abs("../data/testdata/fakepy.sh")
 	root, _ := filepath.Abs("../..")
 	r := &data.Runner{Root: root, Python: py, ProjectsDir: dir, Timeout: 5 * time.Second}
-	for view, want := range map[string]string{"kaizen": "[Pulse]", "kaizen-flow": "[Flow]", "kaizen-board": "[Board]"} {
+	for view, want := range map[string]string{"kaizen": "[Pulse]", "kaizen-friction": "[Friction]", "kaizen-flow": "[Flow]", "kaizen-board": "[Board]"} {
 		out, err := Snapshot(SnapshotOptions{Options: Options{Runner: r, NoColor: true, Range: "all", Now: func() time.Time { return goldenNow }}, View: view, W: 100, H: 30})
 		if err != nil {
 			t.Fatal(err)
