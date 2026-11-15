@@ -2268,7 +2268,7 @@ def c_run_stopped(p, _):
     """Needs only `declared`, `repo.tasks` and the `techlead` log, so the watch can run it on every tick."""
     here = {os.path.basename(t["path"]) for t in p["repo"].tasks}
     decided = {f["subject"] for f in fold(repo_log("firings", p["repo"].root) or [])[0]
-               if f["criterion"] == "run-stopped" and f["decision"]}  # one decision per stopped run
+               if f["criterion"] == "run-stopped" and f["decision"] == "paused"}  # a stopped run paused once is not fired again
     found = []
     for slug, runs in build_runs(p["repo"]).items():
         if slug in here and p["declared"].get(slug, {}).get("state") == "working" and runs[-1].get("outcome") == "stopped" \
