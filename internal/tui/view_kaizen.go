@@ -940,13 +940,14 @@ func (m *model) stopLines(p paint, w int) block {
 }
 
 // siteManagerLines is the site manager's record: how often the human acted on what it
-// escalated (precision) and how much of what needed the human it escalated (recall).
+// escalated (precision), how much of what needed the human it escalated (recall), and how
+// many of the limits it extended were kept.
 func (m *model) siteManagerLines(p paint, w int) block {
 	th := m.th
 	s := m.kz.doc.SiteManager
-	lines := block{m.heading(p, w, "site manager", "what it escalated, and what came of it")}
-	if s.Escalated+s.Suppressed+s.Missed == 0 {
-		for _, l := range wrapPlain("nothing escalated, suppressed or missed yet · precision and recall start with the first outcome (factory firing <id> acted|ignored)", w-2) {
+	lines := block{m.heading(p, w, "site manager", "what it escalated and extended, and what came of it")}
+	if s.Escalated+s.Suppressed+s.Missed+s.Extended == 0 {
+		for _, l := range wrapPlain("nothing escalated, suppressed, missed or extended yet · precision and recall start with the first outcome (factory firing <id> acted|ignored)", w-2) {
 			lines = append(lines, p.sp(1)+p.t(l, th.Faint))
 		}
 		return lines
@@ -957,9 +958,15 @@ func (m *model) siteManagerLines(p paint, w int) block {
 		}
 		return p.t(name+" ", th.Muted) + p.b(pct(*v*100), th.Text) + p.t("  "+of, th.Muted)
 	}
+	var keptShare *float64
+	if ended := s.Kept + s.Overran; ended > 0 {
+		v := float64(s.Kept) / float64(ended)
+		keptShare = &v
+	}
 	lines = append(lines, legend(p, w, []string{
 		ratio("precision", s.Precision, fmt.Sprintf("%d acted on of %d with an outcome", s.Acted, s.Acted+s.Ignored), "no outcome recorded yet"),
 		ratio("recall", s.Recall, fmt.Sprintf("%d acted on of %d that needed the human", s.Acted, s.Acted+s.Missed), "nothing acted on or missed yet"),
+		ratio("limits kept", keptShare, fmt.Sprintf("%d kept of %d extensions that ended", s.Kept, s.Kept+s.Overran), "no extension has ended yet"),
 	})...)
 	missed := m.kzCount(p, s.Missed, "missed", th.Red)
 	if s.Missed > 0 {
@@ -969,6 +976,7 @@ func (m *model) siteManagerLines(p paint, w int) block {
 		m.kzCount(p, s.Escalated, "escalated", th.Text), m.kzCount(p, s.Acted, "acted on", th.Green),
 		m.kzCount(p, s.Ignored, "ignored", th.Orange), m.kzCount(p, s.NoOutcome, "no outcome yet", th.Text),
 		m.kzCount(p, s.Suppressed, "suppressed", th.Text), missed,
+		m.kzCount(p, s.Extended, "extended", th.Text), m.kzCount(p, s.Kept, "kept", th.Green), m.kzCount(p, s.Overran, "overran", th.Red),
 	})...)
 }
 

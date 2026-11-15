@@ -455,16 +455,44 @@ func TestKaizenSiteManagerRecord(t *testing.T) {
 
 	// the log is empty until the site manager first fires: say so, and how outcomes get recorded
 	empty := pulse(data.SiteManager{}, 140)
-	has(empty, "nothing escalated, suppressed or missed yet", "precision and recall start with the first outcome (factory firing <id> acted|ignored)")
+	has(strings.Join(strings.Fields(empty), " "), "nothing escalated, suppressed, missed or extended yet", "precision and recall start with the first outcome (factory firing <id> acted|ignored)")
 	if strings.Contains(empty, "precision 0%") || strings.Contains(empty, "0 escalated") {
 		t.Errorf("an empty record shows no numbers:\n%s", empty)
 	}
 
 	// escalations without an outcome give no ratio, and a zero is a number, not a dash
 	has(pulse(data.SiteManager{Escalated: 2, NoOutcome: 2, Suppressed: 1}, 140),
-		"precision -  no outcome recorded yet", "recall -  nothing acted on or missed yet", "2 escalated   0 acted on   0 ignored   2 no outcome yet   1 suppressed   0 missed")
+		"precision -  no outcome recorded yet", "recall -  nothing acted on or missed yet", "2 escalated   0 acted on   0 ignored   2 no outcome yet   1 suppressed   0 missed", "0 extended")
 	has(pulse(data.SiteManager{Escalated: 1, Ignored: 1, Missed: 1, MissedNeverFired: 1, Precision: ptr(0.0), Recall: ptr(0.0)}, 140),
 		"precision 0%  0 acted on of 1 with an outcome", "recall 0%  0 acted on of 1 that needed the human", "1 missed (0 suppressed first, 1 never fired)")
+}
+
+func TestKaizenSiteManagerExtensions(t *testing.T) {
+	pulse := func(s data.SiteManager) string {
+		doc := kaizenDoc(t)
+		doc.SiteManager = s
+		m := fakeModel(true, 140, 200)
+		setKaizen(m, doc, pagePulse)
+		out := plain(m)
+		return out[strings.Index(out, "site manager"):strings.Index(out, "open issues")]
+	}
+	has := func(out string, wants ...string) {
+		t.Helper()
+		for _, want := range wants {
+			if !strings.Contains(out, want) {
+				t.Errorf("lacks %q:\n%s", want, out)
+			}
+		}
+	}
+	has(pulse(kaizenDoc(t).SiteManager), "limits kept 50%  1 kept of 2 extensions that ended", "2 extended", "1 kept", "1 overran")
+	// extended and still running: no share, not 0%, and not the empty state
+	running := pulse(data.SiteManager{Extended: 1})
+	has(running, "limits kept -  no extension has ended yet", "1 extended   0 kept   0 overran", "what it escalated and extended, and what came of it")
+	if strings.Contains(running, "limits kept 0%") || strings.Contains(running, "nothing escalated") {
+		t.Errorf("a running extension is neither 0%% nor an empty record:\n%s", running)
+	}
+	has(pulse(data.SiteManager{Kept: 3, Overran: 0, Extended: 3}), "limits kept 100%  3 kept of 3 extensions that ended")
+	has(pulse(data.SiteManager{}), "nothing escalated, suppressed, missed or extended yet")
 }
 
 func TestKaizenTechLeadRecord(t *testing.T) {

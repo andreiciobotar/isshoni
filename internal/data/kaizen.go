@@ -229,7 +229,7 @@ type SiteManager struct {
 	NoOutcome        int      `json:"no_outcome"`
 	Suppressed       int      `json:"suppressed"`
 	Paused           int      `json:"paused"`   // churning tasks the queue paused; counted apart, not shown yet
-	Extended         int      `json:"extended"` // limits the site manager extended; counted, not shown yet
+	Extended         int      `json:"extended"` // limits the site manager extended; Kept and Overran are those that ended, the rest still run
 	Kept             int      `json:"kept"`
 	Overran          int      `json:"overran"`
 	Missed           int      `json:"missed"`

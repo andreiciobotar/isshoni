@@ -56,6 +56,16 @@ type FactoryTask struct {
 
 	Paused      *FactoryFlag `json:"paused"`      // the site manager paused this blocked task; nil when not, or from a script before the field
 	Prioritized *FactoryFlag `json:"prioritized"` // the queue prioritizes this task: in motion, in review, or a still-blocked task just released; nil likewise
+
+	Extensions []FactoryExtension `json:"extensions"` // limit extensions granted, oldest first; Limit already includes them; nil from a script before the field
+}
+
+// FactoryExtension is one grant of more time on a task's limit.
+type FactoryExtension struct {
+	Minutes int    `json:"minutes"`
+	By      string `json:"by"`
+	Reason  string `json:"reason"`
+	Decided string `json:"decided"` // timestamp as the script wrote it; not shown
 }
 
 // FactoryFlag is a paused or prioritized mark. Since is the zero time when the script's
