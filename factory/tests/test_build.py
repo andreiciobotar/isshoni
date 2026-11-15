@@ -21,9 +21,9 @@ def built(outcome="built", handover="### Result\nthe pull request " + URL, **ext
 class Build(Machine):
     """The tech-lead machine, with the pull request list and the task's recorded size."""
 
-    def __init__(self, *a, pr="OPEN", size="", **kw):
+    def __init__(self, *a, pr="OPEN", size="", ahead=0, **kw):
         super().__init__(*a, claude=kw.pop("claude", built()), **kw)
-        self.pr, self.size = pr, size
+        self.pr, self.size, self.ahead = pr, size, ahead
 
     def resolve(self, a):
         if a[:3] == ["gh", "pr", "list"]:
@@ -31,6 +31,8 @@ class Build(Machine):
                                  if self.pr else []), ""
         if a[:3] == ["git", "config", "--get"]:
             return (0, self.size + "\n", "") if a[3].endswith("factorySize") and self.size else (1, "", "")
+        if a[:3] == ["git", "rev-list", "--count"]:
+            return 0, f"{self.ahead}\n", ""
         return super().resolve(a)
 
 
@@ -38,6 +40,7 @@ class BuildCase(Case):
     def setUp(self):
         super().setUp()
         self.handover = self.spec.with_suffix(".handover.md")
+        self.report = self.store / "deliverables" / SLUG / "report.md"
 
     def build(self, *flags, **machine):
         return self.build_with(Build, *flags, **machine)
@@ -162,7 +165,7 @@ class OutcomeTests(BuildCase):
         cases = {"the worktree is not clean": ({"dirty": True}, "OPEN"),
                  f"the worktree is not on worktree-{SLUG}": ({"branch": "elsewhere"}, "OPEN"),
                  "the spec changed": (self.edit_spec, "OPEN"),
-                 f"worktree-{SLUG} has no open pull request": ({}, None)}
+                 f"worktree-{SLUG} has no open pull request and no report at {self.report}": ({}, None)}
         for reason, (after, pr) in cases.items():
             with self.subTest(reason=reason):
                 self.spec.write_text(SPEC_TEXT)
@@ -184,8 +187,24 @@ class OutcomeTests(BuildCase):
         self.assertEqual((code, self.only_record()["reason"]), (1, f"cannot check for a pull request on worktree-{SLUG}"))
 
     def test_a_closed_pull_request_is_not_an_open_one(self):
+        self.write_report()
         code, *_ = self.build(pr="MERGED")
-        self.assertEqual((code, self.only_record()["outcome"]), (1, "stopped"))
+        self.assertEqual((code, self.only_record()["reason"]), (1, f"worktree-{SLUG} has no open pull request"))
+
+    def write_report(self):
+        self.report.parent.mkdir(parents=True)
+        self.report.write_text("the report")
+
+    def test_a_report_with_no_pull_request_and_no_commit_ahead_is_built(self):
+        self.write_report()
+        code, *_ = self.build(pr=None)
+        self.assertEqual((code, self.only_record()["outcome"], self.only_record()["reason"]), (0, "built", None))
+
+    def test_a_report_with_a_commit_ahead_and_no_pull_request_is_stopped(self):
+        self.write_report()
+        code, *_ = self.build(pr=None, ahead=1)
+        self.assertEqual((code, self.only_record()["reason"]),
+                         (1, f"worktree-{SLUG} has commits and no pull request: a report task commits nothing"))
 
     def test_question_and_stopped_are_taken_as_they_are_without_the_checks(self):
         for outcome in ("question", "stopped"):
@@ -248,7 +267,8 @@ class HandOverFileTests(BuildCase):
         self.build(claude=built("built", "  "), pr=None)
         first = self.handover.read_text().splitlines()
         self.assertRegex(first[0], self.HEADER % (1, "stopped", "3.20", "a" * 7))
-        self.assertEqual(first[1:4], [f"Reason: worktree-{SLUG} has no open pull request", "", "No hand-over was written."])
+        self.assertEqual(first[1:4], [f"Reason: worktree-{SLUG} has no open pull request and no report at {self.report}", "",
+                                      "No hand-over was written."])
 
     def test_a_cost_that_is_missing_is_unpriced_in_the_header_and_null_in_the_record(self):
         rc, out, err = built()

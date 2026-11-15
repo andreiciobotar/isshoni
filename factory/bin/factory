@@ -5826,14 +5826,29 @@ def build_run(repo, settings, args, spec, handover, learned):
     seconds = round(time.monotonic() - started)
     learned.update(session=session, head_before=old_head, seconds=seconds, cost_usd=cost)
     if verdict == "built" and not reason:
-        pr_state = pull_request(repo, branch)[0]
         checks = [(not git("status", "--porcelain"), "the worktree is not clean"),
                   (git("rev-parse", "--abbrev-ref", "HEAD") == branch, f"the worktree is not on {branch}"),
-                  (spec_hash(spec) == before, "the spec changed"),
-                  (pr_state == "open", f"cannot check for a pull request on {branch}" if pr_state == "unknown"
-                   else f"{branch} has no open pull request")]
-        reason = next((why for ok, why in checks if not ok), None)
+                  (spec_hash(spec) == before, "the spec changed")]
+        reason = next((why for ok, why in checks if not ok), None) or delivery_gap(repo, slug, branch, git)
     return "stopped" if reason else verdict, reason, text
+
+
+def delivery_gap(repo, slug, branch, git):
+    """Why a `built` run has delivered nothing, or None: an open pull request, or a report task's end: no pull request, the
+    report on disk and no commit the base lacks (the worktree is removed after acceptance, so a commit would be lost)."""
+    state = pull_request(repo, branch)[0]
+    report = STORE.expanduser() / "deliverables" / slug / "report.md"
+    if state == "open":
+        return None
+    if state == "unknown":
+        return f"cannot check for a pull request on {branch}"
+    if state != "none":
+        return f"{branch} has no open pull request"
+    if not report.exists():
+        return f"{branch} has no open pull request and no report at {report}"
+    base, merged = land_base(repo, branch)
+    ahead = int(git("rev-list", "--count", f"{repo.remote}/{repo.default if merged else base}..HEAD"))
+    return f"{branch} has commits and no pull request: a report task commits nothing" if ahead else None
 
 
 def report_stop(repo, fallback, pr, kind, line):
