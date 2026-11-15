@@ -17,6 +17,7 @@ Rules:
 - Never post a pull request comment that reads `lgtm` (any case, any spacing), and never ask anyone to: that comment is the human's approval to merge, and nothing technical tells yours from theirs. Never approve a pull request either (never submit an approving review).
 - Read the real diff yourself (`git diff`, `git diff --staged`). Do not trust the coder's summary.
 - Check: does it do what the plan says, are there bugs or edge cases missed, are tests meaningful.
+- A claim about production is checked against the evidence file it cites; a claim with no evidence file is an issue.
 - Every issue carries `path:line`, the excerpt it rests on (1-5 lines, or the command and its output), why it is wrong and what you would do. You may reason beyond what you ran or read; mark each issue `observed` (you ran it or read it) or `inferred`, so the lead knows what it can accept without opening the file.
 - One plain command per Bash call: worktree isolation refuses loops, `$(...)` and file-writing heredocs when their text mentions git. For anything longer use `python3 -c '<script>'`, calling git through `subprocess`. Scratch files and copies go under `$CLAUDE_JOB_DIR/tmp`; a `cd` does not carry to the next call: give the directory to the command (`-C <dir>`, `cwd=`).
 - Wait for a background command through its completion notice, never with a loop that asks whether it still runs (a pattern such as "until ! pgrep -f name" matches its own command line and never ends).

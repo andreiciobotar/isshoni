@@ -63,7 +63,7 @@ class LaunchTests(BuildCase):
         [argv] = m.tech_lead_calls()
         role = (BIN.parent.parent / "roles" / "tech-lead-build.md").read_text()
         self.assertEqual(argv[:-1], [
-            "claude", "-p", "--model", "opus", "--agents", json.dumps(factory.agent_definitions(factory.SETTINGS_DEFAULTS["models"])),
+            "claude", "-p", "--model", "opus", "--agents", json.dumps(factory.agent_definitions(factory.SETTINGS_DEFAULTS, self.root)),
             "--permission-mode", "auto", "--plugin-dir", str(BIN.parent.parent),
             "--strict-mcp-config", "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}",
             "--disallowedTools", "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)",
@@ -99,7 +99,8 @@ class LaunchTests(BuildCase):
         argv = m.tech_lead_calls()[0]
         self.assertEqual((argv[3], argv[argv.index("--permission-mode") + 1], "--strict-mcp-config" in argv), ("sonnet", "plan", False))
         agents = json.loads(argv[argv.index("--agents") + 1])
-        self.assertEqual(agents, factory.agent_definitions({**factory.SETTINGS_DEFAULTS["models"], "coder": "haiku", "tech_lead": "sonnet"}))
+        models = {**factory.SETTINGS_DEFAULTS["models"], "coder": "haiku", "tech_lead": "sonnet"}
+        self.assertEqual(agents, factory.agent_definitions({**factory.SETTINGS_DEFAULTS, "models": models}, self.root))
         self.assertEqual((agents["factory:coder"]["model"], agents["factory:reviewer"]["model"]), ("haiku", "opus"))
         self.assertEqual(self.only_record()["model"], "sonnet")
 
