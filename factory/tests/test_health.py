@@ -100,6 +100,13 @@ class CriteriaFileTests(unittest.TestCase):
         self.assertEqual(len(shipped), 5)
         self.assertTrue(all(c["job"] == "digest" and c["what"].strip() for c in shipped))
 
+    def test_a_deleted_line_turns_its_criterion_off(self):
+        shipped = factory.load_criteria()
+        p = pic(rows=[row("x")])
+        with mock.patch.dict(factory.CRITERIA, {"mix-shift": (lambda p, t: [("x", "x", "shifted")], True)}):
+            self.assertIn("mix-shift", [f["criterion"] for f in factory.evaluate(p, shipped)[0]])
+            self.assertNotIn("mix-shift", [f["criterion"] for f in factory.evaluate(p, [c for c in shipped if c["name"] != "mix-shift"])[0]])
+
     def test_no_watch_threshold_is_left_in_the_file_or_the_facts(self):
         text = (factory.PLUGIN_ROOT / "criteria.json").read_text()
         for gone in ("quiet", "nearing-limit", "past-limit", "review-loops", "deep-stack", "cost-outlier", "wrong-model", "escalate"):
@@ -247,6 +254,18 @@ class CriteriaTests(Home):
             self.assertNotIsInstance(cm.exception, factory.NoJson)
         with mock.patch.object(factory, "run", FakeRun({("gh",): (8, '[{"bucket": "fail"}]', "")})):
             self.assertEqual(factory.gh_json(repo, list, "pr", "checks", "u"), [{"bucket": "fail"}])
+
+    def test_a_wrong_shape_from_gh_is_not_evaluated_but_a_pr_without_checks_is_skipped(self):
+        repo = SimpleNamespace(root=ROOT, default="main")
+        gh = lambda *a: factory.gh_json(repo, *a)  # noqa: E731
+        listed = {("gh", "run"): (0, '{"a": 1}', ""), ("gh", "pr", "view"): (0, "[]", ""),
+                  ("gh", "pr", "checks"): (1, "", "no checks reported")}
+        reviewing = row("x", phase="review", pr_url="https://pr/1")
+        with mock.patch.object(factory, "run", FakeRun(listed)):
+            _, skipped = factory.evaluate(pic(gh=gh, rows=[reviewing]), [{"name": "ci-red-default"}])
+        self.assertEqual({s["criterion"] for s in skipped}, {"ci-red-default"})
+        with mock.patch.object(factory, "run", FakeRun(listed)):
+            self.assertEqual(check("ci-red-handover", pic(gh=gh, rows=[reviewing])), [])
 
     def test_last_activity_survives_a_null_start(self):
         r = row("x", last_commit=NOW - 100)

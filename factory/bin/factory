@@ -2890,7 +2890,7 @@ def look_row(p, r, folded, skip):
         unpriced = f"unpriced: {e}"
     calls = [known(("entry", f["criterion"]), ("decision", f["decision"]), ("to", f.get("to")), ("reason", f["reason"]),
                    ("decided", f["decided"] and age(epoch(f["decided"]), now)), ("outcome", f["outcome"]))
-             for f in folded if f["slug"] == slug and f["id"] not in skip and (epoch(f["ts"]) or 0) >= now - 24 * 3600][:10]
+             for f in reversed(folded) if f["slug"] == slug and f["id"] not in skip and (epoch(f["ts"]) or 0) >= now - 24 * 3600][:10]
     return known(
         ("slug", slug), ("phase", r["phase"]), ("state", r["state"]),
         ("declared", declared and age(declared, now)),
@@ -2920,11 +2920,11 @@ def look_picture(p, since, woken, send):
             else "unknown: sessions cannot be listed with `claude agents --json --all`", "landed_median_usd": median}
 
 
-def wake_events(repo, snap, last, since):
-    """The events the site manager is woken for, from the records since `since` (a ts, later than it) and the tick's pull
+def wake_events(repo, snap, last, since, until):
+    """The events the site manager is woken for, from the records with `since` <= ts < `until` and the tick's pull
     request snapshot `snap` (None: none taken) against those of the last look `last`; no model."""
     def mine(name):
-        return [r for r in read_log(name, since) if r.get("repo") == repo.root and stamp(r) > since]
+        return [r for r in read_log(name, since, until) if r.get("repo") == repo.root]
     queue = mine("queue")
     found = [{"event": "task-started", "slug": r.get("slug"), "ts": r["ts"]} for r in mine("events")
              if r.get("event") == "TaskStarted" and r.get("role") == "dispatcher"]
@@ -3554,13 +3554,17 @@ def watch_tick(args, repo):
     send += [{k: a[k] for k in ("id", *FIRED_KEYS)} for a in asks]
     last = (repo_log("looks", repo.root) or [None])[-1]
     since = last["ts"] if last else iso(p["now"] - WATCH_INTERVAL)
-    woken = wake_events(repo, snap, last, since) + [{"event": "firing", "id": f["id"], "criterion": f["criterion"], "slug": f["slug"]} for f in send]
+    until = now()  # the look is stamped with it: a record is read by exactly one look
+    woken = wake_events(repo, snap, last, since, until) + [{"event": "firing", "id": f["id"], "criterion": f["criterion"], "slug": f["slug"]} for f in send]
     here = {os.path.basename(t["path"]) for t in repo.tasks}
     if full and any(r["state"] in ("working", "blocked") and slug in here for slug, r in p["declared"].items()) \
             and (not last or p["now"] - epoch(last["ts"]) >= HEALTH_SECONDS):
         woken.append({"event": "pace"})
-    if woken and not full:  # a look always has the full picture
-        p = {**gather(repo, args.dispatcher, p["sessions"]), "snap": snap}
+    if woken and not full:  # a look always has the full picture, when there is a dispatcher to ask
+        if p["sessions"] is None:
+            with_dispatcher(p, args.dispatcher)
+        if p["dispatcher"]:
+            p = {**gather(repo, args.dispatcher, p["sessions"]), "snap": snap}
     orphaned = str(p["dispatcher_why"]).startswith("no dispatcher session")  # not a shared or missing name
     failure, undecided = None, "its decision was missing or not valid"
     if not woken:
@@ -3575,7 +3579,7 @@ def watch_tick(args, repo):
             print(undecided)
     else:
         try:
-            look = {**look_picture(p, since, woken, send), "prs": [pr["number"] for pr in snap] if snap is not None else (last or {}).get("prs")}
+            look = {**look_picture(p, since, woken, send), "prs": [pr["number"] for pr in snap] if snap is not None else (last or {}).get("prs"), "until": until}
             run_site_manager(p, send, "watch", look)
         except Fail as e:
             failure = undecided = e
@@ -3661,8 +3665,8 @@ def run_site_manager(p, send, job="watch", look=None):
         failed, subtype = err.strip() or "no usable output", doc.get("subtype")
         if isinstance(subtype, str) and subtype != "success":
             failed = f"{subtype}: {failed}"
-    if job == "watch":  # stamped with the tick's time: what arrives while he runs is the next look's
-        log("looks", {"ts": iso(p["now"]), "repo": repo.root, "woken_by": look["woken_by"], "firings": [f["id"] for f in send],
+    if job == "watch":  # stamped with the time its events were read to: what arrives while he runs is the next look's
+        log("looks", {"ts": look.get("until") or iso(p["now"]), "repo": repo.root, "woken_by": look["woken_by"], "firings": [f["id"] for f in send],
                       "tasks": len(look["tasks"]) if isinstance(look["tasks"], list) else None, "calls": calls, "cost_usd": cost,
                       "seconds": seconds, "run": doc.get("session_id"), "model": load_settings()["models"]["site_manager"],
                       "prs": look.get("prs"), **({"failed": failed} if failed else {})})

@@ -520,6 +520,7 @@ class ToldTests(Loop):
         self.go("lander")
         [fired] = [r for r in self.records() if "criterion" in r]
         self.assertEqual((fired["criterion"], fired["subject"], "escalate" in fired), ("lgtm-blocked", "#1/ci", False))
+        self.assertTrue(factory.fold(self.records())[0][0]["cleared"])
         [decision] = [r for r in self.records() if "decision" in r]
         self.assertEqual((decision["decision"], decision["by"]), ("escalated", "lander"))
 

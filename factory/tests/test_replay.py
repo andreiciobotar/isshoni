@@ -31,8 +31,8 @@ def load(name):
 
 
 def tick_of(ts):
-    """The first tick at or after the record time `ts`."""
-    return -(-epoch(ts) // STEP) * STEP
+    """The first tick after the record time `ts`: a tick reads the records before its own second."""
+    return (epoch(ts) // STEP + 1) * STEP
 
 
 class Replay(Harness):

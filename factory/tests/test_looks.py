@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import DISPATCHER, ROOT, WT, factory
-from test_health import FINISHED, HOUR, NOW, Harness, Home, choice, ev, fired, iso, lead, look, pic, reply, row
+from test_health import FINISHED, HOUR, NOW, Harness, Home, choice, decided, ev, fired, iso, lead, look, pic, reply, row
 from test_merge import pr
 
 ENTRIES = ["overrun", "collision", "review-loops", "unlisted"]
@@ -145,6 +145,13 @@ class Wake(Harness):
         _, out, _ = self.wake(at=NOW + 120)
         self.assertIn("nothing new", out)  # its events are not retried
 
+    def test_a_record_written_after_the_look_read_the_logs_wakes_the_next_tick(self):
+        self.seed("queue", [{"repo": ROOT, "ts": iso(NOW + 30), "step": "sent-back", "slug": "a", "pr": 1, "kind": "conflict", "head": "h"}])
+        _, out, _ = self.wake()
+        self.assertIn("nothing new", out)
+        self.wake(at=NOW + 60)
+        self.assertEqual([w["pr"] for w in self.only_look()["woken_by"]], [1])
+
     def test_without_a_dispatcher_nothing_runs_and_no_look_is_written(self):
         self.seed("events", [ev("a", "TaskStarted", role="dispatcher", ts=iso(NOW - 30))])
         self.wake(sessions=[])
@@ -210,6 +217,20 @@ class Picture(Harness):
         self.assertEqual(tasks["x"]["stack"], 2)
         self.assertEqual((tasks["m"]["merged"], tasks["m"]["extended_minutes"]), ("3h", 20))
         self.assertNotIn("children", tasks["a"])
+
+    def test_calls_are_the_ten_newest_of_the_day_newest_first_and_a_lead_call_among_them_still_refuses(self):
+        self.seed("firings", [r for i in range(12) for r in (
+            fired(f"f{i}", criterion="review-loops" if i == 11 else f"c{i}", subject="x", ts=NOW - 2000 + i), {**decided(f"f{i}", "escalated", ts=NOW - 1000 + i), "to": "lead"})])
+        base = row("x", session="none", extensions=[], dirty=None, ahead=None, behind=None, pr_draft=False)
+        p = pic(rows=[base], repo=SimpleNamespace(root=ROOT, default="main", tasks=[], worktree_path=lambda s: f"{WT}/{s}"))
+        [task] = factory.look_picture(p, None, [], [])["tasks"]
+        self.assertEqual([c["entry"] for c in task["calls"]], ["review-loops", *[f"c{i}" for i in range(10, 1, -1)]])
+        task = {**task, "lead": "x"}
+        with mock.patch.object(factory, "forward") as forward:
+            call = {"entry": "review-loops", "slug": "x", "detail": "d", "decision": "escalated", "reason": "r", "to": "lead", "looked": []}
+            self.guidance.write_text("## review-loops\n")
+            self.assertEqual(factory.record_decisions({**p, "dispatcher": "dispatcher-repo"}, [], {"sent": False, "decisions": [call]}, "r1", {"tasks": [task]}), 0)
+        self.assertFalse(forward.called)
 
 
 class OwnCalls(Harness):
