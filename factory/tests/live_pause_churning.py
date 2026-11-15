@@ -187,7 +187,7 @@ def run(factory, tmp):
     shipped = json.loads((factory.PLUGIN_ROOT / "criteria.json").read_text())
     scratch_criteria.write_text(json.dumps([c for c in shipped if c["name"] == "churning"]))
     patches = {"run": hub, "spawn": lambda argv, cwd, out: hub.spawned.append(argv), "POLL": 0.01, "run_clean": lambda: 0,
-               "CRITERIA_PATH": scratch_criteria}
+               "CRITERIA_PATH": scratch_criteria, "review_tick": lambda *_: None}
     saved = {k: getattr(factory, k) for k in patches}
     for k, v in patches.items():
         setattr(factory, k, v)

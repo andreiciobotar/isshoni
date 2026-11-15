@@ -297,7 +297,8 @@ class RunTests(Session):
         for lean in ("true", "false"):
             with self.subTest(lean_start=lean):
                 self.settings_file(f"[sessions]\nlean_start = {lean}\n")
-                argv = factory.review_argv(factory.load_settings(), self.tmp, "p")
+                with mock.patch.object(factory, "lean_flags", return_value=["--strict-mcp-config"]):
+                    argv = factory.review_argv(factory.load_settings(), self.tmp, "p")
                 self.assertEqual(argv.count("--strict-mcp-config"), 1)
 
     def test_the_session_cannot_reach_github(self):
@@ -617,7 +618,7 @@ class MirrorTests(Store):
         gh = mock.Mock(return_value=(0, json.dumps([self.issue(1, "CLOSED", False, "aaaaaaaaaaaa")]), ""))
         self.settings_file(f'[kaizen]\nissues_repo = "{TARGET}"\n')
         claude = (0, json.dumps({"session_id": "s"}), "")
-        run = lambda argv, **kw: claude if argv[0] == "claude" else gh(argv)
+        run = lambda argv, **kw: (0, "[]", "") if argv[:3] == ["claude", "plugin", "list"] else claude if argv[0] == "claude" else gh(argv)
         with mock.patch.object(factory, "run", run), mock.patch.object(factory, "load_identity", lambda: {"bot_login": "b", "owner": "me"}), \
                 mock.patch.object(factory, "app_token", lambda *a: "T"), redirect_stdout(io.StringIO()):
             factory.review_run(SimpleNamespace(root=self.root), factory.load_settings())
