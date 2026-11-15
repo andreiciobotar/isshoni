@@ -380,11 +380,11 @@ def shapes(d):
     add("pooled_roles", [x["authoring"]["lines"] for x in a["points"] + a["versions"]])
     add("pooled_share", [x["authoring"]["share"] for x in a["points"] + a["versions"]])
     add("overhead", [s["overhead"]])
-    days = [d["pulse"]["today"], d["pulse"]["yesterday"]]
+    days = [d["pulse"]["today"], d["pulse"]["baseline"], *d["pulse"]["days"]]
     add("pulse", [d["pulse"]]), add("pulse_day", days), add("pulse_cost", [x["cost"] for x in days])
     add("pulse_sizes", [x["first_pass"] for x in days]), add("pulse_first_pass", [f for x in days for f in x["first_pass"].values()])
     add("pulse_handover", [x["handover"] for x in days]), add("pulse_p90", [h for x in days for h in list(x["handover"].values())[:3]])
-    add("pulse_conflicts", [x["conflicts"] for x in days])
+    add("pulse_conflicts", [x["conflicts"] for x in days]), add("pulse_verdicts", [d["pulse"]["verdicts"]])
     f = d["friction"]
     add("friction", [f]), add("friction_dispatcher", [f["dispatcher"]]), add("friction_rework", [f["rework"]]), add("friction_causes", [f["causes"]])
     add("friction_refusals", [f["refusals"]]), add("friction_role", f["refusals"]["roles"]), add("friction_wakeups", [f["wakeups"]])
@@ -405,7 +405,7 @@ class DashboardFixtureTests(FixtureStore):
         self.assertLessEqual({"doc", "repo", "version", "task", "pr", "cost", "by_role", "defects", "summary", "time",
                               "first_pass", "median", "stop", "slowed", "outbox", "counts", "topic", "entry",
                               "site_manager", "tech_lead", "pulse", "pulse_day", "pulse_cost", "pulse_sizes", "pulse_first_pass",
-                              "pulse_handover", "pulse_p90", "pulse_conflicts", "mix", "authoring", "authoring_roles", "pooled", "pooled_roles", "pooled_share",
+                              "pulse_handover", "pulse_p90", "pulse_conflicts", "pulse_verdicts", "mix", "authoring", "authoring_roles", "pooled", "pooled_roles", "pooled_share",
                               "overhead", "by_mode"}, set(ours))
         for name in ours:
             self.assertEqual(fixture[name], ours[name], name)

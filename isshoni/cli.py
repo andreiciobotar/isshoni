@@ -273,16 +273,20 @@ def cmd_agents(args):
 
 
 def _pulse_lines(pulse, cur):
-    """The pulse's four figures, one line each: today and yesterday, each with the number of pull requests behind it."""
-    dur = lambda p: fmt_duration(p["p90_s"] * 1000)  # noqa: E731
+    """The pulse's heading and four lead figures, one line each: today and the baseline with the pull requests behind each, and the verdict."""
+    today, base = pulse["today"], pulse["baseline"]
     first_pass = lambda d: tuple(sum(f[k] for f in d["first_pass"].values()) for k in ("yes", "of"))  # noqa: E731
+    median = lambda d: d["handover"]["approval_to_merge"]  # noqa: E731
     figures = (
-        ("all-in cost per merged PR", lambda d: (d["cost"]["per_merged"] is not None and money(d["cost"]["per_merged"], cur, d["cost"]["unpriced_tokens"]), d["merged"])),
-        ("first pass", lambda d: (first_pass(d)[1] and "%d%%" % round(100 * first_pass(d)[0] / first_pass(d)[1]), first_pass(d)[1])),
-        ("hand-over to merge p90", lambda d: (d["handover"]["to_merge"]["p90_s"] is not None and dur(d["handover"]["to_merge"]), d["handover"]["to_merge"]["n"])),
-        ("conflicted base merges per merged PR", lambda d: (d["conflicts"]["per_merged"] is not None and "%.2f" % d["conflicts"]["per_merged"], d["conflicts"]["prs"])))
-    return ["%s: %s" % (label, ", ".join("%s %s (n=%d)" % (day, shown or "-", n) for day in ("today", "yesterday") for shown, n in [f(pulse[day])]))
-            for label, f in figures]
+        ("all-in cost per merged PR", "cost", lambda d: (d["cost"]["per_merged"] is not None and money(d["cost"]["per_merged"], cur, d["cost"]["unpriced_tokens"]), d["merged"])),
+        ("first pass", "first_pass", lambda d: (first_pass(d)[1] and "%d%%" % round(100 * first_pass(d)[0] / first_pass(d)[1]), first_pass(d)[1])),
+        ("approval to merge median", "approval_to_merge", lambda d: (median(d)["p50_s"] is not None and fmt_duration(median(d)["p50_s"] * 1000), median(d)["n"])),
+        ("conflicted base merges per merged PR", "conflicts", lambda d: (d["conflicts"]["per_merged"] is not None and "%.2f" % d["conflicts"]["per_merged"], d["conflicts"]["prs"])))
+    against = "yesterday (%s)" % base["date"] if base["days"] == 1 else "the %d days before (%s to %s)" % (base["days"], base["date"], base["to"])
+    return ["pulse: today %s against %s" % (today["date"], against)] + [
+        "%s: %s: %s" % (label, ", ".join("%s %s (n=%d)" % (name, shown or "-", n) for name, d in (("today", today), ("baseline", base)) for shown, n in [f(d)]),
+                        pulse["verdicts"][key] or "-")
+        for label, key, f in figures]
 
 
 def _friction_lines(f, cur, subagents_only):

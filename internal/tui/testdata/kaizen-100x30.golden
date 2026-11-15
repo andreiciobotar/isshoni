@@ -1,15 +1,18 @@
  Isshoni  1 Dash  2 Agents  3 Factory [4 Kaizen] 5 ◉  6 ✿                24h [7d] 30d  all   ○ idle 
  Kaizen  [Pulse] Friction  Flow  Anatomy  Board   · 20 landed of 24 tasks in 7d  · as of 11:00:00   
- TODAY AGAINST YESTERDAY                    today 11-14                 yesterday 11-13             
- all-in cost / merged PR                    $10.25  n=12                $14.10*  n=5                
-   tasks + dispatcher + site manager        $100 + $20.25 + $2.25       $60.00 + $9.50 + $1.00      
- first pass  small · medium                 75% 3/4 · 33% 1/3           100% 2/2 · -                
-             large · no size stated         0% 0/1 · 50% 2/4            - · 33% 1/3                 
- hand-over → merge p90                      36m44s  n=11                10m00s  n=5                 
-   to approval · approval to merge          30m00s · 4m00s  n=6 (2 bac… -                           
-   send-backs that changed nothing          1 of 3                      -                           
- conflicted base merges / PR (git history)  0.36  4 in 11 PRs           -                           
+ TODAY AGAINST THE 7 DAYS BEFORE                                                                    
+▌ all-in cost / merged PR ▌ first pass             ▌ approval → merge p50   ▌ conflicts / PR        
+▌ $10.25  n=12            ▌ 50%  6/12              ▌ 2m30s  n=6             ▌ 0.36  n=11            
+▌ ↓ 27% vs $14.00* n=50   ▌ ↓ 34 pts vs 84% 42/50  ▌ ≈ vs 2m40s n=30        ▌ ↑ 179% vs 0.13 n=46   
+▌ ▇▇██████▆▆▆▆▅▅▅▅        ▌ ██▇▇▆▆▇▇▇▇▇▇▆▆▅▅       ▌ ··██▇▇▆▆▇▇▅▅▆▆▆▆       ▌ ▁▁▄▄▃▃▄▄▃▃▄▄▄▄██      
+▌ $100 · $20.25 · $2.25   ▌ 3/4 · 1/3 · 0/1 · 2/4  ▌ p90 4m00s              ▌ 4 in 11 PRs           
+ hand-over → merge p90 · → approval p90: today 36m44s · 30m00s (n=11), baseline 55m00s · 40m00s     
+ (n=46)                                                                                             
+ baseline 11-07 to 11-13: parts $600 · $90.00 · $10.00 · first pass 19/21 · 12/17 · 3/4 · 8/8 ·     
+ approval → merge p90 7m00s                                                                         
+ baseline conflicts 6 in 46 PRs · send-backs that changed nothing: 1 of 3 today · - baseline        
  send-backs: the queue log starts 11-14 09:00                                                       
+ approvals recorded: 6 today (2 backfilled), 30 of 46 in the baseline (8 backfilled)                
                                                                                                     
 ▌ LANDED         ▌ COST / TASK    ▌ OVERHEAD       ▌ BRIEF → PR     ▌ PR → MERGE     ▌ FIRST PASS   
 ▌ 20             ▌ $6.20          ▌ $2.06          ▌ 25m50s         ▌ 5m45s          ▌ 7/19         
@@ -23,8 +26,5 @@
 │        █ █ █ █   █   ▂     ▄                   │ │        █ ▅ █ █ ▃ █                            │
 │  $6.20 █·█·█·█·▆·█·█·█·▅·█·█·▄·▆·▅············ │ │ 25m50s █·█·█·█·█·█·▅·▂···▃·▆················· │
 │        █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ▆ ▅ ▃ ★   │ │        █ █ █ █ █ █ █ █ ▇ █ █ ▅ █ ▅ ▄ ▃ ▂ ▂ ▁  │
-│        █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █   │ │        █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █  │
-│        ────────────▲───────────────▲────────── │ │        ────────────▲───────────────▲───────── │
-│        v0.1.0      v0.2.0          v0.3.0      │ │        v0.1.0      v0.2.0          v0.3.0     │
- +27 more lines · ↓ to scroll                                                                       
+ +30 more lines · ↓ to scroll                                                                       
  ←→/hl kaizen page  ·  ↑↓/jk move  ·  r range  ·  tab next view  ·  ? help  ·  q quit               
