@@ -1100,11 +1100,19 @@ class FiringTests(Harness):
         self.refused("firing", "zzz", "acted", why="no firing matches")
         self.refused("firing", "abc", "acted", why="matches 2 firings")
         self.refused("firing", "sss", "acted", why="was not escalated")
-        self.refused("firing", "uuu", "ignored", why="was not escalated")
         self.assertEqual(self.outcomes(), [])
         for argv in (("firing", "abc1", "escalated"), ("firing", "abc1", "acted", "--reason", "r")):
             with self.subTest(argv), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 factory.parse_args(list(argv))
+
+    def test_an_outcome_is_taken_before_the_decision_is_logged_and_counts_once_it_is(self):
+        code, out, _ = self.cli("firing", "uuu", "acted")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "uuu555: acted (its decision is not logged yet)")
+        self.seed("firings", [decided("uuu555", "escalated", ts=NOW + 30) | {"to": "dispatcher"}])
+        folded, _ = factory.fold(self.records())
+        self.assertEqual([(f["decision"], f["outcome"]) for f in folded if f["id"] == "uuu555"], [("escalated", "acted")])
+        self.assertEqual(json.loads(self.cli("firings", "--json")[1])["summary"]["acted"], 1)
 
     def test_an_outcome_is_allowed_after_the_firing_cleared(self):
         self.seed("firings", [{"ts": iso(NOW), "repo": ROOT, "id": "def333", "cleared": True}])
