@@ -439,7 +439,7 @@ The pictures here and in the README are recordings of this repository's own fact
 ```
 bin/isshoni-tui [--range 24h|7d|30d|all] [--follow] [--no-color]
                 [--projects-dir DIR] [--agents-dir DIR] [--prices PATH]
-bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-friction|kaizen-flow|kaizen-anatomy|kaizen-board|hanami|help [--size 140x40] [--session ID] [--row N] [--fold] [--frames N]
+bin/isshoni-tui --snapshot dashboard|session|agents|factory|ops|kaizen|kaizen-friction|kaizen-flow|kaizen-anatomy|kaizen-board|hanami|help [--size 140x40] [--session ID] [--row N] [--fold] [--frames N]
 ```
 `--range` defaults to `7d`. `NO_COLOR` gives the plain rendering too. `--snapshot`
 prints one settled frame and exits, non-zero when the load fails; `--row N` puts the
@@ -452,10 +452,11 @@ VIEW=... SIZE=...` turns it into a PNG under `shots/` (needs Chrome). Both make 
 take `FIXTURE=<name>` (a directory of `tests/fixtures`, e.g. `grouping`): they render a copy
 of it with every file at 2026-01-01T10:30:00Z, as the golden tests do, with the fixture agents
 and prices, `--range all` and times in UTC, so `--row N` is the golden test's row N.
+`--snapshot ops` and the Ops tab need no fixture of that kind, only a root whose `factory/bin/factory` prints watches: `ISSHONI_ROOT=$PWD/tests/fixtures/ops-root` is one, with invented watches whose times are relative to now and no sessions, so `make screenshot VIEW=ops SIZE=100x30 ISSHONI_ROOT=$PWD/tests/fixtures/ops-root ARGS="--projects-dir tests/fixtures/ops-root"` renders the tab without reading your ops store.
 
 | Key | |
 |---|---|
-| `tab` `shift+tab`, `1` `2` `3` `4` | switch view: dashboard, agents, factory, kaizen |
+| `tab` `shift+tab`, `1` `2` `3` `4` `5` `6` | switch view: dashboard, agents, factory, kaizen, ops, hanami |
 | `↑` `↓` `j` `k`, `g` `G`, `pgup` `pgdn` | move, first and last, page |
 | `←` `→` `h` `l` | dashboard: collapse the repository the cursor is in (the cursor moves to its row), expand it. A collapsed row (`▸`) keeps its totals, and the tiles and follow mode still count what is inside; a filter leaves it collapsed, counting the matches. Folding turns follow mode off and is forgotten on exit. On a short-runs row, `→` opens it and `←` closes it (also from one of its sessions); on a closed one `←` still folds the repository |
 | `enter`, `esc` | dashboard: open the session row under the cursor full screen (the zoom; in it `↑` `↓` `g` `G` `pgup` `pgdn` move over the dispatches and `enter` swaps the list for the selected dispatch); on `all`, a repository or a task, a message says to pick a session row and the cursor stays. Back: first the detail, then the zoom, then the dashboard from any other view |
@@ -608,6 +609,27 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   keeps the newest and says `last N/M`. The Pulse rewards line, when there are rewards,
   shimmers for three seconds each time Pulse is shown or new numbers arrive; the tiles
   count up and the columns grow while new numbers arrive (never in a snapshot).
+- **Ops:** the ops watches on this machine, from what `factory ops list --json` prints
+  (cwd the checkout the dashboard runs from, 10 s limit), one block each, alarmed ones
+  first, then the other active ones (`watching`), then the rest (out of budget, ended,
+  stopped), each group in the command's order. A block: its state (`watching`, `alarmed`,
+  `ended: met|not met|inconclusive`, `stopped`, `out of budget`) and repository, when its
+  next look is due (`overdue` when late), its interval and when it ends (`past its end by`
+  when it is past), its goal, its last look with how late it ran, the looks run and missed,
+  what it spent against its budget in dollars (`unpriced` for looks that had no price,
+  never `$0`) and the path of its notes. On a narrow terminal the state word is kept first:
+  the end of the schedule goes, then the interval, then the repository, then the name is
+  cut; on the last-look line the looks run go before the text it saw is cut. It is
+  read-only: nothing on the tab starts, stops or changes a watch. It loads at start, every
+  2 minutes while another tab is shown and every 30 seconds while this one is (and when
+  the tab is shown), never two at once. The tab label carries `▲N` for the number of
+  alarmed watches while another tab is shown (no badge when the last reload failed). The
+  sub-header counts the watches (`alarmed` and `out of budget` ones named) and says how
+  old the answer is. If a reload fails the watches stay under one red line saying why and
+  the sub-header says `stale, from 5m ago`. With a factory that has no `ops` command the
+  page says `⚠ this factory has no ops command yet`; with no watch it says how to start
+  one from your terminal. `↑` `↓` scroll. Below 110 columns the tab is an eye, `5 ◉`
+  (`5 ▲N` with the badge). Known limit: at 60 columns a two-digit alarm count, or an alarm count beside a Factory badge, pushes the selected range chip out of the header. `--snapshot ops` loads once and renders.
 
 A session is live when its transcript changed in the last 30 seconds or so. Agents keep
 one colour and one order everywhere: main, coder, reviewer, explorer, lander, then the rest.
@@ -625,7 +647,7 @@ bin/isshoni-tui --serve ADDR [--authorized-keys FILE] [--host-key FILE]
 
 - **The key file is the only gate.** Public keys only: no password, no keyboard-interactive login, no banner. A key that is listed sees everything the dashboard shows (session titles, repositories, costs). Put `write` before a key (`write ssh-ed25519 AAAA... laptop`) and that key may also change the worktree cap with `c` on the Factory view, which writes `~/.claude/factory/settings.toml` of the account the server runs as, and open the dispatcher's conversation with `d` (next bullet); every other key is read-only (`c` and `d` say so). Any other option on a line is ignored. **A `write` key reaches the dispatcher's conversation, a session that runs commands as the server's account and acts on GitHub as the factory's bot: give `write` only to people you would give a shell.** Whether a key may write is decided when it connects: a key removed or demoted while connected keeps what it had until that connection ends.
 - **The dispatcher (`d`)**, in every view outside an open input, for a `write` key only (not on the local dashboard or `--snapshot`, where `d` does nothing and is not in the help). It gives the connection's terminal to `claude attach NAME`, the dispatcher's conversation, and brings the dashboard back when that exits, at the terminal's size by then. `claude` must be on the server's `PATH`; it runs as the server's account with the server's environment plus the client's `TERM` (and `COLORTERM`, when the client sent it). The names are `sessions.dispatchers` of `~/.claude/factory/settings.toml` (`["dispatcher-<repository>", ...]`), read at every press: one name attaches at once; several open a picker (`1`-`9` or `↑↓` and `enter`; `esc` cancels; past nine only the arrows reach the rest). A name that is not letters, digits, `.`, `_` and `-`, or starts with `-`, is never offered. A missing or empty list, or a settings file that cannot be read, is a toast naming the file and the key. Coming back: `Ctrl+Z` in the attached conversation detaches it and returns to the dashboard; `←` on an empty prompt opens Claude Code's agent view (every session on the server), and `Ctrl+C` twice there returns to the dashboard. If `claude attach` fails (no such session, `claude` missing), the dashboard returns with a toast. The server only ever starts and ends the attach client, never the dispatcher's session, which a Claude Code supervisor owns: detaching, a dropped connection and a server shutdown leave it running. A dropped connection or a shutdown sends the attach client SIGHUP, and the server kills it 2 seconds later if it stays. The pty is resized with the window, and the kernel signals the client; where the server runs on macOS the client has no controlling terminal (the system revokes the terminal when its session leader exits) and does not see a resize. Each attach start and end is a line on stderr (remote address, key fingerprint, name).
-- **Shared calls.** Viewers who ask for the same thing at the same time share one `isshoni` or `factory status` process. A result is used for up to 10 seconds, and not once a transcript has changed since it was started (sessions) or the cap was saved (everything), so the periodic data (agents, kaizen, factory status) can be up to 10 seconds older than on a local dashboard. Viewers on different ranges, or on different sessions, each cost their own call. Two further limits: a transcript that is deleted does not invalidate a shared `sessions` result, so a deleted session can stay listed for a viewer until the next transcript change, or until the 10 seconds lapse and a viewer refetches; and freshness compares the time a run started with file modification times, so on a filesystem with coarse (one-second) times a shared result can miss a write made in the same second until the next change.
+- **Shared calls.** Viewers who ask for the same thing at the same time share one `isshoni` or `factory status` process. A result is used for up to 10 seconds, and not once a transcript has changed since it was started (sessions) or the cap was saved (everything), so the periodic data (agents, kaizen, factory status) can be up to 10 seconds older than on a local dashboard. `factory ops list` is not shared: each viewer runs its own, every 30 seconds on the Ops tab and every 2 minutes off it. Viewers on different ranges, or on different sessions, each cost their own call. Two further limits: a transcript that is deleted does not invalidate a shared `sessions` result, so a deleted session can stay listed for a viewer until the next transcript change, or until the 10 seconds lapse and a viewer refetches; and freshness compares the time a run started with file modification times, so on a filesystem with coarse (one-second) times a shared result can miss a write made in the same second until the next change.
 - **Colour** follows what each client's `TERM` promises (`xterm-256color`: 256 colours; `dumb`: none). Most SSH clients do not forward `COLORTERM`, so truecolor needs it asked for: `ssh -o SetEnv=COLORTERM=truecolor -p 2222 HOST` (the server takes any variable the client sets; a test covers it). The server's own `NO_COLOR` is not consulted; `--no-color` makes every viewer plain. A phone's SSH client usually sends `xterm-256color` and no `COLORTERM`, so it shows 256 colours, in which Hanami's glow is drawn in bands; set `COLORTERM=truecolor` in the client where it lets you set an environment variable.
 - `q` or a dropped connection ends that viewer only. SIGINT and SIGTERM close every connection and every `isshoni` process before the server exits; it waits at most 5 seconds for the viewers. A connection has 30 seconds to finish its handshake.
 - **Unauthenticated connections are bounded**: at most 32 at once, and at most 4 from one source IP address (the port is ignored). A connection counts from accept until its authentication succeeds, or until it closes; a failed attempt does not free it, a close (a client giving up after a failed authentication, the server disconnecting after too many failed tries) or the 30-second handshake timeout does, and authenticated connections are not counted. A connection over either limit is closed before the SSH banner is sent (`ssh` reports that the connection was closed or reset); nothing is queued and no connection is evicted. Refusals are logged to stderr as one line a minute at most, with the number refused since the last line and the limits; the line is written by the first refusal a minute or more after the previous line, so a burst logs "refused 1" at once and the rest of the count shows with the next refusal.
@@ -651,9 +673,9 @@ bin/isshoni-tui --serve ADDR [--authorized-keys FILE] [--host-key FILE]
 
 ## Hanami (花見), the work as something to watch
 
-The fifth view (`5`) draws the same work as motion, for a second screen: the mark come alive. Nothing in it is decoration posing as data: every moving thing is one event from `isshoni events`, and `l` shows the legend.
+The sixth view (`6`) draws the same work as motion, for a second screen: the mark come alive. Nothing in it is decoration posing as data: every moving thing is one event from `isshoni events`, and `l` shows the legend.
 
-<img src="../assets/tabs/hanami.webp" alt="View 5, Hanami: a stretch of the last day replayed at 60 times its speed, with a merge in the middle">
+<img src="../assets/tabs/hanami.webp" alt="View 6, Hanami: a stretch of the last day replayed at 60 times its speed, with a merge in the middle">
 
 | you see | it is |
 |---|---|
@@ -678,7 +700,7 @@ The fifth view (`5`) draws the same work as motion, for a second screen: the mar
 
 Ambient, and not data: the disc's slow breath, the sway of lanterns, the slowest breeze. With nothing running, that is all there is: quiet looks quiet, and the tree at four in the afternoon looks like the afternoon's work.
 
-Colour is always the agent's role, as everywhere in the dashboard. Keys: `l` legend, `z` hides the header and footer, `p` replays the last 24 hours (again: back to live). A replay runs at a minute a second and skips stretches where nothing happened, so a day takes as many seconds as it had busy minutes; its clock is in the sub-header, and its rates (the disc, the wind, the bars) are per event second, so they read as they would have live. Below 110 columns the tab is a blossom, `5 ✿`.
+Colour is always the agent's role, as everywhere in the dashboard. Keys: `l` legend, `z` hides the header and footer, `p` replays the last 24 hours (again: back to live). A replay runs at a minute a second and skips stretches where nothing happened, so a day takes as many seconds as it had busy minutes; its clock is in the sub-header, and its rates (the disc, the wind, the bars) are per event second, so they read as they would have live. Below 110 columns the tab is a blossom, `6 ✿`.
 
 It runs at 20 frames a second and only while it is shown: the view starts `isshoni events --follow` when you open it and stops it when you leave. Measured on a 140x40 terminal (a pty, 30 s after start, CPU time of the process) it takes 7.5% of one core idle and 9.5% replaying a busy stretch, the same as before the beat and the light along the branches were added (the glow is a background colour per cell, two where a half block is drawn, which the terminal layer pays for; the scene itself draws in a millisecond), plus about 1% for the event stream. What had happened before you opened it sets the scene without animation: the last 2 hours of sessions and agents, every open pull request and every unanswered question. An agent whose transcript was last written more than 2 hours earlier and that is still running has no blossom until it next writes. Pull requests come from `gh`, polled once a minute, so a lantern or a firework can be up to a minute late; check states are known live only, so a replay's lanterns do not flicker. Without colour (`--no-color`) there is no glow: shapes and motion carry it; a terminal without truecolor gets the nearest colours it has.
 
@@ -706,7 +728,7 @@ Parsing a transcript is slow, so parsed sessions are cached, one file per transc
 
 ## Shutdown
 
-The dashboard starts three kinds of child process, each in its own process group (`groupCmd` in `internal/data/runner.go`): the monitor calls (`python3 -m isshoni sessions|session|agents|kaizen`, 2 minutes), `factory status --json` (10 s cached, 25 s with a fetch) and the event stream `isshoni events --follow` (while the Hanami tab or follow mode needs it). A cancel or timeout kills the whole group with SIGKILL, so what the child started (`gh`, `git`) goes with it, and waits at most 1 s for its pipes. Under `--serve`, key `d` starts a fourth, `claude attach <name>` (`attach` in `cmd/isshoni-tui/serve.go`, see above): it does not go through `groupCmd`, has no timeout because it waits on a human, and ends when the human detaches or the connection ends, on which it gets SIGHUP and a kill 2 s later. Nothing else is started and nothing is written to disk except the caches below.
+The dashboard starts three kinds of child process, each in its own process group (`groupCmd` in `internal/data/runner.go`): the monitor calls (`python3 -m isshoni sessions|session|agents|kaizen`, 2 minutes), `factory status --json` (10 s cached, 25 s with a fetch), `factory ops list --json` (10 s) and the event stream `isshoni events --follow` (while the Hanami tab or follow mode needs it). A cancel or timeout kills the whole group with SIGKILL, so what the child started (`gh`, `git`) goes with it, and waits at most 1 s for its pipes. Under `--serve`, key `d` starts a fourth, `claude attach <name>` (`attach` in `cmd/isshoni-tui/serve.go`, see above): it does not go through `groupCmd`, has no timeout because it waits on a human, and ends when the human detaches or the connection ends, on which it gets SIGHUP and a kill 2 s later. Nothing else is started and nothing is written to disk except the caches below.
 
 What ends the children, by how the dashboard stops:
 
@@ -717,7 +739,7 @@ What ends the children, by how the dashboard stops:
 | SIGHUP (closed terminal) | the program's context is cancelled; same path as `q`, exit 0 | same path as SIGTERM |
 | SIGKILL | nothing runs: see below | nothing runs: see below |
 
-After SIGKILL the timeouts died with the dashboard and apply no more: the one-shot children (monitor calls, `factory status`) run until they end on their own, which is soon unless the network hangs; the event stream ends through its parent check (`isshoni/events.py`).
+After SIGKILL the timeouts died with the dashboard and apply no more: the one-shot children (monitor calls, `factory status`, `factory ops list`) run until they end on their own, which is soon unless the network hangs; the event stream ends through its parent check (`isshoni/events.py`).
 
 Measured on this machine with `bin/isshoni-tui` against the real data (TUI in a pty, `--serve` on a free port on 127.0.0.1 with an ssh client in a pty), each stop in a fresh run. Descriptors from `lsof -p`, children from `ps -axo pid,ppid,pgid,command` just before the stop, survivors counted among those children 3 s after (for `--serve`: after the server had ended). Calls are short, so most runs catch only the few children that were in flight; "Hanami" is the run with the Hanami tab open.
 

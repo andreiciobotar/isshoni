@@ -289,11 +289,11 @@ func TestViewSwitching(t *testing.T) {
 	if m.view != viewKaizen {
 		t.Fatalf("tab -> %v", m.view)
 	}
-	send(m, "tab", "tab")
+	send(m, "tab", "tab", "tab")
 	if m.view != viewDashboard {
-		t.Fatalf("tab wraps, past hanami -> %v", m.view)
+		t.Fatalf("tab wraps, past ops and hanami -> %v", m.view)
 	}
-	send(m, "shift+tab", "shift+tab", "shift+tab")
+	send(m, "shift+tab", "shift+tab", "shift+tab", "shift+tab")
 	if m.view != viewFactory {
 		t.Fatalf("shift+tab -> %v", m.view)
 	}
@@ -301,15 +301,15 @@ func TestViewSwitching(t *testing.T) {
 	if m.view != viewDashboard {
 		t.Fatal("1")
 	}
-	for i, want := range []viewID{viewDashboard, viewAgents, viewFactory, viewKaizen, viewHanami} {
+	for i, want := range []viewID{viewDashboard, viewAgents, viewFactory, viewKaizen, viewOps, viewHanami} {
 		send(m, fmt.Sprint(i+1))
 		if m.view != want {
 			t.Fatalf("%d -> %v, want %v", i+1, m.view, want)
 		}
 	}
-	send(m, "1", "6")
+	send(m, "1", "7")
 	if m.view != viewDashboard {
-		t.Fatal("6 is unbound")
+		t.Fatal("7 is unbound")
 	}
 	send(m, "2", "esc")
 	if m.view != viewDashboard {
@@ -607,7 +607,7 @@ func checkFrame(t *testing.T, name string, m *model, noColor bool) {
 func TestRenderAllViewsAllSizes(t *testing.T) {
 	for _, sz := range sizes {
 		for _, nc := range []bool{false, true} {
-			for _, view := range []string{"dashboard", "session", "agents", "factory", "kaizen", "help", "detail", "filter", "follow"} {
+			for _, view := range []string{"dashboard", "session", "agents", "factory", "kaizen", "ops", "help", "detail", "filter", "follow"} {
 				m := fakeModel(nc, sz[0], sz[1])
 				switch view {
 				case "session":
@@ -618,6 +618,8 @@ func TestRenderAllViewsAllSizes(t *testing.T) {
 					setFactory(m, fakeFactoryRepos()...)
 				case "kaizen":
 					setKaizen(m, kaizenDoc(t), pagePulse)
+				case "ops":
+					setOps(m, opsWatches(t), "")
 				case "help":
 					m.help = true
 				case "detail":
@@ -639,7 +641,7 @@ func TestRenderAllViewsAllSizes(t *testing.T) {
 
 func TestRenderEmptyAndStates(t *testing.T) {
 	for _, sz := range sizes {
-		for _, v := range []viewID{viewDashboard, viewAgents, viewFactory, viewKaizen} {
+		for _, v := range []viewID{viewDashboard, viewAgents, viewFactory, viewKaizen, viewOps} {
 			// empty data
 			m := New(Options{Static: true})
 			m.w, m.h = sz[0], sz[1]

@@ -215,7 +215,8 @@ class RunTests(Case):
         [argv] = m.tech_lead_calls()
         role = (BIN.parent.parent / "roles" / "tech-lead.md").read_text()
         self.assertEqual(argv[:-1], [
-            "claude", "-p", "--model", "opus", "--permission-mode", "auto", "--plugin-dir", str(BIN.parent.parent),
+            "claude", "-p", "--model", "opus", "--permission-mode", "auto",
+            "--agents", json.dumps(factory.agent_definitions(factory.SETTINGS_DEFAULTS, self.root)), "--plugin-dir", str(BIN.parent.parent),
             "--strict-mcp-config", "--settings", json.dumps(LEAN_SETTINGS),
             "--tools=Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch",
             "--allowedTools", "Read", "Edit", "Write", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "Bash(git *)",

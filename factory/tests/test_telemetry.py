@@ -452,7 +452,8 @@ class TaskEventTests(StoreCase):
         self.assertEqual({k: v for k, v in e.items() if k != "ts"},
                          {"repo": tf.ROOT, "slug": "demo-task", "role": "dispatcher", "model": None, "version": VERSION,
                           "session": "sid-d", "event": "TaskStarted", "base": "main", "lead_model": "fable",
-                          "mode": "team", "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet", "reviewer": "opus"}})
+                          "mode": "team", "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet",
+                                                     "ops-explorer": "haiku", "reviewer": "opus"}})
 
     def test_clean_records_task_removed(self):
         code, out, _, _ = self.clean()
@@ -797,12 +798,22 @@ class HooksJsonTests(unittest.TestCase):
         doc = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())
         events = doc["hooks"]
         self.assertEqual(set(events), {"SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "SubagentStart",
-                                       "SubagentStop", "Notification", "PermissionRequest", "PermissionDenied", "PostToolUse"})
+                                       "SubagentStop", "Notification", "PermissionRequest", "PermissionDenied", "PreToolUse",
+                                       "PostToolUse"})
         for name, groups in events.items():
-            self.assertEqual(len(groups), 1)
-            self.assertEqual(groups[0]["hooks"], [{"type": "command", "timeout": 10,
-                                                   "command": '"${CLAUDE_PLUGIN_ROOT}/bin/factory" hook'}])
-            self.assertEqual(groups[0].get("matcher"), "SendMessage|SubagentHandback" if name == "PostToolUse" else None)
+            want = {"PreToolUse": [("mcp__.*", "ops-hook || exit 2", 60)],  # a gate that cannot start must block
+                    "PostToolUse": [("SendMessage|SubagentHandback", "hook", 10), ("mcp__.*", "ops-hook", 60)],
+                    }.get(name, [(None, "hook", 10)])
+            self.assertEqual([(g.get("matcher"), g["hooks"]) for g in groups], [
+                (matcher, [{"type": "command", "timeout": timeout, "command": f'"${{CLAUDE_PLUGIN_ROOT}}/bin/factory" {command}'}])
+                for matcher, command, timeout in want], name)
+
+    def test_the_harness_waits_far_longer_than_the_gate_gives_itself(self):
+        for group in json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"].values():
+            for g in group:
+                for hook in g["hooks"]:
+                    if "ops-hook" in hook["command"]:
+                        self.assertGreaterEqual(hook["timeout"], 6 * factory.OPS_HOOK_DEADLINE, hook["command"])
 
 
 if __name__ == "__main__":
