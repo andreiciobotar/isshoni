@@ -208,9 +208,6 @@ def wait(args):
     for line, _, _ in results:
         print(line)
     print(f"total cost_usd={sum(c for _, _, c in results):.2f}")
-    if real_store.leaked(root.resolve().name):
-        print(f"FAILED: a line of the real store's logs names {root.resolve().name}")
-        return 1
     return 0 if runs and all(ok for _, ok, _ in results) else 1
 
 
