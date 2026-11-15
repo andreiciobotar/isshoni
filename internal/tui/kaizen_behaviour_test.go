@@ -320,6 +320,7 @@ func TestKaizenFramesFitEverySize(t *testing.T) {
 	long := kaizenDoc(t)
 	long.Tasks[0].Slug = strings.Repeat("長い", 30)
 	long.Stops[0].Why = strings.Repeat("why ", 60)
+	long.Pulse.Today.Conflicts.Error = ptr(strings.Repeat("git said no ", 30))
 	long.Outbox.Entries[0].Text = strings.Repeat("a-very-long-word-without-spaces", 8)
 	docs["long"] = long
 	docs["few anatomy"] = fewAnatomyDoc(t)
@@ -378,7 +379,7 @@ func TestKaizenNullsShowDashes(t *testing.T) {
 // ---- sections ---------------------------------------------------------------------
 
 func TestKaizenPulseSections(t *testing.T) {
-	out := plain(kaizenModel(t, true, 140, 50, pagePulse))
+	out := plain(kaizenModel(t, true, 140, 70, pagePulse))
 	for _, want := range []string{"LANDED", "3 in flight", "COST / TASK", "$6.20", "↓ 44% vs earlier 10", "BRIEF → PR", "25m50s", "PR → MERGE", "5m45s", "FIRST PASS", "7/19", "rework 9% of cost",
 		"✦ 4 landed first-pass in a row · fx-quiet-refactor", "✦ record low cost: $2.31", "cost per task", "brief → pull request", "review rounds", "pull request → merge",
 		"v0.3.0", "defects caught by", "tests 5", "reviewer 39", "human 1", "14 open issues · 7 decisions · 7 acted on  → Board", "★"} {
@@ -395,7 +396,7 @@ func TestKaizenPulseSections(t *testing.T) {
 	doc.Rewards = nil
 	doc.Summary.Trend = nil
 	doc.Repos[1].PRs = "gh failed: not a GitHub repository"
-	m := fakeModel(true, 140, 50)
+	m := fakeModel(true, 140, 70)
 	setKaizen(m, doc, pagePulse)
 	out = plain(m)
 	for _, want := range []string{"none escaped to CI or the human", "comparing latest with earlier starts at 10 landed tasks (have 20)", "3 in flight", "20 tasks",

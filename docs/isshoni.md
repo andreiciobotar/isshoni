@@ -63,12 +63,12 @@ isshoni kaizen [--since 7d] [--factory-dir DIR] [--json] [--cached] [--modes]
 Whether the factory is getting better, computed once. It reads the factory's stores
 (`--factory-dir`, default `~/.claude/factory`; format in `docs/factory.md`, "Logs"), the
 transcripts and the price file; it never imports or runs `factory/bin/factory`. It writes
-two things there: its pull request cache (`cache/kaizen-prs-<key>.json`, one per
-repository) and, for a `gh` call that takes over 2 s or fails, one line in
+three things there: its caches, one file per repository each (`cache/kaizen-prs-<key>.json`, and the
+pulse's `cache/kaizen-merges-<key>.json` and `cache/kaizen-approvals-<key>.json`, below) and, for a `gh` call that takes over 2 s or fails, one line in
 `gh-YYYY-MM.jsonl` (the factory's debug log, which the factory prunes).
 `--since` keeps the tasks that started at or after the cutoff (and the stops, slowed
 texts and feedback of that range) and limits the transcripts loaded. Without `--json` it
-prints the headline numbers and one line per task. A missing or empty directory exits 0 with
+prints the headline numbers, the pulse's four figures (`today X (n=..), yesterday Y (n=..)`) and one line per task. A missing or empty directory exits 0 with
 empty lists (`store_found: false` when the directory is missing). Records are read with a
 default for every field and lines that are not JSON objects are skipped.
 
@@ -92,7 +92,7 @@ names in display order; every `by_role` and `share` object has exactly these key
 (`repo`, `repo_path`, `prs`: `ok` or the reason, `prs_as_of`: when the pull request data
 used was fetched, `prs_error`: why this run could not refresh it), `versions` (each plugin version by its
 earliest record in any store), `tasks`, `summary`, `stops`, `slowed`, `rewards`, `outbox`,
-`site_manager`, `tech_lead`.
+`site_manager`, `tech_lead`, `pulse`.
 Times are UTC (`2026-11-14T00:01:02Z`), a task's durations whole seconds, medians floats
 that may be fractional, money in the price file's currency, and a missing value is `null`.
 
@@ -108,6 +108,7 @@ Per task (listed by `started`, tasks without one first, then slug):
 | `landed` | `pr.merged` is set |
 | `mode` | `single` or `team`, from its last `TaskStarted` event; `single` when the event has none |
 | `brief_to_pr_s`, `pr_to_merge_s` | `pr.opened - started` (null when negative); `pr.merged - pr.opened` |
+| `size` | `size` of its `TaskStarted` event (`small`, `medium`, `large`), as written; null when absent |
 | `cost` | from its transcript sessions (same repository and worktree name): `{total, unpriced_tokens, by_role, rework}`; `by_role` has `lead` (the main session), `tech-lead` (the main session of a tech lead run: its id is the `session` of a `techlead` record), `coder`, `reviewer`, `explorer` (also `Explore`), `lander` and `other` |
 | `cost.rework` | cost of coder and reviewer dispatches that started after the first reviewer dispatch returned. A lower bound: the lead's own rework is not separable |
 | `review_rounds` | reviewer dispatches that ran (not `no-run`); null without sessions |
@@ -122,6 +123,46 @@ medians of `cost`, `brief_to_pr_s`, `pr_to_merge_s`, `review_rounds`; `first_pas
 `tasks` counts all, `in_flight` those not landed and not `acknowledged` or `dismissed`, and
 `defects` sums every task's newest retro. `trend` is null below `trend_min` (10) landed
 tasks; else the median of each measure over the latest half (`latest_n`) against the rest.
+
+`pulse` is today against yesterday, four figures each, for the Pulse page and the text output. A
+day is a calendar day in the time zone of the time the document is built for (the machine's zone
+unless a caller gives one); a pull request counts on the day it merged (`pr.merged`). The figures
+ignore `--since` (with `--since`, the transcripts from the start of yesterday, and from the start of every task merged since, are loaded too): they are computed from all tasks of the store's repositories, pooled. `queue_since`
+is when the `queue` log (`docs/factory.md`) starts, null without one. Each day holds `date`, `merged`
+(merged pull requests) and:
+- `cost` (`tasks`, `dispatcher`, `site_manager`, `unpriced_tokens`, `per_merged`): the all-in cost per
+  merged pull request. Everything the factory spent on that day (every model call with a timestamp on
+  it, in a task's sessions, and in the dispatcher's and site manager's sessions of the store's
+  repositories; a person's own sessions are not counted) over the pull requests merged on it, so
+  unfinished work is in it. `per_merged` is null (shown `-`) when none merged.
+- `first_pass`: per stated `size` (`small`, `medium`, `large`; anything else or no size is `unstated`),
+  the tasks merged that day with a known `first_pass`: `yes` of `of`. `-` means `of` is 0.
+- `handover`: `to_merge`, the p90 (`p90_s`, over `n` tasks; null and `-` when `n` is 0) of the merge
+  time minus the task's first `handed-over` state record, for tasks handed over at or before the merge.
+  Where an approval time is known and falls between the two, it is split into `to_approval` and
+  `approval_to_merge` (p90, same `n`). The approval is the `approved_at` of the `queue` log's `merged`
+  record (null there: no approval was required, the task is not in the split); a pull request with
+  no `merged` record gets it from GitHub (`approvals_backfilled` counts those in the split): the
+  newest `APPROVED` review, else the newest comment that is `lgtm` by a user that is not a bot, at or
+  before the merge. The backfill does not check that the commenter had the permission to approve.
+  `sent_back` counts the `queue` log's `sent-back` records of the day, `sent_back_unchanged` those whose
+  next record for the same pull request has the same `head`. Both are null (`-`) when the day ended
+  before `queue_since`: they start with the `queue` log, nothing earlier is backfilled.
+- `conflicts` (`prs`, `base_merges`, `conflicted`, `per_merged`, `error`): conflicted base merges per
+  merged pull request, from git history in the repository's main checkout (`repo_path`). A pull
+  request's merge commit is the first-parent commit of `refs/remotes/origin/HEAD` whose subject starts
+  `Merge pull request #<number> `; a pull request merged another way, or not fetched yet, is not in
+  `prs`. A base merge is a commit on its branch's first-parent line with two parents whose second
+  parent is an ancestor of the branch's base; it is conflicted when `git show --remerge-diff` prints a
+  `remerge CONFLICT` line. A lower bound: a branch rebased before merging leaves no base merge.
+  `per_merged` is `conflicted` over `prs` (null when `prs` is 0); `error` is one line when git failed
+  (that pull request is left out and not cached). Every git call has a 10 s timeout.
+
+The pulse runs git and gh only for pull requests merged today or yesterday that its caches do not
+hold, once each: `cache/kaizen-merges-<key>.json` (merge commit to pull request number and base
+merges with their conflicted files) and `cache/kaizen-approvals-<key>.json` (pull request number to
+approval time, or null when none was found) never expire. A failed call is not cached; gh runs 8 at a
+time. With `--cached` neither runs, and a pull request not in the caches is unknown.
 
 `summary.by_mode` compares the modes: one row per (`mode`, `size`) with a landed task, sizes in
 the order `small`, `medium`, `large`, `null` (no size stated on the task's `TaskStarted`), modes
@@ -644,4 +685,4 @@ Measured on this machine with `bin/isshoni-tui` against the real data (TUI in a 
 
 The two SIGKILL rows with one survivor in an earlier run were `isshoni events --follow --since 2h`: SIGKILL gives the dashboard no chance to kill it, and it ends when it next writes an event. The descriptor count is the dashboard's own (terminal, the SSH listener and keys, pipes); the run-to-run drift is the pty and the pipes of calls in flight. Before the SIGHUP handler a closed terminal killed the process without running the cleanup, and left the event stream and the factory fetch (both in their own groups) to their own end; the SIGKILL path remains by nature.
 
-What stays on disk: nothing the dashboard writes, apart from its host key and authorized keys under `~/.claude/factory/dashboard/` (`--serve`), the factory settings file when the cap is changed (replaced atomically, its temporary file removed), and the caches the monitor keeps by design: the session cache `~/.cache/isshoni/sessions/<digest>/`, `~/.claude/factory/cache/kaizen-prs-*.json`, `~/.claude/factory/gh-YYYY-MM.jsonl` and `~/.claude/factory/comments/<slug>-<ts>.md`.
+What stays on disk: nothing the dashboard writes, apart from its host key and authorized keys under `~/.claude/factory/dashboard/` (`--serve`), the factory settings file when the cap is changed (replaced atomically, its temporary file removed), and the caches the monitor keeps by design: the session cache `~/.cache/isshoni/sessions/<digest>/`, `~/.claude/factory/cache/kaizen-{prs,merges,approvals}-*.json`, `~/.claude/factory/gh-YYYY-MM.jsonl` and `~/.claude/factory/comments/<slug>-<ts>.md`.
