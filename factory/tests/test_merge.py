@@ -51,7 +51,6 @@ def review(state="APPROVED", at=NOW - 60, login="dev", sha=SHA, n=1, type="User"
 class World(Harness):
     """Open pull requests, one task per head branch, in a faked `gh`."""
 
-    CRITERIA = ["lgtm-blocked", "base-merged"]
 
     def world(self, prs, *, checks=GREEN, mergeable="MERGEABLE", state="handed-over", tasks=None, local=SHA,
               extra=None):
@@ -763,40 +762,6 @@ class HeadsTests(unittest.TestCase):
             self.assertEqual(self.heads(), [self.head()])
 
 
-class LanderBlockedTests(World):
-    """`lgtm-blocked` fires from the stops lander.json records, for pull requests still open at the recorded head."""
-
-    def stop(self, n=1, head=SHA, kind="ci", text="check test failed https://x/run/1"):
-        repo = SimpleNamespace(root=ROOT)
-        state = factory.read_lander(repo)
-        state["stopped"][str(n)] = {"head": head, "kind": kind, "text": text, "ts": iso(NOW - 60)}
-        factory.write_lander(repo, state)
-
-    def health(self, prs, **kw):
-        answers, sessions, slugs = self.world(prs, **kw)
-        return self.cli("health", answers=answers, sessions=sessions, entries=slugs)[1]
-
-    def test_it_fires_under_the_kind_the_lander_gave(self):
-        self.stop()
-        out = self.health([pr(1)])
-        self.assertIn("lgtm-blocked  always  #1/ci  check test failed https://x/run/1 https://x/pull/1", out)
-
-    def test_it_does_not_fire_once_the_head_moved_or_the_pull_request_is_gone(self):
-        self.stop(head="old")
-        self.assertEqual(self.health([pr(1)]), "nothing fired\n")
-        self.stop(n=2)
-        self.assertEqual(self.health([pr(1)]), "nothing fired\n")
-
-    def test_nothing_stopped_asks_github_nothing(self):
-        self.health([pr(1)])
-        self.assertFalse(self.fake.ran("gh", "pr", "list", "--state", "open"))
-
-    def test_a_failing_pull_request_list_is_not_evaluated(self):
-        self.stop()
-        out = self.health([pr(1)], extra={("gh", "pr", "list", "--state", "open"): (1, "", "boom")})
-        self.assertIn("not evaluated: lgtm-blocked: gh pr list failed: boom", out)
-
-
 class PullMainTests(World):
     def merged(self, branch, pull, **kw):
         extra = {("git", "rev-parse", "--abbrev-ref"): (0, f"{branch}\n", ""), ("git", "pull"): pull}
@@ -957,7 +922,7 @@ class SyncDraftTests(World):
     def test_the_cheap_tick_asks_github_once_for_the_list_and_once_per_checked_pull_request(self):
         self.tick([pr(1), pr(2, draft=True)], tasks=["t1", "t2"])
         lists = [c for c in self.fake.calls if c[:5] == ["gh", "pr", "list", "--state", "open"] and factory.NOTICE_FIELDS in c]
-        checks = [c for c in self.fake.calls if c[:3] == ["gh", "pr", "checks"]]
+        checks = [c for c in self.fake.calls if c[:3] == ["gh", "pr", "checks"] and not c[3].startswith("http")]  # not the watch's `ci-red-handover` reads
         self.assertEqual((len(lists), len(checks)), (2, 2))  # the cheap tick's list, and the loop's
 
     def test_a_draft_whose_lead_went_back_to_work_is_not_merged_even_when_approved(self):

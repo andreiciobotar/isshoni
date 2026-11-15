@@ -22,8 +22,6 @@ class Overrun(Harness):
 
     def setUp(self):
         super().setUp()
-        shipped = json.loads((factory.PLUGIN_ROOT / "criteria.json").read_text())
-        self.criteria_path.write_text(json.dumps([c for c in shipped if c["name"] == "run-stopped"]))
         factory.write_lander(SimpleNamespace(root=ROOT), {"health": NOW})  # every tick below is not a full pass
         self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "working", "ts": iso(STARTED + 60)}])
         self.sessions = [DISPATCHER_NAME, lead("x", startedAt=STARTED * 1000)]
@@ -71,14 +69,14 @@ class AskTests(Overrun):
         self.assertEqual(code, 0)
         self.assertIn("SITE MANAGER: x", out)
         [ask] = self.records()
-        self.assertEqual((ask["criterion"], ask["escalate"], ask["slug"], ask["subject"], ask["detail"]),
-                         ("overrun", "judgment", "x", "x", ASK))
+        self.assertEqual((ask["criterion"], "escalate" in ask, ask["slug"], ask["subject"], ask["detail"]),
+                         ("overrun", False, "x", "x", ASK))
         before = json.loads(self.cli("status", "--json")[1])["rows"][0]
         self.assertTrue(before["overtime"])
         code, out, _ = self.watch({"decision": "extended", "minutes": 20, "reason": "landing left"})
         self.assertEqual(code, 0, out)
         [run] = self.runs()
-        [sent] = json.loads(run[-1].partition("\n\n")[2])
+        [sent] = json.loads(run[-1].partition("\n\n")[2])["firings"]
         self.assertEqual((sent["criterion"], sent["detail"], sent["extension_left_minutes"], sent["extended_minutes"], sent["runs"]),
                          ("overrun", ASK, 60, 0, []))
         until = STARTED + 140 * 60
@@ -124,7 +122,7 @@ class BoundTests(Overrun):
         self.assertEqual(self.runs(), [])
 
     def test_the_ceiling_counts_what_was_granted_before(self):
-        self.seed("firings", [fired("e1", criterion="overrun", escalate="judgment", ts=STARTED + 600),
+        self.seed("firings", [fired("e1", criterion="overrun", ts=STARTED + 600),
                               {"ts": iso(STARTED + 660), "repo": ROOT, "id": "e1", "decision": "extended", "reason": "r", "by": "site-manager",
                                "minutes": 40, "until": "u"},
                               {"repo": ROOT, "id": "e1", "cleared": True}])
@@ -134,7 +132,7 @@ class BoundTests(Overrun):
         self.assertEqual(json.loads(self.cli("status", "--json")[1])["rows"][0]["limit"], 160 * 60)
 
     def test_an_extension_before_this_session_does_not_count(self):
-        self.seed("firings", [fired("e1", criterion="overrun", escalate="judgment", ts=STARTED - 600),
+        self.seed("firings", [fired("e1", criterion="overrun", ts=STARTED - 600),
                               {"ts": iso(STARTED - 500), "repo": ROOT, "id": "e1", "decision": "extended", "reason": "r",
                                "by": "site-manager", "minutes": 55, "until": "u"}])
         self.assertEqual(json.loads(self.cli("status", "--json")[1])["rows"][0]["limit"], 120 * 60)
@@ -171,7 +169,7 @@ class OutcomeTests(Overrun):
     UNTIL = STARTED + 140 * 60
 
     def extension(self, decided=NOW - 600):
-        self.seed("firings", [fired("e1", criterion="overrun", escalate="judgment", ts=decided - 60),
+        self.seed("firings", [fired("e1", criterion="overrun", ts=decided - 60),
                               {"ts": iso(decided), "repo": ROOT, "id": "e1", "decision": "extended", "reason": "r", "by": "site-manager",
                                "minutes": 20, "until": iso(self.UNTIL)}])
 
@@ -222,14 +220,14 @@ class OutcomeTests(Overrun):
 
 class ModelTests(Overrun):
     def argv(self):
-        return factory.site_manager_argv({"repo": mock.Mock(root=ROOT), "dispatcher": "d", "lean_start": False, "monitor": None}, [])
+        return factory.site_manager_argv(pic(dispatcher="d", lean_start=False, monitor=None), [])
 
     def test_the_system_prompt_is_the_role_then_the_guidance(self):
         argv = self.argv()
         self.assertEqual(argv[argv.index("--append-system-prompt") + 1], "SITE MANAGER RULES\n\nSITE MANAGER CASES")
 
     def test_the_shipped_guidance_is_there_and_the_default_model_is_opus(self):
-        self.assertTrue((factory.PLUGIN_ROOT / "roles" / "site-manager-cases.md").read_text().startswith("# Deciding on overruns"))
+        self.assertTrue((factory.PLUGIN_ROOT / "roles" / "site-manager-cases.md").read_text().startswith("# The site manager's reference"))
         self.assertEqual(self.argv()[self.argv().index("--model") + 1], "opus")
 
     def test_a_settings_file_naming_another_model_is_respected(self):
@@ -242,7 +240,7 @@ class ValidityTests(Overrun):
 
     def logged(self, criterion, decision, **kw):
         p = pic(rows=[row("x")], sessions=self.sessions)
-        sent = [{"id": "aaa", "criterion": criterion, "escalate": "judgment", "slug": "x"}]
+        sent = [{"id": "aaa", "criterion": criterion, "slug": "x"}]
         with mock.patch.object(factory, "log_firing") as log, mock.patch.object(factory, "tell_decision"), \
                 mock.patch.object(factory, "declare"), mock.patch.object(factory, "task_event"):
             factory.record_decisions(p, sent, {"sent": True, "decisions": [{**choice("aaa", decision), **kw}]}, "r1")
@@ -267,7 +265,7 @@ class ValidityTests(Overrun):
 
     def test_a_churning_pause_records_the_decision_and_the_script_sends_nothing(self):
         p = pic(rows=[row("x")], sessions=self.sessions)
-        sent = [{"id": "aaa", "criterion": "churning", "escalate": "judgment", "slug": "x"}]
+        sent = [{"id": "aaa", "criterion": "churning", "slug": "x"}]
         with mock.patch.object(factory, "churning", lambda p: {"x": {"others": [{"slug": "y"}]}}), \
                 mock.patch.object(factory, "forward") as forward, mock.patch.object(factory, "log_firing") as log:
             factory.record_decisions(p, sent, {"sent": True, "decisions": [{**choice("aaa", "paused"), "waits_on": ["y"]}]}, "r1")
@@ -287,7 +285,7 @@ class RunStoppedTests(Overrun):
         code, out, _ = self.watch({"decision": "paused", "waits_on": ["human"], "reason": "two runs, nothing handed over"}, sent=False)
         self.assertEqual(code, 0, out)
         [run] = self.runs()
-        [f] = json.loads(run[-1].partition("\n\n")[2])
+        [f] = json.loads(run[-1].partition("\n\n")[2])["firings"]
         self.assertEqual((f["criterion"], f["subject"], f["detail"]),
                          ("run-stopped", "x/run2", "no reason; 2 of 2 build runs ended stopped, cost 6.00 USD"))
         self.assertEqual([(r["outcome"], r["minutes"]) for r in f["runs"]], [("stopped", 5)] * 2)
@@ -352,7 +350,7 @@ class RunStoppedTests(Overrun):
         self.seed("techlead", [{"ts": iso(NOW - 60), "repo": ROOT, "slug": "x", "kind": "build", "outcome": "stopped"}])
         self.watch({"decision": "suppressed", "reason": "second run, first was paused"})
         [run] = self.runs()
-        self.assertEqual(json.loads(run[-1].partition("\n\n")[2])[0]["subject"], "x/run2")
+        self.assertEqual(json.loads(run[-1].partition("\n\n")[2])["firings"][0]["subject"], "x/run2")
 
     def test_a_message_to_the_lead_is_accepted_for_a_stopped_run(self):
         self.stopped_runs(1)

@@ -67,12 +67,16 @@ class Sim:
             return 0, json.dumps([{"state": "MERGED" if n in self.merged else "OPEN", "url": f"https://x/pull/{n}",
                                    "headRefOid": p["head"], "isDraft": p["draft"],
                                    "baseRefName": "main" if n in self.merged else p["base"]}]), ""
+        if a[:3] == ["gh", "pr", "checks"] and a[3].startswith("http"):  # the watch's own read of a handed-over pull request
+            return 0, "[]", ""
         if a[:3] == ["gh", "pr", "checks"]:
             n = int(a[3])
             script = self.prs[n]["checks"]
             answer = script.pop(0) if len(script) > 1 else script[0]
             self.log.append(("checks", n, self.prs[n]["head"], answer is not None and all(c["bucket"] == "pass" for c in answer)))
             return (1, "", "no checks reported") if answer is None else (0, json.dumps(answer), "")
+        if a[:3] == ["gh", "pr", "view"] and a[3].startswith("http"):
+            return 0, "{}", ""
         if a[:3] == ["gh", "pr", "view"]:
             script = self.prs[int(a[3])]["mergeable"]
             return 0, json.dumps({"mergeable": script.pop(0) if len(script) > 1 else script[0]}), ""
@@ -136,6 +140,8 @@ class Sim:
                 p["shown"], p["stale"] = p["head"], 1 if p["lag"] else 0  # GitHub still lists the old head once
                 p["head"], p["behind"], p["checks"] = f"h{n}.{len(self.pushes())}", p["stays_behind"], list(p["after"])
                 return 0, "", ""
+        if a[:2] == ["claude", "-p"] and "--json-schema" in a:  # a site manager run: it decides nothing
+            return test_health.reply()
         if a[:2] == ["claude", "-p"]:
             self.lines.append(COURIER_LINE.search(a[-1])[1])
             return 0, json.dumps({"result": "sent"}), ""
@@ -157,7 +163,6 @@ class LoopRun(FakeRun):
 
 
 class Loop(World):
-    CRITERIA = ["lgtm-blocked"]
 
     def setUp(self):
         super().setUp()
@@ -514,7 +519,7 @@ class ToldTests(Loop):
         self.sim.add(1, behind=False, checks=[RED])
         self.go("lander")
         [fired] = [r for r in self.records() if "criterion" in r]
-        self.assertEqual((fired["criterion"], fired["subject"], fired["escalate"]), ("lgtm-blocked", "#1/ci", "always"))
+        self.assertEqual((fired["criterion"], fired["subject"], "escalate" in fired), ("lgtm-blocked", "#1/ci", False))
         [decision] = [r for r in self.records() if "decision" in r]
         self.assertEqual((decision["decision"], decision["by"]), ("escalated", "lander"))
 
@@ -545,15 +550,6 @@ class TickTests(Loop):
         self.assertIn(("undo", 1), self.sim.log)  # the cheap part flipped it while its checks ran
         self.assertEqual(self.sim.events("push", "merge", "undo")[:3], [("push", 1), ("undo", 1), ("merge", 1)])
         self.assertEqual(self.sim.merged[0], 1)
-
-    def test_a_waiting_record_does_not_fire_lgtm_blocked_but_a_reported_one_does(self):
-        repo = SimpleNamespace(root=ROOT)
-        p = {"repo": repo, "rows": [], "gh": lambda kind, *a: [pr(1)]}
-        record = {"head": "sha-1", "kind": "pending", "since": NOW}
-        factory.write_lander(repo, {"stopped": {}, "waiting": {"1": record}, "health": 0})
-        self.assertEqual(factory.c_lgtm_blocked(p, None), [])
-        factory.write_lander(repo, {"stopped": {"1": {**record, "text": "t", "ts": "x"}}, "waiting": {}, "health": 0})
-        self.assertEqual([f[1] for f in factory.c_lgtm_blocked(p, None)], ["#1/pending"])
 
     def test_the_file_is_written_whole_and_leaves_no_temporary(self):
         self.sim.add(1, behind=False)

@@ -53,7 +53,7 @@ def pic(**kw):
 
 
 def check(name, p, threshold=None):
-    return factory.CRITERIA[name][0](p, threshold)
+    return (factory.CRITERIA.get(name) or factory.FACTS[name])[0](p, threshold)
 
 
 def ev(slug, event, **kw):
@@ -92,57 +92,38 @@ class CriteriaFileTests(unittest.TestCase):
                 return factory.load_criteria()
 
     def entry(self, **kw):
-        return json.dumps([{"name": "quiet", "escalate": "judgment", "threshold": 20, "what": "w", **kw}])
+        return json.dumps([{"name": "mix-shift", "job": "digest", "threshold": 5, "what": "w", **kw}])
 
-    def test_the_shipped_file_loads_and_names_every_criterion_once(self):
+    def test_the_shipped_file_holds_only_the_five_digest_criteria(self):
         shipped = factory.load_criteria()
         self.assertEqual(sorted(c["name"] for c in shipped), sorted(factory.CRITERIA))
-        self.assertTrue(all(c["what"].strip() for c in shipped))
+        self.assertEqual(len(shipped), 5)
+        self.assertTrue(all(c["job"] == "digest" and c["what"].strip() for c in shipped))
+
+    def test_no_watch_threshold_is_left_in_the_file_or_the_facts(self):
+        text = (factory.PLUGIN_ROOT / "criteria.json").read_text()
+        for gone in ("quiet", "nearing-limit", "past-limit", "review-loops", "deep-stack", "cost-outlier", "wrong-model", "escalate"):
+            self.assertNotIn(gone, text)
+        self.assertEqual(set(factory.FACTS) & set(factory.CRITERIA), set())
+        self.assertEqual({n for n, (_, every) in factory.FACTS.items() if every},
+                         {"run-stopped", "collision", "new-spec", "churning", "ended-undeclared"})
 
     def test_refusals(self):
         for text, why in ((self.entry(name="nope"), "unknown criterion"),
-                          (self.entry(escalate="sometimes"), "escalate"),
                           (self.entry(threshold=None), "threshold"),
                           (self.entry(threshold=0), "threshold"),
                           (self.entry(threshold=-5), "threshold"),
                           (self.entry(threshold=True), "threshold"),
                           (self.entry(what=" "), "what"),
-                          ('{"name": "quiet"}', "JSON list"),
+                          ('{"name": "mix-shift"}', "JSON list"),
                           ("not json", "JSON")):
             with self.subTest(why=why, text=text), self.assertRaises(factory.Fail) as cm:
                 self.load(text)
             self.assertIn(why, str(cm.exception))
             self.assertEqual(cm.exception.code, 2)
 
-    def test_a_threshold_is_optional_where_none_is_needed(self):
-        text = json.dumps([{"name": "past-limit", "escalate": "always", "threshold": None, "what": "w"}])
-        self.assertEqual(len(self.load(text)), 1)
-
-    def test_a_deleted_line_turns_its_criterion_off(self):
-        p = pic(rows=[row("x", overtime=True, elapsed=3 * HOUR)])
-        shipped = factory.load_criteria()
-        firings, _ = factory.evaluate(p, shipped)
-        self.assertIn("past-limit", [f["criterion"] for f in firings])
-        firings, _ = factory.evaluate(p, [c for c in shipped if c["name"] != "past-limit"])
-        self.assertNotIn("past-limit", [f["criterion"] for f in firings])
-
 
 class CriteriaTests(Home):
-    def test_past_limit(self):
-        self.assertEqual(check("past-limit", pic(rows=[row("x", overtime=True, elapsed=3 * HOUR)])),
-                         [("x", "x", "working for 3h")])
-        self.assertEqual(check("past-limit", pic(rows=[row("x", elapsed=HOUR)])), [])
-
-    def test_nearing_limit(self):
-        def run(**kw):
-            return check("nearing-limit", pic(rows=[row("x", **kw)], sessions=[lead("x")]), 75)
-        self.assertEqual(run(elapsed=35 * 60, limit=45 * 60, nearing=True),
-                         [("x", "x", "working for 35m, 78% of the 45m limit")])
-        self.assertEqual(run(elapsed=int(2 * HOUR * 0.76), nearing=True),
-                         [("x", "x", "working for 1h, 76% of the 2h limit")])
-        self.assertEqual(run(elapsed=35 * 60, limit=45 * 60), [])  # the row decides, not the arithmetic
-        self.assertEqual(run(elapsed=3 * HOUR, overtime=True), [])
-
     def test_ci_red_default(self):
         def runs(*items):
             return pic(gh=lambda *a: [{"workflowName": w, "status": s, "conclusion": c, "url": f"u/{w}"}
@@ -177,113 +158,67 @@ class CriteriaTests(Home):
         for phase in ("blocked", "review"):
             self.assertEqual(len(check("dispatcher-missing", pic(sessions=[], rows=[row("x", phase=phase)]))), 1)
 
-    def quiet_pic(self, **kw):
-        r = row("x", **kw)
-        return pic(rows=[r], sessions=[lead("x")]), r
-
-    def test_quiet_both_sides_of_the_threshold(self):
-        p, _ = self.quiet_pic()
-        self.transcript("{sid}.jsonl", NOW - 21 * 60)
-        self.assertEqual(len(check("quiet", p, 20)), 1)
-        self.transcript("{sid}.jsonl", NOW - 19 * 60)
-        self.assertEqual(check("quiet", p, 20), [])
-
-    def test_quiet_counts_subagent_transcripts_and_commits(self):
-        p, _ = self.quiet_pic()
-        self.transcript("{sid}.jsonl", NOW - 60 * 60)
-        self.assertEqual(len(check("quiet", p, 20)), 1)
-        self.transcript("{sid}/subagents/agent-1.jsonl", NOW - 60)
-        self.assertEqual(check("quiet", p, 20), [])
-        p, _ = self.quiet_pic(last_commit=NOW - 60)
-        self.assertEqual(check("quiet", p, 20), [])
-
-    def test_quiet_needs_a_working_lead_in_motion(self):
-        self.transcript("{sid}.jsonl", NOW - 60 * 60)
-        for r, s in ((row("x", phase="review"), lead("x")), (row("x"), lead("x", **FINISHED)),
-                     (row("x"), lead("x", status="idle")), (row("x"), None)):
-            with self.subTest(phase=r["phase"], session=s):
-                self.assertEqual(check("quiet", pic(rows=[r], sessions=[s] if s else []), 20), [])
-
     def test_ended_undeclared(self):
-        r = row("x")
-        done = lead("x", status="idle", state="done", startedAt=(NOW - HOUR) * 1000)
-        self.assertEqual(len(check("ended-undeclared", pic(rows=[r], sessions=[done]), 10)), 1)
-        young = lead("x", status="idle", state="done", startedAt=(NOW - 5 * 60) * 1000)
-        self.assertEqual(check("ended-undeclared", pic(rows=[r], sessions=[young]), 10), [])
-        self.assertEqual(check("ended-undeclared", pic(rows=[r], sessions=[lead("x")]), 10), [])
-        self.assertEqual(check("ended-undeclared", pic(rows=[row("x", phase="review")], sessions=[done]), 10), [])
-
-    def test_blocked_unanswered(self):
-        for minutes, fires in ((31, 1), (29, 0)):
-            with self.subTest(minutes):
-                p = pic(rows=[row("x", phase="blocked")], declared={"x": {"ts": iso(NOW - minutes * 60)}})
-                self.assertEqual(len(check("blocked-unanswered", p, 30)), fires)
-        p = pic(rows=[row("x", phase="motion")], declared={"x": {"ts": iso(NOW - HOUR)}})
-        self.assertEqual(check("blocked-unanswered", p, 30), [])
-
-    def test_handover_unacknowledged(self):
-        for hours, fires in ((25, 1), (23, 0)):
-            with self.subTest(hours):
-                r = row("x", phase="review", state="handed-over", deliverable="u")
-                p = pic(rows=[r], declared={"x": {"ts": iso(NOW - hours * HOUR)}})
-                self.assertEqual(len(check("handover-unacknowledged", p, 24)), fires)
-        r = row("x", phase="review", state=None, pr_url="u")
-        self.assertEqual(check("handover-unacknowledged", pic(rows=[r], declared={"x": {"ts": iso(0)}}), 24), [])
-
-    def test_review_loops_threshold_and_slug_reuse(self):
-        reviewers = [ev("x", "SubagentStart", role="reviewer")] * 3
-        p = pic(rows=[row("x")], events=[ev("x", "TaskStarted"), *reviewers])
-        self.assertEqual(len(check("review-loops", p, 3)), 1)
-        p = pic(rows=[row("x")], events=[ev("x", "TaskStarted"), *reviewers[:2]])
-        self.assertEqual(check("review-loops", p, 3), [])
-        reused = [ev("x", "TaskStarted"), *reviewers, ev("x", "TaskRemoved"), ev("x", "TaskStarted"), reviewers[0]]
-        self.assertEqual(check("review-loops", pic(rows=[row("x")], events=reused), 3), [])
-        other = [ev("y", "SubagentStart", role="reviewer")] * 3
-        self.assertEqual(check("review-loops", pic(rows=[row("x")], events=other), 3), [])
-        self.assertEqual(check("review-loops", pic(rows=[row("x", phase="review")], events=reviewers), 3), [])
-
-    def test_wrong_model(self):
-        started = ev("x", "TaskStarted", lead_model="fable")
-        for label, events, expected in (
-                ("a null model is not judged", [started, ev("x", "SubagentStart", role="coder", model=None)], []),
-                ("the configured model", [started, ev("x", "PostToolUse", role="coder", model="claude-sonnet-5-5")], []),
-                ("a wrong coder", [started, ev("x", "PostToolUse", role="coder", model="claude-opus-5-5")],
-                 [("x", "x/coder", "claude-opus-5-5, configured sonnet")]),
-                ("the lead's model", [started, ev("x", "PostToolUse", role="lead", model="claude-fable-5-2")], []),
-                ("a wrong lead", [started, ev("x", "PostToolUse", role="lead", model="claude-opus-5-5")],
-                 [("x", "x/lead", "claude-opus-5-5, configured fable")]),
-                ("a null lead model", [started, ev("x", "PostToolUse", role="lead", model=None)], []),
-                ("no TaskStarted: no lead check", [ev("x", "PostToolUse", role="lead", model="claude-opus-5-5")], []),
-                ("a role with no configured model", [started, ev("x", "PostToolUse", role="other", model="claude-opus-5-5")],
-                 []),
-                ("before the last TaskStarted", [ev("x", "PostToolUse", role="coder", model="claude-opus-5-5"),
-                                                 started], [])):
+        r = {"state": "working", "ts": iso(NOW - HOUR)}
+        repo = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"{WT}/x", "branch": "worktree-x"}])
+        done = lead("x", status="idle", state="done")
+        found = check("ended-undeclared", pic(declared={"x": r}, sessions=[done], repo=repo))
+        self.assertEqual(found, [("x", "x", "declared working 1h ago; its lead has no live session and no run holds its lock")])
+        self.assertEqual(check("ended-undeclared", pic(declared={"x": r}, sessions=[], repo=repo))[0][0], "x")
+        for label, declared, sessions in (("a live lead", {"x": r}, [lead("x")]), ("handed over", {"x": r | {"state": "handed-over"}}, [done]),
+                                          ("blocked", {"x": r | {"state": "blocked"}}, []), ("no worktree", {"y": r}, [])):
             with self.subTest(label):
-                self.assertEqual(check("wrong-model", pic(rows=[row("x")], events=events)), expected)
+                self.assertEqual(check("ended-undeclared", pic(declared=declared, sessions=sessions, repo=repo)), [])
 
-    def test_wrong_model_compares_with_the_models_the_task_started_with(self):
-        coder = ev("x", "PostToolUse", role="coder", model="claude-sonnet-5-5")
-        for label, started, current, want in (
-                ("recorded at launch beats the current file", ev("x", "TaskStarted", lead_model="fable", models={"coder": "sonnet"}),
-                 {"coder": "haiku"}, []),
-                ("a recorded model that differs", ev("x", "TaskStarted", lead_model="fable", models={"coder": "haiku"}),
-                 {"coder": "sonnet"}, [("x", "x/coder", "claude-sonnet-5-5, configured haiku")]),
-                ("a task from before the record: the current file", ev("x", "TaskStarted", lead_model="fable"),
-                 {"coder": "haiku"}, [("x", "x/coder", "claude-sonnet-5-5, configured haiku")]),
-                ("a full id is equal, not a substring", ev("x", "TaskStarted", lead_model="fable", models={"coder": "claude-sonnet-5"}),
-                 {"coder": "opus"}, [("x", "x/coder", "claude-sonnet-5-5, configured claude-sonnet-5")]),
-                ("a bracket suffix is ignored", ev("x", "TaskStarted", lead_model="fable", models={"coder": "claude-sonnet-5-5[1m]"}),
-                 {"coder": "opus"}, []),
-                ("an alias with a suffix", ev("x", "TaskStarted", lead_model="fable", models={"coder": "sonnet[1m]"}), {"coder": "opus"}, [])):
+    def test_ended_undeclared_waits_for_a_run_holding_the_tasks_lock(self):
+        r = {"state": "working", "ts": iso(NOW - HOUR)}
+        repo = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"{WT}/x", "branch": "worktree-x"}])
+        p = pic(declared={"x": r}, sessions=[], repo=repo)
+        self.assertEqual(len(check("ended-undeclared", p)), 1)
+        self.assertEqual(os.listdir(self.store), [])  # asking leaves no lock file
+        with factory.repo_lock(repo, "tech-lead-x") as free:
+            self.assertTrue(free)
+            self.assertEqual(check("ended-undeclared", p), [])
+        self.assertEqual(len(check("ended-undeclared", p)), 1)
+
+    def test_ended_undeclared_is_not_evaluated_without_sessions_but_only_for_a_working_task(self):
+        r = {"state": "working", "ts": iso(NOW - HOUR)}
+        repo = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"{WT}/x", "branch": "worktree-x"}])
+        unplaced = {"id": "s9", "kind": "background", "status": "busy", "state": "working"}
+        for sessions in (None, [unplaced]):
+            with self.assertRaises(factory.NotEvaluated):
+                check("ended-undeclared", pic(declared={"x": r}, sessions=sessions, repo=repo))
+        self.assertEqual(check("ended-undeclared", pic(declared={}, sessions=None, repo=repo)), [])
+
+    def test_facts_that_cannot_be_read_are_not_evaluated(self):
+        facts = [{"name": n} for n in factory.FACTS]
+        handed = {"x": {"state": "working", "ts": iso(NOW - HOUR)}}
+        repo = SimpleNamespace(root=ROOT, default="main", remote="origin", tasks=[{"path": f"{WT}/x", "branch": "worktree-x"}])
+        firings, skipped = factory.evaluate(pic(sessions=None, rows=None, events=None, models={}, declared=handed, repo=repo), facts)
+        self.assertEqual(firings, [])
+        names = {s["criterion"] for s in skipped}
+        self.assertEqual(names, {"dispatcher-missing", "ended-undeclared", "ci-red-handover", "base-merged"})
+        self.assertIn("sessions cannot be listed", {s["criterion"]: s["why"] for s in skipped}["dispatcher-missing"])
+
+    def test_gh_failing_is_not_evaluated(self):
+        def broken(*args):
+            raise factory.NotEvaluated("gh run list failed: no auth")
+        firings, skipped = factory.evaluate(pic(gh=broken, rows=[row("x", phase="review", pr_url="u")]),
+                                            [{"name": "ci-red-default"}, {"name": "ci-red-handover"}])
+        self.assertEqual(firings, [])
+        self.assertEqual({s["criterion"] for s in skipped}, {"ci-red-default", "ci-red-handover"})
+
+    def test_phase_facts_are_not_evaluated_when_phases_cannot_be_trusted(self):
+        phase_based = [{"name": n} for n in ("dispatcher-missing", "ci-red-handover", "base-merged")]
+        unplaced = {"id": "s9", "kind": "background", "status": "busy", "state": "working"}
+        for label, p in (("an unplaced session", pic(rows=[row("x")], sessions=[unplaced])),
+                         ("an unknown pull request state", pic(rows=[row("x", pr_state="unknown")]))):
             with self.subTest(label):
-                self.assertEqual(check("wrong-model", pic(rows=[row("x")], events=[started, coder], models=current)), want)
-
-    def test_wrong_model_compares_with_the_configured_model(self):
-        events = [ev("x", "TaskStarted", lead_model="fable"), ev("x", "PostToolUse", role="coder", model="claude-sonnet-5-5")]
-        configured = {"coder": "haiku", "explorer": "haiku", "reviewer": "opus"}
-        self.assertEqual(check("wrong-model", pic(rows=[row("x")], events=events, models=configured)),
-                         [("x", "x/coder", "claude-sonnet-5-5, configured haiku")])
-        self.assertEqual(check("wrong-model", pic(rows=[row("x")], events=events)), [])
+                firings, skipped = factory.evaluate(p, phase_based)
+                self.assertEqual(firings, [])
+                self.assertEqual([s["criterion"] for s in skipped], [c["name"] for c in phase_based])
+                self.assertIn("no working directory" if "unplaced" in label else "pull request state is unknown", skipped[0]["why"])
+        self.assertEqual(factory.evaluate(pic(rows=[row("x", branch=None, pr_state="unknown")]), phase_based)[1], [])
 
     def test_ci_red_handover(self):
         r = row("x", phase="review", pr_url="https://pr/1")
@@ -300,86 +235,6 @@ class CriteriaTests(Home):
         nothing = pic(rows=[row("x", phase="motion", pr_url="u"), row("y", phase="review")], gh=checks)
         self.assertEqual(check("ci-red-handover", nothing), [])
 
-    def test_deep_stack_at_and_above_the_threshold(self):
-        def chain(n):
-            return [row(f"t{i}", base="main" if i == 0 else f"worktree-t{i - 1}") for i in range(n)]
-        self.assertEqual(check("deep-stack", pic(rows=chain(3)), 3), [])
-        found = check("deep-stack", pic(rows=chain(4)), 3)
-        self.assertEqual(found, [("t3", "t3", "4 deep: t3 on t2 on t1 on t0")])
-        loop = [row("a", base="worktree-b"), row("b", base="worktree-a")]
-        self.assertEqual(check("deep-stack", pic(rows=loop), 3), [])
-
-    def test_finished_tasks_are_skipped(self):
-        started = ev("x", "TaskStarted")
-        wrong = ev("x", "PostToolUse", role="coder", model="claude-opus-5-5")
-        reviewers = [ev("x", "SubagentStart", role="reviewer")] * 3
-        self.transcript("{sid}.jsonl", NOW - 60 * 60)
-        done = lead("x", status="idle", state="done", startedAt=(NOW - HOUR) * 1000)
-        chain = lambda **kw: [row("a"), row("b", base="worktree-a"), row("c", base="worktree-b"),
-                              row("x", base="worktree-c", **kw)]
-        cases = {
-            "quiet": lambda kw: (pic(rows=[row("x", **kw)], sessions=[lead("x")]), 20),
-            "ended-undeclared": lambda kw: (pic(rows=[row("x", **kw)], sessions=[done]), 10),
-            "blocked-unanswered": lambda kw: (pic(rows=[row("x", phase="blocked", **kw)],
-                                                  declared={"x": {"ts": iso(NOW - HOUR)}}), 30),
-            "review-loops": lambda kw: (pic(rows=[row("x", **kw)], events=[started, *reviewers]), 3),
-            "wrong-model": lambda kw: (pic(rows=[row("x", **kw)], events=[started, wrong]), None),
-            "deep-stack": lambda kw: (pic(rows=chain(**kw)), 3)}
-        for name, make in cases.items():
-            for kw in ({}, {"pr_state": "merged"}, {"state": "acknowledged"}, {"state": "dismissed"}):
-                with self.subTest(name, **kw):
-                    p, threshold = make(kw)
-                    self.assertEqual(len(check(name, p, threshold)), 0 if kw else 1)
-
-    def test_a_merged_pull_request_ends_review_loops_even_while_the_session_is_busy(self):
-        reviewers = [ev("x", "SubagentStart", role="reviewer")] * 3
-        p = pic(rows=[row("x", phase="motion", pr_state="merged")], events=[ev("x", "TaskStarted"), *reviewers])
-        self.assertEqual(check("review-loops", p, 3), [])
-
-    def test_a_finished_task_is_still_part_of_the_chain_of_a_stacked_one(self):
-        rows = [row("a"), row("b", base="worktree-a", pr_state="merged"), row("c", base="worktree-b"),
-                row("d", base="worktree-c")]
-        self.assertEqual([f[0] for f in check("deep-stack", pic(rows=rows), 3)], ["d"])
-
-    def test_merged_not_cleaned(self):
-        r = row("x", phase="merged", pr_url="https://pr/1")
-        for hours, fires in ((3, 1), (1, 0)):
-            with self.subTest(hours):
-                p = pic(rows=[r], gh=lambda *a: {"mergedAt": iso(NOW - hours * HOUR)})
-                self.assertEqual(len(check("merged-not-cleaned", p, 2)), fires)
-        for hours, fires in ((3, 1), (1, 0)):
-            with self.subTest(settled=hours):
-                p = pic(rows=[row("x", phase="settled")], declared={"x": {"ts": iso(NOW - hours * HOUR)}})
-                self.assertEqual(len(check("merged-not-cleaned", p, 2)), fires)
-
-    def test_what_cannot_be_read_is_not_evaluated(self):
-        criteria = factory.load_criteria()
-        handed = {"x": {"state": "handed-over", "ts": iso(NOW - HOUR)}}  # busy-after-handover reads sessions only for one
-        repo = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"{WT}/x", "branch": "worktree-x"}])
-        firings, skipped = factory.evaluate(pic(sessions=None, rows=None, events=None, models={}, declared=handed, repo=repo),
-                                            criteria)
-        self.assertEqual(firings, [])
-        names = {s["criterion"] for s in skipped}
-        self.assertEqual(names, {c["name"] for c in criteria} - {"ci-red-default", "lgtm-blocked", "churning", "run-stopped", "collision", "new-spec"})
-        why = {s["criterion"]: s["why"] for s in skipped}
-        self.assertIn("sessions cannot be listed", why["past-limit"])
-        self.assertIn("no agent files", why["wrong-model"])
-
-    def test_no_event_log_and_gh_failing(self):
-        _, skipped = factory.evaluate(pic(events=None, rows=[row("x")]), [c for c in factory.load_criteria()
-                                                          if c["name"] in ("review-loops", "wrong-model")])
-        self.assertEqual({s["criterion"]: s["why"] for s in skipped},
-                         {"review-loops": "no event log", "wrong-model": "no event log"})
-
-        def broken(*args):
-            raise factory.NotEvaluated("gh run list failed: no auth")
-        firings, skipped = factory.evaluate(pic(gh=broken, rows=[row("x", phase="review", pr_url="u")]),
-                                            [c for c in factory.load_criteria()
-                                             if c["name"] in ("ci-red-default", "ci-red-handover",
-                                                               "merged-not-cleaned", "past-limit")])
-        self.assertEqual(firings, [])
-        self.assertEqual({s["criterion"] for s in skipped}, {"ci-red-default", "ci-red-handover"})
-
     def test_gh_json_reports_failures_wrong_shapes_and_keeps_json_from_a_failing_exit(self):
         repo = SimpleNamespace(root=ROOT)
         for result in ((1, "", "not logged in"), (1, "garbage", "")):
@@ -392,38 +247,6 @@ class CriteriaTests(Home):
             self.assertNotIsInstance(cm.exception, factory.NoJson)
         with mock.patch.object(factory, "run", FakeRun({("gh",): (8, '[{"bucket": "fail"}]', "")})):
             self.assertEqual(factory.gh_json(repo, list, "pr", "checks", "u"), [{"bucket": "fail"}])
-
-    def test_a_wrong_shape_from_gh_is_not_evaluated_but_a_pr_without_checks_is_skipped(self):
-        repo = SimpleNamespace(root=ROOT, default="main")
-        gh = lambda *a: factory.gh_json(repo, *a)  # noqa: E731
-        listed = {("gh", "run"): (0, '{"a": 1}', ""), ("gh", "pr", "view"): (0, "[]", ""),
-                  ("gh", "pr", "checks"): (1, "", "no checks reported")}
-        reviewing = row("x", phase="review", pr_url="https://pr/1")
-        merged = row("y", phase="merged", pr_url="https://pr/2")
-        with mock.patch.object(factory, "run", FakeRun(listed)):
-            _, skipped = factory.evaluate(pic(gh=gh, rows=[reviewing, merged]), [
-                c for c in factory.load_criteria() if c["name"] in ("ci-red-default", "ci-red-handover",
-                                                                    "merged-not-cleaned")])
-        self.assertEqual({s["criterion"] for s in skipped}, {"ci-red-default", "merged-not-cleaned"})
-        with mock.patch.object(factory, "run", FakeRun(listed)):
-            self.assertEqual(check("ci-red-handover", pic(gh=gh, rows=[reviewing])), [])
-
-    def test_phase_criteria_are_not_evaluated_when_phases_cannot_be_trusted(self):
-        phase_based = [c for c in factory.load_criteria() if c["name"] in (
-            "dispatcher-missing", "quiet", "ended-undeclared", "blocked-unanswered", "handover-unacknowledged",
-            "review-loops", "ci-red-handover", "merged-not-cleaned", "base-merged")]
-        trusted = [c for c in factory.load_criteria() if c["name"] in ("past-limit", "wrong-model", "deep-stack")]
-        unplaced = {"id": "s9", "kind": "background", "status": "busy", "state": "working"}
-        for label, p in (("an unplaced session", pic(rows=[row("x")], sessions=[unplaced])),
-                         ("an unknown pull request state", pic(rows=[row("x", pr_state="unknown")]))):
-            with self.subTest(label):
-                firings, skipped = factory.evaluate(p, phase_based)
-                self.assertEqual(firings, [])
-                self.assertEqual([s["criterion"] for s in skipped], [c["name"] for c in phase_based])
-                self.assertIn("no working directory" if "unplaced" in label else "pull request state is unknown",
-                              skipped[0]["why"])
-                self.assertEqual(factory.evaluate(p, trusted)[1], [])
-        self.assertEqual(factory.evaluate(pic(rows=[row("x", branch=None, pr_state="unknown")]), phase_based)[1], [])
 
     def test_last_activity_survives_a_null_start(self):
         r = row("x", last_commit=NOW - 100)
@@ -458,8 +281,7 @@ class CriteriaTests(Home):
         events = factory.repo_log("events", ROOT)
         self.assertEqual([e["event"] for e in events], ["TaskStarted", "SubagentStart", "SubagentStart"])
         self.assertEqual([e["ts"] for e in events], sorted(e["ts"] for e in events))
-        self.assertEqual(check("review-loops", pic(events=events, rows=[row("x")]), 2),
-                         [("x", "x", "2 reviewer dispatches since it started")])
+        self.assertEqual(len(factory.since_start(events, "x")[0]), 2)
         self.assertIsNone(factory.repo_log("nothing", ROOT))
 
     def test_the_tail_of_a_long_transcript_drops_the_cut_line_and_odd_lines(self):
@@ -497,30 +319,30 @@ BASE = [(f"t{i}", float(i), 50.0) for i in range(1, 6)]  # five landed tasks: me
 
 
 class CostTests(unittest.TestCase):
-    def evaluate(self, name, threshold, tasks=(), rows=(), answer=None, calls=None, gh=None, p=None):
-        p = p or pic(monitor="/m/isshoni", rows=list(rows), gh=gh or landed("t1", "t2", "t3", "t4", "t5"))
+    def ask(self, fn, tasks=(), answer=None, calls=None, gh=None, p=None):
+        p = p or pic(monitor="/m/isshoni", rows=[row("x")], gh=gh or landed("t1", "t2", "t3", "t4", "t5"))
 
         def fake(argv, cwd=None, timeout=None, input=None):
             if calls is not None:
                 calls.append((argv, timeout))
             return answer or (0, monitor_out(*BASE, *tasks), "")
         with mock.patch.object(factory, "run", fake):
-            return check(name, p, threshold)
+            return fn(p)
 
     def test_no_monitor_is_not_evaluated(self):
         with self.assertRaisesRegex(factory.NotEvaluated, 'no monitor: set paths.monitor in ~/.claude/factory/settings.toml'):
-            check("cost-outlier", pic(rows=[row("x")]), 3)
+            factory.costs(pic(rows=[row("x")]))
 
-    def test_the_monitor_is_run_once_for_both_criteria_and_a_failure_is_remembered_too(self):
+    def test_the_monitor_is_run_once_for_the_costs_and_the_median_and_a_failure_is_remembered_too(self):
         calls = []
         p = pic(monitor="/m/isshoni", rows=[row("x")], gh=landed("t1", "t2", "t3", "t4", "t5"))
-        self.evaluate("cost-outlier", 3, calls=calls, p=p)
-        self.evaluate("lead-heavy", 85, calls=calls, p=p)
+        self.ask(factory.costs, calls=calls, p=p)
+        self.ask(factory.landed_median, calls=calls, p=p)
         self.assertEqual(calls, [(["/m/isshoni", "sessions", "--json"], 120)])
         calls, p = [], pic(monitor="/m/isshoni", rows=[row("x")], gh=landed("t1"))
-        for name, threshold in (("cost-outlier", 3), ("lead-heavy", 85)):
+        for fn in (factory.costs, factory.landed_median):
             with self.assertRaisesRegex(factory.NotEvaluated, "the monitor failed: boom"):
-                self.evaluate(name, threshold, answer=(1, "", "warn\nboom\n"), calls=calls, p=p)
+                self.ask(fn, answer=(1, "", "warn\nboom\n"), calls=calls, p=p)
         self.assertEqual(len(calls), 1)
 
     def test_a_monitor_that_fails_or_answers_oddly_is_not_evaluated(self):
@@ -529,12 +351,12 @@ class CostTests(unittest.TestCase):
                             ((0, "[]", ""), "unexpected"), ((0, '{"repos": [{"repo_path": "/repo"}]}', ""), "unexpected"),
                             ((0, bad_task, ""), "unexpected")):
             with self.subTest(why=why), self.assertRaisesRegex(factory.NotEvaluated, f"the monitor failed: .*{why}"):
-                self.evaluate("cost-outlier", 3, rows=[row("x")], answer=answer)
+                self.ask(factory.costs, answer=answer)
 
     def test_only_this_repositorys_tasks_count(self):
         other = (0, monitor_out(*BASE, ("x", 99.0, 99.0), repo="/elsewhere"), "")
         with self.assertRaisesRegex(factory.NotEvaluated, "only 0 landed"):
-            self.evaluate("cost-outlier", 3, rows=[row("x")], answer=other)
+            self.ask(factory.landed_median, answer=other)
 
     def test_the_median_needs_five_landed_tasks_with_a_cost(self):
         zero = [("t1", 0.0, 50.0), *BASE[1:]]
@@ -543,22 +365,10 @@ class CostTests(unittest.TestCase):
             answer = (0, monitor_out(*tasks), "")
             with self.subTest(slugs=slugs, n=n), self.assertRaisesRegex(
                     factory.NotEvaluated, f"only {n} landed tasks have a cost; 5 are needed for a median"):
-                self.evaluate("lead-heavy", 85, rows=[row("x")], answer=answer, gh=landed(*slugs))
+                self.ask(factory.landed_median, answer=answer, gh=landed(*slugs))
 
-    def test_cost_outlier(self):
-        rows = [row("x"), row("y", phase="blocked"), row("review", phase="review"), row("done", pr_state="merged"),
-                row("ack", state="acknowledged"), row("free")]
-        tasks = [("x", 10.0, 50.0), ("y", 9.0, 50.0), ("review", 99.0, 50.0), ("done", 99.0, 50.0), ("ack", 99.0, 50.0)]
-        found = self.evaluate("cost-outlier", 3, tasks, rows)
-        self.assertEqual(found, [("x", "x", "cost 10.00, 3.3 times the median landed task (3.00 over 5)")])
-
-    def test_lead_heavy(self):
-        rows = [row("a"), row("b"), row("c"), row("d"), row("e", pr_state="merged"), row("f", state="acknowledged")]
-        tasks = [("a", 3.0, 90.0), ("b", 2.9, 99.0), ("c", 5.0, 85.0), ("d", 4.0, 85.1), ("e", 9.0, 99.0),
-                 ("f", 9.0, 99.0)]
-        found = self.evaluate("lead-heavy", 85, tasks, rows)
-        self.assertEqual(found, [("a", "a", "the lead's own session is 90.0% of its cost (3.00)"),
-                                 ("d", "d", "the lead's own session is 85.1% of its cost (4.00)")])
+    def test_the_median_of_five(self):
+        self.assertEqual(self.ask(factory.landed_median), (3.0, 5))
 
 
 class RunTests(unittest.TestCase):
@@ -570,7 +380,7 @@ class RunTests(unittest.TestCase):
 class Harness(Home):
     """Runs the CLI against a faked `run`, a temporary store, a fixed clock and its own criteria and role files."""
 
-    CRITERIA = ["past-limit", "dispatcher-missing", "blocked-unanswered"]
+    CRITERIA = []
 
     def setUp(self):
         super().setUp()
@@ -581,6 +391,7 @@ class Harness(Home):
         self.guidance.write_text("SITE MANAGER CASES")
         self.criteria_path = self.home / "criteria.json"
         self.use(*self.CRITERIA)
+        (self.store / "looks-2027-01.jsonl").write_text(json.dumps(look(NOW - 60)) + "\n")  # a look a minute ago: no pace is due
         self.clock = NOW
         self.tools = {"git": "/usr/bin/git", "gh": "/opt/bin/gh", "claude": "/home/u/.local/bin/claude",
                       "crontab": "/usr/bin/crontab", "notify-send": "/usr/bin/notify-send"}
@@ -611,6 +422,7 @@ class Harness(Home):
         base = repo_answers([task_entry(s) for s in entries], sessions)
         base[("claude", "-p")] = reply()
         base[("gh", "pr", "list")] = (0, "[]", "")
+        base[("gh", "run", "list")] = (0, "[]", "")
         self.fake = FakeRun({**base, **(answers or {})})
         if at is not None:
             self.clock = at
@@ -626,9 +438,15 @@ class Harness(Home):
         return lead(slug, startedAt=int((self.clock - 3 * HOUR) * 1000))
 
     def tick(self, **kw):
-        kw.setdefault("sessions", [DISPATCHER | {"name": "dispatcher-repo"}, self.overtime()])
+        """One watch tick with task x declared working and its lead gone: `ended-undeclared` fires."""
+        kw.setdefault("sessions", [DISPATCHER | {"name": "dispatcher-repo"}])
         kw.setdefault("entries", ["x"])
+        if not self.records("tasks"):
+            self.seed("tasks", [{"repo": ROOT, "slug": "x", "role": "lead", "state": "working", "ts": iso(NOW - HOUR)}])
         return self.cli("watch", **kw)
+
+    def looks(self):
+        return [r for r in self.records("looks") if r["ts"] != iso(NOW - 60)]
 
 
 def reply(decisions=(), sent=True, cost=0.15):
@@ -640,9 +458,13 @@ def choice(fid, decision="escalated", reason="because"):
     return {"id": fid, "decision": decision, "reason": reason}
 
 
-def fired(fid, criterion="past-limit", escalate="always", subject="x", ts=NOW - 10 * HOUR, repo=ROOT):
-    return {"ts": iso(ts), "repo": repo, "id": fid, "criterion": criterion, "escalate": escalate, "slug": subject,
-            "subject": subject, "detail": "d"}
+def fired(fid, criterion="ended-undeclared", subject="x", ts=NOW - 10 * HOUR, repo=ROOT):
+    return {"ts": iso(ts), "repo": repo, "id": fid, "criterion": criterion, "slug": subject, "subject": subject, "detail": "d"}
+
+
+def look(ts, **kw):
+    return {"ts": iso(ts), "repo": ROOT, "woken_by": [], "firings": [], "tasks": 0, "calls": 0, "cost_usd": None, "seconds": 0,
+            "run": None, "model": "opus", "prs": [], **kw}
 
 
 def decided(fid, decision, ts=NOW - HOUR, reason="why"):
@@ -651,26 +473,23 @@ def decided(fid, decision, ts=NOW - HOUR, reason="why"):
 
 class HealthTests(Harness):
     def test_table_and_json_write_nothing(self):
-        self.seed("events", [ev("x", "TaskStarted")])
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "role": "lead", "state": "working", "ts": iso(NOW - HOUR)}])
         before = {p.name: p.read_bytes() for p in self.store.iterdir()}
-        code, out, _ = self.cli("health", sessions=[DISPATCHER | {"name": "dispatcher-repo"}, self.overtime()],
-                                entries=["x"])
-        self.assertEqual((code, out), (0, "past-limit  always  x  working for 3h\n"))
-        code, out, _ = self.cli("health", "--json", sessions=[DISPATCHER | {"name": "dispatcher-repo"},
-                                                                self.overtime()], entries=["x"])
+        code, out, _ = self.cli("health", entries=["x"])
+        self.assertEqual((code, out), (0, "ended-undeclared  x  declared working 1h ago; its lead has no live session and no run holds its lock\n"))
+        code, out, _ = self.cli("health", "--json", entries=["x"])
         doc = json.loads(out)
-        self.assertEqual([(f["criterion"], f["escalate"], f["slug"], f["subject"]) for f in doc["firings"]],
-                         [("past-limit", "always", "x", "x")])
-        self.assertTrue(doc["firings"][0]["what"])
+        self.assertEqual([(f["criterion"], f["slug"], f["subject"]) for f in doc["firings"]], [("ended-undeclared", "x", "x")])
+        self.assertNotIn("what", doc["firings"][0])
         self.assertEqual(doc["not_evaluated"], [])
+        self.assertEqual([t["slug"] for t in doc["tasks"]], ["x"])
         self.assertEqual({p.name: p.read_bytes() for p in self.store.iterdir()}, before)
-
     def test_nothing_fired_and_not_evaluated_lines(self):
         code, out, _ = self.cli("health")
         self.assertEqual((code, out), (0, "nothing fired\n"))
         code, out, _ = self.cli("health", answers={("claude", "agents"): (1, "", "boom")})
         self.assertEqual(code, 0)
-        self.assertIn("not evaluated: past-limit: sessions cannot be listed", out)
+        self.assertIn("not evaluated: dispatcher-missing: sessions cannot be listed", out)
 
     def test_the_dispatcher_option(self):
         _, out, _ = self.cli("health", "--dispatcher", "boss", entries=["x"])
@@ -681,11 +500,9 @@ class HealthTests(Harness):
 
     def test_a_bad_criteria_file_is_a_usage_error(self):
         self.criteria_path.write_text('[{"name": "nope"}]')
-        code, _, err = self.cli("health")
+        code, _, err = self.cli("watch")
         self.assertEqual(code, 2)
         self.assertIn("unknown criterion", err)
-
-
 class WatchTests(Harness):
     def test_nothing_fired_starts_no_claude(self):
         code, out, _ = self.tick(sessions=[DISPATCHER | {"name": "dispatcher-repo"}], entries=[])
@@ -697,27 +514,29 @@ class WatchTests(Harness):
 
     def test_the_site_manager_is_given_the_name_the_dispatcher_has_now(self):
         register("sid-d")
-        self.tick(sessions=[DISPATCHER | {"name": "renamed", "pid": 7}, self.overtime()])
+        self.tick(sessions=[DISPATCHER | {"name": "renamed", "pid": 7}])
         [argv] = self.claude_runs()
         self.assertIn("The dispatcher's session name is renamed.", argv[-1])
 
     def test_no_site_manager_runs_when_no_dispatcher_can_be_addressed(self):
-        self.use("past-limit")
         register("sid-d")
-        self.tick(sessions=[DISPATCHER | {"name": None, "pid": 7}, self.overtime()])
-        self.assertEqual((len(self.records()), self.claude_runs()), (1, []))
+        self.tick(sessions=[DISPATCHER | {"name": None, "pid": 7}])
+        self.assertEqual(self.claude_runs(), [])
+        self.assertIn("ended-undeclared", [r.get("criterion") for r in self.records()])
+        self.assertEqual(self.looks(), [])
 
     def test_a_new_firing_is_logged_and_sent(self):
         code, out, _ = self.tick()
         [record] = self.records()
-        self.assertEqual((code, record["criterion"], record["subject"], record["escalate"], record["repo"]),
-                         (0, "past-limit", "x", "always", ROOT))
+        self.assertEqual((code, record["criterion"], record["subject"], record["repo"]), (0, "ended-undeclared", "x", ROOT))
+        self.assertNotIn("escalate", record)
         self.assertEqual(len(record["id"]), 12)
         self.assertEqual(len(self.claude_runs()), 1)
-        self.assertIn(f"{record['id']}  past-limit  x  undecided", out)
-
+        self.assertIn(f"{record['id']}  ended-undeclared  x  undecided", out)
+        [looked] = self.looks()
+        self.assertEqual((looked["woken_by"], looked["firings"]), ([{"event": "firing", "id": record["id"], "criterion": "ended-undeclared", "slug": "x"}], [record["id"]]))
     def test_the_site_manager_runs_on_the_configured_model(self):
-        p = {"repo": mock.Mock(root=ROOT), "dispatcher": "d", "lean_start": False, "monitor": None}
+        p = pic(dispatcher="d", lean_start=False, monitor=None)
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "settings.toml"
             path.write_text('[models]\nsite_manager = "claude-opus-4-1"\n')
@@ -734,7 +553,7 @@ class WatchTests(Harness):
                      "Bash(claude agents --json --all)", "Bash(/m/isshoni sessions *)"}
         for lean in (True, False):
             with self.subTest(lean_start=lean):
-                p = {"repo": mock.Mock(root=ROOT), "dispatcher": "d", "lean_start": lean, "monitor": "/m/isshoni"}
+                p = pic(dispatcher="d", lean_start=lean, monitor="/m/isshoni")
                 with mock.patch.object(factory, "lean_flags", return_value=["--strict-mcp-config"]):
                     argv = factory.site_manager_argv(p, [])
                 [tools] = [a for a in argv if a.startswith("--tools=")]
@@ -750,10 +569,12 @@ class WatchTests(Harness):
                 self.assertEqual("--strict-mcp-config" in argv, lean)
 
     def test_without_a_monitor_there_is_no_monitor_rule(self):
-        p = {"repo": mock.Mock(root=ROOT), "dispatcher": "d", "lean_start": False, "monitor": None}
+        p = pic(dispatcher="d", lean_start=False, monitor=None)
         argv = factory.site_manager_argv(p, [])
         allowed = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
         self.assertEqual(allowed, list(factory.SITE_MANAGER_TOOLS))
+
+    maxDiff = None
 
     def test_the_launch_argv(self):
         path = self.transcript("{sid}.jsonl", NOW - 60)
@@ -764,7 +585,7 @@ class WatchTests(Harness):
         entries.append({"timestamp": "TR", "message": {"role": "user", "content": [
             {"type": "tool_result", "content": [{"type": "text", "text": "ok"}]}]}})
         path.write_text("partial\n" + "".join(json.dumps(e) + "\nnot json\n" for e in entries) + '{"no": "message"}\n')
-        self.tick()
+        self.tick(sessions=[DISPATCHER | {"name": "dispatcher-repo"}, lead("x", **FINISHED)])
         [argv] = self.claude_runs()
         self.assertEqual(argv[:-1], [
             "claude", "-p", "--model", "opus", "--permission-mode", "dontAsk", "--strict-mcp-config", "--settings",
@@ -775,25 +596,27 @@ class WatchTests(Harness):
             "--append-system-prompt", "SITE MANAGER RULES\n\nSITE MANAGER CASES"])
         schema = factory.RUN_SCHEMA
         self.assertEqual(schema["required"], ["sent", "decisions"])
-        self.assertEqual(schema["properties"]["decisions"]["items"]["required"], ["id", "decision", "reason", "looked"])
+        self.assertEqual(schema["properties"]["decisions"]["items"]["required"], ["decision", "reason", "looked"])
+        self.assertTrue({"id", "entry", "slug", "detail"} <= set(schema["properties"]["decisions"]["items"]["properties"]))
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["to"]["enum"],
                          ["dispatcher", "lead"])
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["decision"]["enum"],
                          ["escalated", "suppressed", "paused", "extended", "told"])
         head, _, body = argv[-1].partition("\n\n")
         self.assertEqual(head, f"Job: watch. Repo: {ROOT}. The dispatcher's session name is dispatcher-repo.")
-        [sent] = json.loads(body)
+        picture = json.loads(body)
+        self.assertEqual(list(picture), ["since", "woken_by", "firings", "tasks", "landed_median_usd"])
+        [sent] = picture["firings"]
         self.assertEqual(sent["id"], self.records()[0]["id"])
-        self.assertEqual((sent["criterion"], sent["escalate"], sent["slug"], sent["subject"]),
-                         ("past-limit", "always", "x", "x"))
-        self.assertTrue(sent["what"] and sent["detail"])
-        self.assertNotIn("session_id", sent)
-        self.assertNotIn("transcript", sent)
-        self.assertEqual(sent["task"], {"phase": "motion", "state": None, "session": "working", "elapsed": "3h",
+        self.assertEqual((sent["criterion"], sent["slug"], sent["subject"]), ("ended-undeclared", "x", "x"))
+        self.assertTrue(sent["detail"])
+        for gone in ("what", "escalate", "session_id", "transcript"):
+            self.assertNotIn(gone, sent)
+        self.assertEqual(sent["task"], {"phase": "motion", "state": "working", "session": "done", "elapsed": "3h",
                                         "last_commit": "?", "dirty": None, "ahead": None, "behind": None,
                                         "pr_state": "none", "pr_url": "", "limit": "2h", "size": None,
-                                        "nearing": False, "overtime": True,
-                                        "worktree": f"{WT}/x", "branch": "worktree-x", "lead": "x", "pid": None})
+                                        "nearing": False, "overtime": False,
+                                        "worktree": f"{WT}/x", "branch": "worktree-x", "lead": None, "pid": None})
         self.assertEqual(sent["transcripts"], [str(path)])
         tail = sent["transcript_tail"]
         self.assertEqual(len(tail), 15)
@@ -803,11 +626,10 @@ class WatchTests(Harness):
         self.assertEqual(self.fake.timeouts[-1], 600)
 
     def test_a_firing_without_a_transcript_or_a_task_carries_no_tail(self):
-        self.tick(sessions=[DISPATCHER | {"name": "dispatcher-repo"}, self.overtime()])
-        [sent] = json.loads(self.claude_runs()[0][-1].partition("\n\n")[2])
+        self.tick()
+        [sent] = json.loads(self.claude_runs()[0][-1].partition("\n\n")[2])["firings"]
         self.assertNotIn("transcript_tail", sent)
         self.assertIn("task", sent)
-
     def decisions(self):
         return [(r["id"], r["decision"], r["reason"], r["by"]) for r in self.records() if "decision" in r]
 
@@ -816,34 +638,23 @@ class WatchTests(Harness):
         self.assertEqual(self.decisions(), [("aaa", "escalated", "red", "site-manager")])
 
     def test_output_lines_show_the_decision_and_the_cost(self):
-        self.seed("firings", [fired("aaa", escalate="judgment", criterion="blocked-unanswered")])
-        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "blocked", "ts": iso(NOW - 2 * HOUR)}])
-        _, out, _ = self.cli("watch", entries=["x"], answers={("claude", "-p"): reply([choice("aaa", "suppressed")])})
-        self.assertIn("aaa  blocked-unanswered  x  suppressed", out)
+        self.seed("firings", [fired("aaa")])
+        _, out, _ = self.tick(answers={("claude", "-p"): reply([choice("aaa", "suppressed")])})
+        self.assertIn("aaa  ended-undeclared  x  suppressed", out)
         self.assertTrue(out.endswith("site manager run cost $0.15\n"))
         self.assertEqual(self.decisions(), [("aaa", "suppressed", "because", "site-manager")])
-
     def test_no_cost_line_without_a_numeric_cost(self):
         _, out, _ = self.tick(answers={("claude", "-p"): reply(cost=None)})
         self.assertNotIn("cost", out)
 
-    def seeded_run(self, *decisions, sent=True, escalate="judgment"):
-        """One tick with firing `aaa` open and undecided: a blocked task (judgment) or an overtime lead (always)."""
-        if escalate == "judgment":
-            self.seed("firings", [fired("aaa", criterion="blocked-unanswered", escalate="judgment")])
-            self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "blocked", "ts": iso(NOW - 2 * HOUR)}])
-            kw = {"sessions": [DISPATCHER | {"name": "dispatcher-repo"}]}
-        else:
-            self.seed("firings", [fired("aaa")])
-            kw = {}
-        _, out, _ = self.tick(answers={("claude", "-p"): reply(decisions, sent)}, **kw)
+    def seeded_run(self, *decisions, sent=True):
+        """One tick with firing `aaa` open and undecided."""
+        self.seed("firings", [fired("aaa")])
+        _, out, _ = self.tick(answers={("claude", "-p"): reply(decisions, sent)})
         return out
-
-    def test_suppressed_for_an_always_firing_is_not_recorded(self):
-        out = self.seeded_run(choice("aaa", "suppressed"), escalate="always")
-        self.assertEqual(self.decisions(), [])
-        self.assertIn("aaa  past-limit  x  undecided", out)
-
+    def test_a_suppression_is_recorded_for_any_firing(self):
+        self.seeded_run(choice("aaa", "suppressed"))
+        self.assertEqual(self.decisions(), [("aaa", "suppressed", "because", "site-manager")])
     def test_sent_false_records_no_escalation(self):
         self.seeded_run(choice("aaa", "escalated"), sent=False)
         self.assertEqual(self.decisions(), [])
@@ -865,11 +676,12 @@ class WatchTests(Harness):
                    (1, reply([choice("aaa")])[1], "boom"))
         for i, answer in enumerate(answers):
             with self.subTest(answer=answer):
-                self.seed("firings", [fired("aaa", escalate="judgment")])
+                self.seed("firings", [fired("aaa")])
                 code, out, err = self.tick(answers={("claude", "-p"): answer}, at=NOW + i * 1800)
                 self.assertEqual(code, 1)
-                self.assertIn("aaa  past-limit  x  undecided", out)
+                self.assertIn("aaa  ended-undeclared  x  undecided", out)
                 self.assertEqual(self.decisions(), [])
+                self.assertEqual(self.looks()[-1]["seconds"] >= 0 and "failed" in self.looks()[-1], True)
                 for _, path in factory.log_files("firings"):
                     path.unlink()
 
@@ -883,30 +695,30 @@ class WatchTests(Harness):
         def claude(argv, **kw):
             noisy = "ANTHROPIC_LOG" in (kw["env"] or os.environ)
             return subprocess.CompletedProcess(argv, 0, ("[log_1] sending request\n" if noisy else "") + reply()[1], "")
-        p = {"repo": SimpleNamespace(root=ROOT)}
+        p = pic()
         with mock.patch.dict(os.environ, {"ANTHROPIC_LOG": "debug"}), mock.patch.object(factory.subprocess, "Popen", stub_popen(claude)), \
                 mock.patch.object(factory, "site_manager_argv", return_value=["claude", "-p"]), \
-                mock.patch.object(factory, "record_decisions") as record, mock.patch.object(factory, "report"), \
+                mock.patch.object(factory, "record_decisions", return_value=0) as record, mock.patch.object(factory, "report"), \
                 redirect_stdout(io.StringIO()):
             factory.run_site_manager(p, [])
         record.assert_called_once()
 
-    def test_an_open_blocked_firing_survives_an_unplaced_session(self):
-        self.seed("firings", [fired("aaa", criterion="blocked-unanswered", escalate="judgment")])
+    def test_an_open_firing_survives_an_unplaced_session(self):
+        self.seed("firings", [fired("aaa")])
         unplaced = {"id": "s9", "kind": "background", "status": "busy", "state": "working"}
-        code, out, _ = self.cli("watch", sessions=[DISPATCHER | {"name": "dispatcher-repo"}, unplaced], entries=["x"])
+        code, out, _ = self.tick(sessions=[DISPATCHER | {"name": "dispatcher-repo"}, unplaced])
         self.assertEqual(code, 0)
-        self.assertIn("not evaluated: blocked-unanswered: session s9 has no working directory", out)
-        self.assertEqual(self.records(), [fired("aaa", criterion="blocked-unanswered", escalate="judgment")])
-
+        self.assertIn("not evaluated: ended-undeclared: sessions cannot be listed", out)
+        self.assertEqual(self.records(), [fired("aaa")])
     def test_an_escalated_firing_is_not_sent_again(self):
         self.tick()
         fid = self.records()[0]["id"]
         self.seed("firings", [decided(fid, "escalated", ts=NOW + 1)])
         self.tick(at=NOW + 1800)
-        self.assertEqual(len(self.claude_runs()), 0)
+        [argv] = self.claude_runs()  # the pace look: the working task has not been looked at for a health period
+        picture = json.loads(argv[-1].partition("\n\n")[2])
+        self.assertEqual((picture["woken_by"], picture["firings"]), ([{"event": "pace"}], []))
         self.assertEqual(len(self.records()), 2)
-
     def test_an_undecided_firing_is_sent_again_under_the_same_id(self):
         self.tick()
         _, out, _ = self.tick(at=NOW + 1800)
@@ -948,7 +760,7 @@ class WatchTests(Harness):
         self.assertTrue(new["detail"].endswith(f"; lead told at {iso(NOW - 31 * 60)}: stop sleep"), new["detail"])
         self.assertNotEqual(new["id"], "aaa")
         self.assertNotIn("lead_told", new)
-        [sent] = json.loads(argv[-1].partition("\n\n")[2])
+        [sent] = json.loads(argv[-1].partition("\n\n")[2])["firings"]
         self.assertEqual((sent["id"], sent["lead_told"]), (new["id"], True))
 
     def test_a_refired_firing_still_undecided_is_sent_again_with_the_marker(self):
@@ -957,26 +769,25 @@ class WatchTests(Harness):
         new = self.records()[3]
         self.tick(at=NOW + 1800)
         [argv] = self.claude_runs()
-        [sent] = json.loads(argv[-1].partition("\n\n")[2])
+        [sent] = json.loads(argv[-1].partition("\n\n")[2])["firings"]
         self.assertEqual((sent["id"], sent["lead_told"]), (new["id"], True))
 
     def test_a_condition_that_ended_is_cleared_and_fires_anew_under_a_new_id(self):
         self.tick()
         first = self.records()[0]["id"]
-        code, out, _ = self.tick(at=NOW + 1800, sessions=[DISPATCHER | {"name": "dispatcher-repo"}])
-        self.assertIn("nothing new", out)
+        self.tick(at=NOW + 1800, sessions=[DISPATCHER | {"name": "dispatcher-repo"}, lead("x")])
         self.assertEqual(self.records()[1], {"ts": iso(NOW + 1800), "repo": ROOT, "id": first, "cleared": True})
         self.tick(at=NOW + 3600)
         self.assertEqual([r["id"] for r in self.records()][0], first)
         again = self.records()[2]
         self.assertNotEqual(again["id"], first)
-        self.assertEqual(again["criterion"], "past-limit")
+        self.assertEqual(again["criterion"], "ended-undeclared")
 
     def test_a_criterion_that_was_not_evaluated_clears_nothing(self):
         self.seed("firings", [fired("aaa")])
         code, out, _ = self.tick(answers={("claude", "agents"): (1, "", "boom")})
         self.assertEqual(code, 0)
-        self.assertIn("not evaluated: past-limit", out)
+        self.assertIn("not evaluated: ended-undeclared", out)
         self.assertEqual(self.records(), [fired("aaa")])
         self.assertEqual(self.claude_runs(), [])
 
@@ -987,7 +798,7 @@ class WatchTests(Harness):
         self.assertEqual(self.records()[1]["subject"], "x")
 
     def test_dispatcher_missing_notifies_records_and_runs_no_claude(self):
-        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "blocked", "ts": iso(NOW - 2 * HOUR)}])
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "working", "ts": iso(NOW - 2 * HOUR)}])
         answers = {("osascript",): (0, "", "")}
         code, out, _ = self.cli("watch", sessions=[], entries=["x"], answers=answers)
         self.assertEqual(code, 0)
@@ -1001,11 +812,11 @@ class WatchTests(Harness):
         self.assertEqual((decision["id"], decision["decision"], decision["by"]),
                          (by_criterion["dispatcher-missing"]["id"], "escalated", "watch"))
         self.assertIn("notified on this machine", decision["reason"])
-        self.assertIn("blocked-unanswered", by_criterion)
-        self.assertIn(f"{by_criterion['blocked-unanswered']['id']}  blocked-unanswered  x  undecided", out)
+        self.assertIn("ended-undeclared", by_criterion)
+        self.assertIn(f"{by_criterion['ended-undeclared']['id']}  ended-undeclared  x  undecided", out)
 
     def test_dispatcher_missing_holds_the_others_while_it_fires(self):
-        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "blocked", "ts": iso(NOW - 2 * HOUR)}])
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "working", "ts": iso(NOW - 2 * HOUR)}])
         answers = {("osascript",): (0, "", "")}
         self.cli("watch", sessions=[], entries=["x"], answers=answers)
         self.cli("watch", sessions=[], entries=["x"], answers=answers, at=NOW + 1800)
@@ -1013,11 +824,11 @@ class WatchTests(Harness):
         self.assertEqual(self.claude_runs(), [])
         code, _, _ = self.cli("watch", entries=["x"], at=NOW + 3600)
         self.assertEqual(len(self.claude_runs()), 1)
-        self.assertIn("blocked-unanswered", self.claude_runs()[0][-1])
+        self.assertIn("ended-undeclared", self.claude_runs()[0][-1])
         self.assertNotIn("dispatcher-missing", self.claude_runs()[0][-1])
 
     def test_a_failed_notification_is_written_to_the_watch_log_and_recorded(self):
-        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "blocked", "ts": iso(NOW - 2 * HOUR)}])
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "working", "ts": iso(NOW - 2 * HOUR)}])
         failing = {("osascript",): (1, "", "no display")}
         code, out, _ = self.cli("watch", sessions=[], entries=["x"], answers=failing)
         self.assertEqual(code, 0)
@@ -1029,14 +840,14 @@ class WatchTests(Harness):
         self.assertFalse(self.fake.ran("osascript"))
 
     def test_the_notice_off_macos_uses_notify_send_or_the_log(self):
-        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "blocked", "ts": iso(NOW - 2 * HOUR)}])
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "working", "ts": iso(NOW - 2 * HOUR)}])
         with mock.patch.object(factory.sys, "platform", "linux"):
             self.cli("watch", sessions=[], entries=["x"], answers={("notify-send",): (0, "", "")})
             self.assertEqual([c for c in self.fake.calls if c[0] == "notify-send"],
                              [["notify-send", "factory: repo", "no dispatcher session for /repo: run /factory:dispatch in a session there"]])
 
     def test_without_a_notification_service_the_notice_goes_to_the_log(self):
-        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "blocked", "ts": iso(NOW - 2 * HOUR)}])
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "working", "ts": iso(NOW - 2 * HOUR)}])
         self.tools.pop("notify-send")
         with mock.patch.object(factory.sys, "platform", "linux"):
             _, out, _ = self.cli("watch", sessions=[], entries=["x"])
@@ -1059,12 +870,10 @@ class WatchTests(Harness):
 
 
 class RepoWideTests(Harness):
-    CRITERIA = ["ci-red-default"]
-
     def test_a_repo_wide_firing_carries_no_task(self):
         red = json.dumps([{"workflowName": "ci", "status": "completed", "conclusion": "failure", "url": "u"}])
-        self.tick(answers={("gh", "run", "list"): (0, red, "")})
-        [sent] = json.loads(self.claude_runs()[0][-1].partition("\n\n")[2])
+        self.tick(entries=[], answers={("gh", "run", "list"): (0, red, "")})
+        [sent] = json.loads(self.claude_runs()[0][-1].partition("\n\n")[2])["firings"]
         self.assertEqual((sent["criterion"], sent["slug"]), ("ci-red-default", None))
         self.assertNotIn("task", sent)
         self.assertNotIn("transcript_tail", sent)
@@ -1073,12 +882,12 @@ class RepoWideTests(Harness):
 class FiringTests(Harness):
     def setUp(self):
         super().setUp()
-        self.seed("firings", [fired("abc111", escalate="judgment"), decided("abc111", "escalated"),
-                              fired("abc222", escalate="judgment"), decided("abc222", "escalated"),
+        self.seed("firings", [fired("abc111"), decided("abc111", "escalated"),
+                              fired("abc222"), decided("abc222", "escalated"),
                               fired("def333", criterion="ci-red-default", subject="ci"),
                               decided("def333", "escalated"),
-                              fired("sss444", escalate="judgment"), decided("sss444", "suppressed"),
-                              fired("uuu555", escalate="judgment"), "junk", {"repo": ROOT, "decision": "escalated"}])
+                              fired("sss444"), decided("sss444", "suppressed"),
+                              fired("uuu555"), "junk", {"repo": ROOT, "decision": "escalated"}])
 
     def refused(self, *argv, why):
         code, _, err = self.cli(*argv)
@@ -1118,14 +927,14 @@ class FiringTests(Harness):
 class MissTests(Harness):
     def setUp(self):
         super().setUp()
-        self.seed("firings", [fired("aaa", escalate="judgment"), decided("aaa", "escalated"),
-                              fired("bbb", escalate="judgment"), decided("bbb", "suppressed"),
-                              fired("ccc", escalate="judgment")])
+        self.seed("firings", [fired("aaa"), decided("aaa", "escalated"),
+                              fired("bbb"), decided("bbb", "suppressed"),
+                              fired("ccc")])
 
     def test_a_miss_that_never_fired(self):
         self.assertEqual(self.cli("miss", "a lead sat on a question", "--slug", "x")[0], 0)
         self.assertEqual(self.records()[-1], {"ts": iso(NOW), "repo": ROOT, "miss": "a lead sat on a question",
-                                              "slug": "x", "firing": None})
+                                              "slug": "x", "firing": None, "entry": None})
 
     def test_a_miss_names_a_suppressed_or_undecided_firing_by_prefix(self):
         self.cli("miss", "filter was wrong", "--firing", "bb")
@@ -1167,11 +976,8 @@ class ChurningTests(Harness):
                 mock.patch.object(factory, "churn", lambda repo, slug, pr: {"sent_back": [], "files": ["a"], "others": []}):
             self.assertEqual(list(factory.churning(pic(declared=declared, snap=snap))), ["x"])
 
-    def test_it_is_shipped_judgment_and_every_tick(self):
-        [c] = [c for c in json.loads((factory.PLUGIN_ROOT / "criteria.json").read_text()) if c["name"] == "churning"]
-        self.assertEqual((c["escalate"], c["threshold"]), ("judgment", None))
-        self.assertIn("churning", factory.EVERY_TICK)
-
+    def test_it_is_a_fact_of_every_tick(self):
+        self.assertTrue(factory.FACTS["churning"][1])
     def test_no_pull_request_list_unless_a_handed_over_task_was_sent_back(self):
         asked = []
         declared = {"x": {"state": "handed-over", "ts": "t"}, "y": {"state": "working", "ts": "t"}}
@@ -1188,7 +994,7 @@ class ChurningTests(Harness):
         self.assertEqual(asked, [1])
 
     def record(self, *decisions, sent=True, criterion="churning"):
-        firing = {"id": "aaa", "criterion": criterion, "escalate": "judgment", "slug": "x", "subject": "#7", "detail": "d"}
+        firing = {"id": "aaa", "criterion": criterion, "slug": "x", "subject": "#7", "detail": "d"}
         self.seed("firings", [{"ts": iso(NOW), "repo": ROOT, **{k: v for k, v in firing.items()}}])
         factory.record_decisions(self.p, [firing], {"sent": sent, "decisions": list(decisions)}, "run1")
         return [r for r in self.records() if "decision" in r]
@@ -1205,10 +1011,10 @@ class ChurningTests(Harness):
             with self.subTest(waits=waits):
                 self.assertEqual(self.record(self.paused(waits)), [])
         self.assertEqual(self.record(self.paused(["y"]), sent=False), [])
-        self.assertEqual(self.record(self.paused(["y"]), criterion="past-limit"), [])
+        self.assertEqual(self.record(self.paused(["y"]), criterion="ended-undeclared"), [])
 
     def test_paused_is_counted_apart_in_firings_and_takes_no_outcome(self):
-        self.seed("firings", [fired("ppp", criterion="churning", escalate="judgment", subject="#7"),
+        self.seed("firings", [fired("ppp", criterion="churning", subject="#7"),
                               decided("ppp", "paused") | {"waits_on": ["y"]}])
         [f] = factory.fold(self.records())[0]
         self.assertEqual((f["decision"], f["waits_on"]), ("paused", ["y"]))
@@ -1219,18 +1025,7 @@ class ChurningTests(Harness):
         self.assertEqual(code, 2)
         self.assertIn("was not escalated", err)
 
-    def test_a_pause_does_not_trip_past_limit_or_busy_after_handover_and_blocked_unanswered_names_the_wait(self):
-        late = row("x", state="blocked", phase="blocked", overtime=True, elapsed=NOW - 3 * HOUR, waits_on="y", paused={"since": "t", "waits_on": ["y"]})
-        self.assertEqual(check("past-limit", pic(rows=[late])), [])
-        self.assertEqual(len(check("past-limit", pic(rows=[{**late, "waits_on": "human", "paused": None}]))), 1)
-        declared = {"x": {"state": "blocked", "paused": True, "waits_on": ["y"], "ts": iso(NOW - 2 * HOUR)}}
-        self.assertEqual(check("busy-after-handover", pic(declared=declared, sessions=[lead("x")]), 6), [])
-        [(_, _, detail)] = check("blocked-unanswered", pic(rows=[late], declared=declared), 30)
-        self.assertEqual(detail, "blocked 2h ago, waiting for y (paused)")
-
     def test_a_tick_between_health_passes_finds_the_dispatcher_and_sends_the_firing_to_the_site_manager(self):
-        real = json.loads((factory.PLUGIN_ROOT / "criteria.json").read_text())
-        self.criteria_path.write_text(json.dumps([c for c in real if c["name"] == "churning"]))
         factory.write_lander(SimpleNamespace(root=ROOT), {"health": NOW})
         self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "handed-over", "ts": iso(NOW - HOUR)}])
         with mock.patch.object(factory, "churning", lambda p: {"x": EVIDENCE}):
@@ -1241,8 +1036,6 @@ class ChurningTests(Harness):
         self.assertEqual((fired_row["slug"], fired_row["subject"]), ("x", "#7"))
 
     def status_row(self, state, **declared):
-        real = json.loads((factory.PLUGIN_ROOT / "criteria.json").read_text())
-        self.criteria_path.write_text(json.dumps([c for c in real if c["name"] == "nearing-limit"]))
         self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": state, "ts": iso(NOW - 10 * 60), **declared}])
         started = int((NOW - 100 * 60) * 1000)
         _, out, _ = self.cli("status", "--json", sessions=[DISPATCHER | {"name": "dispatcher-repo"}, lead("x", startedAt=started)],
@@ -1287,7 +1080,7 @@ class RoutingTests(Home):
 
     def logged(self, sent, *decisions, session=None, result_sent=True, run="r1", slug="x"):
         p = pic(rows=[row("x")], sessions=[DISPATCHER | {"name": "dispatcher-repo"}, *([session] if session else [])])
-        firings = [{"id": "aaa", "escalate": "judgment", "slug": slug, **sent}]
+        firings = [{"id": "aaa", "slug": slug, **sent}]
         with mock.patch.object(factory, "log_firing") as log:
             factory.record_decisions(p, firings, {"sent": result_sent, "decisions": list(decisions)}, run)
         return [c.kwargs for c in log.call_args_list]
@@ -1311,7 +1104,6 @@ class RoutingTests(Home):
     def test_a_lead_message_is_not_recorded_when_it_cannot_be_one(self):
         live = lead("x")
         for label, sent, session, slug in (
-                ("an always firing", {"escalate": "always"}, live, "x"),
                 ("a firing whose lead was told before", {"lead_told": True}, live, "x"),
                 ("no task slug", {}, live, None),
                 ("a slug that is no task", {}, live, "y"),
@@ -1325,23 +1117,18 @@ class RoutingTests(Home):
         self.assertEqual(self.logged({}, self.told_lead(), session=lead("x"), result_sent=False), [])
 
     def test_the_earlier_rules_stand(self):
-        self.assertEqual(self.logged({"escalate": "always"}, choice("aaa", "suppressed")), [])
-        self.assertEqual(len(self.logged({"escalate": "always"}, choice("aaa"))), 1)
+        self.assertEqual(len(self.logged({}, choice("aaa", "suppressed"))), 1)
+        self.assertEqual(len(self.logged({}, choice("aaa"))), 1)
 
     def test_a_firing_whose_lead_was_told_can_still_go_to_the_dispatcher(self):
         [rec] = self.logged({"lead_told": True}, choice("aaa"), session=lead("x"))
         self.assertEqual(rec["to"], "dispatcher")
 
-    def test_base_merged_is_a_judgment_so_a_suppression_is_recorded(self):
-        self.assertEqual({c["name"]: c["escalate"] for c in factory.load_criteria()}["base-merged"], "judgment")
-        [rec] = self.logged({"criterion": "base-merged"}, choice("aaa", "suppressed", "lead was told"))
-        self.assertEqual((rec["decision"], rec["reason"]), ("suppressed", "lead was told"))
-
     def test_the_firing_carries_the_lead_worktree_pid_and_transcripts(self):
         main = self.transcript("{sid}.jsonl", NOW)
         sub = self.transcript("{sid}/subagents/a.jsonl", NOW)
         p = pic(rows=[row("x", session="working", dirty=None, ahead=None, behind=None)], sessions=[lead("x", pid=4242)])
-        f = {"id": "aaa", "criterion": "c", "escalate": "judgment", "slug": "x", "subject": "x", "detail": "d",
+        f = {"id": "aaa", "criterion": "c", "slug": "x", "subject": "x", "detail": "d",
              "what": "w"}
         task = factory.firing_for_run(p, f)["task"]
         self.assertEqual((task["lead"], task["worktree"], task["branch"], task["pid"]),
@@ -1352,7 +1139,7 @@ class RoutingTests(Home):
 
     def test_a_firing_without_a_row_carries_only_worktree_lead_pid_and_transcripts(self):
         main = self.transcript("{sid}.jsonl", NOW)
-        f = {"id": "aaa", "criterion": "busy-after-handover", "escalate": "judgment", "slug": "x", "subject": "x",
+        f = {"id": "aaa", "criterion": "busy-after-handover", "slug": "x", "subject": "x",
              "detail": "d", "what": "w"}
         out = factory.firing_for_run(pic(rows=None, sessions=[lead("x", pid=4242)]), f)
         self.assertEqual(out["task"], {"worktree": f"{WT}/x", "lead": "x", "pid": 4242})
@@ -1361,7 +1148,7 @@ class RoutingTests(Home):
         self.assertEqual(gone["task"], {"worktree": f"{WT}/x", "lead": None, "pid": None})
 
     def test_a_lead_message_for_an_every_tick_finding_is_recorded_only_for_a_live_lead(self):
-        sent = [{"id": "aaa", "escalate": "judgment", "slug": "x", "criterion": "busy-after-handover"}]
+        sent = [{"id": "aaa", "slug": "x", "criterion": "busy-after-handover"}]
         for label, session, recorded in (("live", lead("x"), 1), ("finished", lead("x", **FINISHED), 0), ("none", None, 0)):
             with self.subTest(label), mock.patch.object(factory, "log_firing") as log:
                 p = pic(rows=None, sessions=[session] if session else [])
@@ -1378,7 +1165,7 @@ class FiringsTests(Harness):
             fired("s1", ts=NOW - 2 * HOUR), decided("s1", "suppressed", reason="noise"),
             {**fired("u1", ts=NOW - HOUR), "ts": iso(NOW - HOUR)}, {"repo": ROOT, "id": "u1", "cleared": True},
             "not json", ["a list"],
-            {"ts": iso(NOW), "repo": ROOT, "miss": "late", "slug": "x", "firing": "s1"},
+            {"ts": iso(NOW), "repo": ROOT, "miss": "late", "slug": "x", "firing": "s1", "entry": "ended-undeclared"},
             {"ts": iso(NOW), "repo": ROOT, "miss": "never", "slug": None, "firing": None},
             {"ts": iso(NOW), "repo": ROOT, "miss": "never", "slug": None, "firing": None},
             {"ts": iso(NOW), "repo": "/other", "miss": "other repo", "slug": None, "firing": None}])
@@ -1388,10 +1175,12 @@ class FiringsTests(Harness):
         code, out, _ = self.cli("firings")
         lines = out.splitlines()
         self.assertEqual(code, 0)
-        self.assertEqual(lines[0], f"a1  {iso(NOW - 5 * HOUR)}  past-limit  x  escalated  acted  open  why")
-        self.assertEqual(lines[3], f"s1  {iso(NOW - 2 * HOUR)}  past-limit  x  suppressed  -  open  noise")
-        self.assertEqual(lines[4], f"u1  {iso(NOW - HOUR)}  past-limit  x  undecided  -  cleared  -")
+        self.assertEqual(lines[0], f"a1  {iso(NOW - 5 * HOUR)}  ended-undeclared  x  escalated  acted  open  why")
+        self.assertEqual(lines[3], f"s1  {iso(NOW - 2 * HOUR)}  ended-undeclared  x  suppressed  -  open  noise")
+        self.assertEqual(lines[4], f"u1  {iso(NOW - HOUR)}  ended-undeclared  x  undecided  -  cleared  -")
         self.assertEqual(lines[5], f"miss  {iso(NOW)}  x  s1  late")
+        self.assertEqual(lines[-3], "ended-undeclared: fired 5; escalated 3 (acted 1, ignored 1, no outcome 1); to lead 0; suppressed 1; missed 1; precision 0.50")
+        self.assertEqual(lines[-2], "unlisted: fired 0; escalated 0 (acted 0, ignored 0, no outcome 0); to lead 0; suppressed 0; missed 2; precision -")
         self.assertEqual(lines[-1], "escalated 3 (acted 1, ignored 1, no outcome 1); to lead 0; suppressed 1; "
                                     "paused 0; extended 0 (kept 0, overran 0, no outcome 0); missed 3 (1 suppressed first, 2 never fired); precision 0.50; recall 0.25; "
                                     "told 0 (acted 0, noise 0, collided 0, no outcome 0, undelivered 0)")
@@ -1402,13 +1191,17 @@ class FiringsTests(Harness):
         doc = json.loads(out)
         self.assertEqual([f["id"] for f in doc["firings"]], ["a1", "a2", "a3", "s1", "u1"])
         self.assertEqual(len(doc["misses"]), 3)
+        entries = doc["summary"].pop("entries")
+        self.assertEqual(entries["ended-undeclared"], {"fired": 5, "to_lead": 0, "escalated": 3, "acted": 1, "ignored": 1, "no_outcome": 1,
+                                                       "suppressed": 1, "told": 0, "extended": 0, "paused": 0, "missed": 1, "precision": 0.5})
+        self.assertEqual(entries["unlisted"]["missed"], 2)
         self.assertEqual(doc["summary"], {"escalated": 3, "acted": 1, "ignored": 1, "no_outcome": 1, "suppressed": 1,
                                           "paused": 0, "extended": 0, "kept": 0, "overran": 0, "missed": 3, "missed_suppressed": 1, "missed_never_fired": 2,
                                           "precision": 0.5, "recall": 0.25, "told": 0, "told_acted": 0, "told_noise": 0,
                                           "told_collided": 0, "told_no_outcome": 0, "told_undelivered": 0})
 
     def test_a_lead_message_shows_in_the_table_and_everything_in_the_json(self):
-        self.seed("firings", [fired("l1", escalate="judgment"), decided("l1", "escalated") | {
+        self.seed("firings", [fired("l1"), decided("l1", "escalated") | {
             "to": "lead", "looked": ["ps -ax"], "run": "r1"}])
         _, out, _ = self.cli("firings")
         self.assertIn("  escalated to lead  -  open  why\n", out)
@@ -1416,8 +1209,8 @@ class FiringsTests(Harness):
         self.assertEqual((f["to"], f["looked"], f["run"]), ("lead", ["ps -ax"], "r1"))
 
     def test_a_lead_message_is_counted_apart_from_the_dispatchers(self):
-        self.seed("firings", [fired("l1", escalate="judgment"), decided("l1", "escalated") | {"to": "lead"},
-                              fired("d1", escalate="judgment"), decided("d1", "escalated") | {"to": "dispatcher"}])
+        self.seed("firings", [fired("l1"), decided("l1", "escalated") | {"to": "lead"},
+                              fired("d1"), decided("d1", "escalated") | {"to": "dispatcher"}])
         s = json.loads(self.cli("firings", "--json")[1])["summary"]
         self.assertEqual((s["escalated"], s["no_outcome"]), (1, 1))
         self.assertIn("escalated 1 (acted 0, ignored 0, no outcome 1); to lead 1; ", self.cli("firings")[1])
@@ -1861,10 +1654,10 @@ class OrphanTests(SchedHarness):
         self.assertEqual([r for r in self.records() if "decision" in r], [])
 
     def test_it_does_not_start_the_site_manager(self):
-        self.use("past-limit")
-        _, out, _ = self.watch([self.overtime()])
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "working", "ts": iso(NOW - HOUR)}])
+        _, out, _ = self.watch([])
         self.assertEqual(self.claude_runs(), [])
-        self.assertIn("past-limit", out)
+        self.assertIn("ended-undeclared", out)
         self.assertFalse(self.plist().exists())
 
     def test_a_task_handed_over_keeps_the_job(self):

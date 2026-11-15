@@ -300,7 +300,7 @@ class CriteriaFile(unittest.TestCase):
     def load(self, **kw):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d, "criteria.json")
-            path.write_text(json.dumps([{"name": "mix-shift", "escalate": "judgment", "threshold": 5, "what": "w", **kw}]))
+            path.write_text(json.dumps([{"name": "mix-shift", "threshold": 5, "what": "w", **kw}]))
             with mock.patch.object(factory, "CRITERIA_PATH", path):
                 return factory.load_criteria()
 
@@ -317,9 +317,7 @@ class CriteriaFile(unittest.TestCase):
         self.assertEqual({k: v["threshold"] for k, v in shipped.items()},
                          {"mix-shift": 5, "dearest-task": 1.5, "role-growing": 20, "version-shift": 20,
                           "lead-authoring": 50})
-        self.assertEqual({v["escalate"] for v in shipped.values()}, {"judgment"})
-        self.assertEqual({c["name"] for c in factory.job_criteria(factory.load_criteria(), "watch")}
-                         & set(shipped), set())
+        self.assertEqual(factory.job_criteria(factory.load_criteria(), "watch"), [])
 
 
 class DigestCase(Harness):
@@ -366,7 +364,7 @@ class DigestCase(Harness):
         code, out, _ = self.cli("digest", answers={**self.world(), ("claude", "-p"): self.judge()})
         self.assertEqual(code, 0)
         fired, decision, cleared, marker = self.records()
-        self.assertEqual((fired["criterion"], fired["subject"], fired["escalate"]), ("mix-shift", "cache_write_1h", "judgment"))
+        self.assertEqual((fired["criterion"], fired["subject"], "escalate" in fired), ("mix-shift", "cache_write_1h", False))
         self.assertEqual((decision["id"], decision["decision"], decision["by"]), (fired["id"], "escalated", "site-manager"))
         self.assertEqual(cleared, {"ts": iso(NOW), "repo": ROOT, "id": fired["id"], "cleared": True})
         self.assertEqual(marker, {"ts": iso(NOW), "repo": ROOT, "digest": names(5, "c")})
@@ -416,10 +414,10 @@ class DigestCase(Harness):
         self.assertIn("digest: nothing to report", out)
         self.assertEqual(self.records(), [])
 
-    def test_health_and_watch_evaluate_watch_criteria_only(self):
-        self.use("past-limit", "mix-shift")
+    def test_health_and_watch_evaluate_the_facts_only(self):
+        self.use("mix-shift")
         code, out, _ = self.cli("health", "--json")
-        self.assertEqual(json.loads(out), {"firings": [], "not_evaluated": []})
+        self.assertEqual(json.loads(out), {"firings": [], "not_evaluated": [], "tasks": []})
         code, out, _ = self.cli("health")
         self.assertNotIn("mix-shift", out)
         _, out, _ = self.cli("watch")
@@ -427,7 +425,7 @@ class DigestCase(Harness):
         self.assertEqual(out.count("digest skipped: no monitor"), 1)
 
     def test_a_tick_clears_a_digest_firing_a_killed_digest_left_open(self):
-        self.seed("firings", [fired("aaa", criterion="mix-shift", escalate="judgment", subject="cache_read")])
+        self.seed("firings", [fired("aaa", criterion="mix-shift", subject="cache_read")])
         self.cli("watch", answers=self.world(marker_age=1))
         [folded], _ = factory.fold(self.records())
         self.assertTrue(folded["cleared"])
@@ -486,7 +484,7 @@ class DigestCase(Harness):
         self.assertFalse(self.fake.ran(MONITOR))
 
     def test_a_tick_that_fires_dispatcher_missing_makes_no_digest(self):
-        self.use("dispatcher-missing", "mix-shift")
+        self.use("mix-shift")
         d = {"sessionId": "sid-d", "name": "dispatcher-repo", "cwd": ROOT, "kind": "interactive"}
         _, out, _ = self.cli("watch", sessions=[d, {**d, "sessionId": "sid-e"}], entries=["x"],
                              answers=self.world())
@@ -494,18 +492,19 @@ class DigestCase(Harness):
         self.assertFalse(self.fake.ran(MONITOR))
 
     def test_a_failed_digest_leaves_the_ticks_own_firings_handled(self):
-        self.use("past-limit", "mix-shift")
+        self.use("mix-shift")
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "role": "lead", "state": "working", "ts": iso(NOW - HOUR)}])
         answers = {**self.world(), ("claude", "-p"): [reply(), (1, "", "boom")]}
         code, out, err = self.cli("watch", answers=answers, entries=["x"],
                                   sessions=[{"sessionId": "sid-d", "name": "dispatcher-repo", "cwd": ROOT,
-                                             "kind": "interactive"}, self.overtime()])
+                                             "kind": "interactive"}])
         self.assertEqual(code, 1)
         self.assertIn("the site manager run failed (1): boom", err)
-        self.assertIn("past-limit  x  undecided", out)
-        self.assertEqual([(r["criterion"]) for r in self.records() if "criterion" in r], ["past-limit", "mix-shift"])
+        self.assertIn("ended-undeclared  x  undecided", out)
+        self.assertEqual([(r["criterion"]) for r in self.records() if "criterion" in r], ["ended-undeclared", "mix-shift"])
         self.assertEqual(self.markers(), [])
         folded, _ = factory.fold(self.records())
-        self.assertEqual([(f["criterion"], f["cleared"]) for f in folded], [("past-limit", False), ("mix-shift", True)])
+        self.assertEqual([(f["criterion"], f["cleared"]) for f in folded], [("ended-undeclared", False), ("mix-shift", True)])
 
 
 if __name__ == "__main__":

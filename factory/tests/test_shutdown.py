@@ -242,117 +242,44 @@ class TickLockTests(Harness):
         self.assertIn(" watch repo\n", out)
 
 
-class BusyAfterHandoverTests(unittest.TestCase):
-    PS = """  PID  PPID     ELAPSED COMMAND
-    1     0 3-02:00:00 /sbin/launchd
-  100     1       20:00 claude --bg
-  101   100       19:00 zsh -c sleep 600
-  102   101       18:30 sleep 600
-  103   100       05:00 node server.js
-  104   103       00:10 {long}
-  105   100       00:05 sh
-  106   100       00:01 ls
-  200     1       30:00 unrelated child
-"""
-
-    def picture(self, minutes=7, sessions=None, state="handed-over", **kw):
-        repo = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"{WT}/x"}])
-        return pic(repo=repo, declared={"x": {"state": state, "ts": iso(NOW - minutes * 60)}},
-                   sessions=sessions or [lead("x", pid=100)], **kw)
-
-    def ps(self):
-        return FakeRun({("ps",): (0, self.PS.format(long="c" * 150), "")})
-
-    def test_it_names_the_five_oldest_descendants_of_the_leads_pid_and_counts_the_rest(self):
-        fake = self.ps()
-        with mock.patch.object(factory, "run", fake):
-            ((slug, subject, detail),) = check("busy-after-handover", self.picture(), 6)
-        self.assertEqual((slug, subject), ("x", "x"))
-        self.assertEqual(detail, "handed over 7m ago, lead session busy/working: "
-                                 "101 up 19:00: zsh -c sleep 600; 102 up 18:30: sleep 600; 103 up 05:00: node server.js; "
-                                 f"104 up 00:10: {'c' * 120}; 105 up 00:05: sh; +1 more")
-        self.assertEqual(fake.calls, [["ps", "-axo", "pid=,ppid=,etime=,command="]])
-
-    def test_no_child_is_said_with_what_cannot_be_seen(self):
-        with mock.patch.object(factory, "run", FakeRun({("ps",): (0, "100 1 10:00 lead\n", "")})):
-            ((_, _, detail),) = check("busy-after-handover", self.picture(), 6)
-        self.assertTrue(detail.endswith("busy/working: no child process (a subagent waiting without a process "
-                                        "cannot be seen from outside)"), detail)
-
-    def test_it_waits_for_the_threshold_and_for_a_busy_session(self):
-        done = lead("x", pid=100, status="idle")
-        for label, p in (("too early", self.picture(minutes=5)), ("finished", self.picture(sessions=[done])),
-                         ("working", self.picture(state="working"))):
-            with self.subTest(label):
-                fake = self.ps()
-                with mock.patch.object(factory, "run", fake):
-                    self.assertEqual(check("busy-after-handover", p, 6), [])
-                self.assertEqual(fake.calls, [])  # no ps call when no task qualifies
-
-    def test_two_tasks_cost_one_ps_call(self):
-        repo = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"{WT}/{s}"} for s in "xy"])
-        p = pic(repo=repo, declared={s: {"state": "handed-over", "ts": iso(NOW - HOUR)} for s in "xy"},
-                sessions=[lead("x", pid=100), lead("y", sid="22222222-bbbb", pid=105)])
-        fake = self.ps()
-        with mock.patch.object(factory, "run", fake):
-            found = check("busy-after-handover", p, 6)
-        self.assertEqual([f[0] for f in found], ["x", "y"])
-        self.assertEqual(len(fake.calls), 1)
-
-    def test_sessions_that_cannot_be_listed_are_not_evaluated_only_when_a_task_qualifies(self):
-        self.assertEqual(check("busy-after-handover", self.picture(minutes=5, sessions=[lead("x")]), 6), [])
-        with self.assertRaises(factory.NotEvaluated):
-            check("busy-after-handover", {**self.picture(), "sessions": None}, 6)
-
-    def test_it_is_shipped_in_the_criteria_file(self):
-        (c,) = [c for c in factory.load_criteria() if c["name"] == "busy-after-handover"]
-        self.assertEqual((c["escalate"], c["threshold"], c.get("job", "watch")), ("judgment", 6, "watch"))
-        self.assertEqual(factory.EVERY_TICK, {"busy-after-handover", "churning", "run-stopped", "collision", "new-spec"})
-
-
-class BusyEveryTickTests(Harness):
-    """The criterion on the ticks between two health passes, and what it costs there."""
-
-    CRITERIA = ["busy-after-handover", "past-limit"]
-    PS = "  100     1       20:00 claude --bg\n  101   100       19:00 sleep 600\n"
+class EveryTickTests(Harness):
+    """`ended-undeclared` on the ticks between two health passes, and what it costs there."""
 
     def setUp(self):
         super().setUp()
         factory.write_lander(SimpleNamespace(root=ROOT), {"stopped": {}, "waiting": {}, "health": NOW - 10})  # no health pass
-        self.busy = [DISPATCHER | {"name": "dispatcher-repo"}, lead("x", pid=100)]
+        self.alive = [DISPATCHER | {"name": "dispatcher-repo"}, lead("x", pid=100)]
+        self.gone = [DISPATCHER | {"name": "dispatcher-repo"}]
 
-    def hand_over(self, minutes):
-        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "handed-over", "ts": iso(NOW - minutes * 60)}])
+    def declare(self, state="working"):
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "role": "lead", "state": state, "ts": iso(NOW - HOUR)}])
 
     def tick(self, at=NOW, sessions=None, answers=None):
-        out = self.cli("watch", entries=["x"], sessions=sessions or self.busy, at=at,
-                       answers={("ps",): (0, self.PS, ""), **(answers or {})})
-        return out[1]
+        return self.cli("watch", entries=["x"], sessions=sessions or self.gone, at=at, answers=answers)[1]
 
     def count(self, *prefix):
         return sum(c[:len(prefix)] == list(prefix) for c in self.fake.calls)
 
-    def test_a_task_not_yet_past_the_threshold_costs_nothing_extra(self):
-        self.hand_over(5)
-        self.assertIn("nothing new", self.tick())
-        # the listings are the draft sync's and the lander loop's, which run with any handed-over task
-        self.assertEqual((self.count("claude", "agents"), self.count("ps"), self.count("claude", "-p")), (2, 0, 0))
+    def test_a_live_lead_costs_one_listing_and_runs_nothing(self):
+        self.declare()
+        self.assertIn("nothing new", self.tick(sessions=self.alive))
+        self.assertEqual((self.count("claude", "agents"), self.count("claude", "-p")), (1, 0))
 
-    def test_no_handed_over_task_runs_no_session_listing_and_no_ps(self):
+    def test_no_working_task_runs_no_session_listing(self):
+        self.declare("handed-over")
         self.assertIn("nothing new", self.tick())
-        self.assertEqual([c for c in self.fake.calls if c[0] in ("claude", "ps", "gh")], [])
+        self.assertEqual(self.count("claude", "agents"), 2)  # the draft sync's and the lander loop's, which run with any handed-over task
+        self.assertEqual(self.records(), [])
 
-    def test_a_new_finding_reaches_the_site_manager_within_a_tick_and_costs_one_listing_and_one_ps(self):
-        self.hand_over(7)
+    def test_a_new_finding_reaches_the_site_manager_within_a_tick_and_costs_one_listing(self):
+        self.declare()
         self.tick()
         [record] = self.records()
-        self.assertEqual((record["criterion"], record["subject"]), ("busy-after-handover", "x"))
-        self.assertIn("101 up 19:00: sleep 600", record["detail"])
-        # three listings: the draft sync's, the criterion's and the lander loop's
-        self.assertEqual((self.count("claude", "agents"), self.count("ps"), len(self.claude_runs())), (3, 1, 1))
+        self.assertEqual((record["criterion"], record["subject"]), ("ended-undeclared", "x"))
+        self.assertEqual((self.count("claude", "agents"), len(self.claude_runs())), (1, 1))
 
     def test_an_undecided_finding_is_sent_again_on_the_health_pass_only_and_a_decided_one_is_not(self):
-        self.hand_over(7)
+        self.declare()
         self.tick()
         fid = self.records()[0]["id"]
         self.tick(at=NOW + 120)
@@ -361,40 +288,41 @@ class BusyEveryTickTests(Harness):
         self.assertEqual(len(self.claude_runs()), 1)  # undecided: sent again
         self.tick(at=NOW + 1920)
         self.assertEqual(self.claude_runs(), [])
-        self.assertEqual(len([r for r in self.records() if r.get("criterion") == "busy-after-handover"]), 1)
+        self.assertEqual(len([r for r in self.records() if r.get("criterion") == "ended-undeclared"]), 1)
 
     def test_the_site_manager_is_given_the_name_the_dispatcher_has_now_between_health_passes(self):
         register("sid-d")
-        self.hand_over(7)
-        self.tick(sessions=[DISPATCHER | {"name": "renamed", "pid": 7}, lead("x", pid=100)])
+        self.declare()
+        self.tick(sessions=[DISPATCHER | {"name": "renamed", "pid": 7}])
         [argv] = self.claude_runs()
         self.assertIn("The dispatcher's session name is renamed.", argv[-1])
 
     def test_a_failing_site_manager_run_is_not_repeated_on_every_tick(self):
-        self.hand_over(7)
+        self.declare()
         runs = 0
         for later in (0, 120, 240, 360):
             self.tick(at=NOW + later, answers={("claude", "-p"): (1, "", "boom")})
             runs += len(self.claude_runs())
         self.assertEqual(runs, 1)
+        self.assertIn("failed", self.records("looks")[-1])
 
-    def test_a_finding_whose_session_finished_is_cleared_on_the_next_tick(self):
-        self.hand_over(7)
+    def test_a_finding_whose_lead_is_back_is_cleared_on_the_next_tick(self):
+        self.declare()
         self.tick()
         fid = self.records()[0]["id"]
-        self.tick(at=NOW + 120, sessions=[self.busy[0], lead("x", pid=100, status="idle")])
+        self.tick(at=NOW + 120, sessions=self.alive)
         self.assertTrue(any(r.get("id") == fid and r.get("cleared") for r in self.records()))
 
     def test_no_dispatcher_session_means_no_site_manager_run_on_any_tick(self):
-        self.hand_over(7)
+        self.declare()
         for later in (0, 120):
-            self.tick(at=NOW + later, sessions=[self.busy[1]])
+            self.tick(at=NOW + later, sessions=[{"sessionId": "s2", "name": "other", "cwd": "/elsewhere", "kind": "background", "status": "idle", "state": "done"}])
             self.assertEqual(self.claude_runs(), [])
         self.assertEqual(len([r for r in self.records() if r.get("criterion")]), 1)  # logged once, never sent
 
     def test_a_failed_session_listing_neither_clears_nor_fires(self):
         failing = {("claude", "agents"): (1, "", "boom")}
-        self.hand_over(7)
+        self.declare()
         self.tick(answers=failing)
         self.assertEqual((self.records(), self.claude_runs()), ([], []))
         self.tick(at=NOW + 120)
@@ -403,30 +331,29 @@ class BusyEveryTickTests(Harness):
         self.assertEqual([r for r in self.records() if r.get("id") == fid and r.get("cleared")], [])
         self.assertEqual(len([r for r in self.records() if r.get("criterion")]), 1)
 
-    def test_a_finding_without_a_row_still_carries_the_transcript_tail(self):
+    def test_a_finding_carries_the_transcript_tail_of_the_finished_lead(self):
         entries = [{"timestamp": "T0", "message": {"role": "user", "content": "start"}}]
         self.transcript("{sid}.jsonl", NOW - 60).write_text("".join(json.dumps(e) + "\n" for e in entries))
-        self.hand_over(7)
-        self.tick()
-        [sent] = json.loads(self.claude_runs()[0][-1].partition("\n\n")[2])
-        self.assertEqual(sent["task"], {"worktree": f"{WT}/x", "lead": "x", "pid": 100})
+        self.declare()
+        self.tick(sessions=[*self.gone, lead("x", pid=100, status="idle")])
+        [sent] = json.loads(self.claude_runs()[0][-1].partition("\n\n")[2])["firings"]
         self.assertEqual(sent["transcript_tail"], ["T0 user: start"])
 
     def test_a_lead_told_longer_than_the_grace_ago_is_fired_again_on_a_tick_between_health_passes(self):
-        self.hand_over(7)
+        self.declare()
         told = NOW + 120 - (factory.LEAD_GRACE_MINUTES + 1) * 60
-        self.seed("firings", [fired("aaa", "busy-after-handover", "judgment"),
+        self.seed("firings", [fired("aaa", "ended-undeclared"),
                               decided("aaa", "escalated", ts=told, reason="stop sleep") | {"to": "lead"}])
         self.tick(at=NOW + 120)
         [argv] = self.claude_runs()
-        [sent] = json.loads(argv[-1].partition("\n\n")[2])
+        [sent] = json.loads(argv[-1].partition("\n\n")[2])["firings"]
         self.assertNotEqual(sent["id"], "aaa")
         self.assertTrue(sent["lead_told"])
 
-    def test_the_other_criteria_are_left_alone_between_health_passes(self):
-        self.seed("firings", [fired("a", criterion="past-limit")])  # open, and not evaluated on this tick
-        self.hand_over(5)
-        self.tick()
+    def test_the_facts_of_the_health_pass_are_left_alone_between_passes(self):
+        self.seed("firings", [fired("a", criterion="base-merged")])  # open, and not evaluated on this tick
+        self.declare()
+        self.tick(sessions=self.alive)
         self.assertFalse(any(r.get("cleared") for r in self.records()))
 
 

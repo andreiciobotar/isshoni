@@ -163,7 +163,8 @@ def probe(control, sleeper):
               "the answer format: id is the [tag], decision is always suppressed, reason is `ALLOWED` or `REFUSED` "
               "followed by the first words of its output (for a read, the value asked for), looked is empty.\n\n"
               + "\n".join(lines).replace("SLEEPPID", str(sleeper.pid)))
-    p = {"repo": SimpleNamespace(root=str(CWD)), "dispatcher": "d", "lean_start": True, "monitor": None}
+    p = {"repo": SimpleNamespace(root=str(CWD)), "dispatcher": "d", "lean_start": True, "monitor": None, "now": time.time(),
+         "rows": [], "declared": {}, "events": [], "models": {}, "gh": lambda *a: []}
     argv = factory.site_manager_argv(p, [])
     if control:
         at = argv.index(factory.SETTINGS_ISOLATION[0])

@@ -464,6 +464,16 @@ class SiteManagerTests(Store):
         self.log("firings.jsonl", [])
         self.assertEqual(self.record(), self.EMPTY)
 
+    def test_an_own_call_counts_like_any_firing(self):
+        """The site manager's own call is a fired record of an entry, a decision by him and a `cleared` record."""
+        self.log("firings-2026-11.jsonl", [
+            {"ts": "2026-11-10T10:00:00Z", "repo": ALPHA, "id": "c1", "criterion": "review-loops", "slug": "a1", "subject": "a1", "detail": "d"},
+            then("c1", "10:00", decision="escalated", by="site-manager", to="dispatcher", run="r1", looked=["git log"]),
+            then("c1", "10:00", cleared=True), then("c1", "10:30", outcome="acted"),
+            {"ts": "2026-11-10T11:00:00Z", "repo": ALPHA, "id": "c2", "criterion": "unlisted", "slug": "a1", "subject": "a1", "detail": "d"},
+            then("c2", "11:00", decision="suppressed", by="site-manager", run="r1", looked=[]), then("c2", "11:00", cleared=True)])
+        self.assertEqual(self.record(), {**self.EMPTY, "escalated": 1, "acted": 1, "suppressed": 1, "precision": 1.0, "recall": 1.0})
+
     def test_fired_without_a_decision_or_an_outcome_gives_no_ratio(self):
         self.log("firings-2026-11.jsonl", [fired("f1", "2026-11-10T10:00:00Z"), fired("f2", "2026-11-10T10:01:00Z"),
                                            then("f2", "10:02", decision="escalated", by="watch")])
@@ -545,7 +555,7 @@ class SiteManagerTests(Store):
         self.assertEqual(p.returncode, 0, p.stderr)
         theirs = json.loads(p.stdout)["summary"]
         self.assertEqual((theirs["escalated"], theirs["missed"]), (4, 2))
-        theirs = {k: v for k, v in theirs.items() if not k.startswith("told")}  # the dashboard does not count `told`
+        theirs = {k: v for k, v in theirs.items() if not k.startswith("told") and k != "entries"}  # the dashboard counts neither `told` nor the score per entry
         theirs.update({k: round(theirs[k], 6) for k in ("precision", "recall")})
         self.assertEqual(self.record(), theirs)
 
