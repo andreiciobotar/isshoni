@@ -68,7 +68,7 @@ pulse's `cache/kaizen-merges-<key>.json` and `cache/kaizen-approvals-<key>.json`
 `gh-YYYY-MM.jsonl` (the factory's debug log, which the factory prunes).
 `--since` keeps the tasks that started at or after the cutoff (and the stops, slowed
 texts and feedback of that range) and limits the transcripts loaded. Without `--json` it
-prints the headline numbers, the pulse's four figures (`today X (n=..), yesterday Y (n=..)`) and one line per task. A missing or empty directory exits 0 with
+prints the headline numbers, the pulse's four figures (`today X (n=..), yesterday Y (n=..)`), one line per friction figure and one line per task. A missing or empty directory exits 0 with
 empty lists (`store_found: false` when the directory is missing). Records are read with a
 default for every field and lines that are not JSON objects are skipped.
 
@@ -92,7 +92,7 @@ names in display order; every `by_role` and `share` object has exactly these key
 (`repo`, `repo_path`, `prs`: `ok` or the reason, `prs_as_of`: when the pull request data
 used was fetched, `prs_error`: why this run could not refresh it), `versions` (each plugin version by its
 earliest record in any store), `tasks`, `summary`, `stops`, `slowed`, `rewards`, `outbox`,
-`site_manager`, `tech_lead`, `pulse`.
+`site_manager`, `tech_lead`, `pulse`, `friction`.
 Times are UTC (`2026-11-14T00:01:02Z`), a task's durations whole seconds, medians floats
 that may be fractional, money in the price file's currency, and a missing value is `null`.
 
@@ -111,6 +111,7 @@ Per task (listed by `started`, tasks without one first, then slug):
 | `size` | `size` of its `TaskStarted` event (`small`, `medium`, `large`), as written; null when absent |
 | `cost` | from its transcript sessions (same repository and worktree name): `{total, unpriced_tokens, by_role, rework}`; `by_role` has `lead` (the main session), `tech-lead` (the main session of a tech lead run: its id is the `session` of a `techlead` record), `coder`, `reviewer`, `explorer` (also `Explore`), `lander` and `other` |
 | `cost.rework` | cost of coder and reviewer dispatches that started after the first reviewer dispatch returned. A lower bound: the lead's own rework is not separable |
+| `cost.after_review` | cost of every call of the task's sessions (main threads and all dispatches, lead included) after the first reviewer dispatch returned; null without a review |
 | `review_rounds` | reviewer dispatches that ran (not `no-run`); null without sessions |
 | `first_pass` | `review_rounds == 1`; zero reviews is not first-pass |
 | `stops`, `stopped_s` | its stops, and the sum of their `waited_s` |
@@ -163,6 +164,41 @@ hold, once each: `cache/kaizen-merges-<key>.json` (merge commit to pull request 
 merges with their conflicted files) and `cache/kaizen-approvals-<key>.json` (pull request number to
 approval time, or null when none was found) never expire. A failed call is not cached; gh runs 8 at a
 time. With `--cached` neither runs, and a pull request not in the caches is unknown.
+
+`friction` is the Friction page, second screen of the dashboard. Unlike the pulse, every figure follows `--since`: it is
+computed from the tasks kept by the cutoff, and from records and calls at or after it (the one exception: the Bash-call
+counts of `refusals` cover whole runs, because the parser keeps counts, not times). `null` and `-` mean unknown, never 0.
+- `dispatcher` (`calls`, `cost`, `per_call`, `context_median`, `unpriced_tokens`): the main-thread calls of the dispatcher
+  sessions (the relay's memory is the main thread's context), their cost per call and the median context of a call
+  (input, cache write and cache read tokens). Bad: over $0.15 per call, or over 400k median context.
+- `rework` (`cost`, `task_cost`, `share`, `per_task_median`, `n`): the sum of `cost.after_review` over the tasks (no review: no
+  rework) against their total cost, and the median per task over the `n` tasks that have a review. It includes the lead's own
+  calls; `summary.rework_share` (coder and reviewer dispatches only) is shown beside it as "subagents only". Bad: over 1/3.
+- `causes`: the defects of each task's newest retro by their `cause` (`spec`, `brief`, `conflict`, `scope`, `code`); no cause or
+  another value is `unstated`. Bad: a cause over 1/3 of the stated defects (`unstated` is shown apart).
+- `refusals` (`after_calls` = 3, `roles`): per role, the share of `Bash` tool calls whose result was refused, from the transcripts:
+  `guard` (the worktree guard: the result starts `This session is isolated in the worktree ... Refusing to run it`) and
+  `classifier` (starts `Permission for this action was denied by the Claude Code auto mode classifier`). `bash` counts the
+  role's Bash calls over whole runs, the refusals those at or after the cutoff. `after_cost` is the cost of the next 3 calls of the
+  run after each refusal, a call counted once. Roles: the task sessions (`lead`, `tech-lead`), their dispatches by role, and the
+  dispatcher and site manager sessions with a call at or after the cutoff (`dispatcher`, `site_manager`, their dispatches by role; one with none adds nothing, not even its Bash calls); a role with no Bash call and no
+  refusal is left out. The `PermissionDenied` events stay what they are: the `DENIED` stops. Bad: over 5% for a role.
+- `wakeups` (`prompts`, `tasks`, `cost`, `per_prompt`): prompts from the session (`from` is `session`) to a task's lead after its
+  first hand-over, the tasks with at least one, and the cost of the session's calls (main thread and dispatches) from each such
+  prompt until the next prompt from the session or the human; prompts from a subagent or a notification continue the same work.
+- `queue` (`since`, `merged`, `updated`, `rerun`, `sent_back`, `stopped`, `per_merged`): the `queue` log's attempts per pull request
+  merged in the range: its `updated`, `rerun`, `sent-back` and `stopped` records up to the merge, over the merged pull requests
+  (`land-*` steps are the lead's own landing and are not counted). `since` is the log's oldest record; the whole object is null
+  without a log, never zeros.
+- `held`: per task, at or after the cutoff, the queue's `sent_back` records (any kind), `TaskPaused` events (`paused`), and
+  `TaskPrioritized` events (`prioritized`) with the sum of their `paused_minutes`. Tasks with all zero are left out. The pause
+  records are written by another task (`pause-churning-tasks`) and may be absent; a missing or mistyped field is ignored.
+- `late_conflicts` (`tasks`, `files`, `log_tasks`, `git_tasks`, `git_prs`): conflicts that reached the pull request late, from two
+  sources shown side by side, never added: `log` counts the queue records at or after the cutoff that are a `sent-back` of kind
+  `conflict` or a `land-conflict` (null without a log, like `log_tasks`); `git` is the backfill, the conflicted base merges of the kept tasks' pull
+  requests that the pulse already looked up (the `kaizen-merges` cache; nothing here runs git, `git_prs` counts the pull requests
+  found in it). The columns overlap in time (a conflict the log records later is a conflicted base merge in git) and the log misses
+  merges made by hand, so a number is not the sum of its two columns. Rows are sorted by their larger count.
 
 `summary.by_mode` compares tasks from before the team (`single`) with those since (`team`): different tasks on different days, so the rows are a hint, not a measurement. One row per (`mode`, `size`) with a landed task, sizes in
 the order `small`, `medium`, `large`, `null` (no size stated on the task's `TaskStarted`), modes
@@ -378,7 +414,7 @@ The pictures here and in the README are recordings of this repository's own fact
 ```
 bin/isshoni-tui [--range 24h|7d|30d|all] [--follow] [--no-color]
                 [--projects-dir DIR] [--agents-dir DIR] [--prices PATH]
-bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-flow|kaizen-anatomy|kaizen-board|hanami|help [--size 140x40] [--session ID] [--row N] [--fold] [--frames N]
+bin/isshoni-tui --snapshot dashboard|session|agents|factory|kaizen|kaizen-friction|kaizen-flow|kaizen-anatomy|kaizen-board|hanami|help [--size 140x40] [--session ID] [--row N] [--fold] [--frames N]
 ```
 `--range` defaults to `7d`. `NO_COLOR` gives the plain rendering too. `--snapshot`
 prints one settled frame and exits, non-zero when the load fails; `--row N` puts the

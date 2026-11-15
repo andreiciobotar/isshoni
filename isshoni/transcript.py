@@ -115,6 +115,7 @@ class Run:
         self.tools = {}
         self.writes = {}  # file path -> [Edit and Write calls, lines written]; "" when the call had no path
         self.dispatches = 0
+        self.refused = []  # [(ts, "guard" | "classifier")] results of its Bash calls that were refused
 
 
 class Dispatch:
@@ -421,7 +422,12 @@ def _scan(path, seen, depth, agent_id, prices):
                     if b.get("type") == "tool_result":
                         tid = b.get("tool_use_id")
                         name = sc.tool_names.get(tid, "?") if isinstance(tid, str) else "?"
-                        _arrive(inbound, "handback" if name == "Agent" else "result:" + name, _result_text(b.get("content")))
+                        text = _result_text(b.get("content"))
+                        _arrive(inbound, "handback" if name == "Agent" else "result:" + name, text)
+                        if name == "Bash" and ts and isinstance(text, str):
+                            kind = next((k for k, rx in _REFUSALS if rx.match(text.lstrip())), None)
+                            if kind:
+                                sc.run.refused.append((ts, kind))
                         if isinstance(tid, str) and isinstance(aid, str):
                             sc.tool_result_agent[aid] = tid
                     elif b.get("type") == "text":
@@ -448,6 +454,9 @@ def _result_text(content):
     return content
 
 
+_REFUSALS = (
+    ("guard", re.compile(r"This (session|agent) is isolated in the worktree .{0,500}?Refusing to run it", re.DOTALL)),
+    ("classifier", re.compile(r"Permission for this action was denied by the Claude Code auto mode classifier")))
 _CD = re.compile(r"^\s*cd\s+\S+\s*&&\s*")
 
 

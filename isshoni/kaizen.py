@@ -18,6 +18,7 @@ from .cli import fmt_duration
 
 ROLES = ("lead", "tech-lead", "coder", "reviewer", "explorer", "lander", "other")
 DEFECT_KINDS = ("tests", "reviewer", "lead", "ci", "human", "other")
+CAUSES = ("spec", "brief", "conflict", "scope", "code")  # a defect's stated cause; anything else is "unstated"
 MODES = ("single", "team")
 SIZES = ("small", "medium", "large")  # a task without a stated size sorts last, as `None`
 STOP_KINDS = ("QUESTION", "BLOCKED", "OVERTIME")
@@ -225,8 +226,9 @@ def _dispatch_role(d):
     return "explorer" if r in metrics.EXPLORER_TYPES else r if r in ROLES else "other"
 
 
-def _cost(sessions, tech_sessions):
-    """`tech_sessions`: ids of the sessions that were tech lead runs; their main thread is the tech lead's."""
+def _cost(sessions, tech_sessions, prices):
+    """`tech_sessions`: ids of the sessions that were tech lead runs; their main thread is the tech lead's.
+    `after_review`: what every call of the sessions (main threads and dispatches) cost after the first review returned; None without one."""
     by_role = dict.fromkeys(ROLES, 0.0)
     unpriced = 0
     dispatches = []
@@ -241,13 +243,15 @@ def _cost(sessions, tech_sessions):
             dispatches.append(d)
     reviews = sorted((d for d in dispatches if metrics.role(d.agent_type) == "reviewer" and d.status != "no-run"),
                      key=lambda d: d.start or transcript.EPOCH)
-    rework = 0.0
+    rework, after_review = 0.0, None
     after = reviews and (reviews[0].returned_at or reviews[0].start)
     if after:
+        after_review = round(sum((cost for s in sessions for ts, cost, _ in _spend(s, prices, after) if ts > after), 0.0), 6)
         rework = sum((d.usage.cost for d in dispatches
                       if metrics.role(d.agent_type) in ("coder", "reviewer") and d.start and d.start > after), 0.0)
     return {"total": round(sum(by_role.values()), 6), "unpriced_tokens": unpriced,
-            "by_role": {k: round(v, 6) for k, v in by_role.items()}, "rework": round(rework, 6)}, len(reviews)
+            "by_role": {k: round(v, 6) for k, v in by_role.items()}, "rework": round(rework, 6),
+            "after_review": after_review}, len(reviews)
 
 
 # ---- tasks --------------------------------------------------------------------------
@@ -278,12 +282,23 @@ def _stops(events):
     return sorted(out, key=lambda s: s["ts"])
 
 
+def _defect_rows(retro):
+    return [d for d in retro.get("defects") if isinstance(d, dict)] if isinstance(retro.get("defects"), list) else []
+
+
 def _defects(retro):
     counts = dict.fromkeys(DEFECT_KINDS, 0)
-    for d in retro.get("defects") if isinstance(retro.get("defects"), list) else []:
-        if isinstance(d, dict):
-            c = d.get("caught_by")
-            counts[c if c in DEFECT_KINDS else "other"] += 1
+    for d in _defect_rows(retro):
+        c = d.get("caught_by")
+        counts[c if c in DEFECT_KINDS else "other"] += 1
+    return counts
+
+
+def _causes(retro):
+    counts = dict.fromkeys((*CAUSES, "unstated"), 0)
+    for d in _defect_rows(retro):
+        c = d.get("cause")
+        counts[c if c in CAUSES else "unstated"] += 1
     return counts
 
 
@@ -331,9 +346,9 @@ def _handed_over(recs):
 
 
 def _wakeups(recs, handed):
-    """Prompts to the lead, from the session or the human, after the task's first hand-over (`handed`)."""
-    return sum(1 for e in recs["events"] for ts in [_ts(e)] if handed and ts and ts > handed
-               and e.get("event") == "UserPromptSubmit" and e.get("role") == "lead" and e.get("from") in ("session", "human"))
+    """The records of the prompts to the lead, from the session or the human, after the task's first hand-over (`handed`)."""
+    return [e for e in recs["events"] for ts in [_ts(e)] if handed and ts and ts > handed
+            and e.get("event") == "UserPromptSubmit" and e.get("role") == "lead" and e.get("from") in ("session", "human")]
 
 
 def _task(key, recs, sessions, prices, tech_sessions):
@@ -361,12 +376,13 @@ def _task(key, recs, sessions, prices, tech_sessions):
         t["_handover_s"] = _seconds(handed, started)
     t["authoring"] = _authoring(t["_roles"])
     if sessions:
-        t["cost"], t["review_rounds"] = _cost(sessions, tech_sessions)
+        t["cost"], t["review_rounds"] = _cost(sessions, tech_sessions, prices)
         t["first_pass"] = t["review_rounds"] == 1
     t["stops"] = len(recs["stops"])
     t["stopped_s"] = sum(s["waited_s"] for s in recs["stops"] if s["waited_s"] is not None)
     retros = sorted(recs["retros"], key=lambda r: _ts(r) or transcript.EPOCH)
     t["defects"] = _defects(retros[-1]) if retros else None
+    t["_causes"] = _causes(retros[-1]) if retros else None
     return t
 
 
@@ -522,7 +538,7 @@ def _by_mode(landed):
                 "first_pass": sum(t["first_pass"] is True for t in ts),
                 "review_rounds_median": _median(t["review_rounds"] for t in ts),
                 "defects": {k: sum(d[k] for d in defects) for k in DEFECT_KINDS} if defects else None,
-                "lead_wakeups": sum(t["_wakeups"] for t in ts),
+                "lead_wakeups": sum(len(t["_wakeups"]) for t in ts),
                 "build_runs_median": _median(t["_build_runs"] for t in ts) if mode == "team" else None})
     return rows
 
@@ -538,14 +554,20 @@ def _spender(s, repos):
             else "site_manager" if _SITE_MANAGER.match(s.first_prompt) else None)
 
 
-def _spend(s, prices, since=None):
-    """(ts, cost, unpriced tokens) of each call of a session's main thread and dispatches at or after `since` (all when None);
+def _price(run, prices, since=None):
+    """(call, cost, unpriced tokens) of each call of one run (None: no calls) at or after `since` (all when None);
     a call without a price costs 0.0 and its tokens are the third item."""
+    for c in run.calls if run else ():
+        if since is None or (c.ts and c.ts >= since):
+            parts = prices.parts(c.model, c.raw)
+            yield c, *((0.0, c.context + c.output) if parts is None else (sum(parts.values()), 0))
+
+
+def _spend(s, prices, since=None):
+    """(ts, cost, unpriced tokens) of each call of a session's main thread and dispatches at or after `since`."""
     for run in [s.run] + [d.run for d in s.dispatches]:
-        for c in run.calls if run else ():
-            if since is None or (c.ts and c.ts >= since):
-                parts = prices.parts(c.model, c.raw)
-                yield c.ts, *((0.0, c.context + c.output) if parts is None else (sum(parts.values()), 0))
+        for c, cost, tokens in _price(run, prices, since):
+            yield c.ts, cost, tokens
 
 
 def _overhead(sessions, tasks, landed, cutoff, prices):
@@ -666,7 +688,7 @@ def _tech_lead(records, cutoff, tasks):
     return {"came_back": len(mine), "resolved": outcome("resolved"), "escalated": outcome("escalated"),
             "stopped": outcome("stopped"), "unstarted": outcome("unstarted"), "cost": spent(mine),
             "cost_resolved": spent([r for r in mine if r.get("outcome") == "resolved"]),
-            "landed": len(landed), "lead_wakeups": sum(t["_wakeups"] for t in landed)}
+            "landed": len(landed), "lead_wakeups": sum(len(t["_wakeups"]) for t in landed)}
 
 
 # ---- the document -------------------------------------------------------------------
@@ -675,7 +697,7 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     """The kaizen document. `load_sessions(load_from)` is called once, and only when the store has tasks; `load_from` is the
     time the transcripts are needed from (pulse.sessions_from), None for all. `cached`: pull requests come from the disk
     cache and gh is never run."""
-    from . import pulse  # pulse imports this module's helpers
+    from . import friction, pulse  # they import this module's helpers
     factory_dir = os.path.expanduser(factory_dir)
     logs = {n: read_log(factory_dir, n) for n in ("events", "retros", "feedback", "tasks")}
     logs["tasks"].sort(key=lambda r: str(r.get("ts")))  # a carried record sits in a newer file than its ts
@@ -741,7 +763,9 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
     summary["overhead"] = _overhead(sessions, tasks, summary["landed"], cutoff, prices)
     summary["by_mode"] = _by_mode([t for t in tasks if t["landed"]])
     tech_lead = _tech_lead(tech, cutoff, tasks)
-    pulse_doc = pulse.build(factory_dir, everyone, by_task, sessions, prices, now, cached)
+    queue = pulse.read_queue(factory_dir)
+    pulse_doc = pulse.build(factory_dir, everyone, by_task, sessions, prices, queue, now, cached)
+    friction_doc = friction.build(factory_dir, tasks, by_task, sessions, mine, prices, cutoff, queue, tech_sessions)
     for t in everyone:
         for private in [k for k in t if k.startswith("_")]:
             del t[private]
@@ -756,5 +780,5 @@ def build(factory_dir, load_sessions, prices, cutoff=None, now=None, cached=Fals
         "slowed": slowed, "rewards": _rewards([t for t in tasks if t["landed"]]),
         "outbox": _outbox(logs["feedback"], cutoff),
         "site_manager": _site_manager(read_log(factory_dir, "firings"), cutoff),
-        "tech_lead": tech_lead, "pulse": pulse_doc,
+        "tech_lead": tech_lead, "pulse": pulse_doc, "friction": friction_doc,
     }
