@@ -1,0 +1,51 @@
+{"criterion": "nearing-limit", "detail": "working for 1h, 91% of the 1h30m limit", "escalate": "judgment", "id": "6fe0ca6487b6", "repo": "<root>", "slug": "ops-explorer", "subject": "ops-explorer", "ts": "2026-11-15T09:19:21Z"}
+{"criterion": "review-loops", "detail": "4 reviewer dispatches since it started", "escalate": "judgment", "id": "955ba067c566", "repo": "<root>", "slug": "ops-explorer", "subject": "ops-explorer", "ts": "2026-11-15T09:19:21Z"}
+{"by": "site-manager", "decision": "suppressed", "id": "6fe0ca6487b6", "reason": "withheld", "repo": "<root>", "ts": "2026-11-15T09:19:28Z"}
+{"by": "site-manager", "decision": "suppressed", "id": "955ba067c566", "reason": "withheld", "repo": "<root>", "ts": "2026-11-15T09:19:28Z"}
+{"cleared": true, "id": "e0dffc52786d", "repo": "<root>", "ts": "2026-11-15T09:50:30Z"}
+{"cleared": true, "id": "6fe0ca6487b6", "repo": "<root>", "ts": "2026-11-15T09:50:30Z"}
+{"cleared": true, "id": "955ba067c566", "repo": "<root>", "ts": "2026-11-15T09:50:30Z"}
+{"criterion": "review-loops", "detail": "5 reviewer dispatches since it started", "escalate": "judgment", "id": "f43a30d1408c", "repo": "<root>", "slug": "pulse-band-visual", "subject": "pulse-band-visual", "ts": "2026-11-15T10:49:32Z"}
+{"criterion": "review-loops", "detail": "3 reviewer dispatches since it started", "escalate": "judgment", "id": "d691df4d996a", "repo": "<root>", "slug": "readme-diagram-rethink", "subject": "readme-diagram-rethink", "ts": "2026-11-15T10:49:32Z"}
+{"by": "site-manager", "decision": "escalated", "id": "f43a30d1408c", "reason": "withheld", "repo": "<root>", "to": "dispatcher", "ts": "2026-11-15T10:49:42Z"}
+{"by": "site-manager", "decision": "suppressed", "id": "d691df4d996a", "reason": "withheld", "repo": "<root>", "ts": "2026-11-15T10:49:42Z"}
+{"id": "f43a30d1408c", "outcome": "acted", "repo": "<root>", "ts": "2026-11-15T10:49:46Z"}
+{"cleared": true, "id": "f43a30d1408c", "repo": "<root>", "ts": "2026-11-15T11:19:48Z"}
+{"cleared": true, "id": "d691df4d996a", "repo": "<root>", "ts": "2026-11-15T11:19:48Z"}
+{"criterion": "lgtm-blocked", "detail": "#106 stopped conflict: conflicts with main in factory/roles/tech-lead-build.md", "escalate": "always", "id": "c452e7195635", "repo": "<root>", "slug": "lander-agent-file-current", "subject": "#106/conflict", "ts": "2026-11-15T13:11:59Z"}
+{"by": "lander", "decision": "escalated", "id": "c452e7195635", "reason": "reported by the lander to the tech lead", "repo": "<root>", "ts": "2026-11-15T13:12:00Z"}
+{"criterion": "lgtm-blocked", "detail": "#106 stopped stale: its head changed after the approval; a fresh approval is needed", "escalate": "always", "id": "0dc13930c40b", "repo": "<root>", "slug": "lander-agent-file-current", "subject": "#106/stale", "ts": "2026-11-15T13:18:18Z"}
+{"by": "lander", "decision": "escalated", "id": "0dc13930c40b", "reason": "reported by the lander to the dispatcher", "repo": "<root>", "ts": "2026-11-15T13:18:32Z"}
+{"cleared": true, "id": "c452e7195635", "repo": "<root>", "ts": "2026-11-15T13:23:06Z"}
+{"cleared": true, "id": "0dc13930c40b", "repo": "<root>", "ts": "2026-11-15T13:23:06Z"}
+{"criterion": "mix-shift", "detail": "cache_write_1h is 20% of cost over the 59 tasks landed since the last digest (rules-round-three, retro-says-stored, no-blocked-pushes, one-wizard, authoring-by-role, factory-view-never-hangs and 53 more), 29% over the 44 before", "escalate": "judgment", "id": "3ac2277b3674", "repo": "<root>", "slug": null, "subject": "cache_write_1h", "ts": "2026-11-15T14:22:57Z"}
+{"criterion": "dearest-task", "detail": "cost 41.52, 4.5 times the median of the 44 before (9.14; threshold 1.5 times); mostly the coder: 15.66 against a median 1.80, 298 calls against 63, peak context 18k against 140k", "escalate": "judgment", "id": "5254c79a99cb", "repo": "<root>", "slug": "models-configurable", "subject": "models-configurable", "ts": "2026-11-15T14:22:57Z"}
+{"criterion": "role-growing", "detail": "the coder's median own tool calls per task is 128 over 56 tasks (rules-round-three, no-blocked-pushes, one-wizard, authoring-by-role, factory-view-never-hangs, lead-lean-start and 50 more), 90 over the 27 before: +42%", "escalate": "judgment", "id": "4d535b6b2c72", "repo": "<root>", "slug": null, "subject": "coder/own-calls", "ts": "2026-11-15T14:22:57Z"}
+{"criterion": "role-growing", "detail": "the explorer's median context per call is 57k over 41 tasks (no-blocked-pushes, one-wizard, authoring-by-role, factory-view-never-hangs, lead-lean-start, serve-hardening and 35 more), 43k over the 15 before: +35%", "escalate": "judgment", "id": "8b0b10583d74", "repo": "<root>", "slug": null, "subject": "explorer/context", "ts": "2026-11-15T14:22:57Z"}
+{"criterion": "role-growing", "detail": "the explorer's median own tool calls per task is 48 over 41 tasks (no-blocked-pushes, one-wizard, authoring-by-role, factory-view-never-hangs, lead-lean-start, serve-hardening and 35 more), 23 over the 15 before: +109%", "escalate": "judgment", "id": "e7347de78983", "repo": "<root>", "slug": null, "subject": "explorer/own-calls", "ts": "2026-11-15T14:22:57Z"}
+{"criterion": "role-growing", "detail": "the reviewer's median own tool calls per task is 74 over 59 tasks (rules-round-three, retro-says-stored, no-blocked-pushes, one-wizard, authoring-by-role, factory-view-never-hangs and 53 more), 38 over the 44 before: +92%", "escalate": "judgment", "id": "435c3714c538", "repo": "<root>", "slug": null, "subject": "reviewer/own-calls", "ts": "2026-11-15T14:22:57Z"}
+{"criterion": "lead-authoring", "detail": "the lead wrote product code or tests in 31 of the last 59 landed tasks (retro-says-stored, one-wizard, authoring-by-role, factory-view-never-hangs, flaky-serve-test, kaizen-fast-local-load and 25 more), 30 of the 44 before (53% against 68%); 241 lines of 23841 written by all roles", "escalate": "judgment", "id": "03a5f78f6612", "repo": "<root>", "slug": null, "subject": "lead", "ts": "2026-11-15T14:22:57Z"}
+{"by": "site-manager", "decision": "suppressed", "id": "3ac2277b3674", "reason": "withheld", "repo": "<root>", "ts": "2026-11-15T14:23:08Z"}
+{"by": "site-manager", "decision": "escalated", "id": "5254c79a99cb", "reason": "withheld", "repo": "<root>", "to": "dispatcher", "ts": "2026-11-15T14:23:08Z"}
+{"by": "site-manager", "decision": "escalated", "id": "4d535b6b2c72", "reason": "withheld", "repo": "<root>", "to": "dispatcher", "ts": "2026-11-15T14:23:08Z"}
+{"by": "site-manager", "decision": "suppressed", "id": "8b0b10583d74", "reason": "withheld", "repo": "<root>", "ts": "2026-11-15T14:23:08Z"}
+{"by": "site-manager", "decision": "escalated", "id": "e7347de78983", "reason": "withheld", "repo": "<root>", "to": "dispatcher", "ts": "2026-11-15T14:23:08Z"}
+{"by": "site-manager", "decision": "escalated", "id": "435c3714c538", "reason": "withheld", "repo": "<root>", "to": "dispatcher", "ts": "2026-11-15T14:23:08Z"}
+{"by": "site-manager", "decision": "suppressed", "id": "03a5f78f6612", "reason": "withheld", "repo": "<root>", "ts": "2026-11-15T14:23:08Z"}
+{"cleared": true, "id": "3ac2277b3674", "repo": "<root>", "ts": "2026-11-15T14:23:08Z"}
+{"cleared": true, "id": "5254c79a99cb", "repo": "<root>", "ts": "2026-11-15T14:23:08Z"}
+{"cleared": true, "id": "4d535b6b2c72", "repo": "<root>", "ts": "2026-11-15T14:23:08Z"}
+{"cleared": true, "id": "8b0b10583d74", "repo": "<root>", "ts": "2026-11-15T14:23:08Z"}
+{"cleared": true, "id": "e7347de78983", "repo": "<root>", "ts": "2026-11-15T14:23:08Z"}
+{"cleared": true, "id": "435c3714c538", "repo": "<root>", "ts": "2026-11-15T14:23:08Z"}
+{"cleared": true, "id": "03a5f78f6612", "repo": "<root>", "ts": "2026-11-15T14:23:08Z"}
+{"criterion": "lgtm-blocked", "detail": "#110 stopped conflict: conflicts with main in assets/diagrams/factory-narrow.svg, assets/diagrams/factory-wide.svg", "escalate": "always", "id": "5b50091598c4", "repo": "<root>", "slug": "site-manager-decides", "subject": "#110/conflict", "ts": "2026-11-15T14:28:49Z"}
+{"by": "lander", "decision": "escalated", "id": "5b50091598c4", "reason": "reported by the lander to the tech lead", "repo": "<root>", "ts": "2026-11-15T14:28:50Z"}
+{"criterion": "lgtm-blocked", "detail": "#110 stopped stale: its head changed after the approval; a fresh approval is needed", "escalate": "always", "id": "f462da165df1", "repo": "<root>", "slug": "site-manager-decides", "subject": "#110/stale", "ts": "2026-11-15T14:35:07Z"}
+{"by": "lander", "decision": "escalated", "id": "f462da165df1", "reason": "reported by the lander to the dispatcher", "repo": "<root>", "ts": "2026-11-15T14:35:17Z"}
+{"cleared": true, "id": "5b50091598c4", "repo": "<root>", "ts": "2026-11-15T14:52:20Z"}
+{"cleared": true, "id": "f462da165df1", "repo": "<root>", "ts": "2026-11-15T15:22:43Z"}
+{"criterion": "ended-undeclared", "detail": "lead stopped undeclared, active 47m ago", "escalate": "judgment", "id": "09cac29411fb", "repo": "<root>", "slug": "kaizen-review-role", "subject": "kaizen-review-role", "ts": "2026-11-15T15:22:43Z"}
+{"criterion": "run-stopped", "detail": "no reason; 1 of 1 build runs ended stopped, cost 7.16 USD", "escalate": "judgment", "id": "f1c7e65ec472", "repo": "<root>", "slug": "kaizen-review-role", "subject": "kaizen-review-role/run1", "ts": "2026-11-15T15:22:43Z"}
+{"by": "site-manager", "decision": "escalated", "id": "09cac29411fb", "reason": "withheld", "repo": "<root>", "to": "dispatcher", "ts": "2026-11-15T15:23:28Z"}
+{"by": "site-manager", "decision": "escalated", "id": "f1c7e65ec472", "reason": "withheld", "repo": "<root>", "to": "dispatcher", "ts": "2026-11-15T15:23:28Z"}
