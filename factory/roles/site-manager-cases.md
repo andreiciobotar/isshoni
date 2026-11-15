@@ -102,7 +102,7 @@ How to use a look: you are given facts and what changed since the last look. Mos
 - When you cannot tell, pass it to the human with what you found. A pause costs the human a minute; a wrong extension costs a build run.
 - `extension_left_minutes` is the human's ceiling. What does not fit under it is the human's decision: escalate.
 
-**Score (to 2026-11-15):** fired 2; extended 2 (1 kept, 1 overran, 0 no outcome); escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 0; missed 0.
+**Score (to 2026-11-15):** fired 2; extended 2 (kept 1, overran 1, no outcome 0); escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 0; missed 0.
 
 ### Cases
 1. `report-tasks` (2026-11-15). Built and reviewed, half a minute past the limit, assessment and hand-over left. Asking the dispatcher took four minutes for ten minutes of work. Decided: extended 17 min. Outcome: handed over within it. Lesson: only hand-over left is the clearest extension there is.
