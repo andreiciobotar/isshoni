@@ -2969,11 +2969,11 @@ def transcript_tail(path, count=15):
 
 def task_lead(p, slug):
     """(status row, worktree path, session, lead) of a task; the row is None on an every-tick picture, the lead is
-    the name SendMessage addresses, None without a live session."""
+    the name SendMessage addresses, None without a process (an idle lead has one)."""
     row = next((r for r in p["rows"] or [] if r["slug"] == slug), None)
     path = row["path"] if row else p["repo"].worktree_path(slug) if slug and p.get("sessions") else None
     session = path and task_session(p, path)
-    return row, path, session, session and not finished(session) and session.get("name") or None
+    return row, path, session, session and "pid" in session and session.get("name") or None
 
 
 def firing_for_run(p, f):
@@ -3048,18 +3048,20 @@ def grant(p, slug, minutes):
 
 
 def tell_decision(p, f, decision, reason, minutes=None, until=None):
-    """The lines the script sends after a decision on an overrun, or a pause: the lead (if it is live), then once the
-    dispatcher; on an escalated overrun the model's own message is the dispatcher's."""
+    """The lines the script sends after a decision on an overrun, or a pause: to the lead, else to the dispatcher marked
+    undelivered, then once the dispatcher; on an escalated overrun the model's own message is the dispatcher's. Logs
+    on the firing who was told: `lead`, `dispatcher` or `nobody`."""
     repo, slug, clock = p["repo"], f["slug"], (until or "")[11:16] + "Z"
     if f.get("criterion") != "overrun" and not (decision == "paused" and f.get("criterion") in ASKS):
         return
     said = {"extended": f"extended {minutes} min, limit now {clock}: {reason}",
             "paused": f"paused: start no build run and end your turn; the human decides. {reason}",
             "escalated": f"passed to the human: declare factory state blocked human and wait. {reason}"}[decision]
-    to = task_lead(p, slug)[3] and forward(repo, p["dispatcher"], slug, "SITE MANAGER", said)
+    to = forward(repo, p["dispatcher"], slug, "SITE MANAGER", said)
+    log_firing(repo, id=f["id"], told=to or "nobody")
     heard = {"extended": ("SITE MANAGER", f"{slug}: extended {minutes} min to {clock}, no answer needed: {reason}"),
              "paused": ("PAUSED", f"{slug}: paused by the site manager, for the human: {reason}")}.get(decision)
-    if heard and to != "dispatcher":
+    if heard and to == "lead":
         forward(repo, p["dispatcher"], slug, *heard, lead=False)
 
 
