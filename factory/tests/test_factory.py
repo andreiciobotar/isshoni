@@ -368,6 +368,53 @@ class StateTests(unittest.TestCase):
         *_, fake = self.state("handed-over", "https://github.com/o/r/pull/9")
         self.assertFalse(fake.ran("gh", "pr", "ready"))
 
+    def test_working_undoes_the_recorded_pull_request_by_its_number(self):
+        recorded = {("git", "config", "--get-regexp"): (0, "branch.worktree-x.factorypr 5\n", "")}
+        *_, fake = invoke(["state", "working"], repo_answers([task_entry("x")], (), recorded), cwd=self.CWD)
+        self.assertIn(["gh", "pr", "ready", "--undo", "5"], fake.calls)
+        self.assertNotIn(["gh", "pr", "ready", "--undo", "worktree-x"], fake.calls)
+
+    URL = "https://github.com/o/r/pull/9"
+    KEY = "branch.worktree-x.factoryPr"
+
+    def hand_over(self, listed, head="h1", url=URL, recorded=None):
+        answers = {("gh", "pr", "list"): listed if isinstance(listed, tuple) else (0, json.dumps(listed), ""),
+                   ("git", "rev-parse", "HEAD"): (0, head + "\n", "")}
+        answers.update({("git", "config", "--get-regexp"): (0, f"branch.worktree-x.factorypr {recorded}\n", "")}
+                       if recorded else {})
+        code, out, err, fake = invoke(["state", "handed-over", url], repo_answers([task_entry("x")], (), answers), cwd=self.CWD)
+        self.assertEqual((code, out), (0, "x: handed-over\n"))
+        written = [c for c in fake.calls if c[:3] == ["git", "config", self.KEY]]
+        return err, written, fake
+
+    def test_handed_over_records_the_number_of_the_open_pull_request_with_that_url_and_the_worktree_head(self):
+        err, written, fake = self.hand_over([{"url": self.URL, "headRefOid": "h1"}])
+        self.assertEqual((err, written), ("", [["git", "config", self.KEY, "9"]]))
+        self.assertTrue(fake.ran("gh", "pr", "list", "--head", "worktree-x", "--state", "open"))
+
+    def test_handed_over_overwrites_an_older_record_that_is_how_a_replaced_pull_request_is_adopted(self):
+        err, written, _ = self.hand_over([{"url": self.URL, "headRefOid": "h1"}], recorded="4")
+        self.assertEqual((err, written), ("", [["git", "config", self.KEY, "9"]]))
+
+    def test_handed_over_records_nothing_and_says_nothing_for_a_link_that_is_not_an_open_pull_request_of_the_branch(self):
+        err, written, _ = self.hand_over([{"url": "https://github.com/o/r/pull/8", "headRefOid": "h1"}], recorded="4")
+        self.assertEqual((err, written), ("", []))
+
+    def test_handed_over_says_so_on_stderr_and_records_nothing_when_the_head_differs(self):
+        err, written, _ = self.hand_over([{"url": self.URL, "headRefOid": "other"}])
+        self.assertEqual((err, written), (f"{self.URL}: its number was not recorded: its head is not the worktree head\n", []))
+
+    def test_handed_over_says_so_on_stderr_and_records_nothing_when_gh_fails(self):
+        err, written, _ = self.hand_over((1, "", "boom"))
+        self.assertIn(f"{self.URL}: its number was not recorded: ", err)
+        self.assertEqual(written, [])
+
+    def test_handed_over_asks_gh_nothing_for_a_link_whose_end_is_not_a_number(self):
+        for url in ("https://github.com/o/r/pull/abc", "https://github.com/o/r/pull/9a", "https://github.com/o/r/pull/"):
+            with self.subTest(url):
+                err, written, fake = self.hand_over([{"url": url, "headRefOid": "h1"}], url=url)
+                self.assertEqual((err, written, fake.ran("gh")), ("", [], False))
+
     def test_handed_over_stores_a_link_as_given(self):
         code, out, _, fake = self.state("handed-over", "https://github.com/o/r/pull/9")
         self.assertEqual((code, out), (0, "x: handed-over\n"))
@@ -398,6 +445,24 @@ class StateTests(unittest.TestCase):
     def test_from_the_worktree_root_and_a_subdirectory(self):
         for cwd in (f"{WT}/x", self.CWD):
             self.assertEqual(self.state("working", cwd=cwd)[0], 0)
+
+
+class RecordedPullRequestTests(unittest.TestCase):
+    def test_repo_reads_the_recorded_number_into_the_task_entry_of_that_branch_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "repo"
+            env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                   "GIT_COMMITTER_EMAIL": "t@t"}
+            git = lambda *a: subprocess.run(["git", *a], cwd=root, env=env, check=True, capture_output=True, text=True)
+            root.mkdir()
+            git("init", "-q", "-b", "main")
+            git("commit", "-q", "--allow-empty", "-m", "init")
+            for slug in ("abc", "def"):
+                git("worktree", "add", "-q", "-b", f"worktree-{slug}", f".claude/worktrees/{slug}")
+            git("config", "branch.worktree-abc.factoryPr", "12")
+            git("config", "branch.other.factoryPr", "13")
+            tasks = {t["branch"]: t for t in factory.Repo(root).tasks}
+            self.assertEqual((tasks["worktree-abc"]["pr"], "pr" in tasks["worktree-def"]), ("12", False))
 
 
 class AckTests(unittest.TestCase):

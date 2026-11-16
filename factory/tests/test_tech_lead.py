@@ -33,11 +33,11 @@ def said(outcome="resolved", note=ANSWER["note"], **extra):
 class Machine(FakeRun):
     """git, gh and claude for one task: `state` is the worktree, `after` what the tech lead's run changes in it."""
 
-    def __init__(self, root, claude=None, after=None, comment=(0, "", ""), lead=True, push=(0, "", "")):
+    def __init__(self, root, claude=None, after=None, comment=(0, "", ""), lead=True, push=(0, "", ""), config=None):
         super().__init__({})
         self.root, self.claude, self.after, self.comment, self.push = root, claude or said(), after or {}, comment, push
         self.state = {"head": OLD, "remote": OLD, "dirty": False, "branch": f"worktree-{SLUG}", "ancestor": True, "merged": True}
-        self.config = {}
+        self.config = dict(config or {})
         self.cwds, self.groups, self.comments, self.lines, self.prompts, self.lead, self.pushes = [], [], [], [], [], lead, []
 
     def __call__(self, argv, cwd=None, input=None, timeout=None, env=None, group=False):
@@ -72,6 +72,8 @@ class Machine(FakeRun):
             return self.comment
         if a[:3] == ["gh", "pr", "ready"]:
             return 0, "", ""
+        if a[:3] == ["git", "config", "--get-regexp"]:  # git lower-cases the variable name only
+            return 0, "".join(f"{k.removesuffix('factoryPr')}factorypr {v}\n" for k, v in self.config.items() if k.endswith(".factoryPr")), ""
         if a[:3] == ["git", "config", "--get"]:
             return (0, self.config[a[3]] + "\n", "") if a[3] in self.config else (1, "", "")
         if a[:3] == ["git", "rev-parse", "HEAD"]:
@@ -139,6 +141,19 @@ class Case(unittest.TestCase):
         self.use(machine or Machine(self.root))
         repo = factory.Repo()
         return factory.send_back(repo, "dispatcher-repo", self.pr(), SLUG, evidence), repo
+
+
+class OwnershipTests(Case):
+    def test_a_pull_request_that_is_not_the_recorded_one_is_refused_before_anything_is_changed(self):
+        code, out, _, m = self.go(config={f"branch.worktree-{SLUG}.factoryPr": "99"})
+        self.assertEqual(code, 1)
+        self.assertIn(f"#{N} is not the pull request of task {SLUG} (it recorded #99)", out)
+        self.assertEqual((self.declared(), m.tech_lead_calls(), m.pushes, m.comments), ([], [], [], []))
+        self.assertFalse(m.ran("gh", "pr", "ready"))
+
+    def test_the_recorded_pull_request_is_run(self):
+        *_, m = self.go(config={f"branch.worktree-{SLUG}.factoryPr": str(N)})
+        self.assertEqual(len(m.tech_lead_calls()), 1)
 
 
 class SendBackTests(Case):
