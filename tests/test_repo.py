@@ -1,4 +1,5 @@
 """Specs are working papers kept in ~/.claude/factory/specs/: nothing under docs/specs/ is tracked."""
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -32,6 +33,23 @@ class GitRuleIsOneLine(unittest.TestCase):
             "factory/agents/reviewer.md", "factory/roles/lead.md"])
         self.assertEqual(len({tuple(v) for v in found.values()}), 1, "one bullet per file, the same in all")
         self.assertEqual({len(v) for v in found.values()}, {1})
+
+
+class ReviewWordsAreInOnePlace(unittest.TestCase):
+    SKILLS = ("factory/skills/coding-taste/SKILL.md", ".claude/skills/coding-taste/SKILL.md")
+
+    def test_the_two_coding_taste_copies_are_the_same_bytes(self):
+        a, b = [(ROOT / p).read_bytes() for p in self.SKILLS]
+        self.assertEqual(a, b)
+
+    def test_only_the_skill_and_the_dispatch_skill_state_the_verdict_words(self):
+        words = re.compile(r"\bAPPROVE\b|CHANGES_NEEDED")
+        found = sorted(
+            f.relative_to(ROOT).as_posix()
+            for d in ("factory/roles", "factory/agents", "factory/skills", ".claude/agents", ".claude/skills")
+            for f in (ROOT / d).rglob("*") if f.is_file() and words.search(f.read_text()))
+        self.assertEqual(found, [".claude/skills/coding-taste/SKILL.md", "factory/skills/coding-taste/SKILL.md", "factory/skills/dispatch/SKILL.md"])
+        self.assertNotRegex((ROOT / "CLAUDE.md").read_text(), words)
 
 
 if __name__ == "__main__":

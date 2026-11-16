@@ -6802,6 +6802,14 @@ def tell_lead(repo, fallback, slug, head, said, title, lead=True):
 TECH_LEAD_TIMEOUT = 1800
 TECH_LEAD_BUDGET = "5.00"
 TECH_LEAD_ROLE = PLUGIN_ROOT / "roles" / "tech-lead.md"
+
+
+def with_review_words(role):
+    """A role file's text, then the `coding-taste` skill without its frontmatter: the tech lead holds the Review words."""
+    skill = (PLUGIN_ROOT / "skills" / "coding-taste" / "SKILL.md").read_text().removeprefix("---\n").partition("\n---\n")[2]
+    return f"{role.read_text()}\n\n{skill}"
+
+
 TECH_LEAD_KIT = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch"
 TECH_LEAD_TOOLS = ("Read", "Edit", "Write", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "Bash(git *)", "Bash(make *)",
                    "Bash(gh pr view *)", "Bash(gh pr diff *)", "Bash(gh pr checks *)", "Bash(gh run view *)")
@@ -6876,7 +6884,7 @@ def tech_lead_argv(repo, slug, pr, evidence, spec, settings):
             "--plugin-dir", str(PLUGIN_ROOT), *worktree_flags(isolated_name(repo, tech_lead_paths(repo, slug)[0]), settings["lean_start"]), f"--tools={TECH_LEAD_KIT}",
             "--allowedTools", *TECH_LEAD_TOOLS, "--disallowedTools", *TECH_LEAD_DENIED,
             "--max-budget-usd", TECH_LEAD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(TECH_LEAD_SCHEMA),
-            "--append-system-prompt", TECH_LEAD_ROLE.read_text(), tech_lead_prompt(repo, slug, pr, evidence, spec)]
+            "--append-system-prompt", with_review_words(TECH_LEAD_ROLE), tech_lead_prompt(repo, slug, pr, evidence, spec)]
 
 
 def spec_hash(spec):
@@ -7082,7 +7090,7 @@ def build_argv(repo, slug, spec, handover, note, settings, findings=()):
             "--agents", json.dumps(agent_definitions(settings, repo.root)), "--permission-mode", settings["lead_permission_mode"],
             "--plugin-dir", str(PLUGIN_ROOT), *worktree_flags(isolated_name(repo, repo.worktree_path(slug)), settings["lean_start"]), f"--tools={LEAD_TOOLS}", "--disallowedTools", *BUILD_DENIED,
             "--max-budget-usd", BUILD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(BUILD_SCHEMA),
-            "--append-system-prompt", BUILD_ROLE.read_text(), build_prompt(repo, slug, spec, handover, note, findings)]
+            "--append-system-prompt", with_review_words(BUILD_ROLE), build_prompt(repo, slug, spec, handover, note, findings)]
 
 
 def args_build(parser):

@@ -27,13 +27,15 @@ Rules:
 - A scratch copy is the expected way to run a mutation check or another commit's tests: `git archive -o <tmp>/x.tar <sha>`, then `tar -xf <tmp>/x.tar -C <dir>` into an existing directory, then run there with `cwd=`. To show that new tests are meaningful, copy the new test files into a copy of the base SHA: they should fail there.
 - When the task says it is a re-review, you get a commit range and the issues raised last time. Check that range (`git diff <base>..<head>`) and those issues, and rerun the test suite. Do not repeat whole-codebase or whole-dataset validation unless the range touches that code; say what you left unchecked.
 
+The verdict word and each issue's level are the `coding-taste` skill's Review words.
+
 Return exactly this format:
 
 ## Verdict
-APPROVE or CHANGES_NEEDED
+One verdict word.
 
 ## Issues
-- [blocker|minor] [observed|inferred] `path:line` - why it is wrong, and what you would do
+- [level] [observed|inferred] `path:line` - why it is wrong, and what you would do
   ```
   excerpt, or command and output
   ```

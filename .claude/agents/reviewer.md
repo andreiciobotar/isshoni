@@ -20,13 +20,15 @@ Rules:
 - Keep git in this worktree: no `-C`, `--git-dir`, `GIT_DIR` or `cd` elsewhere. A call refused with `This session is isolated` ran nothing: retry with literal values, no `$`, backtick, loop or `HOME=`.
 - When the task says it is a re-review, you get a commit range and the issues raised last time. Check that range (`git diff <base>..<head>`) and those issues, and rerun the test suite. Do not repeat whole-codebase or whole-dataset validation unless the range touches that code; say what you left unchecked.
 
+The verdict word and each issue's level are the `coding-taste` skill's Review words.
+
 Return exactly this format:
 
 ## Verdict
-APPROVE or CHANGES_NEEDED
+One verdict word.
 
 ## Issues
-- [blocker|minor] `path:line` - problem and suggested fix
+- [level] `path:line` - problem and suggested fix
 
 ## Checked
 - What you actually verified (commands run, files read).
