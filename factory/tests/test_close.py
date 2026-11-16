@@ -365,6 +365,34 @@ class SiteManagerTests(CloseBase):
         [f] = self.folded()
         self.assertEqual(self.told, [("t1", "ESCALATION", f"{f['id']} merged-not-cleaned t1: closed (replaced); kept: {ONLY_HERE}{sha[:7]} the only copy", False)])
 
+    def test_a_failure_after_the_declare_is_a_kept_close_the_dispatcher_hears_of(self):
+        f = self.firing()
+        with mock.patch.object(factory, "list_sessions", side_effect=[[], None]):
+            logged, out = self.decide(f)
+        why = "cannot list sessions again before removing t1; nothing further removed"
+        self.assertEqual(logged, 1)
+        self.assertIn(f"kept t1: {why}", out)
+        self.assertNotIn("close skipped", out)
+        self.assertEqual([r["decision"] for r in self.records("firings") if "decision" in r], ["closed"])
+        self.assertEqual(self.states()[-1], ("t1", "closed"))
+        self.assertEqual(self.told, [("t1", "ESCALATION", f"{f['id']} ended-undeclared t1: closed (replaced); kept: {why}", False)])
+
+    def test_factory_close_prints_a_failure_after_the_declare_as_kept_and_exits_0(self):
+        with mock.patch.object(factory, "list_sessions", side_effect=[[], None]):
+            code, out, _ = self.go("close", "t1", "--reason", "dead")
+        self.assertEqual((code, out), (0, "closed t1: dead\nkept t1: cannot list sessions again before removing t1; nothing further removed\n"))
+        self.assertEqual(self.states()[-1], ("t1", "closed"))
+
+    def test_superseded_by_is_logged_on_a_closed_decision_only(self):
+        f = self.firing()
+        self.decide(f, decision="suppressed", superseded_by="t1-finish")
+        call = {"entry": "merged-not-cleaned", "slug": "t1", "detail": "x", "decision": "suppressed", "reason": "r", "superseded_by": "t1-finish", "looked": []}
+        with redirect_stdout(io.StringIO()):
+            factory.record_decisions(self.p, [], {"sent": True, "decisions": [call]}, "run1", {"tasks": [{"slug": "t1"}]})
+        decisions = [r for r in self.records("firings") if "decision" in r]
+        self.assertEqual(len(decisions), 2)
+        self.assertTrue(all("superseded_by" not in r for r in decisions))
+
     def test_a_refused_close_is_printed_and_logs_no_decision(self):
         self.sessions = [{"id": "s1", "name": "t1", "cwd": str(self.wt), "kind": "background", "status": "busy", "state": "working"}]
         f = self.firing()
@@ -441,6 +469,12 @@ class WakingTests(Harness):
                 self.escalated(300, outcome)
                 self.tick()
                 self.assertEqual((self.claude_runs(), len(self.records())), ([], 2 + bool(outcome)))
+
+    def test_a_closed_decision_whose_worktree_is_gone_stands_on_the_full_pass(self):
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "role": "site-manager", "state": "closed", "ts": iso(NOW - HOUR)}])
+        self.seed("firings", [fired("aaa"), decided("aaa", "closed")])
+        self.tick(entries=[])
+        self.assertEqual([r["id"] for r in self.records() if r.get("outcome") == "stood"], ["aaa"])
 
     def test_the_schema_and_tools_carry_the_decision_and_the_dry_run(self):
         item = factory.RUN_SCHEMA["properties"]["decisions"]["items"]["properties"]

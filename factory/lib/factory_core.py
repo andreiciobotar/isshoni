@@ -1915,8 +1915,9 @@ def live_reason(repo, slug, sessions, files):
 
 def close_task(repo, slug, role, reason, superseded_by, sessions, files):
     """Declare the task `slug` closed by `role` (a task that will never finish and has no lead to hand over), then clean it as
-    `clean` would: returns what `clean_row` returns. A refusal is a `Fail` (exit 1) and writes nothing: not a task worktree,
-    finished already (`ack` is its path), no reason, replaced by itself, or live."""
+    `clean` would: returns what `clean_row` returns, or "kept" with the failure when `clean_row` raises after the declare. A
+    refusal is a `Fail` (exit 1) and writes nothing: not a task worktree, finished already (`ack` is its path), no reason,
+    replaced by itself, or live."""
     refuse = lambda why: Fail(f"close: {slug}: {why}", code=1)  # noqa: E731
     state = read_tasks(repo.root).get(slug, {}).get("state")
     if not any(os.path.basename(t["path"]) == slug for t in repo.tasks):
@@ -1935,7 +1936,11 @@ def close_task(repo, slug, role, reason, superseded_by, sessions, files):
         task_event("TaskClosed", repo, slug, by=role, reason=reason, **({"superseded_by": superseded_by} if superseded_by else {}))
     print(f"closed {slug}: {reason}")
     rows = collect(repo, sessions, load_settings()["task_time_limit_hours"])
-    return clean_row(repo, next(r for r in rows if r["slug"] == slug), rows, files, False)
+    try:
+        return clean_row(repo, next(r for r in rows if r["slug"] == slug), rows, files, False)
+    except Fail as e:  # declared already: a failure now is a kept task, not a refusal
+        print(f"kept {slug}: {e}")
+        return "kept", str(e)
 
 
 def args_close(parser):
@@ -3255,7 +3260,7 @@ def record_call(p, d, rows, run, called):
     f, looked, said = fire(repo, {"criterion": entry, "slug": slug, "subject": slug, "detail": detail.strip()}), d.get("looked"), reason.strip()
     log_firing(repo, id=f["id"], decision=decision, reason=said, by="site-manager", run=run,
                looked=[x for x in looked if isinstance(x, str)] if isinstance(looked, list) else [],
-               **({"to": to} if decision == "escalated" else {}), **({"superseded_by": superseded_by} if superseded_by else {}))
+               **({"to": to} if decision == "escalated" else {}), **({"superseded_by": superseded_by} if decision == "closed" and superseded_by else {}))
     log_firing(repo, id=f["id"], cleared=True)
     print(f"{f['id']}  {entry}  {slug}  {decision}")
     if closed:
@@ -3326,7 +3331,7 @@ def record_decisions(p, sent, result, run, look=None):
                    looked=[x for x in looked if isinstance(x, str)] if isinstance(looked, list) else [],
                    **({"to": to} if to else {}), **({"waits_on": waits} if decision == "paused" else {}),
                    **({"minutes": minutes, "until": until} if decision == "extended" else {}),
-                   **({"tell": tell} if decision == "told" else {}), **({"superseded_by": superseded_by} if superseded_by else {}))
+                   **({"tell": tell} if decision == "told" else {}), **({"superseded_by": superseded_by} if decision == "closed" and superseded_by else {}))
         if closed:
             tell_closed(p, fid, crit, f["slug"], reason, superseded_by, closed)
         else:
