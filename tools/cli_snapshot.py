@@ -30,7 +30,7 @@ def show(parser, path):
     print(parser.format_help())
     for a in parser._actions:
         kind = getattr(a.type, "__name__", a.type)
-        print(f"{a.option_strings} dest={a.dest} nargs={a.nargs} const={a.const!r} default={a.default!r} type={kind} "
+        print(f"{type(a).__name__} {a.option_strings} dest={a.dest} nargs={a.nargs} const={a.const!r} default={a.default!r} type={kind} "
               f"choices={list(a.choices) if a.choices is not None else None} required={a.required} metavar={a.metavar!r} "
               f"help={a.help!r}")
     for g in parser._mutually_exclusive_groups:

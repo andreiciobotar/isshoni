@@ -48,10 +48,15 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(factory.main(["probe"]), 7)
 
     def test_listing_is_the_order_line_then_extra_names_sorted(self):
-        self.assertEqual(listed_commands(), list(factory.COMMAND_ORDER))
-        for name in ("zz-b", "aa-c", "zz-a"):
-            factory.command(name, "extra")(lambda args: 0)
-        self.assertEqual(listed_commands(), [*factory.COMMAND_ORDER, "aa-c", "zz-a", "zz-b"])
+        with mock.patch.object(factory, "COMMAND_ORDER", ("status", "new")), \
+                mock.patch.dict(factory.COMMANDS, clear=True):
+            for name in ("new", "status"):
+                factory.command(name, "ordered")(lambda args: 0)
+            self.assertEqual(listed_commands(), ["status", "new"])
+            factory.command("zz-b", "extra")(lambda args: 0)
+            self.assertEqual(listed_commands(), ["status", "new", "zz-b"])
+            factory.command("aa-c", "extra")(lambda args: 0)
+            self.assertEqual(listed_commands(), ["status", "new", "aa-c", "zz-b"])
 
     def test_the_order_line_names_only_declared_commands(self):
         self.assertLessEqual(set(factory.COMMAND_ORDER), set(factory.COMMANDS))
