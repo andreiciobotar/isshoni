@@ -229,6 +229,12 @@ class HostTests(unittest.TestCase):
             head = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True, timeout=60).strip()
             self.assertEqual((home / ".isshoni/.rev").read_text().strip(), head)
             self.assertIn("dispatcher-widgets", (home / "stub-state.json").read_text())
+            argvs = [json.loads(l)["argv"] for l in (home / "stub-claude.log").read_text().splitlines()]
+            off = '{"attribution":{"commit":"","pr":"","sessionUrl":false}}'
+            for start in ([a for a in argvs if "--bg" in a], [a for a in argvs if a[:1] == ["-p"]]):
+                self.assertTrue(start)
+                self.assertEqual([a.count("--settings") for a in start], [1] * len(start))
+                self.assertEqual([a[a.index("--settings") + 1] for a in start], [off] * len(start))
             settings = tomllib.loads((home / ".claude/factory/settings.toml").read_text())
             self.assertEqual((settings["paths"]["monitor"], settings["sessions"]["dispatchers"]),
                              ("/state/home/.isshoni/bin/isshoni", ["dispatcher-widgets"]))
