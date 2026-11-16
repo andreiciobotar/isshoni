@@ -619,8 +619,13 @@ def agent_definitions(settings, root):
 
 
 LEAD_TOOLS = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch,SendMessage,WebFetch,WebSearch,TaskStop,Monitor"
+# `:**`, not `:*`: a rule ending in `:*` is the matcher's old prefix syntax and would stop matching a delete refspec.
+PUSH_DENIED = tuple(f"Bash({p} {rest})" for p in ("git push", "git -C * push") for rest in (
+    "*--delete*", "-d *", "* -d *", "* -d", "*--force*", "-f*", "* -f*", "*--mirror*", "*--prune*",
+    "* :**", '* ":**', "* ':**", "* +*", '* "+*', "* '+*"))
 LEAD_DENIED = ("Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
-               "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)")
+               "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)", *PUSH_DENIED,
+               "Bash(gh pr merge*)", "Bash(gh pr review*)")
 
 
 def agent_models(models):
@@ -4389,17 +4394,17 @@ def dissolve(repo, n):
     return None
 
 
-def chains(snap, default):
-    """The pull-request numbers of each chain of two or more open same-repository pull requests, bottom to top: the
-    bottom's base is `default`, each next one's base is the head of the one below, and a head with two pull
-    requests on it ends the chain."""
+def chains(repo, snap):
+    """The pull-request numbers of each chain of two or more open same-repository pull requests, all of them this
+    factory's, bottom to top: the bottom's base is `repo.default`, each next one's base is the head of the one
+    below, and a head with two pull requests on it ends the chain."""
     mine = [pr for pr in snap if not pr["isCrossRepository"]]
     found = []
-    for bottom in (pr for pr in mine if pr["baseRefName"] == default):
+    for bottom in (pr for pr in mine if pr["baseRefName"] == repo.default):
         chain = [bottom]
         while len(above := [pr for pr in mine if pr["baseRefName"] == chain[-1]["headRefName"]]) == 1 and above[0] not in chain:
             chain.append(above[0])
-        if len(chain) > 1:
+        if len(chain) > 1 and all(owned(repo, pr) for pr in chain):
             found.append([pr["number"] for pr in chain])
     return found
 
@@ -4407,7 +4412,7 @@ def chains(snap, default):
 def ensure_stacks(repo, snap):
     """Make each chain of `snap` one GitHub stack: create it, or append to the stack of its lower members. Only
     adds; one `lander: stacks:` line when a call fails, and the rest is left to the next pass."""
-    found = chains(snap, repo.default)
+    found = chains(repo, snap)
     if not found:
         return
     try:
@@ -4784,6 +4789,11 @@ def snapshot(repo):
 def task_slug(repo, pr):
     """The slug of the task worktree whose branch is the head of `pr`, or None."""
     return next((os.path.basename(t["path"]) for t in repo.tasks if t["branch"] == pr["headRefName"]), None)
+
+
+def owned(repo, pr):
+    """Whether `pr` is this factory's: same-repository, and a local task worktree is on its head branch."""
+    return not pr["isCrossRepository"] and task_slug(repo, pr) is not None
 
 
 def pr_items(pr):
@@ -5413,7 +5423,7 @@ LAND_TIMEOUT = 1800
 LAND_TOOLS = ("Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
               "Bash(gh pr edit *)", "Bash(factory overlap *)")
 ROLE_DENIED = ("Bash(gh pr merge*)", "Bash(gh pr review*)", "Bash(gh pr comment*)", "Bash(gh pr ready*)", "Bash(gh api*)",
-               "Bash(gh repo*)", "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)",
+               "Bash(gh repo*)", *PUSH_DENIED, "Bash(git rebase*)",
                "Bash(git commit --amend*)", "Bash(git worktree*)")
 LAND_REASONS = ("dirty", "conflict", "golden", "tests", "denied", "other")
 LAND_RESULT_RE = re.compile(r"(LANDED, LOOK|LANDED|STOPPED)(?: (\S+))?")
@@ -6414,8 +6424,8 @@ def tech_lead_run(repo, settings, args, learned):
 BUILD_TIMEOUT = 5400
 BUILD_BUDGET = "15.00"
 BUILD_ROLE = PLUGIN_ROOT / "roles" / "tech-lead-build.md"
-BUILD_DENIED = ("Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)", "Bash(git commit --amend*)",
-                "Bash(git worktree*)")
+BUILD_DENIED = (*PUSH_DENIED, "Bash(git rebase*)", "Bash(git commit --amend*)", "Bash(git worktree*)",
+                "Bash(gh pr merge*)", "Bash(gh pr review*)")
 BUILD_OUTCOMES = ("built", "question", "stopped")
 BUILD_SCHEMA = {"type": "object", "properties": {"outcome": {"enum": list(BUILD_OUTCOMES)}, "handover": {"type": "string"},
                                                  "findings": {"type": "array", "items": {"type": "object", "required": ["id", "outcome", "note"], "properties": {

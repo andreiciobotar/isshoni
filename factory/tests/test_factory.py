@@ -1144,6 +1144,16 @@ class OpsHookTests(InStore):
         self.assertFalse((self.dir / "deliverables").exists())
 
 
+class DeniedTests(unittest.TestCase):
+    def test_every_list_holds_the_push_patterns(self):
+        for name in ("ROLE_DENIED", "BUILD_DENIED", "LEAD_DENIED", "TECH_LEAD_DENIED"):
+            self.assertLessEqual(set(factory.PUSH_DENIED), set(getattr(factory, name)), name)
+
+    def test_build_and_lead_refuse_merge_and_review(self):
+        for name in ("BUILD_DENIED", "LEAD_DENIED"):
+            self.assertLessEqual({"Bash(gh pr merge*)", "Bash(gh pr review*)"}, set(getattr(factory, name)), name)
+
+
 class ReserveTests(unittest.TestCase):
     def test_reserve_is_a_rounded_up_percent_that_never_takes_the_last_slot(self):
         for cap, want in ((1, 0), (2, 1), (5, 1), (10, 1), (11, 2), (15, 2), (20, 2), (21, 3)):
@@ -1235,8 +1245,7 @@ class NewSetupRealPathTests(unittest.TestCase):
 class NewTests(unittest.TestCase):
     ARGS = ["new", "demo-task", "--brief", "do it", "--dispatcher", "d1"]
     OK = {("claude", "--bg"): (0, "backgrounded · 96dc4869 · demo-task\n", ""), ("git", "ls-remote"): (2, "", "")}
-    DENIED = ["Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
-              "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)"]
+    DENIED = list(factory.LEAD_DENIED)
 
     def answers(self, entries, sessions=(), *extras, dispatcher="d1"):
         return repo_answers(entries, [dict(DISPATCHER, name=dispatcher), *sessions], *extras)
