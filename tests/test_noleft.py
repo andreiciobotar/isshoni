@@ -128,8 +128,10 @@ class NoLeftTests(unittest.TestCase):
         self.assertEqual(wrapper.wait(timeout=10), 129)
 
     def test_a_signal_before_the_command_started_still_reports(self):
-        p = subprocess.run([sys.executable, "-c", EARLY, NOLEFT], capture_output=True, text=True, timeout=60)
-        self.assertEqual((p.returncode, p.stdout), (143, "left behind: 0\n"))
+        p = subprocess.Popen([sys.executable, "-c", EARLY, NOLEFT], stdout=subprocess.PIPE, text=True, start_new_session=True)
+        self.addCleanup(self.kill_group, p)
+        out, _ = p.communicate(timeout=60)
+        self.assertEqual((p.returncode, out), (143, "left behind: 0\n"))
 
     @staticmethod
     def kill_group(wrapper):

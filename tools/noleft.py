@@ -3,7 +3,7 @@
     python3 tools/noleft.py <command...>
 
 Prints `left behind: N` and one line per survivor (pid, command), kills them (they are the command's own),
-and exits 1 when N > 0, else with the command's exit code.
+and exits 1 when N > 0, else with the command's exit code, or 128 + n if signal n stopped the wrapper first.
 
 A process is the command's when it descends from it at some poll (every POLL seconds, one `ps` call each; a
 process whose whole parent chain ends within POLL of its start is missed). It is not found by an environment
