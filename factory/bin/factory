@@ -79,6 +79,21 @@ COPIED = {"SessionStart": ("source",), "SessionEnd": ("reason",), "SubagentStart
 PROMPT_FROM = (("<agent-message", "subagent"), ("<cross-session-message", "session"),
                ("<task-notification", "notification"))
 
+COMMANDS = {}  # name -> (help, options, function), filled by @command where each command is defined
+COMMAND_ORDER = ("new", "status", "clean", "state", "overrun", "commands", "ack", "hook", "ops-hook", "retro", "env",
+                 "feedback", "review", "log", "health", "watch", "ops", "digest", "firing", "miss", "firings",
+                 "pauses", "merge", "lander", "tech-lead", "build", "land", "overlap", "rerun", "schedule",
+                 "dispatcher", "settings", "wizard", "uninstall")  # `factory --help` order; a name not here follows, by name
+
+
+def command(name, help, options=None):
+    """Declare the function below as `factory <name>`. `options(parser)`, defined just above it, adds its
+    arguments and subcommands; it runs when the command line is parsed, not at load."""
+    def declare(function):
+        COMMANDS[name] = (help, options, function)
+        return function
+    return declare
+
 
 class Fail(Exception):
     """One line on stderr and an exit code: 2 for a usage or precondition error, 1 for a failed external step."""
@@ -527,6 +542,13 @@ def set_setting(dotted, raw):
     return f"set {dotted} = {toml_value(value)}"
 
 
+def args_settings(parser):
+    parser.add_argument("action", choices=("set",))
+    parser.add_argument("key", help="table.key, e.g. models.coder")
+    parser.add_argument("value", help="a number, true or false, a model name, or a JSON list")
+
+
+@command("settings", "change one line of the settings file in place", args_settings)
 def cmd_settings(args):
     print(set_setting(args.key, args.value))
     return 0
@@ -1313,6 +1335,20 @@ def task_event(event, repo, slug, **extra):
 
 # ---- commands ---------------------------------------------------------------
 
+def args_new(parser):
+    parser.add_argument("slug")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--brief")
+    group.add_argument("--brief-file")
+    parser.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
+    parser.add_argument("--lead-model", help="the lead's model for this task instead of models.lead in the settings")
+    parser.add_argument("--base", help="slug of an open task to stack this task on")
+    parser.add_argument("--critical", action="store_true",
+                        help="use the slots held in reserve: the default branch is red, the factory is broken, "
+                             "or the human says so")
+
+
+@command("new", "start a lead for a task", args_new)
 def cmd_new(args):
     validate_slug(args.slug)
     if args.brief_file:
@@ -1441,6 +1477,14 @@ def age(ts, now):
     return "now"
 
 
+def args_status(parser):
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--cached", action="store_true", help="never contact GitHub: pull requests come from the cache")
+    parser.add_argument("--max-age", type=float, default=0, metavar="SECONDS",
+                        help="contact GitHub only when the cache is older than this or lacks a branch (default 0: always)")
+
+
+@command("status", "one row per task worktree", args_status)
 def cmd_status(args):
     repo = Repo()
     settings = load_settings()
@@ -1567,6 +1611,11 @@ def merged_reason(repo, row):
     return None
 
 
+def args_clean(parser):
+    parser.add_argument("--dry-run", action="store_true")
+
+
+@command("clean", "remove finished tasks", args_clean)
 def cmd_clean(args):
     repo = Repo()
     sessions = list_sessions()
@@ -1727,6 +1776,11 @@ def here_task(repo, command):
     return task
 
 
+def args_overrun(parser):
+    parser.add_argument("text", help="what is done, what is left, why it is slow, what you would do with more time")
+
+
+@command("overrun", "ask the site manager for more time, or help, on the task whose worktree this is (a lead runs it, once)", args_overrun)
 def cmd_overrun(args):
     """A lead past its limit, or stuck, asks: a firing the watch sends to the site manager on its next tick."""
     repo = Repo()
@@ -1740,6 +1794,15 @@ def cmd_overrun(args):
     return 0
 
 
+def args_state(parser):
+    parser.add_argument("state", choices=STATES[:3])
+    parser.add_argument("--paused", action="store_true", help="with blocked and slugs: the lander's pause of a churning task, released by the script when they land")
+    parser.add_argument("deliverable", nargs="?", metavar="deliverable|whom",
+                        help="with handed-over: a link, or a path outside the worktree; with blocked: whom it waits on, "
+                             "human (default), dispatcher or the slug of another open task")
+
+
+@command("state", "declare the state of the task whose worktree this is (a lead runs it)", args_state)
 def cmd_state(args):
     repo = Repo()
     task = here_task(repo, "state")
@@ -1776,6 +1839,12 @@ def cmd_state(args):
     return 0
 
 
+def args_ack(parser):
+    parser.add_argument("slug")
+    parser.add_argument("state", choices=SETTLED)
+
+
+@command("ack", "record the human's word on a task whose work was handed over", args_ack)
 def cmd_ack(args):
     repo = Repo()
     if not any(os.path.basename(t["path"]) == args.slug for t in repo.tasks):
@@ -1788,6 +1857,7 @@ def cmd_ack(args):
     return 0
 
 
+@command("hook", "record one hook payload read from stdin (run by the plugin's hooks)")
 def cmd_hook(args):
     """Record one hook payload and keep the watch job in step with the dispatcher. Prints nothing and exits 0
     whatever happens."""
@@ -1852,6 +1922,7 @@ def save_evidence(p):
     return path
 
 
+@command("ops-hook", "gate and record the ops explorer's MCP calls from a hook payload on stdin (run by the plugin's hooks)")
 def cmd_ops_hook(args):
     """The ops explorer's MCP calls: before one, allow it when its tool is on ops.tools and deny it otherwise; after one,
     save its evidence. Nothing for any other agent. A failure before a call exits 2, which blocks it."""
@@ -1909,6 +1980,11 @@ def follow_dispatcher(p):
         schedule_remove(repo, backend)
 
 
+def args_retro(parser):
+    parser.add_argument("file", nargs="?", help="read the JSON from this file instead of stdin")
+
+
+@command("retro", "store a lead retrospective (a JSON object on stdin, or in a file)", args_retro)
 def cmd_retro(args):
     tag = tags()
     if not tag["slug"]:
@@ -1946,6 +2022,25 @@ def set_feedback(prefix, status, pr=None, by=None):
                       **({"by": by} if by else {})})
 
 
+def args_feedback(parser):
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--status", choices=STATUSES)
+    parser.add_argument("--kind", choices=("issue", "decision"))
+    parser.add_argument("--since", help="only entries filed after this ts (YYYY-MM-DDTHH:MM:SSZ) or from this day on (YYYY-MM-DD)")
+    actions = parser.add_subparsers(dest="action")
+    decide = actions.add_parser("decide", help="file one key decision: what and why, one line")
+    decide.add_argument("text")
+    add = actions.add_parser("add", help="file feedback items read from stdin")
+    add.add_argument("--role", required=True)
+    add.add_argument("--slug")
+    add.add_argument("--model")
+    change = actions.add_parser("set", help="set the status of an entry")
+    change.add_argument("id")
+    change.add_argument("status", choices=STATUSES)
+    change.add_argument("--pr")
+
+
+@command("feedback", "list or change the factory outbox: issues and decisions", args_feedback)
 def cmd_feedback(args):
     if args.since is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}Z)?", args.since):
         raise Fail(f"feedback: --since is YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD, got {args.since!r}")
@@ -1976,6 +2071,13 @@ def cmd_feedback(args):
     return 0
 
 
+def args_log(parser):
+    parser.add_argument("name", choices=("events", "retros", "reviews"))
+    parser.add_argument("--since", metavar="TS")
+    parser.add_argument("--until", metavar="TS")
+
+
+@command("log", "print stored events, retrospectives or kaizen reviews, oldest first", args_log)
 def cmd_log(args):
     for bound in (args.since, args.until):
         if bound is not None and not BOUND_RE.fullmatch(bound):
@@ -3161,6 +3263,12 @@ def report(repo, sent):
         print(f"{f['id']}  {f['criterion']}  {f['subject']}  {folded[f['id']]['decision'] or 'undecided'}")
 
 
+def args_health(parser):
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
+
+
+@command("health", "print the facts that fire right now (read-only)", args_health)
 def cmd_health(args):
     repo = Repo()
     p = gather(repo, args.dispatcher)
@@ -3346,6 +3454,19 @@ def ops_list(args):
     return 0
 
 
+def args_ops(parser):
+    actions = parser.add_subparsers(dest="action", required=True)
+    begin = actions.add_parser("start", help="the human starts a watch from a terminal")
+    begin.add_argument("name")
+    begin.add_argument("goal")
+    begin.add_argument("--every", required=True, metavar="DURATION", help="the gap between looks: 90s, 10m, 6h, 2d")
+    begin.add_argument("--until", required=True, metavar="DURATION|TIME", help="the hard end: a duration or a UTC time (2026-11-15T15:00:00Z)")
+    begin.add_argument("--budget", required=True, type=float, metavar="USD", help="what the looks may cost in all")
+    actions.add_parser("list", help="every watch in the store, newest first").add_argument("--json", action="store_true")
+    actions.add_parser("stop", help="stop a watch").add_argument("name")
+
+
+@command("ops", "a watch over a running system: start, list or stop (looks run on the watch tick)", args_ops)
 def cmd_ops(args):
     return {"start": ops_start, "list": ops_list, "stop": ops_stop}[args.action](args)
 
@@ -3483,6 +3604,11 @@ def ops_tick(repo):
                 print(f"ops watch {w.get('name')}: {why(e)}")
 
 
+def args_watch(parser):
+    parser.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
+
+
+@command("watch", "the scheduled tick: evaluate, log, and send what is new to the site manager", args_watch)
 def cmd_watch(args):
     """One scheduled tick at a time per repository: cron starts one every two minutes, whatever the last one still does.
     The lander's loop runs last, while a task is handed over or the human's word stands."""
@@ -3642,6 +3768,12 @@ def digest(p, criteria, by_hand):
         log_firing(repo, digest=[t["task"] for t in window(p)[0]])
 
 
+def args_digest(parser):
+    parser.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
+    parser.add_argument("--dry-run", action="store_true", help="print the findings; log nothing, start no model")
+
+
+@command("digest", "the site manager's digest of where the money goes, now rather than when due", args_digest)
 def cmd_digest(args):
     repo = Repo()
     criteria = job_criteria(load_criteria(), "digest")
@@ -3689,6 +3821,12 @@ def run_site_manager(p, send, job="watch", look=None):
         raise Fail(f"the site manager run failed ({rc}): {failed}", code=1)
 
 
+def args_firing(parser):
+    parser.add_argument("id")
+    parser.add_argument("action", choices=("acted", "ignored"))
+
+
+@command("firing", "record the outcome of an escalated firing (the dispatcher runs it)", args_firing)
 def cmd_firing(args):
     repo = Repo()
     f = find_firing(repo.root, args.id)
@@ -3699,6 +3837,14 @@ def cmd_firing(args):
     return 0
 
 
+def args_miss(parser):
+    parser.add_argument("text")
+    parser.add_argument("--slug")
+    parser.add_argument("--firing", help="the id of the firing that was suppressed or undecided")
+    parser.add_argument("--entry", help="the entry of the site manager's reference it should have been raised under (default: the firing's)")
+
+
+@command("miss", "record a problem the site manager did not escalate", args_miss)
 def cmd_miss(args):
     repo = Repo()
     if not args.text.strip():
@@ -3753,6 +3899,11 @@ def entry_scores(firings, misses):
     return scores
 
 
+def args_firings(parser):
+    parser.add_argument("--json", action="store_true")
+
+
+@command("firings", "the firing log with precision and recall, and the score per entry", args_firings)
 def cmd_firings(args):
     firings, misses = fold(repo_log("firings", Repo().root) or [])
     s = {**summarize(firings, misses), "entries": entry_scores(firings, misses)}
@@ -3802,6 +3953,7 @@ def pauses(repo):
     return found
 
 
+@command("pauses", "the churning tasks the queue paused: how long, for whom, and the send-backs around each")
 def cmd_pauses(args):
     found = pauses(Repo())
     for f in found:
@@ -4066,6 +4218,12 @@ def register_dispatcher(repo, sessions):
     return 0
 
 
+def args_dispatcher(parser):
+    parser.add_argument("--json", action="store_true")
+    parser.add_subparsers(dest="action").add_parser("register", help="make this session the repository's dispatcher")
+
+
+@command("dispatcher", "print the current session name of this repository's dispatcher (exit 1 when none)", args_dispatcher)
 def cmd_dispatcher(args):
     repo = Repo()
     sessions = list_sessions()
@@ -4084,6 +4242,11 @@ def cmd_dispatcher(args):
     return 0
 
 
+def args_schedule(parser):
+    parser.add_argument("action", choices=("install", "remove", "status"))
+
+
+@command("schedule", "install, remove or show the job that runs watch every 2 minutes", args_schedule)
 def cmd_schedule(args):
     repo = Repo()
     backend, label = scheduler(), job_label(repo.root)
@@ -4358,6 +4521,15 @@ def pull_main(repo):
         print(f"main checkout not updated: {(err or out).strip()}")
 
 
+def args_merge(parser):
+    parser.add_argument("prs", nargs="*", type=int, metavar="pr")
+    parser.add_argument("--all", action="store_true", help="every open pull request whose task is handed over")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--approved", action="store_true",
+                        help="merge only what GitHub's own records show approved (a review or an lgtm), read now")
+
+
+@command("merge", "merge handed-over pull requests that pass every check (no model takes part)", args_merge)
 def cmd_merge(args):
     if bool(args.prs) == args.all:
         raise Fail("merge: name pull request numbers or give --all, not both")
@@ -4922,6 +5094,7 @@ def act_git(path, *args, timeout=None):
                env={**os.environ, **exports} if exports else None)
 
 
+@command("env", "print shell exports that make git and gh act as the factory's App (nothing without one)")
 def cmd_env(args):
     """Print the exports that make git and gh act as the App; nothing when no identity applies. The token is
     masked when stdout is a terminal."""
@@ -5375,6 +5548,14 @@ WIZARD_STEPS = (
 )
 
 
+def args_wizard(parser):
+    parser.add_argument("--yes", action="store_true", help="accept every offer without asking")
+    parser.add_argument("--list", action="store_true", help="show each step and its state; change nothing")
+    parser.add_argument("--owner", help="the account or organization to create the App under (default: your own GitHub account)")
+    parser.add_argument("--name", help="the new App's name, 34 characters at most (default: isshoni-lander-<owner>)")
+
+
+@command("wizard", "set everything up, step by step; rerun to repair or finish", args_wizard)
 def cmd_wizard(args):
     if args.name and len(args.name) > APP_NAME_MAX:
         raise Fail(f"--name is {len(args.name)} characters: an App name is {APP_NAME_MAX} at most", 2)
@@ -5555,6 +5736,12 @@ UNINSTALL_STEPS = (("schedules", uninstall_schedules), ("GitHub App", uninstall_
                    ("home", uninstall_home), ("dashboard binary", uninstall_dashboard))
 
 
+def args_uninstall(parser):
+    parser.add_argument("--yes", action="store_true", help="confirm every removal without asking")
+    parser.add_argument("--list", action="store_true", help="show what each step would remove; change nothing")
+
+
+@command("uninstall", "remove what the wizard and the factory put on this machine", args_uninstall)
 def cmd_uninstall(args):
     left, failed = [], False
     for name, step in UNINSTALL_STEPS:
@@ -5634,6 +5821,12 @@ def commands_line(repo, path, branch):
     return f"The test command is {what}. The golden command is {golden or 'none'}."
 
 
+def args_commands(parser):
+    parser.add_argument("which", nargs="?", choices=("test", "golden"))
+    parser.add_argument("value", nargs="?", metavar="command|none", help="record it for this task; none: there is none")
+
+
+@command("commands", "state or print the test and golden commands of a task (a lead runs it in its worktree)", args_commands)
 def cmd_commands(args):
     """State or print the test and golden commands of the task whose worktree this is (a lead runs it)."""
     repo = Repo()
@@ -5771,6 +5964,13 @@ class Overlap:
         return "\n".join([f"overlap: {self.summary}", f"verdict: {'look' if self.look else 'safe'}", *self.quoted])
 
 
+def args_overlap(parser):
+    parser.add_argument("old_base")
+    parser.add_argument("old_head")
+    parser.add_argument("target")
+
+
+@command("overlap", "what a base and a task both changed, and whether anyone must look (run in the task worktree)", args_overlap)
 def cmd_overlap(args):
     print(Overlap(checked_out(lambda *a: run(["git", *a])), args.old_base, args.old_head, args.target).text())
     return 0
@@ -6020,6 +6220,12 @@ def land_candidates(repo):
     return found
 
 
+def args_land(parser):
+    parser.add_argument("slug", nargs="?")
+    parser.add_argument("--all", action="store_true", help="every handed-over task whose pull request conflicts or whose base merged")
+
+
+@command("land", "bring a handed-over task up to its base (a model takes part only on a conflict)", args_land)
 def cmd_land(args):
     if bool(args.slug) == args.all:
         raise Fail("land: name a task or give --all, not both")
@@ -6142,6 +6348,11 @@ def rerun_line(repo, n):
                   + (f" ({stop[1]})" if stop else "") + (f"; {refusal}" if refusal else ""))
 
 
+def args_rerun(parser):
+    parser.add_argument("pr", type=int)
+
+
+@command("rerun", "re-run the failed jobs of a pull request's red check once, when the failure looks like a flake", args_rerun)
 def cmd_rerun(args):
     try:
         started, line = rerun_line(Repo(), str(args.pr))
@@ -6468,6 +6679,14 @@ def tell_tech_lead(repo, args, slug, n, evidence, said, where):
     tell_lead(repo, args.dispatcher, slug, "TECH LEAD", line, f"factory: #{n} came back to {slug}")
 
 
+def args_tech_lead(parser):
+    parser.add_argument("slug")
+    parser.add_argument("pr", type=int)
+    parser.add_argument("evidence", help="one line: why it came back")
+    parser.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
+
+
+@command("tech-lead", "resolve a pull request that came back from the merge queue (a model takes part)", args_tech_lead)
 def cmd_tech_lead(args):
     """Resolve what came back from the merge queue as a tech lead session in the task's worktree, and act on what the
     scripted checks accept of its answer: see docs/factory.md. Once the run holds the lock, a failure of any step is a
@@ -6583,6 +6802,14 @@ def build_argv(repo, slug, spec, handover, note, settings, findings=()):
             "--append-system-prompt", BUILD_ROLE.read_text(), build_prompt(repo, slug, spec, handover, note, findings)]
 
 
+def args_build(parser):
+    parser.add_argument("slug")
+    parser.add_argument("--note", help="what changed since the last run: the lead's words to the tech lead")
+    parser.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
+    parser.add_argument("--run", action="store_true", help=argparse.SUPPRESS)
+
+
+@command("build", "start a tech lead on this task's build (a model takes part; run it in the task's worktree)", args_build)
 def cmd_build(args):
     """Start a tech lead on the build of the task whose worktree this is, detached; its `--run` half does the work: see
     docs/factory.md, "Team mode". Once the run holds the lock, a failure is a `stopped` record and a line to the lead."""
@@ -7061,6 +7288,14 @@ def watch_snapshot(repo, fallback, snap):
         sync_drafts(draft_picture(repo, snap), snap)
 
 
+def args_lander(parser):
+    parser.add_argument("prs", nargs="*", type=int, metavar="pr", help="merge these on the human's word as well as what GitHub shows approved")
+    parser.add_argument("--window", type=int, metavar="MINUTES",
+                        help="every handed-over pull request with green checks merges for this long (0 closes the window); the next tick starts it")
+    parser.add_argument("--dispatcher", help="the dispatcher's session name (old-style: the session name to look for when no registered session is running; default dispatcher-<repo directory>)")
+
+
+@command("lander", "merge every pull request that is ready, here and now; or record the human's word for a window", args_lander)
 def cmd_lander(args):
     """Record the human's word (a merge window, or numbers) and, for numbers or none, run the loop here."""
     repo = Repo()
@@ -7144,6 +7379,11 @@ def review_tick(repo):
         print(f"review: {why(e)}")
 
 
+def args_review(parser):
+    parser.add_argument("--run", action="store_true", help="run a review now, in the foreground, whether or not one is due")
+
+
+@command("review", "the kaizen review: say whether one is due and run it if so; --run skips the decision", args_review)
 def cmd_review(args):
     """The decision, in one line, and the review itself when it is due; `--run` runs without deciding."""
     repo, settings = Repo(), load_settings()
@@ -7347,141 +7587,12 @@ def review_run(repo, settings):
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog="factory", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
-    new = sub.add_parser("new", help="start a lead for a task")
-    new.add_argument("slug")
-    group = new.add_mutually_exclusive_group(required=True)
-    group.add_argument("--brief")
-    group.add_argument("--brief-file")
-    new.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
-    new.add_argument("--lead-model", help="the lead's model for this task instead of models.lead in the settings")
-    new.add_argument("--base", help="slug of an open task to stack this task on")
-    new.add_argument("--critical", action="store_true",
-                     help="use the slots held in reserve: the default branch is red, the factory is broken, "
-                          "or the human says so")
-    status = sub.add_parser("status", help="one row per task worktree")
-    status.add_argument("--json", action="store_true")
-    status.add_argument("--cached", action="store_true", help="never contact GitHub: pull requests come from the cache")
-    status.add_argument("--max-age", type=float, default=0, metavar="SECONDS",
-                        help="contact GitHub only when the cache is older than this or lacks a branch (default 0: always)")
-    clean = sub.add_parser("clean", help="remove finished tasks")
-    clean.add_argument("--dry-run", action="store_true")
-    state = sub.add_parser("state", help="declare the state of the task whose worktree this is (a lead runs it)")
-    state.add_argument("state", choices=STATES[:3])
-    state.add_argument("--paused", action="store_true", help="with blocked and slugs: the lander's pause of a churning task, released by the script when they land")
-    state.add_argument("deliverable", nargs="?", metavar="deliverable|whom",
-                       help="with handed-over: a link, or a path outside the worktree; with blocked: whom it waits on, "
-                            "human (default), dispatcher or the slug of another open task")
-    overrun = sub.add_parser("overrun", help="ask the site manager for more time, or help, on the task whose worktree this is (a lead runs it, once)")
-    overrun.add_argument("text", help="what is done, what is left, why it is slow, what you would do with more time")
-    commands = sub.add_parser("commands", help="state or print the test and golden commands of a task (a lead runs it in its worktree)")
-    commands.add_argument("which", nargs="?", choices=("test", "golden"))
-    commands.add_argument("value", nargs="?", metavar="command|none", help="record it for this task; none: there is none")
-    ack = sub.add_parser("ack", help="record the human's word on a task whose work was handed over")
-    ack.add_argument("slug")
-    ack.add_argument("state", choices=SETTLED)
-    sub.add_parser("hook", help="record one hook payload read from stdin (run by the plugin's hooks)")
-    sub.add_parser("ops-hook", help="gate and record the ops explorer's MCP calls from a hook payload on stdin (run by the plugin's hooks)")
-    retro = sub.add_parser("retro", help="store a lead retrospective (a JSON object on stdin, or in a file)")
-    retro.add_argument("file", nargs="?", help="read the JSON from this file instead of stdin")
-    sub.add_parser("env", help="print shell exports that make git and gh act as the factory's App (nothing without one)")
-    feedback = sub.add_parser("feedback", help="list or change the factory outbox: issues and decisions")
-    feedback.add_argument("--json", action="store_true")
-    feedback.add_argument("--status", choices=STATUSES)
-    feedback.add_argument("--kind", choices=("issue", "decision"))
-    feedback.add_argument("--since", help="only entries filed after this ts (YYYY-MM-DDTHH:MM:SSZ) or from this day on (YYYY-MM-DD)")
-    actions = feedback.add_subparsers(dest="action")
-    decide = actions.add_parser("decide", help="file one key decision: what and why, one line")
-    decide.add_argument("text")
-    add = actions.add_parser("add", help="file feedback items read from stdin")
-    add.add_argument("--role", required=True)
-    add.add_argument("--slug")
-    add.add_argument("--model")
-    change = actions.add_parser("set", help="set the status of an entry")
-    change.add_argument("id")
-    change.add_argument("status", choices=STATUSES)
-    change.add_argument("--pr")
-    review = sub.add_parser("review", help="the kaizen review: say whether one is due and run it if so; --run skips the decision")
-    review.add_argument("--run", action="store_true", help="run a review now, in the foreground, whether or not one is due")
-    show = sub.add_parser("log", help="print stored events, retrospectives or kaizen reviews, oldest first")
-    show.add_argument("name", choices=("events", "retros", "reviews"))
-    show.add_argument("--since", metavar="TS")
-    show.add_argument("--until", metavar="TS")
-    health = sub.add_parser("health", help="print the facts that fire right now (read-only)")
-    health.add_argument("--json", action="store_true")
-    health.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
-    watch = sub.add_parser("watch", help="the scheduled tick: evaluate, log, and send what is new to the site manager")
-    watch.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
-    ops = sub.add_parser("ops", help="a watch over a running system: start, list or stop (looks run on the watch tick)")
-    actions = ops.add_subparsers(dest="action", required=True)
-    begin = actions.add_parser("start", help="the human starts a watch from a terminal")
-    begin.add_argument("name")
-    begin.add_argument("goal")
-    begin.add_argument("--every", required=True, metavar="DURATION", help="the gap between looks: 90s, 10m, 6h, 2d")
-    begin.add_argument("--until", required=True, metavar="DURATION|TIME", help="the hard end: a duration or a UTC time (2026-11-15T15:00:00Z)")
-    begin.add_argument("--budget", required=True, type=float, metavar="USD", help="what the looks may cost in all")
-    actions.add_parser("list", help="every watch in the store, newest first").add_argument("--json", action="store_true")
-    actions.add_parser("stop", help="stop a watch").add_argument("name")
-    digest = sub.add_parser("digest", help="the site manager's digest of where the money goes, now rather than when due")
-    digest.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
-    digest.add_argument("--dry-run", action="store_true", help="print the findings; log nothing, start no model")
-    firing = sub.add_parser("firing", help="record the outcome of an escalated firing (the dispatcher runs it)")
-    firing.add_argument("id")
-    firing.add_argument("action", choices=("acted", "ignored"))
-    miss = sub.add_parser("miss", help="record a problem the site manager did not escalate")
-    miss.add_argument("text")
-    miss.add_argument("--slug")
-    miss.add_argument("--firing", help="the id of the firing that was suppressed or undecided")
-    miss.add_argument("--entry", help="the entry of the site manager's reference it should have been raised under (default: the firing's)")
-    firings = sub.add_parser("firings", help="the firing log with precision and recall, and the score per entry")
-    firings.add_argument("--json", action="store_true")
-    sub.add_parser("pauses", help="the churning tasks the queue paused: how long, for whom, and the send-backs around each")
-    merge = sub.add_parser("merge", help="merge handed-over pull requests that pass every check (no model takes part)")
-    merge.add_argument("prs", nargs="*", type=int, metavar="pr")
-    merge.add_argument("--all", action="store_true", help="every open pull request whose task is handed over")
-    merge.add_argument("--dry-run", action="store_true")
-    merge.add_argument("--approved", action="store_true",
-                       help="merge only what GitHub's own records show approved (a review or an lgtm), read now")
-    lander = sub.add_parser("lander", help="merge every pull request that is ready, here and now; or record the human's word for a window")
-    lander.add_argument("prs", nargs="*", type=int, metavar="pr", help="merge these on the human's word as well as what GitHub shows approved")
-    lander.add_argument("--window", type=int, metavar="MINUTES",
-                        help="every handed-over pull request with green checks merges for this long (0 closes the window); the next tick starts it")
-    lander.add_argument("--dispatcher", help="the dispatcher's session name (old-style: the session name to look for when no registered session is running; default dispatcher-<repo directory>)")
-    tech = sub.add_parser("tech-lead", help="resolve a pull request that came back from the merge queue (a model takes part)")
-    tech.add_argument("slug")
-    tech.add_argument("pr", type=int)
-    tech.add_argument("evidence", help="one line: why it came back")
-    tech.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
-    build = sub.add_parser("build", help="start a tech lead on this task's build (a model takes part; run it in the task's worktree)")
-    build.add_argument("slug")
-    build.add_argument("--note", help="what changed since the last run: the lead's words to the tech lead")
-    build.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
-    build.add_argument("--run", action="store_true", help=argparse.SUPPRESS)
-    land = sub.add_parser("land", help="bring a handed-over task up to its base (a model takes part only on a conflict)")
-    land.add_argument("slug", nargs="?")
-    land.add_argument("--all", action="store_true", help="every handed-over task whose pull request conflicts or whose base merged")
-    overlap = sub.add_parser("overlap", help="what a base and a task both changed, and whether anyone must look (run in the task worktree)")
-    overlap.add_argument("old_base")
-    overlap.add_argument("old_head")
-    overlap.add_argument("target")
-    rerun = sub.add_parser("rerun", help="re-run the failed jobs of a pull request's red check once, when the failure looks like a flake")
-    rerun.add_argument("pr", type=int)
-    schedule = sub.add_parser("schedule", help="install, remove or show the job that runs watch every 2 minutes")
-    schedule.add_argument("action", choices=("install", "remove", "status"))
-    dispatcher = sub.add_parser("dispatcher", help="print the current session name of this repository's dispatcher (exit 1 when none)")
-    dispatcher.add_argument("--json", action="store_true")
-    dispatcher.add_subparsers(dest="action").add_parser("register", help="make this session the repository's dispatcher")
-    settings = sub.add_parser("settings", help="change one line of the settings file in place")
-    settings.add_argument("action", choices=("set",))
-    settings.add_argument("key", help="table.key, e.g. models.coder")
-    settings.add_argument("value", help="a number, true or false, a model name, or a JSON list")
-    wizard = sub.add_parser("wizard", help="set everything up, step by step; rerun to repair or finish")
-    wizard.add_argument("--yes", action="store_true", help="accept every offer without asking")
-    wizard.add_argument("--list", action="store_true", help="show each step and its state; change nothing")
-    wizard.add_argument("--owner", help="the account or organization to create the App under (default: your own GitHub account)")
-    wizard.add_argument("--name", help="the new App's name, 34 characters at most (default: isshoni-lander-<owner>)")
-    uninstall = sub.add_parser("uninstall", help="remove what the wizard and the factory put on this machine")
-    uninstall.add_argument("--yes", action="store_true", help="confirm every removal without asking")
-    uninstall.add_argument("--list", action="store_true", help="show what each step would remove; change nothing")
+    listed = [n for n in COMMAND_ORDER if n in COMMANDS]
+    for name in listed + sorted(set(COMMANDS) - set(listed)):
+        help, options, _ = COMMANDS[name]
+        subparser = sub.add_parser(name, help=help)
+        if options:
+            options(subparser)
     return parser.parse_args(argv)
 
 
@@ -7503,12 +7614,7 @@ def main(argv=None):
             if args.cmd == "hook":
                 return 0
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
-        return {"new": cmd_new, "status": cmd_status, "clean": cmd_clean, "state": cmd_state, "overrun": cmd_overrun, "commands": cmd_commands, "ack": cmd_ack, "hook": cmd_hook, "ops-hook": cmd_ops_hook,
-                "retro": cmd_retro, "feedback": cmd_feedback, "log": cmd_log, "review": cmd_review, "health": cmd_health, "watch": cmd_watch,
-                "digest": cmd_digest, "ops": cmd_ops, "firing": cmd_firing, "miss": cmd_miss, "firings": cmd_firings, "pauses": cmd_pauses,
-                "merge": cmd_merge, "land": cmd_land, "overlap": cmd_overlap, "rerun": cmd_rerun, "lander": cmd_lander,
-                "tech-lead": cmd_tech_lead, "build": cmd_build, "schedule": cmd_schedule, "dispatcher": cmd_dispatcher,
-                "wizard": cmd_wizard, "uninstall": cmd_uninstall, "env": cmd_env, "settings": cmd_settings}[args.cmd](args)
+        return COMMANDS[args.cmd][2](args)
     except Fail as e:
         print(f"factory: {e}", file=sys.stderr)
         return e.code
