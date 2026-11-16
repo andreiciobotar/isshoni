@@ -2010,6 +2010,9 @@ def cmd_state(args):
     if args.state in ("working", "blocked"):
         to_draft(repo, task["branch"])
     print(f"{slug}: {args.state}")
+    if args.state == "handed-over":
+        for n, r in held_prs(read_lander(repo)).items():
+            print(f'The queue holds #{n} on {", ".join(r.get("tests", []))}: if this pull request fixes that, its body needs the line "Unblocks: #{n}".')
     return 0
 
 
@@ -2330,7 +2333,7 @@ GUIDANCE_PATH = PLUGIN_ROOT / "roles" / "site-manager-cases.md"
 SITE_MANAGER_TOOLS = (
     "Read", "Grep", "Glob", "SendMessage", "ToolSearch",
     "Bash(factory status)", "Bash(factory status *)", "Bash(factory health)", "Bash(factory health *)",
-    "Bash(factory log *)", "Bash(factory firings)", "Bash(factory firings *)",
+    "Bash(factory log *)", "Bash(factory firings)", "Bash(factory firings *)", "Bash(factory unblock *)",
     "Bash(factory feedback)", "Bash(factory feedback --json)",
     "Bash(ps *)", "Bash(pgrep *)",
     "Bash(gh pr view *)", "Bash(gh pr checks *)", "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(gh run list *)",
@@ -2705,10 +2708,51 @@ def model_matches(expected, actual):
     return e in ("", "inherit") or (e in ALIASES and e in actual.lower()) or e == re.sub(r"\[[^\]]*\]$", "", actual.lower())
 
 
-def c_ci_red_handover(p, _):
+def unblocks(body):
+    """The pull request numbers a line `Unblocks: #1, #2` of a pull request `body` names."""
+    return [int(m) for line in UNBLOCKS_RE.findall(body or "") for m in re.findall(r"\d+", line)]
+
+
+def hold_names(p):
+    """{pull request: the open pull requests whose body names it in an `Unblocks:` line}; NotEvaluated when gh cannot say."""
+    named = {}
+    for pr in p["gh"](list, "pr", "list", "--state", "open", "--limit", "100", "--json", "number,body"):
+        for m in unblocks(pr.get("body")):
+            named.setdefault(m, []).append(pr["number"])
+    return named
+
+
+def c_red_waiting(p, _):
+    held = held_prs(read_lander(p["repo"]))
+    named = hold_names(p) if held else {}
     found = []
+    for n, r in held.items():
+        minutes = int((p["now"] - (epoch(r.get("ts")) or p["now"])) // 60)
+        if minutes >= HOLD_GRACE_MINUTES and not named.get(int(n)):
+            found.append((r.get("slug"), f"#{n}", f"#{n} has waited {minutes} min on {', '.join(r.get('tests', []))} "
+                          f"({', '.join(r.get('checks', []))}), judged not its branch's; no open pull request names it "
+                          f"(\"Unblocks: #{n}\")"))
+    return found
+
+
+def waiting_body(p):
+    """The `waiting` of the watch body: {} with nothing held, else {"waiting": [{pr, slug, since, tests, named_by}]};
+    `named_by` is None when the open pull requests cannot be read."""
+    held = held_prs(read_lander(p["repo"]))
+    if not held:
+        return {}
+    try:
+        named = hold_names(p)
+    except NotEvaluated:
+        named = None
+    return {"waiting": [{"pr": int(n), "slug": r.get("slug"), "since": r.get("ts"), "tests": r.get("tests", []),
+                         "named_by": None if named is None else named.get(int(n), [])} for n, r in held.items()]}
+
+
+def c_ci_red_handover(p, _):
+    found, held = [], held_prs(read_lander(p["repo"]))
     for r in phased(p):
-        if r["phase"] == "review" and r["pr_url"]:
+        if r["phase"] == "review" and r["pr_url"] and r["pr_url"].rsplit("/", 1)[-1] not in held:
             try:
                 checks = p["gh"](list, "pr", "checks", r["pr_url"], "--json", "name,bucket")
             except NoJson as e:
@@ -2987,7 +3031,7 @@ FACTS = {  # what happened, which the script sees and fires, the watch's: name -
     "run-stopped": (c_run_stopped, True), "collision": (c_collision, True), "new-spec": (c_new_spec, True),
     "churning": (c_churning, True), "ended-undeclared": (c_ended_undeclared, True),
     "dispatcher-missing": (c_dispatcher_missing, False), "ci-red-default": (c_ci_red_default, False),
-    "ci-red-handover": (c_ci_red_handover, False), "base-merged": (c_base_merged, False),
+    "ci-red-handover": (c_ci_red_handover, False), "base-merged": (c_base_merged, False), "red-waiting": (c_red_waiting, False),
 }
 
 
@@ -3294,7 +3338,7 @@ def site_manager_argv(p, firings, job="watch", look=None):
     if job == "watch":
         look = look or look_picture(p, None, [], firings)
         body = {"since": look["since"], "woken_by": look["woken_by"], "firings": body, "tasks": look["tasks"],
-                "landed_median_usd": look["landed_median_usd"]}
+                "landed_median_usd": look["landed_median_usd"], **waiting_body(p)}
     else:
         current, baseline, last = window(p)
         body = {"window": {"current": [t["task"] for t in current], "baseline": len(baseline),
@@ -4761,12 +4805,14 @@ def checks_stop(p, n):
 
 def sync_drafts(p, prs):
     """Make the draft flag of each pull request of `prs` (the open ones) that belongs to a task follow its task:
-    ready exactly when handed over (as handover_reason says) with passing checks, else a draft. Changes no flag
-    for what it cannot read."""
+    ready exactly when handed over (as handover_reason says) and either its checks pass or it is held (its red check
+    is not its branch's: it stays ready, whichever of this and the queue's pass saw the red check first), else a
+    draft. Reads no checks of a held one. Changes no flag for what it cannot read."""
     try:
         phased(p)
     except NotEvaluated as e:
         return print(f"drafts not synced: {e}")
+    lander = read_lander(p["repo"])
     for pr in prs:
         row, n = task_of(p, pr), str(pr["number"])
         if pr["isCrossRepository"] or row is None or row["phase"] in ("settled", "merged"):
@@ -4775,12 +4821,13 @@ def sync_drafts(p, prs):
             print(f"#{n} draft flag not changed: its task's head cannot be read")
             continue
         why = handover_reason(p, pr)
-        try:
-            stop = None if why else checks_stop(p, n)
-        except NotEvaluated as e:
-            print(f"#{n} draft flag not changed: {e}")
-            continue
-        why = why or stop and stop[1]
+        if not why and not held_at(lander, pr):
+            try:
+                stop = checks_stop(p, n)
+            except NotEvaluated as e:
+                print(f"#{n} draft flag not changed: {e}")
+                continue
+            why = stop and stop[1]
         if (not why) != pr["isDraft"]:
             continue
         error = gh_step(p["repo"], "pr", "ready", n, *(["--undo"] if why else []))
@@ -6311,11 +6358,59 @@ def failing_tests(log):
     return names
 
 
-def rerun_line(repo, n):
-    """(whether a re-run started, the line to print after `#n `) for the failed checks of pull request `n`, as
-    docs/factory.md defines it. NotEvaluated when GitHub cannot be read."""
-    gh = lambda *args: gh_json(repo, *args)
+def test_files(repo, name, head):
+    """The files of `head` that define the test `name`; NotEvaluated when git grep fails."""
+    rc, found, err = repo.git("-c", "core.quotePath=false", "grep", "-l", "-E", rf"func {name}\(|def {name}\(", head)
+    if rc > 1:
+        raise NotEvaluated(f"git grep failed: {err.strip() or rc}")
+    return [l.partition(":")[2] for l in found.splitlines()]
+
+
+def failure_facts(repo, listed, pr, logs):
+    """What the failed checks `listed` of pull request `pr` (its `headRefName` and `baseRefName`) come to, for `rerun_line`
+    and `not_ours`: (runs: run id -> failed check names, tests: run id -> failing test names, head ref, files the branch
+    changes, found: test -> the files of the head that define it). `logs` (run id -> failing tests) keeps the failed log of
+    a run to one fetch. NotEvaluated says why not."""
+    runs = {}
+    for c in listed:
+        if c.get("bucket") == "fail":
+            link = RUN_LINK_RE.search(str(c.get("link")))
+            if not link:
+                raise NotEvaluated(f"{c.get('name')} is not an Actions run")
+            runs.setdefault(link[1], []).append(str(c.get("name")))
+    if not runs:
+        raise NotEvaluated("no failed check")
+    for run_id, names in runs.items():
+        if run_id not in logs:
+            rc, log, err = run(["gh", "run", "view", run_id, "--log-failed"], cwd=repo.root)
+            if rc != 0:
+                raise NotEvaluated(f"gh run view failed: {err.strip() or rc}")
+            logs[run_id] = failing_tests(log)
+        if not logs[run_id]:
+            raise NotEvaluated(f"no failing test could be named in {', '.join(names)}'s log")
+    head = f"{repo.remote}/{pr['headRefName']}"
+    if act_git(repo.root, "fetch", repo.remote)[0] != 0:
+        raise NotEvaluated(f"git fetch {repo.remote} failed")
     git = lambda *args: repo.git("-c", "core.quotePath=false", *args)
+    rc, fork, err = git("merge-base", f"{repo.remote}/{pr['baseRefName']}", head)
+    if rc != 0:
+        raise NotEvaluated(f"git merge-base failed: {err.strip() or rc}")
+    rc, diff, err = git("diff", "--name-only", fork.strip(), head)
+    if rc != 0:
+        raise NotEvaluated(f"git diff failed: {err.strip() or rc}")
+    tests, found = {r: logs[r] for r in runs}, {}
+    for name in sorted({t for names in tests.values() for t in names}):
+        found[name] = test_files(repo, name, head)
+        if not found[name]:
+            raise NotEvaluated(f"{name} was not found in the branch")
+    return runs, tests, head, diff.splitlines(), found
+
+
+def rerun_line(repo, n, logs=None, word=False):
+    """(whether a re-run started, the line to print after `#n `) for the failed checks of pull request `n`, as
+    docs/factory.md defines it. NotEvaluated when GitHub cannot be read. With `word` (the caller has the human's word for a pull request held as not
+    its branch's) the three flake conditions are skipped."""
+    gh = lambda *args: gh_json(repo, *args)
     no = lambda why: (False, f"no rerun: {why}")
     listed = gh(list, "pr", "checks", n, "--json", "name,bucket,link")
     if any(c.get("bucket") == "pending" for c in listed):
@@ -6323,62 +6418,35 @@ def rerun_line(repo, n):
     pr = gh(dict, "pr", "view", n, "--json", "state,headRefName,baseRefName")
     if pr.get("state") != "OPEN":
         return no("the pull request is not open")
-    runs = {}  # run id -> names of its failed checks
-    for c in listed:
-        if c.get("bucket") == "fail":
-            link = RUN_LINK_RE.search(str(c.get("link")))
-            if not link:
-                return no(f"{c.get('name')} is not an Actions run")
-            runs.setdefault(link[1], []).append(str(c.get("name")))
-    if not runs:
-        return no("no failed check")
-    tests = {}  # run id -> names of its failing tests
-    for run_id, names in runs.items():
-        rc, log, err = run(["gh", "run", "view", run_id, "--log-failed"], cwd=repo.root)
-        if rc != 0:
-            return no(f"gh run view failed: {err.strip() or rc}")
-        tests[run_id] = failing_tests(log)
-        if not tests[run_id]:
-            return no(f"no failing test could be named in {', '.join(names)}'s log")
-    base, head = pr["baseRefName"], f"{repo.remote}/{pr['headRefName']}"
-    if act_git(repo.root, "fetch", repo.remote)[0] != 0:
-        return no(f"git fetch {repo.remote} failed")
-    rc, fork, err = git("merge-base", f"{repo.remote}/{base}", head)
-    if rc != 0:
-        return no(f"git merge-base failed: {err.strip() or rc}")
-    rc, diff, err = git("diff", "--name-only", fork.strip(), head)
-    if rc != 0:
-        return no(f"git diff failed: {err.strip() or rc}")
-    changed = diff.splitlines()
+    try:
+        runs, tests, head, changed, found = failure_facts(repo, listed, pr, {} if logs is None else logs)
+    except NotEvaluated as e:
+        return no(e)
+    base = pr["baseRefName"]
     where, own = {}, []
-    for name in sorted({t for names in tests.values() for t in names}):
-        rc, found, err = git("grep", "-l", "-E", rf"func {name}\(|def {name}\(", head)
-        files = [l.partition(":")[2] for l in found.splitlines()]
-        if rc > 1:
-            return no(f"git grep failed: {err.strip() or rc}")
-        if not files:
-            return no(f"{name} was not found in the branch")
+    for name, files in found.items():
         touched = [f for f in files if any(os.path.dirname(c) == os.path.dirname(f) for c in changed)]
         where[name] = f"{name} ({(touched or files)[0]})"
         if touched:
             own.append(where[name])
-    if own:
-        return no(f"{', '.join(own)} is in what the branch changes")
-    rc, tip, err = repo.git("rev-parse", f"{repo.remote}/{base}")
-    if rc != 0:
-        return no(f"git rev-parse failed: {err.strip() or rc}")
-    tip = tip.strip()
-    green = {c["name"] for c in gh(dict, "api", f"repos/{{owner}}/{{repo}}/commits/{tip}/check-runs?per_page=100").get("check_runs", [])
-             if c.get("conclusion") == "success"}
-    for check in (c for checks in runs.values() for c in checks):
-        if check not in green:
-            return no(f"{check} is not green on {base}")
-    for run_id, names in tests.items():
-        attempt = gh(dict, "run", "view", run_id, "--json", "attempt").get("attempt")
-        if not isinstance(attempt, int):
-            return no("gh run view failed: no attempt in its answer")
-        if attempt > 1:
-            return no(f"already re-run once; looks like a flake: {', '.join(where[t] for t in names)}")
+    if not word:
+        if own:
+            return no(f"{', '.join(own)} is in what the branch changes")
+        rc, tip, err = repo.git("rev-parse", f"{repo.remote}/{base}")
+        if rc != 0:
+            return no(f"git rev-parse failed: {err.strip() or rc}")
+        tip = tip.strip()
+        green = {c["name"] for c in gh(dict, "api", f"repos/{{owner}}/{{repo}}/commits/{tip}/check-runs?per_page=100").get("check_runs", [])
+                 if c.get("conclusion") == "success"}
+        for check in (c for checks in runs.values() for c in checks):
+            if check not in green:
+                return no(f"{check} is not green on {base}")
+        for run_id, names in tests.items():
+            attempt = gh(dict, "run", "view", run_id, "--json", "attempt").get("attempt")
+            if not isinstance(attempt, int):
+                return no("gh run view failed: no attempt in its answer")
+            if attempt > 1:
+                return no(f"already re-run once; looks like a flake: {', '.join(where[t] for t in names)}")
     started, refusal = [], None
     for run_id, names in tests.items():
         rc, out, err = run(["gh", "run", "rerun", run_id, "--failed"], cwd=repo.root)
@@ -6391,11 +6459,13 @@ def rerun_line(repo, n):
         return no(refusal)
     checks, flake = ", ".join(c for r in started for c in runs[r]), ", ".join(where[t] for r in started for t in tests[r])
     with tempfile.NamedTemporaryFile("w", suffix=".md") as f:
-        f.write(f"Re-ran the failed jobs of {checks} once (by factory rerun): {flake} is outside what this branch changes, "
+        f.write(f"Re-ran the failed jobs of {checks} on the human's word (by factory rerun)." if word else
+                f"Re-ran the failed jobs of {checks} once (by factory rerun): {flake} is outside what this branch changes, "
                 f"and {checks} is green on {base} at {tip[:7]}.")
         f.flush()
         stop = gh_step(repo, "pr", "comment", n, "--body-file", f.name)
-    return True, (f"rerun: {checks}: {flake} is outside what the branch changes and {checks} is green on {base}; attempt 2 started"
+    return True, ((f"rerun: {checks}: attempt 2 started on the human's word" if word else
+                   f"rerun: {checks}: {flake} is outside what the branch changes and {checks} is green on {base}; attempt 2 started")
                   + (f" ({stop[1]})" if stop else "") + (f"; {refusal}" if refusal else ""))
 
 
@@ -6405,10 +6475,18 @@ def args_rerun(parser):
 
 @command("rerun", "re-run the failed jobs of a pull request's red check once, when the failure looks like a flake", args_rerun)
 def cmd_rerun(args):
+    repo = Repo()
     try:
-        started, line = rerun_line(Repo(), str(args.pr))
+        head = gh_json(repo, dict, "pr", "view", str(args.pr), "--json", "headRefOid").get("headRefOid")
+    except NotEvaluated:
+        head = None
+    hold = held_at(read_lander(repo), {"number": args.pr, "headRefOid": head})
+    try:
+        started, line = rerun_line(repo, str(args.pr), word=bool(hold))
     except NotEvaluated as e:
         started, line = False, f"no rerun: {e}"
+    if started and hold:
+        log_queue(repo, args.pr, hold.get("slug"), hold["head"], "rerun", by="word", text=line)
     print(f"#{args.pr} {line}")
     return 0 if started else 1
 
@@ -6419,7 +6497,12 @@ WORD_SECONDS = 3600
 WINDOW_MAX = 720
 POLL = 20
 # kind of a stop -> (patience in seconds before it is reported, whether it keeps the loop polling meanwhile, who is told)
-STOP_POLICY = {"pending": (1800, True, "dispatcher"), "handover": (600, False, "dispatcher"), "conflict": (0, False, "lead")}
+STOP_POLICY = {"pending": (1800, True, "dispatcher"), "handover": (600, False, "dispatcher"), "conflict": (0, False, "lead"),
+               "not-ours": (0, False, "dispatcher")}
+NOT_OURS_HOURS = 24
+NOT_OURS_RUNS = 5
+HOLD_GRACE_MINUTES = 30
+UNBLOCKS_RE = re.compile(r"^Unblocks: (#\d+(?:, #\d+)*)\s*$", re.M)
 
 
 def stop_policy(kind, reason):
@@ -6431,15 +6514,36 @@ def stop_policy(kind, reason):
 
 def read_lander(repo):
     """lander.json: the stops the loop has reported (`stopped`) and those still inside their patience (`waiting`),
-    each by pull request number, when health last ran, and the tasks the queue serves first (`prioritized`: slug to
-    since)."""
+    each by pull request number, when health last ran, the tasks the queue serves first (`prioritized`: slug to
+    since) and the pull requests released from a hold (`unblocked`: number to {by, ts})."""
     try:
         data = json.loads(repo_state(repo.root, "lander", "json").read_text())
     except (OSError, ValueError):
         data = None
     data = data if isinstance(data, dict) else {}
     return {"stopped": data.get("stopped") or {}, "waiting": data.get("waiting") or {}, "health": data.get("health") or 0,
-            "prioritized": data.get("prioritized") or {}}
+            "prioritized": data.get("prioritized") or {}, "unblocked": data.get("unblocked") or {}}
+
+
+def held_prs(state):
+    """{number: its stored stop} of the pull requests of lander.json `state` the queue holds as red for a reason not
+    their branch's (a `not-ours` stop, not released); the one record of holding."""
+    return {n: r for n, r in state["stopped"].items() if r.get("kind") == "not-ours" and n not in state["unblocked"]}
+
+
+def held_at(state, pr):
+    """The stored `not-ours` stop of `pr` while it is held at its current head, else None."""
+    old = held_prs(state).get(str(pr["number"]))
+    return old if old and old.get("head") == pr["headRefOid"] else None
+
+
+class Hold(str):
+    """The one line of a `not-ours` stop, with `extra` (the tests, checks and slug it names) kept beside it."""
+
+    def __new__(cls, line, **extra):
+        self = super().__new__(cls, line)
+        self.extra = extra
+        return self
 
 
 def write_json(path, data):
@@ -6541,18 +6645,72 @@ def held(state, stops):
     return found
 
 
-def after_red(repo, pr, stop):
+def after_red(repo, pr, stop, logs):
     """A failed-checks stop first asks `rerun_line` (once, in process): the stop becomes the polling `pending` when a re-run
-    started, else it carries the `no rerun: <why>` text after a `; `."""
+    started, else it carries the `no rerun: <why>` text after a `; `. With no re-run, a pull request not released from a hold
+    that `not_ours` judges not its branch's is held: the stop is `not-ours`."""
     if stop[0] != "ci" or not stop[1].startswith("failed or cancelled checks"):
         return stop
     try:
-        started, line = rerun_line(repo, str(pr["number"]))
+        started, line = rerun_line(repo, str(pr["number"]), logs)
     except NotEvaluated as e:
         started, line = False, f"no rerun: {e}"
     if started:
         log_queue(repo, pr["number"], task_slug(repo, pr), pr["headRefOid"], "rerun", text=line)
-    return ("pending", line) if started else (stop[0], f"{stop[1]}; {line}")
+        return "pending", line
+    if str(pr["number"]) not in read_lander(repo)["unblocked"] and (hold := not_ours(repo, pr, logs)):
+        return "not-ours", hold
+    return stop[0], f"{stop[1]}; {line}"
+
+
+def independent_failures(repo, pr, head):
+    """[(test, branch, sha7, run id)] of the tests that failed in attempt 1 of the newest NOT_OURS_RUNS workflow runs of the last
+    NOT_OURS_HOURS on another branch whose head shares nothing with `head` but the default branch; NotEvaluated when the
+    runs cannot be listed."""
+    default = f"{repo.remote}/{repo.default}"
+    runs = gh_json(repo, list, "run", "list", "--limit", "50", "--json", "databaseId,headBranch,headSha,createdAt,conclusion,attempt")
+    cutoff, found = time.time() - NOT_OURS_HOURS * 3600, []
+    recent = sorted((r for r in runs if (r.get("conclusion") == "failure" or (r.get("attempt") or 1) > 1)
+                    and (epoch(r.get("createdAt")) or 0) >= cutoff and r.get("headBranch") != pr["headRefName"]),
+                    key=lambda r: r["createdAt"], reverse=True)[:NOT_OURS_RUNS]
+    for r in recent:
+        rc, fork, _ = repo.git("merge-base", head, str(r.get("headSha")))
+        if rc != 0 or repo.git("merge-base", "--is-ancestor", fork.strip(), default)[0] != 0:
+            continue
+        rc, log, _ = run(["gh", "run", "view", str(r.get("databaseId")), "--attempt", "1", "--log-failed"], cwd=repo.root, timeout=GH_TIMEOUT)
+        if rc == 0:
+            found += [(t, r["headBranch"], str(r["headSha"])[:7], r["databaseId"]) for t in failing_tests(log)]
+    return found
+
+
+def not_ours(repo, pr, logs):
+    """The `Hold` line when the failed checks of `pr` are not its branch's, else None. Not its branch's: every failed check
+    is an Actions run whose log names failing tests, none of them in a file the branch changes, and each file that defines
+    one defines a test that also failed in attempt 1 on an independent head (`independent_failures`). Anything unreadable
+    or untrue gives None."""
+    try:
+        listed = gh_json(repo, list, "pr", "checks", str(pr["number"]), "--json", "name,bucket,link")
+        if any(c.get("bucket") == "cancel" for c in listed):
+            return None
+        runs, _, head, changed, found = failure_facts(repo, listed, pr, logs)
+        files = {f for names in found.values() for f in names}
+        if files & set(changed):
+            return None
+        proof = {}  # file -> the failure elsewhere that shows it defines a test that fails without this branch
+        for failure in independent_failures(repo, pr, head):
+            for f in test_files(repo, failure[0], head):
+                proof.setdefault(f, failure)
+    except NotEvaluated:
+        return None
+    if not files <= proof.keys():
+        return None
+    checks = [c for names in runs.values() for c in names]
+    named = ", ".join(f"{t} ({found[t][0]})" for t in found)
+    elsewhere = ", ".join(f"{t} on {b} at {sha} (run {i})" for t, b, sha, i in dict.fromkeys(proof[f] for f in sorted(files)))
+    return Hold(f"{', '.join(checks)}: {named} is outside what the branch changes and failed without it: {elsewhere}. It stays "
+                f"ready and approved and is not updated until a fix merges. The human decides: factory rerun {pr['number']}, or a fix "
+                f"task whose pull request body has the line \"Unblocks: #{pr['number']}\"",
+                tests=list(found), checks=checks, slug=task_slug(repo, pr))
 
 
 def evidence(repo, n, kind, line):
@@ -7037,8 +7195,11 @@ def report_stop(repo, fallback, pr, kind, line):
         to = send_back(repo, fallback, pr, slug, evidence(repo, n, kind, line))
     else:
         to = forward(repo, fallback, slug, "LANDER", f"#{n} stopped {kind}: {line}", lead=False)
+    held = {k: v for k, v in getattr(line, "extra", {}).items() if k in ("tests", "checks")}
     log_queue(repo, n, slug, pr["headRefOid"], "sent-back" if sent_back else "stopped", kind=kind, text=line, told=to or "human",
-              **files)
+              **files, **held)
+    if kind == "not-ours" and (failed := gh_step(repo, "pr", "comment", str(n), "--body", f"Merge queue: held, not sent back: {line}")):
+        print(f"#{n} comment not posted: {failed[1]}")
     if to:
         log_firing(repo, id=firing["id"], decision="escalated", by="lander", reason=f"reported by the lander to the {to}")
     else:
@@ -7059,6 +7220,8 @@ def settle(repo, fallback, stops):
     `handover` of a pull request already sent back at this head (its task is working) stays quiet."""
     state, waiting, stopped, news = read_lander(repo), {}, {}, []
     for n, (pr, kind, line) in stops.items():
+        if kind == "not-ours" and str(n) in state["unblocked"]:  # released while the pass ran
+            continue
         since, head = waiting_since(state, n, pr, kind), pr["headRefOid"]
         old = state["stopped"].get(str(n)) or {}
         if kind == "handover" and old.get("head") == head or (old.get("head"), old.get("kind")) == (head, kind):
@@ -7066,7 +7229,7 @@ def settle(repo, fallback, stops):
         elif time.time() - since < max(stop_policy(kind, line)[0], CHURN_PATIENCE if awaits_decision(repo, pr, kind) else 0):
             waiting[str(n)] = {"head": head, "kind": kind, "since": since}
         else:
-            stopped[str(n)] = {"head": head, "kind": kind, "text": line, "ts": now()}
+            stopped[str(n)] = {"head": head, "kind": kind, "text": line, "ts": now(), **getattr(line, "extra", {})}
             news.append((pr, kind, line))
     write_lander(repo, {**state, "waiting": waiting, "stopped": stopped})
     for new in news:
@@ -7252,7 +7415,9 @@ def lander_pass(repo, fallback, p, snap, line, updated):
     At most one pull request is brought up to date, and none while another waits for its checks; `updated` keeps the
     tip of the default branch each one was updated against. A handed-over pull request in no queue is only checked,
     read-only, for a conflict."""
-    stops, behind = {}, []
+    stops, behind, logs, state = {}, [], {}, read_lander(repo)
+    if gone := state["unblocked"].keys() - {str(pr["number"]) for pr in snap}:
+        write_lander(repo, {**state, "unblocked": {n: r for n, r in state["unblocked"].items() if n not in gone}})
     for pr, permission in line:
         stop = attempt(repo, p, pr, permission)
         if stop is None:
@@ -7260,11 +7425,14 @@ def lander_pass(repo, fallback, p, snap, line, updated):
             end_priority(repo, task_slug(repo, pr), "merged")
             run_clean()
             pull_main(repo)
+            release_named(repo, pr, snap)
             return True, stops, set()
-        if stop[0] in ("behind", "conflict"):
+        if (old := held_at(state, pr)) and stop[0] == "ci" and stop[1].startswith("failed or cancelled checks"):
+            stops[pr["number"]] = (pr, "not-ours", old["text"])
+        elif stop[0] in ("behind", "conflict"):
             behind.append((pr, stop[0]))
         else:
-            stops[pr["number"]] = (pr, *after_red(repo, pr, stop))
+            stops[pr["number"]] = (pr, *after_red(repo, pr, stop, logs))
     queued, declared = {pr["number"] for pr, _ in line}, read_tasks(repo.root)
     for pr in snap:
         if pr["number"] not in queued and pr["baseRefName"] == repo.default \
@@ -7276,6 +7444,9 @@ def lander_pass(repo, fallback, p, snap, line, updated):
         n, files = pr["number"], conflicting_files(repo, pr)
         if files:  # told at once, whether or not another waits: no update, no CI run
             stops[n] = (pr, "conflict", f"conflicts with {repo.default} in {', '.join(files)}")
+            continue
+        if (old := held_at(state, pr)) and kind == "behind" and still_red(p, n):
+            stops[n] = (pr, "not-ours", old["text"])
             continue
         if flight:
             continue
@@ -7290,6 +7461,39 @@ def lander_pass(repo, fallback, p, snap, line, updated):
             flight.add(n)
     settle(repo, fallback, stops)
     return False, stops, flight
+
+
+def still_red(p, n):
+    """Whether the checks of pull request `n` are failed, or cannot be read."""
+    try:
+        stop = checks_stop(p, str(n))
+    except NotEvaluated:
+        return True
+    return bool(stop) and stop[0] == "ci" and stop[1].startswith("failed or cancelled checks")
+
+
+def unblock(repo, pr, by):
+    """Release pull request `pr` from its hold: `unblocked` in lander.json (a red check on it now goes back to its task), the
+    hold dropped, a queue row `unblocked`. The branch is updated at its turn by the queue."""
+    state, n = read_lander(repo), str(pr["number"])
+    state["unblocked"][n] = {"by": by, "ts": now()}
+    if state["stopped"].get(n, {}).get("kind") == "not-ours":
+        del state["stopped"][n]
+    write_lander(repo, state)
+    log_queue(repo, pr["number"], task_slug(repo, pr), pr["headRefOid"], "unblocked", by=by)
+
+
+def release_named(repo, pr, snap):
+    """After pull request `pr` merged: unblock each open pull request of `snap` that a line `Unblocks: #<n>, #<m>` of its body
+    names. A body that cannot be read is printed and stops nothing."""
+    try:
+        body = gh_json(repo, dict, "pr", "view", str(pr["number"]), "--json", "body").get("body")
+    except NotEvaluated as e:
+        return print(f"#{pr['number']} body not read: {e}")
+    for other in snap:
+        if other["number"] in unblocks(body) and other["number"] != pr["number"]:
+            unblock(repo, other, f"#{pr['number']}")
+            print(f"#{other['number']} unblocked by #{pr['number']}")
 
 
 def wait(p, flight, deadline):
@@ -7426,6 +7630,25 @@ def cmd_lander(args):
                   + (f" ({joined} {'is' if len(set(args.prs)) == 1 else 'are'} now in its queue)" if args.prs else ""))
             return 0
         return 1 if drain(repo, args.dispatcher) else 0
+
+
+def args_unblock(parser):
+    parser.add_argument("pr", type=int)
+    parser.add_argument("--by", default="word", help="who or what released it: a pull request (#12), or why (default: word)")
+
+
+@command("unblock", "release a pull request the queue holds as red for a reason not its branch's", args_unblock)
+def cmd_unblock(args):
+    repo = Repo()
+    try:
+        pr = next((pr for pr in snapshot(repo) if pr["number"] == args.pr), None)
+    except NotEvaluated as e:
+        raise Fail(f"unblock: {e}", code=1)
+    if pr is None:
+        raise Fail(f"unblock: #{args.pr} is not an open pull request; nothing done", code=1)
+    unblock(repo, pr, args.by)
+    print(f"#{args.pr} unblocked: the queue updates it at its turn; a red check on it now goes back to its task")
+    return 0
 
 
 # ---- kaizen review ----------------------------------------------------------
