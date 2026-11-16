@@ -1,4 +1,4 @@
-.PHONY: install up build test fmt-check fmt golden test-factory test-python test-go wizard wizard-remote uninstall uninstall-remote snapshot screenshot strip pictures clean FORCE
+.PHONY: install up build test modules fmt-check fmt golden test-factory test-python test-go wizard wizard-remote uninstall uninstall-remote snapshot screenshot strip pictures clean FORCE
 
 BIN := bin/isshoni-tui
 VIEW ?= dashboard
@@ -44,10 +44,14 @@ NOLEFT := python3 tools/noleft.py
 GOTESTFLAGS ?=
 test: fmt-check test-factory test-python test-go
 
-test-python:
+# The one place the tests reach the network: the Go modules, fetched once, up to 3 attempts, before any test that needs them.
+modules:
+	@for i in 1 2 3; do go mod download && exit 0; sleep 2; done; echo "network: go mod download failed 3 times; not caused by this change" >&2; exit 1
+
+test-python: modules
 	$(NOLEFT) python3 -m unittest discover -s tests
 
-test-go:
+test-go: modules
 	go vet ./...
 	$(NOLEFT) go test $(GOTESTFLAGS) ./...
 
