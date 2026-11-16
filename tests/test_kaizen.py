@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest import mock
 
 from tests.support import AGENTS, PRICES_PATH, ROOT
@@ -1203,7 +1204,7 @@ class GhTests(unittest.TestCase):
     def test_slow_and_failed_calls_are_logged_and_fast_ones_are_not(self):
         self.gh(reply())
         self.assertEqual(self.logged(), [])
-        with mock.patch.object(kaizen.time, "monotonic", side_effect=[0, 3.5]):
+        with mock.patch.object(kaizen, "time", SimpleNamespace(**{**vars(time), "monotonic": mock.Mock(side_effect=[0, 3.5])})):
             self.gh(reply())
         (slow,) = self.logged()
         self.assertEqual((slow["rc"], slow["seconds"], slow["error"], slow["cwd"], slow["argv"][:2]), (0, 3.5, "", ROOT, ["gh", "api"]))

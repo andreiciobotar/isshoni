@@ -135,7 +135,7 @@ class Scratch(Harness):
             if call[-1].startswith("Job:"):
                 sent = json.loads(call[-1].partition("\n\n")[2])["firings"]
                 return reply([{"id": f["id"], "decision": decision, "reason": reason, "looked": ["git diff"],
-                               **({"tell": tell or [f["slug"]]} if decision == "told" else {})} for f in sent])
+                               **({"tell": [f["slug"]] if tell is None else tell} if decision == "told" else {})} for f in sent])
             return 0, json.dumps({"result": "sent"}), ""
         self.answer = answer
 
@@ -255,6 +255,7 @@ class CollisionTests(Scratch):
         self.commit("beta", "f.txt", lines(BODY, 5, "from b"))
         for tell in (["zzz"], [], ["alpha", "zzz"]):
             self.sees(tell=tell)
+            factory.write_lander(SimpleNamespace(root=self.root), {"health": 0})  # a full pass sends the open firing again
             self.tick()
         self.assertEqual([r for r in self.records() if "decision" in r], [])
         self.assertEqual(len(self.fired()), 1)  # undecided: it comes back on a full pass, as today
