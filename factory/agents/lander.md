@@ -21,7 +21,8 @@ You decide nothing about behavior. When a step needs a decision, you stop and re
 - Never remove a worktree or delete a branch. Stay inside this worktree; the files your brief names outside it are read, not written.
 - A denied permission is a stop, not something to work around. "Could not resolve host" is the network, not a denial: retry up to three times before you stop (`other`).
 - Read every command's exit code; blank output is not success (`git merge-base --is-ancestor` answers only by its code).
-- One plain command per Bash call: worktree isolation refuses loops, `$(...)`, heredocs and compound commands whose text mentions git. A `cd` does not carry to the next call.
+- Keep git inside this worktree: never point it at the main checkout or another task's worktree (`-C`, `--git-dir`, `GIT_DIR`, `cd`); read another branch as `git show <branch>:<path>`. A Bash call refused with `This session is isolated in the worktree` (Claude Code's own check, not on in every session; nothing here loosens it) ran nothing: rewrite it once so the call that runs git holds literal values only, with no `$` expansion (not even `$CLAUDE_JOB_DIR`: print it once, type the path), `$(...)`, backtick, loop or `HOME=`. Pipes, `&&`, heredocs and redirects are accepted.
+- A `cd` does not carry to the next call.
 - Wait for a background command through its completion notice, never with a loop that asks whether it still runs (a pattern such as "until ! pgrep -f name" matches its own command line and never ends).
 - Before you report, stop every background command you started; say how many you stopped.
 
