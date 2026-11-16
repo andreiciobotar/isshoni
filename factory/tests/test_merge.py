@@ -437,17 +437,51 @@ class ApprovedTests(World):
                 _, out, _ = self.refused("REVIEW_REQUIRED", state)
                 self.assertIn(f"{factory.REFUSED}a review is still required (reviewDecision REVIEW_REQUIRED); gh pr merge 1", out)
 
-    def test_any_other_answer_leaves_the_refusal_as_it_is(self):
-        raw_line = "#1 stopped: gh pr merge 1 --merge --match-head-commit sha-1: base branch policy prohibits the merge\n"
+    def test_a_refusal_no_record_explains_is_kind_refused_and_says_what_was_read(self):
         view = ("gh", "pr", "view", "1", "--json", "reviewDecision,mergeStateStatus")
-        for label, decision, extra in (("empty", "", {}), ("absent", None, {}), ("approved", "APPROVED", {}),
-                                       ("unreadable", "", {view: (1, "", "boom")})):
+        for label, decision, seen, extra in (
+                ("empty", "", "reviewDecision none, mergeStateStatus BLOCKED, checks passed", {}),
+                ("absent", None, "reviewDecision none, mergeStateStatus BLOCKED, checks passed", {}),
+                ("approved", "APPROVED", "reviewDecision APPROVED, mergeStateStatus BLOCKED, checks passed", {}),
+                ("view unreadable", "", "reviewDecision unreadable, mergeStateStatus unreadable, checks passed", {view: (1, "", "boom")}),
+                ("checks unreadable", "APPROVED", "reviewDecision APPROVED, mergeStateStatus BLOCKED, checks unreadable",
+                 {("gh", "pr", "checks", "1"): [raw(GREEN), (1, "", "boom")]})):
             with self.subTest(label):
                 self.setUp()
                 code, out, _ = self.refused(decision, extra=extra)
                 self.assertEqual(code, 1)
-                self.assertIn(raw_line, out)
+                self.assertIn(f"#1 stopped: GitHub refused the merge and nothing it shows explains why ({seen}); "
+                              "gh pr merge 1 --merge --match-head-commit sha-1: base branch policy prohibits the merge\n", out)
                 self.assertNotIn(factory.REFUSED, out)
+
+    def test_an_unexplained_refusal_after_a_retarget_says_the_base_was_changed(self):
+        merged = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
+        _, out, _ = self.approved([pr(2, base="worktree-t1")], {2: [comment(n=2)]}, extra={
+            ("gh", "pr", "list", "--head", "worktree-t1"): merged,
+            ("gh", "pr", "merge"): (1, "", "base branch policy prohibits the merge"),
+            ("gh", "pr", "view", "2", "--json", "reviewDecision,mergeStateStatus"): raw(
+                {"reviewDecision": "APPROVED", "mergeStateStatus": "CLEAN"})})
+        self.assertIn("#2 stopped: GitHub refused the merge and nothing it shows explains why (reviewDecision APPROVED, "
+                      "mergeStateStatus CLEAN, checks passed); its base was changed to main in this pass, which can start a "
+                      "required check again; gh pr merge 2 --merge", out)
+
+    def test_a_refusal_while_a_check_runs_again_is_kind_pending_with_its_start(self):
+        again = [{"name": "test", "bucket": "pass"}, {"name": "lint", "bucket": "pending", "startedAt": "2026-01-02T03:04:05Z"}]
+        for retarget, after in ((False, ""), (True, ", after its base was changed to main in this pass")):
+            with self.subTest(retarget=retarget):
+                self.setUp()
+                merged = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
+                n = 2 if retarget else 1
+                extra = {("gh", "pr", "merge"): (1, "", "base branch policy prohibits the merge"),
+                         ("gh", "pr", "checks", str(n)): [raw(GREEN), raw(again)],
+                         ("gh", "pr", "view", str(n), "--json", "reviewDecision,mergeStateStatus"): raw(
+                             {"reviewDecision": "APPROVED", "mergeStateStatus": "CLEAN"})}
+                if retarget:
+                    extra[("gh", "pr", "list", "--head", "worktree-t1")] = merged
+                code, out, _ = self.approved([pr(n, base="worktree-t1" if retarget else "main")], {n: [comment(n=n)]}, extra=extra)
+                self.assertEqual(code, 1)
+                self.assertIn(f"#{n} stopped: GitHub refused the merge while a check ran again on this head: "
+                              f"lint (started 2026-01-02T03:04:05Z){after}; gh pr merge {n} --merge", out)
 
     def test_a_human_authors_own_lgtm_is_refused_for_a_review_and_nothing_is_read_before_a_merge_that_succeeds(self):
         code, out, _ = self.refused("REVIEW_REQUIRED")

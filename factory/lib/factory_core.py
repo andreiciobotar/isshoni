@@ -4704,19 +4704,31 @@ def mergeability(p, n):
     return None
 
 
-def refusal(p, n, stop):
-    """`stop`, the failed `gh pr merge` step of pull request `n`, with its reason in words when GitHub's
-    `reviewDecision` names a review requirement; else unchanged."""
-    try:
-        view = p["gh"](dict, "pr", "view", n, "--json", "reviewDecision,mergeStateStatus")
-    except NotEvaluated:
-        return stop
-    what = {"REVIEW_REQUIRED": "a review is still required", "CHANGES_REQUESTED": "a reviewer requested changes"}.get(
-        view.get("reviewDecision"))
-    if not what:
-        return stop
-    state = f", mergeStateStatus {view['mergeStateStatus']}" if view.get("mergeStateStatus") else ""
-    return stop[0], f"{REFUSED}{what} (reviewDecision {view['reviewDecision']}{state}); {stop[1]}"
+def refusal(p, n, stop, retarget):
+    """`stop`, the failed `gh pr merge` step of pull request `n`, with what GitHub's records say explains it: a review
+    requirement (kind `merge`), a check that started again (kind `pending`), else that nothing does (kind `refused`).
+    `retarget`: this call changed its base."""
+    def read(*argv):
+        try:
+            return p["gh"](*argv)
+        except NotEvaluated:
+            return None
+    view = read(dict, "pr", "view", n, "--json", "reviewDecision,mergeStateStatus")
+    decision, state = (view or {}).get("reviewDecision"), (view or {}).get("mergeStateStatus")
+    what = {"REVIEW_REQUIRED": "a review is still required", "CHANGES_REQUESTED": "a reviewer requested changes"}.get(decision)
+    if what:
+        return stop[0], f"{REFUSED}{what} (reviewDecision {decision}{f', mergeStateStatus {state}' if state else ''}); {stop[1]}"
+    checks = read(list, "pr", "checks", n, "--json", "name,bucket,startedAt")
+    running = [f"{c.get('name')} (started {c.get('startedAt')})" for c in checks or [] if c.get("bucket") == "pending"]
+    default = p["repo"].default
+    if running:
+        after = f", after its base was changed to {default} in this pass" if retarget else ""
+        return "pending", f"GitHub refused the merge while a check ran again on this head: {', '.join(running)}{after}; {stop[1]}"
+    seen = ("reviewDecision unreadable, mergeStateStatus unreadable" if view is None
+            else f"reviewDecision {decision or 'none'}, mergeStateStatus {state or 'none'}")
+    after = f"; its base was changed to {default} in this pass, which can start a required check again" if retarget else ""
+    return "refused", (f"GitHub refused the merge and nothing it shows explains why ({seen}, "
+                       f"checks {'unreadable' if checks is None else 'passed'}){after}; {stop[1]}")
 
 
 def checks_stop(p, n):
@@ -4827,7 +4839,7 @@ def merge_one(p, pr, merged, dry, permission=None):
                  ["pr", "merge", n, "--merge", "--match-head-commit", pr["headRefOid"]]]:
         stop = gh_step(repo, *step)
         if stop:
-            return refusal(p, n, stop) if step[1] == "merge" else stop
+            return refusal(p, n, stop, retarget) if step[1] == "merge" else stop
     log_queue(repo, pr["number"], task_slug(repo, pr), pr["headRefOid"], "merged", approved_at=approved_at)
     return None
 
@@ -6297,7 +6309,10 @@ WORD_SECONDS = 3600
 WINDOW_MAX = 720
 POLL = 20
 # kind of a stop -> (patience in seconds before it is reported, whether it keeps the loop polling meanwhile, who is told)
-STOP_POLICY = {"pending": (1800, True, "dispatcher"), "handover": (600, False, "dispatcher"), "conflict": (0, False, "lead")}
+# `refused`: GitHub refused a merge and nothing it shows says why. `settle` keeps the first one of a head in `waiting` (nothing
+# told: the next pass calls merge again), a second at the same head is told once, no tech lead.
+STOP_POLICY = {"pending": (1800, True, "dispatcher"), "handover": (600, False, "dispatcher"), "conflict": (0, False, "lead"),
+               "refused": (1, False, "dispatcher")}
 
 
 def stop_policy(kind, reason):
