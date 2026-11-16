@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import DISPATCHER, ROOT, WT, factory
-from test_health import HOUR, NOW, Harness, choice, ev, fired, iso, lead, pic, reply, row
+from test_health import HOUR, NOW, SID, Harness, choice, ev, fired, iso, lead, pic, reply, row
 
 DISPATCHER_NAME = DISPATCHER | {"name": "dispatcher-repo"}
 STARTED = NOW - 130 * 60  # the lead is 10 minutes past its 2 h limit
@@ -138,32 +138,42 @@ class IdleLeadTests(Overrun):
             ("dispatcher-repo", "PAUSED: x: paused by the site manager, for the human: the human decides")])
         self.assertEqual(self.told(), ["lead"])
 
-    def test_a_lead_without_a_process_leaves_one_line_for_the_dispatcher(self):
+    def retired(self, resume):
+        """A watch tick that extends the limit of a lead the harness retired; `resume` is what `claude --bg --resume` answers."""
         self.ask()
-        gone = {k: v for k, v in self.idle_lead().items() if k not in ("pid", "status")} | {"cwd": ROOT}
+        gone = {k: v for k, v in self.idle_lead().items() if k not in ("pid", "status")} | {"cwd": ROOT, "id": "ab"}
         self.sessions = [DISPATCHER_NAME, gone]
-        self.watch({"decision": "extended", "minutes": 20, "reason": "landing left"}, deaf=["x"])
-        self.assertEqual(self.lines(), [
-            ("x", f"SITE MANAGER: x: extended 20 min, limit now {clock(STARTED + 140 * 60)}: landing left"),
-            ("dispatcher-repo", f"SITE MANAGER: x (not delivered to its lead): extended 20 min, limit now "
-                                f"{clock(STARTED + 140 * 60)}: landing left")])
-        self.assertEqual(self.told(), ["dispatcher"])
+        self.cli("watch", answers={**self.decide({"decision": "extended", "minutes": 20, "reason": "landing left"}),
+                                   ("claude", "--bg", "--resume"): resume})
+        return [c for c in self.fake.calls if c[:3] == ["claude", "--bg", "--resume"]]
+
+    def test_a_retired_lead_is_resumed_with_the_line_and_the_dispatcher_hears_the_extension(self):
+        until = clock(STARTED + 140 * 60)
+        [resume] = self.retired((0, "backgrounded · ab · x\n", ""))
+        self.assertEqual(resume, ["claude", "--bg", "--resume", SID, f"SITE MANAGER: x: extended 20 min, limit now {until}: landing left"])
+        self.assertEqual(self.lines(), [("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {until}, no answer needed: landing left")])
+        self.assertEqual(self.told(), ["lead"])
+
+    def test_a_retired_lead_that_cannot_be_resumed_is_queued_and_the_dispatcher_hears_nothing_yet(self):
+        self.assertEqual(len(self.retired((1, "", "boom"))), 1)
+        self.assertEqual((self.lines(), self.told()), ([], ["queued"]))
 
     def test_nobody_reached_is_recorded(self):
         self.ask()
         self.watch({"decision": "extended", "minutes": 20, "reason": "landing left"}, deaf=["x", "dispatcher-repo"])
         self.assertEqual(self.lines(), [
             ("x", f"SITE MANAGER: x: extended 20 min, limit now {clock(STARTED + 140 * 60)}: landing left"),
-            ("dispatcher-repo", f"SITE MANAGER: x (not delivered to its lead): extended 20 min, limit now "
+            ("dispatcher-repo", f"SITE MANAGER: x (not delivered to its lead: no such session): extended 20 min, limit now "
                                 f"{clock(STARTED + 140 * 60)}: landing left")])
         self.assertEqual(self.told(), ["nobody"])
 
-    def test_task_lead_names_a_lead_with_a_process_idle_or_not(self):
+    def test_task_lead_names_a_lead_live_idle_or_retired(self):
         p = pic(rows=[], sessions=[self.idle_lead()])
         self.assertEqual(factory.task_lead(p, "x")[3], "x")
         self.assertEqual(factory.firing_for_run(p, fired("f1", criterion="overrun") | {"what": ""})["task"]["lead"], "x")
-        p = pic(rows=[], sessions=[{k: v for k, v in self.idle_lead().items() if k not in ("pid", "status")}])
-        self.assertIsNone(factory.task_lead(p, "x")[3])
+        p = pic(rows=[], sessions=[{k: v for k, v in self.idle_lead().items() if k not in ("pid", "status")} | {"cwd": ROOT}])
+        self.assertEqual(factory.task_lead(p, "x")[3], "x")
+        self.assertIsNone(factory.task_lead(pic(rows=[], sessions=[]), "x")[3])
 
 
 class BoundTests(Overrun):
@@ -209,7 +219,7 @@ class BoundTests(Overrun):
 
     def test_with_no_dispatcher_the_human_is_told_on_this_machine(self):
         self.ask()
-        self.sessions = [lead("x", startedAt=STARTED * 1000)]
+        self.sessions = [lead("x", pid=4242, startedAt=STARTED * 1000)]
         code, out, _ = self.watch()
         self.assertEqual(code, 0)
         self.assertEqual(self.runs(), [])
