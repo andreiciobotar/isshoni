@@ -1657,15 +1657,12 @@ def cmd_status(args):
     return 0
 
 
-def keep_reason(repo, row, rows, files=None):
-    return keep_rule(repo, row, rows, files)[0]
-
-
 def reported(row):
-    """A handed-over task with no pull request whose recorded deliverable is a file that exists: a report, over at hand-over."""
+    """A handed-over task with no pull request whose recorded deliverable is a file that exists outside its worktree:
+    a report, over at hand-over."""
     d = row["deliverable"]
     return (row["state"] == "handed-over" and row["pr_state"] == "none" and isinstance(d, str)
-            and not LINK_RE.match(d) and os.path.isfile(d))
+            and not LINK_RE.match(d) and not inside(d, row["path"]) and os.path.isfile(d))
 
 
 def keep_rule(repo, row, rows, files=None):
@@ -1764,7 +1761,7 @@ def clean_row(repo, row, rows, files, dry_run):
     "failed", why it was kept). A closed task's branch goes by `update-ref -d` at the head judged: its commits may live in
     another task's branch, which `branch -d` refuses, and a branch that moved since stays."""
     slug = row["slug"]
-    reason = keep_reason(repo, row, rows, files)
+    reason = keep_rule(repo, row, rows, files)[0]
     if not reason and not dry_run:
         sessions = list_sessions()
         if sessions is None:
@@ -2023,13 +2020,13 @@ ACK_REFUSED = {"open": "has an open pull request: its approval and merge end it,
 @command("ack", "record the human's word on a task whose work was handed over", args_ack)
 def cmd_ack(args):
     repo = Repo()
-    if not any(os.path.basename(t["path"]) == args.slug for t in repo.tasks):
+    task = next((t for t in repo.tasks if os.path.basename(t["path"]) == args.slug), None)
+    if task is None:
         raise Fail(f"ack: {args.slug} is not a task worktree")
     last = read_tasks(repo.root).get(args.slug, {})
     if last.get("state") not in ("handed-over", *SETTLED):
         raise Fail(f"ack: {args.slug} has not handed over its work")
-    branch = next(t["branch"] for t in repo.tasks if os.path.basename(t["path"]) == args.slug)
-    pr_state = pull_request(repo, branch)[0] if branch else "none"
+    pr_state = pull_request(repo, task["branch"])[0] if task["branch"] else "none"
     if pr_state in ACK_REFUSED:
         raise Fail(f"ack: {args.slug} {ACK_REFUSED[pr_state]}")
     declare(repo, args.slug, "dispatcher", args.state, last.get("deliverable"))
@@ -2537,7 +2534,7 @@ def c_merged_not_cleaned(p, _):
     for r in rows:
         if r["phase"] == "merged" or r["state"] in (*SETTLED, "closed") or reported(r):
             reason, elsewhere = keep_rule(repo, r, rows, files)
-            if reason and not elsewhere:
+            if reason and not elsewhere and not r["blocked"]:
                 found.append((r["slug"], r["slug"], f"kept: {reason}"))
     return found
 

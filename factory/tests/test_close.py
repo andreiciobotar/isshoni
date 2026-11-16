@@ -681,7 +681,7 @@ class OverTests(CloseBase):
         self.lead({**self.LEAD, "state": "done"})
         for deliverable, why in (("https://x/report", "no merged pull request (none)"),
                                  (str(self.root.parent / "gone.md"), "no merged pull request (none)"),
-                                 (str(self.wt / "a.txt"), "settled, but its deliverable is inside the worktree")):
+                                 (str(self.wt / "a.txt"), "no merged pull request (none)")):
             with self.subTest(deliverable):
                 self.declare("t1", "handed-over", deliverable=deliverable)
                 self.kept(why)
@@ -691,9 +691,10 @@ class OverTests(CloseBase):
         self.assertEqual(self.found(), [])  # clean removes it
         self.write(self.wt, "notes.txt", "mine\n")
         self.assertEqual(self.found(), [("t1", "t1", "kept: uncommitted changes")])
-        (self.wt / "notes.txt").unlink()
         self.lead({**self.LEAD, "status": "busy"})
-        self.assertEqual(self.found(), [])  # a session at work is somebody at work
+        self.assertEqual(self.found(), [])  # a session at work is somebody at work, dirty or not
+        (self.wt / "notes.txt").unlink()
+        self.assertEqual(self.found(), [])
         self.lead(self.LEAD)
         self.removed()
         self.assertEqual(self.found(), [])
