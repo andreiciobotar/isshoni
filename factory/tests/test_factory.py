@@ -1149,11 +1149,20 @@ class ReserveTests(unittest.TestCase):
         self.assertEqual(factory.reserve(5, 100), 4)
 
 
+class DeniedTests(unittest.TestCase):
+    def test_every_list_holds_the_push_patterns(self):
+        for name in ("ROLE_DENIED", "BUILD_DENIED", "LEAD_DENIED", "TECH_LEAD_DENIED"):
+            self.assertLessEqual(set(factory.PUSH_DENIED), set(getattr(factory, name)), name)
+
+    def test_build_and_lead_refuse_merge_and_review(self):
+        for name in ("BUILD_DENIED", "LEAD_DENIED"):
+            self.assertLessEqual({"Bash(gh pr merge*)", "Bash(gh pr review*)"}, set(getattr(factory, name)), name)
+
+
 class NewTests(unittest.TestCase):
     ARGS = ["new", "demo-task", "--brief", "do it", "--dispatcher", "d1"]
     OK = {("claude", "--bg"): (0, "backgrounded · 96dc4869 · demo-task\n", ""), ("git", "ls-remote"): (2, "", "")}
-    DENIED = ["Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
-              "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)"]
+    DENIED = list(factory.LEAD_DENIED)
 
     def answers(self, entries, sessions=(), *extras, dispatcher="d1"):
         return repo_answers(entries, [dict(DISPATCHER, name=dispatcher), *sessions], *extras)
