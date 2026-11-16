@@ -25,7 +25,7 @@ install:
 	@command -v go >/dev/null || { echo "isshoni: Go is missing. Install Go 1.27 or newer (https://go.dev/dl/ or your package manager), then run make install again." >&2; exit 1; }
 	@command -v python3 >/dev/null || { echo "isshoni: python3 is missing. Install Python 3.11 or newer (https://www.python.org/downloads/ or your package manager), then run make install again." >&2; exit 1; }
 	@python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "isshoni: Python 3.11 or newer is required. Install a newer one (https://www.python.org/downloads/ or your package manager)." >&2; exit 1; }
-	go mod download
+	$(MAKE) modules
 	$(MAKE) build
 	@if [ -n "$(CHROME)" ]; then echo "Chrome found: make screenshot is available."; else echo "Chrome or Chromium not found (optional): make screenshot needs one; install it or set CHROME=/path/to/chrome."; fi
 	@echo "Ready: run make up, or $(BIN)."
