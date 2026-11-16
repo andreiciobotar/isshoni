@@ -636,7 +636,7 @@ class WatchTests(Harness):
                                         "last_commit": "?", "dirty": None, "ahead": None, "behind": None,
                                         "pr_state": "none", "pr_url": "", "limit": "2h", "size": None,
                                         "nearing": False, "overtime": False,
-                                        "worktree": f"{WT}/x", "branch": "worktree-x", "lead": None, "pid": None})
+                                        "worktree": f"{WT}/x", "branch": "worktree-x", "lead": "x", "pid": None})
         self.assertEqual(sent["transcripts"], [str(path)])
         tail = sent["transcript_tail"]
         self.assertEqual(len(tail), 15)
@@ -1109,8 +1109,9 @@ class RoutingTests(Home):
     def logged(self, sent, *decisions, session=None, result_sent=True, run="r1", slug="x"):
         p = pic(rows=[row("x")], sessions=[DISPATCHER | {"name": "dispatcher-repo"}, *([session] if session else [])])
         firings = [{"id": "aaa", "slug": slug, **sent}]
-        with mock.patch.object(factory, "log_firing") as log:
+        with mock.patch.object(factory, "log_firing") as log, mock.patch.object(factory, "forward") as forward:
             factory.record_decisions(p, firings, {"sent": result_sent, "decisions": list(decisions)}, run)
+        self.forwarded = [c.args for c in forward.call_args_list]
         return [c.kwargs for c in log.call_args_list]
 
     def told_lead(self, **kw):
@@ -1120,6 +1121,13 @@ class RoutingTests(Home):
         [rec] = self.logged({}, self.told_lead(), session=lead("x", pid=4242))
         self.assertEqual(rec, {"id": "aaa", "decision": "escalated", "reason": "because", "by": "site-manager",
                                "run": "r1", "looked": ["ps -ax"], "to": "lead"})
+
+    def test_the_script_sends_a_lead_message_live_or_retired_with_the_reason_as_its_text(self):
+        for session in (lead("x", pid=4242), lead("x", **FINISHED)):
+            self.assertEqual(len(self.logged({}, self.told_lead(), session=session)), 1)
+            self.assertEqual([a[2:] for a in self.forwarded], [("x", "SITE MANAGER", "because")])
+        self.logged({}, self.told_lead(), session=None)
+        self.assertEqual(self.forwarded, [])
 
     def test_an_escalation_without_to_goes_to_the_dispatcher_and_looked_may_be_missing(self):
         [rec] = self.logged({}, choice("aaa"))
@@ -1135,8 +1143,7 @@ class RoutingTests(Home):
                 ("a firing whose lead was told before", {"lead_told": True}, live, "x"),
                 ("no task slug", {}, live, None),
                 ("a slug that is no task", {}, live, "y"),
-                ("no session", {}, None, "x"),
-                ("a finished session", {}, lead("x", **FINISHED), "x")):
+                ("no session", {}, None, "x")):
             with self.subTest(label):
                 self.assertEqual(self.logged(sent, self.told_lead(), session=session, slug=slug), [])
 
@@ -1163,7 +1170,7 @@ class RoutingTests(Home):
                          ("x", f"{WT}/x", "worktree-x", 4242))
         self.assertEqual(factory.firing_for_run(p, f)["transcripts"], [str(main), str(sub)])
         gone = factory.firing_for_run(pic(rows=[row("x", session="working", dirty=None, ahead=None, behind=None)], sessions=[lead("x", **FINISHED)]), f)
-        self.assertEqual((gone["task"]["lead"], gone["task"]["pid"]), (None, None))
+        self.assertEqual((gone["task"]["lead"], gone["task"]["pid"]), ("x", None))
 
     def test_a_firing_without_a_row_carries_only_worktree_lead_pid_and_transcripts(self):
         main = self.transcript("{sid}.jsonl", NOW)
@@ -1173,12 +1180,12 @@ class RoutingTests(Home):
         self.assertEqual(out["task"], {"worktree": f"{WT}/x", "lead": "x", "pid": 4242})
         self.assertEqual(out["transcripts"], [str(main)])
         gone = factory.firing_for_run(pic(rows=None, sessions=[lead("x", **FINISHED)]), f)
-        self.assertEqual(gone["task"], {"worktree": f"{WT}/x", "lead": None, "pid": None})
+        self.assertEqual(gone["task"], {"worktree": f"{WT}/x", "lead": "x", "pid": None})
 
-    def test_a_lead_message_for_an_every_tick_finding_is_recorded_only_for_a_live_lead(self):
+    def test_a_lead_message_for_an_every_tick_finding_is_recorded_for_a_lead_live_or_retired(self):
         sent = [{"id": "aaa", "slug": "x", "criterion": "busy-after-handover"}]
-        for label, session, recorded in (("live", lead("x", pid=4242), 1), ("finished", lead("x", **FINISHED), 0), ("none", None, 0)):
-            with self.subTest(label), mock.patch.object(factory, "log_firing") as log:
+        for label, session, recorded in (("live", lead("x", pid=4242), 1), ("retired", lead("x", **FINISHED), 1), ("none", None, 0)):
+            with self.subTest(label), mock.patch.object(factory, "log_firing") as log, mock.patch.object(factory, "forward"):
                 p = pic(rows=None, sessions=[session] if session else [])
                 factory.record_decisions(p, sent, {"sent": True, "decisions": [self.told_lead()]}, "r1")
                 self.assertEqual(log.call_count, recorded)

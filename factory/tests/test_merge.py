@@ -79,7 +79,7 @@ class World(Harness):
                 [raw({"mergeable": x}) for x in m] if isinstance(m, list) else m)
         answers.update(extra or {})
         finished = [{"id": f"id-{s}", "sessionId": f"sid-{s}", "cwd": f"{WT}/{s}", "kind": "background",
-                     "status": "idle", "state": "done"} for s in slugs]
+                     "pid": 7, "status": "idle", "state": "done"} for s in slugs]
         return answers, [DISPATCHER | {"name": SESSION}, *finished], slugs
 
     def tip_moved_in_last_fetch(self):
