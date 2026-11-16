@@ -932,6 +932,38 @@ class SyncDraftTests(World):
                 self.assertEqual(self.flips(), flips)
                 self.assertEqual("".join(l + "\n" for l in out.splitlines() if l.startswith("#1 ")), line)
 
+    def test_a_held_pull_request_with_red_checks_stays_ready(self):
+        hold = {"stopped": {"1": {"head": SHA, "kind": "not-ours", "text": "t", "ts": iso(NOW)}}}
+        for label, (lander, flips) in {"held": (hold, []), "released": ({**hold, "unblocked": {"1": {}}}, [["pr", "ready", "1", "--undo"]]),
+                                     "held at another head": ({"stopped": {"1": {**hold["stopped"]["1"], "head": "old"}}},
+                                                              [["pr", "ready", "1", "--undo"]]),
+                                     "not held": ({}, [["pr", "ready", "1", "--undo"]])}.items():
+            with self.subTest(label):
+                self.setUp()
+                factory.write_lander(SimpleNamespace(root=ROOT), lander)
+                code, out, _ = self.tick([pr(1)], checks=FAILED)
+                self.assertEqual(code, 0)
+                self.assertEqual(self.flips(), flips)
+        for label, (draft, flips) in {"working, ready, held": (False, [["pr", "ready", "1", "--undo"]]),
+                                      "working, draft, held": (True, [])}.items():
+            with self.subTest(label):
+                self.setUp()
+                factory.write_lander(SimpleNamespace(root=ROOT), hold)
+                code, out, _ = self.tick([pr(1, draft=draft)], checks=FAILED, state="working")
+                self.assertEqual(code, 0)
+                self.assertEqual(self.flips(), flips)
+
+    def test_a_red_pull_request_the_sync_made_a_draft_is_ready_again_once_held(self):
+        hold = {"stopped": {"1": {"head": SHA, "kind": "not-ours", "text": "t", "ts": iso(NOW)}}}
+        self.tick([pr(1)], checks=FAILED)  # the tick's sync runs before the pass that holds it
+        self.assertEqual(self.flips(), [["pr", "ready", "1", "--undo"]])
+        self.setUp()
+        factory.write_lander(SimpleNamespace(root=ROOT), hold)
+        code, out, _ = self.tick([pr(1, draft=True)], checks=FAILED)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.flips(), [["pr", "ready", "1"]])
+        self.assertIn("#1 ready for review\n", out)
+
     def test_status_agrees_with_what_the_sync_leaves_on_github(self):
         cases = {
             "working": (dict(state="working", prs=[pr(1)]), True, "motion", None),

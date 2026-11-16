@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import test_health
-from test_factory import ROOT, WT, FakeRun, factory
+from test_factory import ROOT, WT, FakeRun, factory, invoke, repo_answers, task_entry
 from test_health import NOW, iso, register
 from test_merge import RECORDED, SESSION, World, pr, review
 
@@ -20,6 +20,15 @@ GREEN = [{"name": "test", "bucket": "pass"}]
 PENDING = [{"name": "test", "bucket": "pending"}]
 RED = [{"name": "test", "bucket": "fail", "link": "https://x/run/2"}]
 COURIER_LINE = re.compile(r"nothing else: (.*)\. Then reply", re.S)
+REAL_RERUN = factory.rerun_line  # Loop replaces it with a double
+RUN_LINK = "https://github.com/o/r/actions/runs/101/job/1"
+RED_RUN = [{"name": "test", "bucket": "fail", "link": RUN_LINK}]
+TEST_FILE = "factory/tests/test_a.py"
+
+
+def failed_log(*names):
+    """What `gh run view --log-failed` prints for these failing unittest tests."""
+    return "".join(f"test\tRun make test\t2026-11-14T16:28:27.2263559Z FAIL: {n} (m.C.{n})\n" for n in names)
 
 
 class Sim:
@@ -30,6 +39,9 @@ class Sim:
         self.prs, self.merged, self.tip, self.log, self.lines, self.cwd_of = {}, [], 0, [], [], {}
         self.refused, self.explained = set(), True  # numbers whose `gh pr merge` GitHub refuses; whether its records say a review is required
         self.comments, self.comment_fails, self.model = [], False, None  # `gh pr comment` bodies; what the tech lead's model run does and answers
+        self.runs, self.run_list_fails = [], False  # `gh run list`
+        self.logs, self.logs1, self.log_reads = {}, {}, []  # `--log-failed` by run id, current attempt and attempt 1; the reads made
+        self.bodies, self.changed, self.defines, self.shared = {}, {}, {}, {}  # pull request bodies; files a branch changes; test -> files; head sha -> "independent" | "contains" | None
 
     def add(self, n, behind=True, base="main", approved=True, draft=False, checks=None, after=None, conflicts=(),
             update_conflict=(), local=None, diverged=False, mergeable=("MERGEABLE",), lag=False, stays_behind=False, ahead=False):
@@ -69,6 +81,33 @@ class Sim:
             return 0, json.dumps([{"state": "MERGED" if n in self.merged else "OPEN", "url": f"https://x/pull/{n}",
                                    "headRefOid": p["head"], "isDraft": p["draft"],
                                    "baseRefName": "main" if n in self.merged else p["base"]}]), ""
+        if a[:3] == ["gh", "run", "list"]:
+            return (1, "", "boom") if self.run_list_fails else (0, json.dumps(self.runs), "")
+        if a[:3] == ["gh", "run", "view"]:
+            self.log_reads.append(tuple(a[3:]))
+            return 0, (self.logs1 if "--attempt" in a else self.logs)[a[3]], ""
+        if a[:3] == ["gh", "pr", "view"] and a[-1] == "body":
+            return 0, json.dumps({"body": self.bodies.get(int(a[3]), "")}), ""
+        if a[:3] == ["gh", "pr", "view"] and a[-1] == "state,headRefName,baseRefName":
+            return 0, json.dumps({"state": "OPEN", "headRefName": f"worktree-t{a[3]}", "baseRefName": "main"}), ""
+        if a[:2] == ["gh", "api"] and "check-runs" in a[-1]:
+            return 0, json.dumps({"check_runs": []}), ""  # no check is green on the default branch: no re-run
+        if a[:2] == ["git", "fetch"]:
+            return 0, "", ""
+        if a[:3] == ["git", "-c", "core.quotePath=false"]:  # what `failure_facts` reads of the branch
+            n = int(a[-1].rpartition("worktree-t")[2])
+            if a[3] == "merge-base":
+                return 0, "fork\n", ""
+            if a[3] == "diff":
+                return 0, "".join(f"{f}\n" for f in self.changed.get(n, [])), ""
+            if a[3] == "grep":
+                files = self.defines.get(re.search(r"def (\w+)", a[-2])[1], [])
+                return (0, "".join(f"{a[-1]}:{f}\n" for f in files), "") if files else (1, "", "")
+        if a[:2] == ["git", "merge-base"] and a[2].startswith("origin/worktree-t"):  # `independent_failures`: the fork point with another head
+            kind = self.shared.get(a[3])
+            return (0, f"mb{kind}\n", "") if kind else (128, "", "bad object")
+        if a[:3] == ["git", "merge-base", "--is-ancestor"] and a[3].startswith("mb"):
+            return (0 if a[3] == "mbindependent" else 1), "", ""
         if a[:3] == ["gh", "pr", "checks"] and a[3].startswith("http"):  # the watch's own read of a handed-over pull request
             return 0, "[]", ""
         if a[:3] == ["gh", "pr", "checks"]:
@@ -84,7 +123,7 @@ class Sim:
             return 0, json.dumps({"number": n, "url": f"https://x/pull/{n}", "headRefName": f"worktree-t{n}",
                                   "headRefOid": self.prs[n]["head"], "state": "OPEN"}), ""
         if a[:3] == ["gh", "pr", "comment"]:
-            self.comments.append(a[a.index("--body") + 1])
+            self.comments.append(Path(a[-1]).read_text() if "--body-file" in a else a[a.index("--body") + 1])
             return (1, "", "boom") if self.comment_fails else (0, "", "")
         if a[:3] == ["gh", "pr", "view"] and "reviewDecision" in a[a.index("--json") + 1]:
             return 0, json.dumps({"reviewDecision": "REVIEW_REQUIRED", "mergeStateStatus": "BLOCKED"} if self.explained
@@ -195,7 +234,7 @@ class Loop(World):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def rerun_line(self, repo, n):
+    def rerun_line(self, repo, n, logs=None, word=False):
         """The function behind `factory rerun`: what the test says it answers, and what it did to the checks."""
         self.reruns.append(n)
         started, line, checks = self.rerun_answer
@@ -217,6 +256,10 @@ class Loop(World):
 
     def lander_json(self):
         return factory.read_lander(SimpleNamespace(root=ROOT))
+
+    def queued(self, *steps):
+        """The `queue` records of these steps, without their `ts`."""
+        return [{k: v for k, v in r.items() if k != "ts"} for r in self.records("queue") if r["step"] in steps]
 
 
 class MergeInOrderTests(Loop):
@@ -279,10 +322,6 @@ class MergeInOrderTests(Loop):
         self.sim.add(2, approved=False, base="worktree-t1", conflicts=["a.txt"])
         self.go("lander")
         self.assertEqual((self.sim.lines, self.sim.events("undo")), ([], []))
-
-    def queued(self, *steps):
-        """The `queue` records of these steps, without their `ts`."""
-        return [{k: v for k, v in r.items() if k != "ts"} for r in self.records("queue") if r["step"] in steps]
 
     def test_the_queue_records_the_update_with_the_tip_it_merged_in(self):
         self.sim.add(1)
@@ -454,6 +493,251 @@ class MergeInOrderTests(Loop):
         self.go("lander")
         self.assertEqual(self.sim.merged, [1, 2])
         self.assertEqual(self.sim.events("push", "merge", "edit"), [("push", 1), ("merge", 1), ("push", 2), ("edit", 2), ("merge", 2)])
+
+
+class HoldTests(Loop):
+    """A red check whose failing test is not the branch's, through the real `rerun_line` and `not_ours` over the Sim: the
+    failing test `test_one` lives in TEST_FILE, which no branch changes; `test_two`, in the same file, failed in attempt 1 of
+    a run on another branch an hour ago, on a head that shares nothing with these but the default branch."""
+
+    def setUp(self):
+        super().setUp()
+        self.sim.logs["101"] = failed_log("test_one")
+        self.sim.defines = {"test_one": [TEST_FILE], "test_two": [TEST_FILE]}
+        self.sim.runs = [{"databaseId": 201, "headBranch": "other", "headSha": "abc1234567", "createdAt": iso(NOW - 3600),
+                          "conclusion": "success", "attempt": 2}]
+        self.sim.logs1["201"] = failed_log("test_two")
+        self.sim.shared = {"abc1234567": "independent"}
+
+    def rerun_line(self, repo, n, logs=None, word=False):
+        return REAL_RERUN(repo, n, logs, word)
+
+    HOLD = ("test: test_one (factory/tests/test_a.py) is outside what the branch changes and failed without it: test_two on other "
+            "at abc1234 (run 201). It stays ready and approved and is not updated until a fix merges. The human decides: "
+            'factory rerun 1, or a fix task whose pull request body has the line "Unblocks: #1"')
+
+    def second_pass(self, fix_body="Fixes the check.\nUnblocks: #1\n", **kw):
+        """#1 is held in a first run (#2, the fix, is not approved yet); #2 is approved and the next run merges it."""
+        self.sim.add(1, behind=False, checks=[RED_RUN], **kw)
+        self.sim.add(2, behind=False, approved=False)
+        self.sim.bodies[2] = fix_body
+        self.go("lander")
+        self.sim.prs[2]["approved"] = True
+        self.sim.lines.clear()
+        self.sim.comments.clear()
+        return self.go("lander", at=NOW + 120)
+
+    def test_1_a_red_check_that_fails_without_the_branch_is_held_and_not_sent_back(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        code, out, _ = self.go("lander")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.sim.events("undo", "push"), [])
+        self.assertEqual([r for r in self.records("tasks") if r.get("role") == "lander"], [])
+        self.assertEqual([c for c in self.claude_runs() if "--append-system-prompt" in c], [])  # no tech lead
+        self.assertEqual(self.sim.lines, [f"LANDER: #1 stopped not-ours: {self.HOLD}"])
+        self.assertEqual(self.sim.comments, [f"Merge queue: held, not sent back: {self.HOLD}"])
+        self.assertEqual(self.queued("stopped", "sent-back"), [
+            {"repo": ROOT, "slug": "t1", "pr": 1, "head": "h1", "step": "stopped", "kind": "not-ours", "text": self.HOLD,
+             "told": "dispatcher", "tests": ["test_one"], "checks": ["test"]}])
+        reads = list(self.sim.log_reads)
+        self.assertEqual(reads, [("101", "--log-failed"), ("201", "--attempt", "1", "--log-failed")])
+        for at, moves in ((NOW + 120, False), (NOW + 240, True)):  # the second pass sees the default branch move
+            if moves:
+                self.sim.tip += 1
+                self.sim.prs[1]["behind"] = True
+            self.go("lander", at=at)
+            self.assertFalse(self.fake.ran("gh", "run"))
+        self.assertEqual((self.sim.log_reads, len(self.sim.lines), len(self.sim.comments), self.sim.pushes()), (reads, 1, 1, []))
+
+    def assertSentBackAsToday(self):
+        self.go("lander")
+        self.assertEqual(self.sim.events("undo"), [("undo", 1)])
+        [row] = self.queued("sent-back")
+        self.assertEqual((row["kind"], row["told"], row["text"].startswith("failed or cancelled checks: test; no rerun: ")), ("ci", "lead", True))
+        self.assertEqual(self.queued("stopped"), [])
+        self.assertTrue(self.sim.comments[0].startswith("Merge queue: back to draft: red checks: test " + RUN_LINK))
+
+    def red(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+
+    def test_2_a_test_in_a_file_the_branch_changes_is_sent_back(self):
+        self.red()
+        self.sim.changed[1] = [TEST_FILE]
+        self.assertSentBackAsToday()
+
+    def test_2_no_independent_failure_is_sent_back(self):
+        self.red()
+        self.sim.runs = []
+        self.assertSentBackAsToday()
+
+    def test_2_a_log_that_names_no_test_is_sent_back(self):
+        self.red()
+        self.sim.logs["101"] = "test\tRun make test\t2026-11-14T16:28:27.2263559Z ##[error]exit 1\n"
+        self.assertSentBackAsToday()
+
+    def test_2_a_run_list_that_fails_is_sent_back(self):
+        self.red()
+        self.sim.run_list_fails = True
+        self.assertSentBackAsToday()
+
+    def test_2_evidence_older_than_24_hours_is_sent_back(self):
+        self.red()
+        self.sim.runs[0]["createdAt"] = iso(NOW - 24 * 3600 - 60)
+        self.assertSentBackAsToday()
+
+    def test_2_evidence_on_a_head_that_contains_the_branch_is_sent_back(self):
+        self.red()
+        self.sim.shared = {"abc1234567": "contains"}
+        self.assertSentBackAsToday()
+
+    def test_2_evidence_on_a_head_git_does_not_have_is_sent_back(self):
+        self.red()
+        self.sim.shared = {}
+        self.assertSentBackAsToday()
+
+    def test_2_evidence_in_another_file_than_the_failing_test_is_sent_back(self):
+        self.red()
+        self.sim.defines["test_two"] = ["factory/tests/test_b.py"]
+        self.assertSentBackAsToday()
+
+    def test_2_evidence_on_the_branch_itself_is_sent_back(self):
+        self.red()
+        self.sim.runs[0]["headBranch"] = "worktree-t1"
+        self.assertSentBackAsToday()
+
+    def test_3_a_merged_pull_request_whose_body_names_it_releases_it_and_the_update_and_green_merge_follow_with_no_lead(self):
+        code, out, _ = self.second_pass()
+        self.assertEqual((code, self.sim.merged, self.sim.pushes()), (0, [2, 1], [1]))
+        self.assertIn("#1 unblocked by #2\n", out)
+        self.assertEqual(self.queued("unblocked"), [{"repo": ROOT, "slug": "t1", "pr": 1, "head": "h1", "step": "unblocked", "by": "#2"}])
+        self.assertEqual((self.sim.lead_lines(), self.sim.events("undo"), self.sim.comments), ([], [], []))
+        self.assertEqual([c for c in self.claude_runs() if "--append-system-prompt" in c], [])
+        self.assertEqual((self.lander_json()["stopped"], self.lander_json()["unblocked"]), ({}, {}))  # the merged one is pruned
+
+    def test_3_a_fix_that_does_not_name_it_releases_nothing(self):
+        _, out, _ = self.second_pass(fix_body="Unblocks: #1 and more words\nunblocks: #1\n")
+        self.assertEqual((self.sim.merged, self.sim.pushes(), self.queued("unblocked")), ([2], [], []))
+        self.assertIn("1", self.lander_json()["stopped"])
+
+    def test_4_an_update_that_conflicts_goes_back_as_today(self):
+        code, out, _ = self.second_pass(update_conflict=["a.txt"])
+        self.assertEqual((code, self.sim.merged, self.sim.pushes()), (1, [2], []))
+        self.assertEqual(self.sim.events("abort", "undo"), [("abort", 1), ("undo", 1)])
+        self.assertIn("#1 stopped conflict: conflicts with main in a.txt (told lead)\n", out)
+        self.assertIn("#1 went back to you: it conflicts with main in a.txt.", self.sim.lead_lines()[0])
+        self.assertEqual([r["kind"] for r in self.queued("sent-back")], ["conflict"])
+
+    def test_5_red_again_after_the_unblock_is_sent_back_and_not_held_again(self):
+        code, out, _ = self.second_pass(after=[RED_RUN])
+        self.assertEqual((code, self.sim.merged, self.sim.pushes()), (1, [2], [1]))
+        self.assertEqual(self.sim.events("undo"), [("undo", 1)])
+        self.assertEqual([r["kind"] for r in self.queued("sent-back")], ["ci"])
+        self.assertEqual([r["kind"] for r in self.queued("stopped")], ["not-ours"])  # the first run's, and no second
+        self.assertFalse(self.fake.ran("gh", "run", "list"))  # not asked again
+        self.assertEqual(self.lander_json()["stopped"]["1"]["kind"], "ci")
+
+    def test_7_a_rerun_on_the_humans_word_passes_the_three_conditions_and_checks_running_end_the_hold(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        self.go("lander")
+        self.sim.changed[1] = ["factory/tests/test_other.py"]  # shares the directory of the failing test: a flake condition
+        self.sim.comments.clear()
+        code, out, _ = self.cli("rerun", "1", answers={("gh", "run", "rerun"): (0, "", "")})
+        line = "rerun: test: attempt 2 started on the human's word"
+        self.assertEqual((code, out), (0, f"#1 {line}\n"))
+        self.assertEqual([c for c in self.fake.calls if c[:3] == ["gh", "run", "rerun"]], [["gh", "run", "rerun", "101", "--failed"]])
+        self.assertNotIn(("101", "--json", "attempt"), self.sim.log_reads)
+        self.assertEqual(self.sim.comments, ["Re-ran the failed jobs of test on the human's word (by factory rerun)."])
+        self.assertEqual(self.queued("rerun"), [{"repo": ROOT, "slug": "t1", "pr": 1, "head": "h1", "step": "rerun", "by": "word", "text": line}])
+        self.sim.prs[1]["checks"] = [PENDING, GREEN]
+        self.go("lander", at=NOW + 240)
+        self.assertEqual((self.sim.merged, self.lander_json()["stopped"]), ([1], {}))
+
+    def test_7_a_rerun_the_app_refuses_prints_the_command_and_writes_no_row(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        self.go("lander")
+        code, out, _ = self.cli("rerun", "1", answers={("gh", "run", "rerun"): (1, "", "HTTP 403")})
+        self.assertEqual(code, 1)
+        self.assertIn("From your own terminal: gh run rerun 101 --failed (HTTP 403)", out)
+        self.assertEqual(self.queued("rerun"), [])
+
+    def test_7_a_new_red_head_is_not_a_word_and_the_queue_re_runs_nothing(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        self.go("lander")
+        self.sim.prs[1]["head"] = "h1b"  # pushed since the hold; red again, and now the branch changes the failing test's file
+        self.sim.changed[1] = [TEST_FILE]
+        self.sim.lines.clear()
+        self.go("lander", at=NOW + 120)
+        self.assertFalse(self.fake.ran("gh", "run", "rerun"))
+        self.assertEqual(self.sim.events("undo"), [("undo", 1)])
+        self.assertEqual(self.queued("rerun"), [])
+
+    def test_7_a_rerun_by_hand_on_a_new_head_is_not_a_word(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        self.go("lander")
+        self.sim.prs[1]["head"] = "h1b"
+        self.sim.changed[1] = ["factory/tests/test_other.py"]
+        code, out, _ = self.cli("rerun", "1", answers={("gh", "run", "rerun"): (0, "", "")})
+        self.assertEqual(code, 1)
+        self.assertTrue(out.startswith("#1 no rerun: "))
+        self.assertFalse(self.fake.ran("gh", "run", "rerun"))
+
+    def test_1_a_changed_file_beside_the_failing_test_but_not_it_still_holds(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        self.sim.changed[1] = ["factory/tests/test_other.py"]
+        self.go("lander")
+        self.assertEqual(self.sim.events("undo"), [])
+        self.assertEqual(self.lander_json()["stopped"]["1"]["kind"], "not-ours")
+
+    def test_3_a_held_behind_pull_request_whose_checks_cannot_be_read_stays_held_and_is_not_updated(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        self.go("lander")
+        self.sim.prs[1].update(behind=True, checks=[None])  # `gh pr checks` fails
+        self.sim.lines.clear()
+        self.sim.comments.clear()
+        self.go("lander", at=NOW + 120)
+        self.assertEqual((self.sim.pushes(), self.sim.events("undo"), self.sim.lines, self.sim.comments), ([], [], [], []))
+        self.assertEqual(self.lander_json()["stopped"]["1"]["kind"], "not-ours")
+
+    def test_8_an_unblock_during_a_pass_is_not_reported_as_a_new_hold(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        self.go("lander")
+        self.sim.prs[1]["behind"] = True
+        self.sim.lines.clear()
+        real = factory.settle
+
+        def unblocked_meanwhile(repo, fallback, stops):
+            factory.unblock(repo, stops[1][0], "word")
+            real(repo, fallback, stops)
+
+        with mock.patch.object(factory, "settle", unblocked_meanwhile):
+            self.go("lander", at=NOW + 120)
+        self.assertEqual((self.sim.lines, len(self.queued("stopped"))), ([], 1))
+        self.assertEqual(self.lander_json()["stopped"], {})
+
+    def test_8_unblock_releases_a_held_pull_request_and_a_closed_number_exits_1(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        self.go("lander")
+        code, out, err = self.cli("unblock", "1", "--by", "#7", entries=["t1"])
+        self.assertEqual((code, out, err), (0, "#1 unblocked: the queue updates it at its turn; a red check on it now goes back to its task\n", ""))
+        self.assertEqual(self.lander_json()["stopped"], {})
+        self.assertEqual(self.lander_json()["unblocked"], {"1": {"by": "#7", "ts": iso(self.clock)}})
+        self.assertEqual(self.queued("unblocked"), [{"repo": ROOT, "slug": "t1", "pr": 1, "head": "h1", "step": "unblocked", "by": "#7"}])
+        self.cli("unblock", "1")
+        self.assertEqual(self.lander_json()["unblocked"]["1"]["by"], "word")
+        code, out, err = self.cli("unblock", "9")
+        self.assertEqual((code, out, err), (1, "", "factory: unblock: #9 is not an open pull request; nothing done\n"))
+        self.assertEqual(sorted(self.lander_json()["unblocked"]), ["1"])
+
+    def test_9_handing_over_says_what_a_held_pull_request_needs_in_the_fixs_body(self):
+        url, record = "https://github.com/o/r/pull/9", {"head": "h1", "kind": "not-ours", "text": "t", "tests": ["test_one", "test_two"]}
+        answers = repo_answers([task_entry("x")], (), {("gh", "pr", "list"): (0, json.dumps([{"url": url, "headRefOid": "h1"}]), ""),
+                                                      ("git", "rev-parse", "HEAD"): (0, "h1\n", "")})
+        for stopped, said in (({"4": record, "5": {**record, "kind": "ci"}}, ["The queue holds #4 on test_one, test_two: if this pull request "
+                                                                              'fixes that, its body needs the line "Unblocks: #4".']), ({}, [])):
+            with self.subTest(stopped=bool(stopped)), mock.patch.object(factory, "read_lander", lambda repo: {
+                    "stopped": stopped, "waiting": {}, "health": 0, "prioritized": {}, "unblocked": {}}):
+                code, out, err, _ = invoke(["state", "handed-over", url], answers, cwd=f"{WT}/x/sub")
+                self.assertEqual((code, out.splitlines(), err), (0, ["x: handed-over", *said], ""))
 
 
 class LevelTests(Loop):
@@ -757,7 +1041,7 @@ class TickTests(Loop):
         self.assertEqual(sorted(p.name for p in self.store.glob("lander-*")),
                          sorted(f"lander-repo-{factory.repo_state(ROOT, 'lander', 'json').name[-13:-5]}.{e}"
                                 for e in ("json", "lock")))
-        self.assertEqual(sorted(self.lander_json()), ["health", "prioritized", "stopped", "waiting"])
+        self.assertEqual(sorted(self.lander_json()), ["health", "prioritized", "stopped", "unblocked", "waiting"])
 
 
 class ScratchRepoBase(unittest.TestCase):
@@ -866,6 +1150,68 @@ class RealLevelTests(ScratchRepoBase):
         self.git("push", "-q", "origin", "worktree-t1", cwd=other)
         self.assertEqual(self.level(), "its worktree and origin/worktree-t1 have diverged")
         self.assertEqual(self.git("status", "--porcelain", cwd=self.wt), "")
+
+
+class HeldUpdateTests(ScratchRepoBase):
+    """Real git: #1 is held on a red check, its fix has merged (main moved); what the pass does to the branch."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(mock.patch.dict(os.environ, {**self.env, "CLAUDE_CODE_SESSION_ID": "sid"}))
+        self.repo = SimpleNamespace(root=str(self.root), remote="origin", default="main", tasks=[{"path": str(self.wt), "branch": "worktree-t1"}],
+                                    git=lambda *a, path=None: self.run_git(path or self.root, *a))
+        self.reported = []
+        self.enterContext(mock.patch.object(factory, "report_stop", lambda *a: self.reported.append(a[3:])))
+        self.enterContext(mock.patch.object(factory, "land_busy", lambda *a: None))
+        self.enterContext(mock.patch.object(factory, "identity_exports", lambda: ({}, None)))
+        self.enterContext(mock.patch.object(factory, "attempt", lambda *a: ("behind", "behind")))
+        self.enterContext(redirect_stdout(io.StringIO()))
+
+    def hold(self, text="held", head=None):
+        self.old = head or self.git("rev-parse", "HEAD", cwd=self.wt)
+        factory.write_lander(self.repo, {"stopped": {"1": {"head": self.old, "kind": "not-ours", "text": text, "ts": factory.now(),
+                                                            "tests": ["test_one"], "checks": ["test"], "slug": "t1"}}})
+        self.pr = {"number": 1, "headRefName": "worktree-t1", "baseRefName": "main", "headRefOid": self.old, "url": "u/1",
+                   "latestReviews": [], "comments": []}
+
+    def passes(self, checks):
+        p = {"gh": lambda kind, *a: checks}
+        with mock.patch.object(factory, "pull_main", lambda r: None):
+            return factory.lander_pass(self.repo, None, p, [self.pr], [(self.pr, {})], {})
+
+    RED_CHECKS = [{"name": "test", "bucket": "fail"}]
+
+    def release(self):
+        with mock.patch.object(factory, "gh_json", lambda repo, kind, *a: {"body": "Unblocks: #1"}):
+            factory.release_named(self.repo, {"number": 2}, [self.pr])
+
+    def test_3_a_held_branch_is_not_updated_until_a_merged_fix_names_it_then_a_real_merge_commit_is_pushed(self):
+        self.task_commit("a.txt", "one\ntwo\nthree changed\n")
+        self.main_moves("b.txt", "the fix\n")
+        self.hold()
+        merged, stops, flight = self.passes(self.RED_CHECKS)
+        self.assertEqual((merged, flight, [(kind, line) for pr, kind, line in stops.values()]), (False, set(), [("not-ours", "held")]))
+        self.assertEqual(self.git("rev-parse", "worktree-t1", cwd=self.remote), self.old)  # nothing pushed
+        self.assertEqual(self.reported, [])  # same head, same kind: quiet
+        self.release()
+        merged, stops, flight = self.passes(self.RED_CHECKS)
+        self.assertEqual((merged, stops, flight), (False, {}, {1}))
+        pushed = self.git("rev-parse", "worktree-t1", cwd=self.remote)
+        self.assertEqual((self.git("rev-parse", "HEAD^1", cwd=self.wt), self.git("rev-parse", "HEAD^2", cwd=self.wt), pushed),
+                         (self.old, self.git("rev-parse", "origin/main", cwd=self.wt), self.git("rev-parse", "HEAD", cwd=self.wt)))
+        self.assertEqual([r["step"] for r in factory.read_log("queue")], ["unblocked", "updated"])
+        self.assertEqual(factory.read_lander(self.repo)["unblocked"]["1"]["by"], "#2")
+
+    def test_4_an_update_that_conflicts_with_the_fix_is_a_conflict_stop_and_the_branch_is_untouched(self):
+        self.task_commit("a.txt", "one\ntwo\ntask\n")
+        self.main_moves("a.txt", "one\ntwo\nmain\n")
+        self.hold()
+        self.release()
+        merged, stops, flight = self.passes(self.RED_CHECKS)
+        self.assertEqual([(kind, line) for pr, kind, line in stops.values()], [("conflict", "conflicts with main in a.txt")])
+        self.assertEqual([r[0:2] for r in self.reported], [("conflict", "conflicts with main in a.txt")])
+        self.assertEqual((self.git("rev-parse", "HEAD", cwd=self.wt), self.git("status", "--porcelain", cwd=self.wt),
+                          self.git("rev-parse", "worktree-t1", cwd=self.remote)), (self.old, "", self.old))
 
 
 class ChurnTests(ScratchRepoBase):
