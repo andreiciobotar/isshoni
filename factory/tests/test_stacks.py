@@ -29,11 +29,11 @@ def posts(fake):
 
 
 class EnsureTests(unittest.TestCase):
-    def ensure(self, snap, stacks=(), answers=None):
+    def ensure(self, snap, stacks=(), answers=None, repo=REPO):
         fake = FakeRun({LIST: (0, json.dumps(list(stacks)), ""), ("gh", "api", "-H", V): (0, "{}", ""), **(answers or {})})
         out = io.StringIO()
         with mock.patch.object(factory, "run", fake), redirect_stdout(out):
-            factory.ensure_stacks(REPO, snap)
+            factory.ensure_stacks(repo, snap)
         return fake, out.getvalue()
 
     def test_a_chain_without_a_stack_is_created_bottom_to_top(self):
@@ -84,6 +84,14 @@ class EnsureTests(unittest.TestCase):
                 with self.subTest(foreign=foreign, stacks=stacks):
                     fake, _ = self.ensure(snap, stacks)
                     self.assertEqual(posts(fake), [])
+
+    def test_a_chain_with_a_member_of_another_number_than_its_tasks_recorded_one_gets_no_call(self):
+        snap = [node(1, "main", "a"), node(2, "a", "b")]
+        for recorded, posted in (("2", 1), ("9", 0)):
+            with self.subTest(recorded=recorded):
+                tasks = [{**t, "pr": recorded} if t["branch"] == "b" else t for t in REPO.tasks]
+                fake, _ = self.ensure(snap, repo=SimpleNamespace(root=ROOT, default="main", tasks=tasks))
+                self.assertEqual(len(posts(fake)), posted)
 
     def test_an_owned_chain_is_stacked_beside_a_foreign_chain(self):
         snap = [node(1, "main", "a"), node(2, "a", "b"), node(3, "main", "x"), node(4, "x", "y")]
