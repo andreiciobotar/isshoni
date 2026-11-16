@@ -46,7 +46,7 @@ class Machine:
         if a == ["gh", "--version"]:
             return 0, f"gh version {self.gh_version} (2026-11-12)\nhttps://github.com/cli/cli/releases/tag/v{self.gh_version}\n", ""
         if a == ["gh", "extension", "list"]:
-            return 0, "gh stack\tgithub/gh-stack\tv0.3.0\n" if self.stack else "gh other\tsomeone/gh-stack\tv1\n", ""
+            return 0, "gh stack\tgithub/gh-stack\tv0.3.0\n" if self.stack else "gh stack\tsomeone/gh-stack\tv1\ngh stacks\tgithub/gh-stacks\tv1\n", ""
         if a == ["gh", "extension", "install", "github/gh-stack"]:
             if "extension" in self.fail:
                 return 1, "", "download\nHTTP 404"
@@ -412,6 +412,19 @@ class StackStep(Setup):
         self.assertNotIn(["gh", "--version"], self.machine.calls)
         self.assertIn("gh stack: ", self.out)
         self.assertIn("done: github/gh-stack", self.out)
+
+    def test_the_gh_calls_run_outside_any_repository_and_the_install_has_a_timeout(self):
+        seen = []
+
+        def spy(argv, **kw):
+            seen.append((argv[:3], kw.get("cwd"), kw.get("timeout")))
+            return self.machine(argv, **kw)
+
+        with mock.patch.object(factory, "run", spy):
+            self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
+        for argv in (["gh", "extension", "list"], ["gh", "--version"], self.INSTALL[:3]):
+            self.assertIn("/", [cwd for a, cwd, _ in seen if a == argv[:3]], argv)
+        self.assertIn(factory.RUN_TIMEOUT, [t for a, _, t in seen if a == self.INSTALL[:3]])
 
     def test_an_offer_answered_yes_installs_once_and_the_next_run_finds_it(self):
         for argv, stdin in (("wizard", "n\nn\ny\nn\n"), ("wizard --yes", "")):
