@@ -4901,7 +4901,9 @@ def outbox_log(repo, rid, **fields):
 
 
 def outbox_put(repo, slug, line):
-    outbox_log(repo, secrets.token_hex(6), slug=slug, line=line)
+    rid = secrets.token_hex(6)
+    outbox_log(repo, rid, slug=slug, line=line)
+    return rid
 
 
 def deliver(repo, sessions, slug):
@@ -4941,21 +4943,23 @@ def forward(repo, fallback, slug, head, said, lead=True):
     (see `reach_lead`); "lead" when it got it, "queued" when a retired lead could not be resumed yet (the tick tries again).
     Else the dispatcher's, found as `find_dispatcher` does, with why it did not reach the lead; the role that got it, or None.
     Without `lead` only the dispatcher is tried, with `head: said`."""
-    sessions = list_sessions() or []
+    sessions = list_sessions()
     if lead:
-        outbox_put(repo, slug, f"{head}: {slug}: {said}")
+        rid = outbox_put(repo, slug, f"{head}: {slug}: {said}")
+        if sessions is None:  # not listed: not "gone"; the tick tries again
+            return "queued"
         ok, why = deliver(repo, sessions, slug)
         if ok:
             return "lead"
         session = lead_session(sessions, repo, slug)
         if session and "pid" not in session:
             return "queued"
-        *older, mine = outbox(repo, slug)
+        older = [r for r in outbox(repo, slug) if r["id"] != rid]
         if older:
             lead_gone(repo, fallback, slug, why, older)
-        outbox_log(repo, mine["id"], end="dispatcher")
+        outbox_log(repo, rid, end="dispatcher")
         return forward(repo, fallback, slug, head, f"{slug} ({why}): {said}", lead=False)
-    dispatcher = find_dispatcher(sessions, repo.root, fallback)[0]
+    dispatcher = find_dispatcher(sessions or [], repo.root, fallback)[0]
     return "dispatcher" if dispatcher and not courier(repo, dispatcher["name"], f"{head}: {said}") else None
 
 

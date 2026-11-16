@@ -11,11 +11,11 @@ from test_factory import DISPATCHER, ROOT, WT, FakeRun, factory
 from test_health import NOW, Harness, ev, iso, lead
 
 # A retired lead as `claude agents --json --all` lists it: no pid, no status, the main checkout as its cwd.
-GONE = {"id": "87bf7aa3", "cwd": ROOT, "kind": "background", "startedAt": 1794819536571,
-        "sessionId": "87bf7aa3-5533-4a09-988d-13810816af81", "name": "x", "state": "done"}
+GONE = {"id": "5e55a1d0", "cwd": ROOT, "kind": "background", "startedAt": 1794800000000,
+        "sessionId": "5e55a1d0-7c2b-4e0f-9a64-3b1d8f20c7aa", "name": "x", "state": "done"}
 LIVE = {**GONE, "pid": 7, "status": "idle", "cwd": f"{WT}/x"}
 DISPATCHER_SESSION = DISPATCHER | {"name": "dispatcher-repo", "pid": 9}
-BACKGROUNDED = (0, "note: woke session 87bf7aa3 with its saved options (-n, --agents)\nbackgrounded · 87bf7aa3 · x\n", "")
+BACKGROUNDED = (0, "note: woke session 5e55a1d0 with its saved options (-n, --agents)\nbackgrounded · 5e55a1d0 · x\n", "")
 SENT = (0, json.dumps({"result": "sent"}), "")
 RESUME = ["claude", "--bg", "--resume", GONE["sessionId"]]
 COURIER_LINE = re.compile(r"nothing else: (.*)\. Then reply", re.S)
@@ -75,7 +75,7 @@ class ForwardTests(Outbox):
 
     def test_the_resume_argv_is_exactly_flag_free(self):
         self.forward([GONE], said="a")
-        self.assertEqual(self.resumes(), [["claude", "--bg", "--resume", "87bf7aa3-5533-4a09-988d-13810816af81", "TECH LEAD: x: a"]])
+        self.assertEqual(self.resumes(), [["claude", "--bg", "--resume", "5e55a1d0-7c2b-4e0f-9a64-3b1d8f20c7aa", "TECH LEAD: x: a"]])
 
     def test_a_resume_that_fails_leaves_the_row_pending_and_tells_the_dispatcher_nothing(self):
         for label, answer in (("non-zero", (1, "", "boom\nmore")), ("no backgrounded line", (0, "ok", "")),
@@ -96,6 +96,12 @@ class ForwardTests(Outbox):
         self.assertEqual(self.forward([DISPATCHER_SESSION]), "dispatcher")
         self.assertEqual(self.couriers(), [("dispatcher-repo", "TECH LEAD: x (its lead is gone: no session named x): built")])
         self.assertEqual(self.ends(), {"TECH LEAD: x: built": "dispatcher"})
+
+    def test_a_failed_listing_leaves_the_row_pending_and_tells_nobody(self):
+        with mock.patch.object(factory, "list_sessions", return_value=None), mock.patch.object(factory, "run") as run:
+            self.assertEqual(factory.forward(self.repo, None, "x", "TECH LEAD", "built"), "queued")
+        self.assertEqual([r["line"] for r in factory.outbox(self.repo)], ["TECH LEAD: x: built"])
+        run.assert_not_called()
 
     def test_a_live_lead_gets_a_courier_by_name_and_no_resume(self):
         self.assertEqual(self.forward([DISPATCHER_SESSION, LIVE]), "lead")
