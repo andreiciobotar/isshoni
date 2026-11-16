@@ -15,8 +15,8 @@ ARG SUPERCRONIC_SHA1_arm64=9d4c2000493215a1898502b2fc2dada3e8ea8c7a
 ARG UID=1000
 ARG GID=1000
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git less lsof make openssl procps python3 tmux \
+RUN apt-get -o Acquire::Retries=3 update \
+ && apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates curl git less lsof make openssl procps python3 tmux \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=go /usr/local/go /usr/local/go

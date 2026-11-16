@@ -44,9 +44,9 @@ NOLEFT := python3 tools/noleft.py
 GOTESTFLAGS ?=
 test: fmt-check test-factory test-python test-go
 
-# The one place the tests reach the network: the Go modules, fetched once, up to 3 attempts, before any test that needs them.
+# Go modules, fetched once, up to 3 attempts, before any test that needs them. With GOPROXY=off nothing is fetched: one try, a local error.
 modules:
-	@for i in 1 2 3; do go mod download && exit 0; sleep 2; done; echo "network: go mod download failed 3 times; not caused by this change" >&2; exit 1
+	@if [ "$$(go env GOPROXY)" = off ]; then exec go mod download; fi; for i in 1 2 3; do go mod download && exit 0; [ $$i = 3 ] || sleep 2; done; echo "network: go mod download failed 3 times; a network failure, not caused by the code" >&2; exit 1
 
 test-python: modules
 	$(NOLEFT) python3 -m unittest discover -s tests

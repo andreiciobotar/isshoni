@@ -5,7 +5,8 @@ A test that fails without a change to what it tests is a defect in the test or t
 ## Rules
 
 - The fake clock of the factory tests is patched on the script's module, `factory` (`factory_core`), never on `time`. `factory.time` is the standard library's `time` module: patching its `sleep` or `time` also reaches `subprocess`, whose wait loop then spins and moves the fake clock by whatever the machine's load makes it.
-- A test fetches nothing from the network. Go modules are fetched once, before the tests, by the Makefile; the fetch is retried, and when it still fails the message says it is a network failure and not the change. `tests/test_host_e2e.py` runs with `GOPROXY=off`, so a module that was not downloaded is a plain local error.
+- Go modules are fetched once, before the tests, by the Makefile (`make modules`); the fetch is retried, and when it still fails the message says it is a network failure and not the code. `tests/test_host_e2e.py` runs its `make install` with `GOPROXY=off`, so a module that was not downloaded is a plain local error.
+- `tests/test_host_e2e.py` still reaches the network in two places: the image build (base image, `apt-get`, and the binary downloads, each retried) and the `git clone` of this repository that `host add` performs, which is the path under test.
 - A test waits for the event it needs, not for a time.
 
 ## Reproducing the clock flake
