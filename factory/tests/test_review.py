@@ -138,7 +138,7 @@ class TickTests(Store):
     def test_a_due_review_is_started_once_without_waiting(self):
         self.put("tasks", 1, slug="a")
         spawn = self.tick()
-        spawn.assert_called_once_with([mock.ANY, str(factory.Path(factory.__file__).resolve()), "review", "--run"], self.root,
+        spawn.assert_called_once_with([mock.ANY, str(factory.FACTORY), "review", "--run"], self.root,
                                       self.store / "review.log")
 
     def test_nothing_starts_while_the_lock_is_held(self):

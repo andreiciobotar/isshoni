@@ -1,18 +1,9 @@
 """@command: a command declared beside its function is parsed, listed in order and run by main."""
 import argparse
-import importlib.machinery
-import importlib.util
-import os
 import unittest
-from pathlib import Path
 from unittest import mock
 
-os.environ.pop("FACTORY_ROLE", None)
-BIN = Path(__file__).resolve().parent.parent / "bin" / "factory"
-os.environ.pop("FACTORY_HOME", None)
-_loader = importlib.machinery.SourceFileLoader("factory_bin", str(BIN))
-factory = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_bin", _loader))
-_loader.exec_module(factory)
+from test_factory import factory
 
 
 def listed_commands():

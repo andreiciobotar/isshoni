@@ -264,6 +264,7 @@ def model(lab):
             loader = importlib.machinery.SourceFileLoader("factory_live", lab.factory)
             module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_live", loader))
             loader.exec_module(module)
+            module = getattr(module, "factory_core", module)
             real_run = module.run
             with mock.patch.object(module, "run", probing), redirect_stdout(out):
                 module.main(["land", "probe"])
