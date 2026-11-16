@@ -21,6 +21,7 @@ CONFLICT = "it conflicts with main in a.txt"
 RED = "red checks: test https://x/run/2"
 COURIER_LINE = re.compile(r"nothing else: (.*)\. Then reply", re.S)
 SETTINGS = {"models": {"tech_lead": "opus"}}
+ISOLATED_SETTINGS = {"disableBundledSkills": True, **factory.BASE_REF, "enabledPlugins": LEAN_SETTINGS["enabledPlugins"]}
 ANSWER = {"outcome": "resolved", "note": "Kept both paragraphs in docs/factory.md; make test passes; no reviewer."}
 
 
@@ -217,7 +218,7 @@ class RunTests(Case):
         self.assertEqual(argv[:-1], [
             "claude", "-p", "--model", "opus", "--permission-mode", "auto",
             "--agents", json.dumps(factory.agent_definitions(factory.SETTINGS_DEFAULTS, self.root)), "--plugin-dir", str(BIN.parent.parent),
-            "--strict-mcp-config", "--settings", json.dumps(LEAN_SETTINGS),
+            "--worktree", SLUG, "--strict-mcp-config", "--settings", json.dumps(ISOLATED_SETTINGS),
             "--tools=Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch",
             "--allowedTools", "Read", "Edit", "Write", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "Bash(git *)",
             "Bash(make *)", "Bash(gh pr view *)", "Bash(gh pr diff *)", "Bash(gh pr checks *)", "Bash(gh run view *)",
@@ -231,7 +232,8 @@ class RunTests(Case):
             "\n\nEarlier tech lead runs on this pull request:\nnone"))
         i = m.calls.index(argv)
         self.assertEqual((m.cwds[i], m.timeouts[i], m.envs[i]["FACTORY_ROLE"], m.groups[i]),
-                         (f"{self.root}/.claude/worktrees/{SLUG}", 1800, "tech-lead", True))
+                         (self.root, 1800, "tech-lead", True))
+        self.assertIn(["git", "worktree", "unlock", f"{self.root}/.claude/worktrees/{SLUG}"], m.calls)
 
     def test_the_prompt_carries_the_stated_commands(self):
         self.use(Machine(self.root)).config.update({f"branch.worktree-{SLUG}.factoryTest": "./check.sh",

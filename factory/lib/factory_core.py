@@ -627,19 +627,52 @@ def agent_models(models):
     return {f.stem: models[model_key(f)] for f in sorted((PLUGIN_ROOT / "agents").glob("*.md")) if model_key(f) in models}
 
 
-def lean_flags():
-    """The flags of a lean start: no MCP servers, no bundled skills, and every installed plugin but the factory off."""
+def lean_flags(extra=None):
+    """The flags of a lean start: no MCP servers, no bundled skills, and every installed plugin but the factory off.
+    `extra` is more settings for the one `--settings` it passes."""
     rc, out, _ = run(["claude", "plugin", "list", "--json"], timeout=20)
     try:
         ids = sorted({e["id"] for e in json.loads(out) if e["id"].partition("@")[0] != "factory"}) if rc == 0 else None
     except (ValueError, TypeError, KeyError, AttributeError):
         ids = None
-    settings = {"disableBundledSkills": True}
+    settings = {"disableBundledSkills": True, **(extra or {})}
     if ids is None:
         print("factory: claude plugin list gave no plugin list; other plugins stay on", file=sys.stderr)
     else:
         settings["enabledPlugins"] = {i: False for i in ids}
     return ["--strict-mcp-config", "--settings", json.dumps(settings)]
+
+
+BASE_REF = {"worktree": {"baseRef": "head"}}  # a reopened worktree keeps its tip instead of resetting to the default branch
+
+
+def isolated_name(repo, path):
+    """The directory name of the worktree `path` when it is `<root>/.claude/worktrees/<name>`, else None: only such a
+    worktree can be opened by `claude --worktree <name>` from the main checkout."""
+    name = os.path.basename(path)
+    return name if os.path.realpath(path) == os.path.realpath(repo.worktree_path(name)) else None
+
+
+def worktree_flags(name, lean):
+    """The flags of a headless session in the worktree `name` (None: not under `.claude/worktrees`): `--worktree` and the
+    base-ref setting, so that Claude Code isolates it as it does a lead; else the lean flags, or none."""
+    if name is None:
+        return lean_flags() if lean else []
+    return ["--worktree", name, *(lean_flags(BASE_REF) if lean else ["--settings", json.dumps(BASE_REF)])]
+
+
+def run_in_worktree(repo, path, argv, **kw):
+    """`run` for a session started with `worktree_flags`: from the main checkout when isolated (the harness leaves the
+    worktree locked: released after the run), else in the worktree, said once to be not isolated."""
+    name = isolated_name(repo, path)
+    if name is None:
+        print(f"factory: {path} is not under {repo.root}/.claude/worktrees: this session is not isolated to its worktree",
+              file=sys.stderr)
+    try:
+        return run(argv, cwd=path if name is None else repo.root, **kw)
+    finally:
+        if name is not None:
+            repo.git("worktree", "unlock", path)
 
 
 SIZE_LIMIT_MINUTES = {"small": 45, "medium": 90, "large": 120}
@@ -5727,11 +5760,10 @@ class Landing:
             f"The golden files this task means to change: {', '.join(task_files) or 'none'}. A generated file on this "
             "list may be regenerated with the repository's documented command; any other golden that changes is a stop.",
             commands_line(self.repo, self.path, self.branch)])
-        lean = lean_flags() if self.lean else []
         argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", load_settings()["models"]["lander"],
-                "--permission-mode", self.mode, *lean, "--allowedTools", *LAND_TOOLS,
+                "--permission-mode", self.mode, *worktree_flags(isolated_name(self.repo, self.path), self.lean), "--allowedTools", *LAND_TOOLS,
                 "--disallowedTools", *ROLE_DENIED, "--output-format", "json", brief]
-        rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT, group=True)
+        rc, out, _ = run_in_worktree(self.repo, self.path, argv, timeout=LAND_TIMEOUT, group=True)
         try:
             text = json.loads(out).get("result")
         except (ValueError, AttributeError):
@@ -6206,10 +6238,9 @@ def tech_lead_prompt(repo, slug, pr, evidence, spec):
 
 def tech_lead_argv(repo, slug, pr, evidence, spec, settings):
     """The tech lead's launch command, the one place another runner would plug in."""
-    lean = lean_flags() if settings["lean_start"] else []
     return ["claude", "-p", "--model", settings["models"]["tech_lead"], "--permission-mode", settings["lead_permission_mode"],
             "--agents", json.dumps(agent_definitions(settings, repo.root)),
-            "--plugin-dir", str(PLUGIN_ROOT), *lean, f"--tools={TECH_LEAD_KIT}",
+            "--plugin-dir", str(PLUGIN_ROOT), *worktree_flags(isolated_name(repo, tech_lead_paths(repo, slug)[0]), settings["lean_start"]), f"--tools={TECH_LEAD_KIT}",
             "--allowedTools", *TECH_LEAD_TOOLS, "--disallowedTools", *TECH_LEAD_DENIED,
             "--max-budget-usd", TECH_LEAD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(TECH_LEAD_SCHEMA),
             "--append-system-prompt", TECH_LEAD_ROLE.read_text(), tech_lead_prompt(repo, slug, pr, evidence, spec)]
@@ -6325,7 +6356,7 @@ def tech_lead_run(repo, settings, args, learned):
     old_head, old_default = (repo.git("rev-parse", ref, path=worktree)[1].strip() for ref in ("HEAD", f"{repo.remote}/{repo.default}"))
     before, started = spec_hash(spec), time.monotonic()
     argv = tech_lead_argv(repo, slug, pr, evidence, spec, settings)
-    rc, out, _ = run(argv, cwd=worktree, timeout=TECH_LEAD_TIMEOUT, env={**os.environ, "FACTORY_ROLE": "tech-lead"}, group=True)
+    rc, out, _ = run_in_worktree(repo, worktree, argv, timeout=TECH_LEAD_TIMEOUT, env={**os.environ, "FACTORY_ROLE": "tech-lead"}, group=True)
     session, cost, verdict, note, reason = model_answer(rc, out, ("resolved", "escalate"), "note", TECH_LEAD_TIMEOUT, TECH_LEAD_BUDGET)
     learned.update(session=session, head_before=old_head, seconds=round(time.monotonic() - started), cost_usd=cost)
     head, clean, flaw = tech_lead_state(repo, worktree, pr, old_head, old_default, spec, before)
@@ -6379,10 +6410,9 @@ def build_prompt(repo, slug, spec, handover, note, findings=()):
 
 def build_argv(repo, slug, spec, handover, note, settings, findings=()):
     """The build's launch command, the one place another runner would plug in."""
-    lean = lean_flags() if settings["lean_start"] else []
     return ["claude", "-p", "--model", settings["models"]["tech_lead"],
             "--agents", json.dumps(agent_definitions(settings, repo.root)), "--permission-mode", settings["lead_permission_mode"],
-            "--plugin-dir", str(PLUGIN_ROOT), *lean, f"--tools={LEAD_TOOLS}", "--disallowedTools", *BUILD_DENIED,
+            "--plugin-dir", str(PLUGIN_ROOT), *worktree_flags(isolated_name(repo, repo.worktree_path(slug)), settings["lean_start"]), f"--tools={LEAD_TOOLS}", "--disallowedTools", *BUILD_DENIED,
             "--max-budget-usd", BUILD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(BUILD_SCHEMA),
             "--append-system-prompt", BUILD_ROLE.read_text(), build_prompt(repo, slug, spec, handover, note, findings)]
 
@@ -6476,8 +6506,8 @@ def build_run(repo, settings, args, spec, handover, learned):
     declare(repo, slug, "tech-lead", "working")
     old_head, before, started, findings = git("rev-parse", "HEAD"), spec_hash(spec), time.monotonic(), pending_findings(repo, slug)
     learned["delivered"] = [f["id"] for f in findings]
-    rc, out, _ = run(build_argv(repo, slug, spec, handover, args.note, settings, findings), cwd=worktree, timeout=BUILD_TIMEOUT,
-                     env={**os.environ, "FACTORY_ROLE": "tech-lead"}, group=True)
+    rc, out, _ = run_in_worktree(repo, worktree, build_argv(repo, slug, spec, handover, args.note, settings, findings),
+                                 timeout=BUILD_TIMEOUT, env={**os.environ, "FACTORY_ROLE": "tech-lead"}, group=True)
     session, cost, verdict, text, reason = model_answer(rc, out, BUILD_OUTCOMES, "handover", BUILD_TIMEOUT, BUILD_BUDGET)
     seconds = round(time.monotonic() - started)
     learned.update(session=session, head_before=old_head, seconds=seconds, cost_usd=cost, reported=reported_findings(out))

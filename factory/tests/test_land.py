@@ -48,7 +48,12 @@ if a[:1] == ["agents"]:
 elif a[:2] == ["plugin", "list"]:
     print('[{"id": "alpha@m", "enabled": true}, {"id": "factory@factory", "enabled": true}]')
 elif a[:1] == ["-p"]:
-    open(f"{d}/claude.jsonl", "a").write(json.dumps({"argv": a, "cwd": os.path.realpath(os.getcwd())}) + "\\n")
+    start = os.path.realpath(os.getcwd())
+    if "--worktree" in a:  # as the harness does: open the worktree, left locked, and work in it
+        path = os.path.join(start, ".claude", "worktrees", a[a.index("--worktree") + 1])
+        subprocess.run(["git", "worktree", "lock", path], check=True)
+        os.chdir(path)
+    open(f"{d}/claude.jsonl", "a").write(json.dumps({"argv": a, "cwd": start, "pwd": os.path.realpath(os.getcwd())}) + "\\n")
     mode = os.environ["FAKE_LANDER"]
     if mode == "fail":
         sys.exit(1)
@@ -337,7 +342,10 @@ class LandTests(unittest.TestCase):
         self.conflict()
         self.land("t1")
         (call,) = self.claude_calls()
-        self.assertFalse(any(a.startswith("--strict") or a == "--settings" for a in call["argv"]))
+        self.assertFalse(any(a.startswith("--strict") for a in call["argv"]))
+        i = call["argv"].index("--worktree")
+        self.assertEqual((call["argv"][i:i + 4], call["argv"].count("--settings")),
+                         (["--worktree", "t1", "--settings", json.dumps(FACTORY.BASE_REF)], 1))
 
     def test_the_lander_runs_on_the_configured_model(self):
         (self.home / ".claude" / "factory").mkdir(parents=True)
@@ -362,13 +370,15 @@ class LandTests(unittest.TestCase):
         self.assertEqual((p.returncode, self.result(p)), (1, "`LANDED, LOOK https://x/pull/t1`"))
         (call,) = self.claude_calls()
         argv = call["argv"]
-        self.assertEqual(call["cwd"], str(wt))
+        self.assertEqual((call["cwd"], call["pwd"]), (str(self.repo), str(wt)))
+        self.assertNotIn("locked", self.git("worktree", "list", "--porcelain"))
+        self.assertEqual(argv[argv.index("--worktree") + 1], "t1")
         self.assertEqual(argv[:5], ["-p", "--agent", "factory:lander", "--plugin-dir", str(BIN.parent.parent)])
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "auto")
         i = argv.index("--strict-mcp-config")
         self.assertEqual(argv[i:i + 3], ["--strict-mcp-config", "--settings", json.dumps(
-            {"disableBundledSkills": True, "enabledPlugins": {"alpha@m": False}})])
+            {"disableBundledSkills": True, **FACTORY.BASE_REF, "enabledPlugins": {"alpha@m": False}})])
         tools = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
         self.assertEqual(tools, ["Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
                                  "Bash(gh pr edit *)", "Bash(factory overlap *)"])

@@ -293,6 +293,33 @@ A task whose deliverable is findings, not a change, runs through the same team a
 
 **GitHub stacks.** The pull requests of a stack also show as a GitHub stack, so the reviewer gets stack navigation and checks judged against the trunk. It is display only: landing is unchanged, the queue merges each pull request bottom-up with `gh pr merge --merge --match-head-commit` after its own gates, and nobody merges with GitHub's stack merge button or `merge-async`. The stack is derived on every `drain` pass from the open pull requests' base and head refs, right after the snapshot: a chain starts at a pull request based on the default branch, and each next one is based on the head of the one below. Two pull requests on one head (siblings) end the chain, a fork pull request never joins, and a chain of one is no stack. The pass only creates a stack or appends to one (`gh api` `repos/{owner}/{repo}/stacks`, header `X-GitHub-Api-Version: 2026-03-10`, through the bot's `gh`); a failure prints one `lander: stacks:` line and landing goes on. GitHub refuses `gh pr edit --base` on a stack member, and its synchronous merge does not support stacks, so the script dissolves the stack (`unstack`, which removes every unmerged member) just before it retargets or merges a member (`merge`, the lander's loop, `factory land`); the next pass re-forms what is left once its bottom targets the default branch. A dissolve that fails, or that leaves locked members (HTTP 200), is a stop. To undo by hand: `gh api -X POST -H "X-GitHub-Api-Version: 2026-03-10" repos/{owner}/{repo}/stacks/<number>/unstack`; the next pass forms it again while the chain holds. GitHub's `gh stack` extension shows and manages these stacks from the terminal; `factory wizard` offers it (step 6, Setup and uninstall).
 
+## Isolation to the worktree
+Claude Code isolates a session to one worktree only when the session is started with `--worktree <name>` from the main checkout (`MAIN`): a `claude -p` started with its working directory already in a worktree (`WT`) is not isolated. The harness then refuses a command that runs git in another checkout (`git -C`, `--git-dir`, `GIT_DIR`, `GIT_WORK_TREE`, a `cd` there first) and a file edit into `MAIN`, and it refuses the compound commands that name git, which is why the role files tell their agents to run one plain command per Bash call. Deny rules cannot do this: they match the text of a command, not where it would act.
+
+The build run, the merge-queue tech lead and the `factory land` lander are therefore started `claude -p --worktree <name> --settings '{"worktree":{"baseRef":"head"}}'` (the lean start passes that setting inside its own `--settings`: one flag) with their working directory `MAIN`, when `WT` is `MAIN/.claude/worktrees/<name>`. `baseRef=head` is there so that a reopened worktree keeps its tip. Under another path the start is as before (working directory `WT`, no flag) and the run prints `this session is not isolated to its worktree` to stderr. The session's own `pwd` is `WT` either way. The harness leaves the worktree locked after a `-p` run; the factory runs `git worktree unlock WT` when the run ends.
+
+| session | start | isolated before | isolated after | shown by |
+|---|---|---|---|---|
+| lead | `claude --bg --worktree <slug>`, cwd `MAIN` | yes | yes | its `-C`, `GIT_DIR` and `cd` forms refused in the worker-commands probe (rows A18, B17, B19) |
+| lead's explorers | subagents of the lead | yes | yes | same probe; the harness covers every subagent of an isolated session |
+| build run (tech lead) | `claude -p`, cwd `WT`; now `claude -p --worktree <slug>`, cwd `MAIN` | no | yes | `live_isolation.py` R1..R7: S1 accepted, S2 refused |
+| its coder, reviewer, explorer, lander | subagents of the build run | no | yes | R1..R7: S3 refused |
+| merge-queue tech lead | as the build run | no | yes | not probed on its own: same start, same helper; the probe uses the build run's tools and deny list |
+| `factory land` lander | as the build run | no | yes | not probed on its own, as above |
+| site manager, kaizen review | `claude -p`, cwd `MAIN` | no | no | not probed: they run in `MAIN` by design, there is no worktree to isolate them to |
+| ops watch, its ops explorer | `claude -p --tools=Agent`, cwd `MAIN`; the explorer has no shell | no | no | not probed: no worktree; no shell in the explorer |
+| courier | `claude -p`, SendMessage only | no | no | not probed: no shell |
+| dispatcher | `claude --bg` in `MAIN` (`docker/start`) | no | no | not probed: no worktree |
+
+**What the probe measured** (`python3 factory/tests/live_isolation.py`; scratch repository, Haiku, the build run's tools and deny list). R1..R7 are the commands that reach outside the worktree: `git -C MAIN commit`, `GIT_DIR=MAIN/.git git commit`, `cd MAIN && git commit`, `git -C <other worktree> commit`, `git -C MAIN reset --hard`, `git -C MAIN stash push -u`, `git -C MAIN config`. All seven were accepted under S1 (`claude -p`, cwd `WT`) and refused under S2 (`--worktree`, cwd `MAIN`), S3 (S2, the command run by a subagent) and S4 (S2 launched with cwd `WT`: not refused at launch, ran isolated). What a build needs (commit, push, fetch and merge, reading `MAIN`'s files, writing under `FACTORY_HOME` and the scratch directory) worked under S1..S4; `gh` was not probed (a scratch repository has no network identity). A reopen did not move the branch with or without `baseRef=head`; the lock was left, and `git worktree unlock` cleared it.
+
+**What isolation does not stop.**
+- The stash is shared by every worktree: `git stash push -u` in `WT` (R8) was accepted under every start.
+- `git config probe.key 1` in `WT` (R9) was refused by the harness in the probe, though git's config is shared by every worktree. That is measured, not designed: do not rely on it.
+- `cp` or a shell redirect into `MAIN`, which does not run git there, is not refused.
+- None of the deny lists (`LEAD_DENIED`, `ROLE_DENIED`, `TECH_LEAD_DENIED`, `BUILD_DENIED`) stops a `git -C <elsewhere> commit|reset|stash|config`: their patterns begin at `git <verb>`.
+- A command shape the harness refuses now also stops a build run's agents (compound commands naming git); that is the price.
+
 ## Logs
 All under `~/.claude/factory/`, JSON lines, append-only, mode 0600. Except where noted, a record carries `ts` (UTC, `2026-11-14T00:01:02Z`), `repo` (the main checkout's path), `slug`, `role` (`lead`, `dispatcher`, a subagent's type without the `factory:` prefix such as `coder`, or the same for a session started with `--agent`, as `factory land` starts the lander, `subagent` when it has none, else `other`; `feedback add` stores the `--role` it is given), `model`, `version` (the plugin's), `session`.
 
