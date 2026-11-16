@@ -36,7 +36,7 @@ class Attribution(unittest.TestCase):
                 result = seen[0]
             return result
 
-    def builders(self, isolated=False):
+    def builders(self, lander_in_worktrees=False):
         repo = lambda tmp: SimpleNamespace(root=tmp, default="main", remote="origin", worktree_path=lambda name: f"{tmp}/.claude/worktrees/{name}",
                               git=lambda *a, **k: (0, "", ""))
 
@@ -46,7 +46,7 @@ class Attribution(unittest.TestCase):
 
         def lander(settings, tmp):
             land = factory.Landing.__new__(factory.Landing)
-            land.__dict__.update(repo=repo(tmp), path=repo(tmp).worktree_path("s") if isolated else str(tmp), branch="b", remote="origin", slug="s", lean=settings["lean_start"],
+            land.__dict__.update(repo=repo(tmp), path=repo(tmp).worktree_path("s") if lander_in_worktrees else str(tmp), branch="b", remote="origin", slug="s", lean=settings["lean_start"],
                                  mode="auto", declared=True, old_head="h", base="main", merged=False, target="main")
             land.out = lambda *a: "h" if a[0] == "rev-parse" else "x" if a[0] == "diff" else ""
             land.git = land.log_queue = land.mark_working = lambda *a, **k: None
@@ -73,7 +73,7 @@ class Attribution(unittest.TestCase):
                     self.assertEqual(json.loads(argv[argv.index("--settings") + 1])["attribution"], factory.ATTRIBUTION_OFF)
 
     def test_the_worktree_sessions_carry_attribution_off_and_base_ref_in_their_one_settings(self):
-        builders = self.builders(isolated=True)
+        builders = self.builders(lander_in_worktrees=True)
         for name in ("build", "tech lead", "lander"):
             for lean in (True, False):
                 with self.subTest(session=name, lean_start=lean):
