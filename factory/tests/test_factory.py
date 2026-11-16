@@ -1140,15 +1140,6 @@ class OpsHookTests(InStore):
         self.assertFalse((self.dir / "deliverables").exists())
 
 
-class ReserveTests(unittest.TestCase):
-    def test_reserve_is_a_rounded_up_percent_that_never_takes_the_last_slot(self):
-        for cap, want in ((1, 0), (2, 1), (5, 1), (10, 1), (11, 2), (15, 2), (20, 2), (21, 3)):
-            self.assertEqual(factory.reserve(cap, 10), want, cap)
-        for cap in (1, 2, 7, 40):
-            self.assertEqual(factory.reserve(cap, 0), 0)
-        self.assertEqual(factory.reserve(5, 100), 4)
-
-
 class DeniedTests(unittest.TestCase):
     def test_every_list_holds_the_push_patterns(self):
         for name in ("ROLE_DENIED", "BUILD_DENIED", "LEAD_DENIED", "TECH_LEAD_DENIED"):
@@ -1157,6 +1148,15 @@ class DeniedTests(unittest.TestCase):
     def test_build_and_lead_refuse_merge_and_review(self):
         for name in ("BUILD_DENIED", "LEAD_DENIED"):
             self.assertLessEqual({"Bash(gh pr merge*)", "Bash(gh pr review*)"}, set(getattr(factory, name)), name)
+
+
+class ReserveTests(unittest.TestCase):
+    def test_reserve_is_a_rounded_up_percent_that_never_takes_the_last_slot(self):
+        for cap, want in ((1, 0), (2, 1), (5, 1), (10, 1), (11, 2), (15, 2), (20, 2), (21, 3)):
+            self.assertEqual(factory.reserve(cap, 10), want, cap)
+        for cap in (1, 2, 7, 40):
+            self.assertEqual(factory.reserve(cap, 0), 0)
+        self.assertEqual(factory.reserve(5, 100), 4)
 
 
 class NewTests(unittest.TestCase):
