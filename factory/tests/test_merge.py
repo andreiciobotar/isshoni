@@ -853,6 +853,19 @@ class SyncDraftTests(World):
                 self.assertEqual(self.flips(), flips)
                 self.assertEqual("".join(l + "\n" for l in out.splitlines() if l.startswith("#1 ")), line)
 
+    def test_a_held_pull_request_with_red_checks_stays_ready(self):
+        hold = {"stopped": {"1": {"head": SHA, "kind": "not-ours", "text": "t", "ts": iso(NOW)}}}
+        for label, (lander, flips) in {"held": (hold, []), "released": ({**hold, "unblocked": {"1": {}}}, [["pr", "ready", "1", "--undo"]]),
+                                     "held at another head": ({"stopped": {"1": {**hold["stopped"]["1"], "head": "old"}}},
+                                                              [["pr", "ready", "1", "--undo"]]),
+                                     "not held": ({}, [["pr", "ready", "1", "--undo"]])}.items():
+            with self.subTest(label):
+                self.setUp()
+                factory.write_lander(SimpleNamespace(root=ROOT), lander)
+                code, out, _ = self.tick([pr(1)], checks=FAILED)
+                self.assertEqual(code, 0)
+                self.assertEqual(self.flips(), flips)
+
     def test_status_agrees_with_what_the_sync_leaves_on_github(self):
         cases = {
             "working": (dict(state="working", prs=[pr(1)]), True, "motion", None),

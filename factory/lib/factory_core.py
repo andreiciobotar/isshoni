@@ -4536,9 +4536,13 @@ def sync_drafts(p, prs):
         phased(p)
     except NotEvaluated as e:
         return print(f"drafts not synced: {e}")
+    lander = read_lander(p["repo"])
     for pr in prs:
         row, n = task_of(p, pr), str(pr["number"])
         if pr["isCrossRepository"] or row is None or row["phase"] in ("settled", "merged"):
+            continue
+        if held_at(lander, pr):
+            print(f"#{n} draft flag not changed: held, its red check is not its branch's")
             continue
         if row["last_commit"] is None:
             print(f"#{n} draft flag not changed: its task's head cannot be read")
