@@ -26,7 +26,7 @@ class CloseBase(ScratchRepoBase):
 
     def setUp(self):
         super().setUp()
-        self.sessions, self.prs, self.lsof, self.calls = [], [], NO_USER, []
+        self.sessions, self.prs, self.lsof, self.calls, self.rm = [], [], NO_USER, [], (0, "", "")
         patcher = mock.patch.dict(os.environ, {**self.env, "CLAUDE_CODE_SESSION_ID": "sid-d"})
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -34,6 +34,8 @@ class CloseBase(ScratchRepoBase):
 
         def answer(argv, **kw):
             self.calls.append(list(argv))
+            if argv[:2] == ["claude", "rm"]:
+                return self.rm
             if argv[0] == "claude":
                 return (0, json.dumps(self.sessions), "") if self.sessions is not None else (1, "", "boom")
             if argv[0] == "lsof":
@@ -85,6 +87,18 @@ class CloseBase(ScratchRepoBase):
         self.assertTrue(self.wt.is_dir())
         self.assertIn("worktree-t1", self.branches())
         return err
+
+    def vanished_lead(self, session=True):
+        """A report task whose lead is gone: declared working, no pull request, clean, level with nothing of its own while main
+        moved on, the worktree locked as Claude Code locks it, and (unless `session` is false) its finished session listed."""
+        self.main_moves("m1.txt", "1\n")
+        self.main_moves("m2.txt", "2\n")
+        self.git("worktree", "lock", "--reason", "claude session x (pid 1)", str(self.wt))
+        self.sessions = [{"id": "sx", "name": "t1", "cwd": str(self.wt), "kind": "background", "state": "done"}] if session else []
+
+    def removal_commands(self):
+        """The commands of the removal that were run: `claude rm`, `git worktree remove`, `git update-ref`."""
+        return [c for c in self.calls if c[:2] == ["claude", "rm"] or c[:3] == ["git", "worktree", "remove"] or "update-ref" in c]
 
     def pr(self, state, branch="worktree-t1", head=None, base="main"):
         self.prs.append({"state": state, "url": f"https://x/pull/{len(self.prs) + 1}", "headRefOid": head or self.git("rev-parse", branch),
@@ -226,6 +240,57 @@ class StackedTests(CloseBase):
         self.assertIn("worktree-t1", self.branches())
 
 
+    def test_a_merged_task_whose_stack_merged_too_is_removed_through_its_session_without_a_close(self):
+        self.sessions = [{"id": "sx", "name": "t1", "cwd": str(self.wt), "kind": "background", "state": "done"}]
+        self.pr("MERGED", branch="worktree-t2")
+        code, out, _ = self.go("clean")
+        self.assertEqual((code, out), (0, "removed t1\nremoved t2\n"))
+        self.assertEqual([c for c in self.calls if c[:2] == ["claude", "rm"]], [["claude", "rm", "sx"]])
+        self.assertEqual(self.states(), [("t1", "working"), ("t2", "working")])
+        self.assertEqual(self.event_names(), ["TaskRemoved", "TaskRemoved"])
+
+
+class VanishedLeadTests(CloseBase):
+    """A report task whose lead is gone, its worktree locked: the dispatcher closes it."""
+
+    def test_a_listed_session_removes_it_with_one_claude_rm_through_the_lock(self):
+        self.vanished_lead()
+        code, out, _ = self.go("close", "t1", "--reason", "report used")
+        self.assertEqual((code, out), (0, "closed t1: report used\nremoved t1\n"))
+        self.assertEqual(self.states(), [("t1", "working"), ("t1", "closed")])
+        self.assertEqual(self.event_names(), ["TaskClosed", "TaskRemoved"])
+        self.assertEqual(self.removal_commands(), [["claude", "rm", "sx"]])
+
+    def test_a_claude_rm_that_fails_keeps_the_closed_task_and_its_worktree(self):
+        self.vanished_lead()
+        self.rm = (1, "", "no such session")
+        code, out, err = self.go("close", "t1", "--reason", "report used")
+        self.assertEqual((code, out), (1, "closed t1: report used\n"))
+        self.assertEqual(err, "failed t1 (branch worktree-t1): claude rm sx: no such session\n")
+        self.assertEqual(self.states(), [("t1", "working"), ("t1", "closed")])
+        self.assertEqual(self.event_names(), ["TaskClosed"])
+        self.assertEqual(self.removal_commands(), [["claude", "rm", "sx"]])
+        self.assertTrue(self.wt.is_dir())
+        self.assertIn("worktree-t1", self.branches())
+
+    def test_a_locked_worktree_with_no_session_is_kept_until_unlocked(self):
+        self.vanished_lead(session=False)
+        code, out, _ = self.go("close", "t1", "--reason", "report used")
+        why = f"its worktree is locked (claude session x (pid 1)) and no session is left to remove it through; if nothing uses it, run: git worktree unlock {self.wt}"
+        self.assertEqual((code, out), (0, f"closed t1: report used\nkept t1: {why}\n"))
+        self.assertEqual(self.event_names(), ["TaskClosed"])
+        self.assertEqual(self.removal_commands(), [])
+        self.assertTrue(self.wt.is_dir())
+        self.assertIn("worktree-t1", self.branches())
+        self.git("worktree", "unlock", str(self.wt))
+        code, out, _ = self.go("close", "t1", "--reason", "report used")
+        self.assertEqual((code, out), (0, "closed t1: report used\nremoved t1\n"))
+        self.assertEqual(self.states(), [("t1", "working"), ("t1", "closed")])
+        self.assertEqual(self.event_names(), ["TaskClosed", "TaskRemoved"])
+        self.assertFalse(self.wt.exists())
+        self.assertNotIn("worktree-t1", self.branches())
+
+
 class RefusalTests(CloseBase):
     def test_a_task_with_an_unfinished_session_is_live(self):
         self.sessions = [{"id": "s1", "name": "t1", "cwd": str(self.wt), "kind": "background", "status": "busy", "state": "working"}]
@@ -342,6 +407,17 @@ class SiteManagerTests(CloseBase):
         self.assertTrue(self.wt.is_dir())
         self.assertEqual(self.told, [("t1", "ESCALATION", f"{f['id']} ended-undeclared t1: closed (replaced); kept: {ONLY_HERE}{sha[:7]} the only copy", False)])
         self.assertEqual(self.event_names(), ["TaskClosed"])
+
+    def test_a_removal_that_fails_is_an_escalation_pointing_at_the_watch_log(self):
+        self.vanished_lead()
+        self.rm = (1, "", "no such session")
+        f = self.firing()
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(self.decide(f)[0], 1)
+        self.assertEqual(self.states()[-1], ("t1", "closed"))
+        self.assertEqual(self.event_names(), ["TaskClosed"])
+        self.assertTrue(self.wt.is_dir())
+        self.assertEqual(self.told, [("t1", "ESCALATION", f"{f['id']} ended-undeclared t1: closed (replaced); kept: its removal failed, see the watch log", False)])
 
     def test_a_call_of_his_own_closes_on_any_entry(self):
         call = {"entry": "merged-not-cleaned", "slug": "t1", "detail": "head is in main", "decision": "closed", "reason": "replaced",
