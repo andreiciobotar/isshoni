@@ -719,6 +719,17 @@ class StackedFactTests(StackedTests):
         self.assertEqual(factory.c_merged_not_cleaned({"repo": repo, "sessions": [], "rows": rows}, None), [])
 
 
+class StackedKeptTests(StackedTests):
+    def test_a_closed_task_with_a_task_stacked_on_it_shows_why_it_is_kept_and_is_not_in_motion(self):
+        self.declare("t1", "closed", reason="replaced by t2")
+        doc = json.loads(self.go("status", "--json")[1])
+        rows = {r["slug"]: r for r in doc["rows"]}
+        self.assertEqual((rows["t1"]["kept"], rows["t1"]["phase"]), ("t2 is stacked on it", "merged"))
+        self.assertIsNone(rows["t2"]["kept"])
+        self.assertEqual(doc["in_motion"], 1)  # t2 alone
+        self.assertIn("kept: t2 is stacked on it", self.go("status")[1])
+
+
 class MergedNotCleanedWatchTests(Harness):
     """The watch's full pass: the fact's firing folds like any other."""
 

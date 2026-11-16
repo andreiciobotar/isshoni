@@ -1098,6 +1098,7 @@ def collect(repo, sessions, limit_hours, prs=None):
         prs = (ask_pull_requests(repo, needed)[0] if needed else {}) or {b: UNKNOWN_PR for b in needed}
     prioritized = read_lander(repo)["prioritized"]
     granted = extended(repo)
+    firings = fold(repo_log("firings", repo.root) or [])[0]
     events = repo_log("events", repo.root) or []
     rows = []
     for wt in repo.tasks:
@@ -1139,13 +1140,21 @@ def collect(repo, sessions, limit_hours, prs=None):
         row["waited"] = None if since is None else max(0, int(now - since))
         row["blocked"] = session_block(mine, over_merged(row["pr_state"], row["state"]))
         row["phase"] = phase(row["pr_state"], mine if placed else None, row["state"])
-        timed = row["phase"] == "motion" and bool(session) and not finished(session) and row["elapsed"] is not None
+        decided = [f for f in firings if f["slug"] == slug and not f["cleared"] and f["decision"] in ("suppressed", "escalated")
+                   and f["criterion"] in ("ended-undeclared", "merged-not-cleaned")]
+        row["held"] = {"criterion": decided[-1]["criterion"], "decision": decided[-1]["decision"], "since": decided[-1]["decided"],
+                       "reason": decided[-1]["reason"]} if decided else None
+        timed = (row["phase"] == "motion" and bool(session) and not finished(session) and row["elapsed"] is not None
+                 and not row["held"])
         row["overtime"] = timed and row["elapsed"] > row["limit"]
         row["nearing"] = bool(timed and not row["overtime"] and row["state"] == "working"
                               and row["elapsed"] * 100 > row["limit"] * NEARING_PERCENT)
         times = [t for t in (row["last_commit"], started) if t]
         row["stale"] = bool(times) and now - max(times) > STALE_SECONDS
         rows.append(row)
+    files = OpenFiles()
+    for row in rows:
+        row["kept"] = kept(repo, row, rows, files)[0]
     stops(repo, declared, rows)
     return rows
 
@@ -1645,6 +1654,8 @@ def cmd_status(args):
         pr = r["pr_state"] + (f" {r['pr_url']}" if r["pr_url"] else "")
         flags = " ".join(f for f in ("overtime" if r["overtime"] else "", "nearing" if r["nearing"] else "", "stale" if r["stale"] else "",
                                           f"paused {age(epoch(r['paused']['since']), now)}: waits {', '.join(r['paused']['waits_on'])}" if r["paused"] else "",
+                                          f"kept: {r['kept']}" if r["kept"] else "",
+                                          f"held {age(epoch(r['held']['since']), now)}: {r['held']['criterion']} {r['held']['decision']}" if r["held"] else "",
                                           f"prioritized {age(epoch(r['prioritized']['since']), now)}" if r["prioritized"] else "") if f)
         more = f" (+{sum(e['minutes'] for e in r['extensions'])}m {r['extensions'][-1]['by']})" if r["extensions"] else ""
         elapsed = "-" if r["elapsed"] is None else (
@@ -1716,6 +1727,13 @@ def keep_rule(repo, row, rows, files=None):
         return (f"its worktree is locked{why} and no session is left to remove it through; "
                 f"if nothing uses it, run: git worktree unlock {row['path']}"), False
     return reason, False
+
+
+def kept(repo, row, rows, files):
+    """`keep_rule` for a task whose work is over (merged, settled, closed or a report), `(None, False)` for any other."""
+    if row["phase"] == "merged" or row["state"] in (*SETTLED, "closed") or reported(row):
+        return keep_rule(repo, row, rows, files)
+    return None, False
 
 
 def settled_reason(repo, row):
@@ -2555,10 +2573,9 @@ def c_merged_not_cleaned(p, _):
     repo, rows, files = p["repo"], phased(p), OpenFiles()
     found = []
     for r in rows:
-        if r["phase"] == "merged" or r["state"] in (*SETTLED, "closed") or reported(r):
-            reason, elsewhere = keep_rule(repo, r, rows, files)
-            if reason and not elsewhere and not r["blocked"]:
-                found.append((r["slug"], r["slug"], f"kept: {reason}"))
+        reason, elsewhere = kept(repo, r, rows, files)
+        if reason and not elsewhere and not r["blocked"]:
+            found.append((r["slug"], r["slug"], f"kept: {reason}"))
     return found
 
 
