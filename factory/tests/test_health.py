@@ -522,15 +522,24 @@ class HealthTests(Harness):
         return [l for l in self.cli("health")[1].splitlines() if l.startswith("watch:")]
 
     def test_a_late_tick_is_a_line_that_tells_a_held_lock_from_a_free_one(self):
+        path = self.lock_file(factory.TICK_LATE + factory.LAND_TIMEOUT + 120)
+        [free] = self.health_lines()
+        self.assertIn("no tick has begun for 46m and none is running", free)
+        with open(path, "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            [stuck] = self.health_lines()
+        self.assertIn("the last tick began 46m ago and is still running (one begins every 2m; a pass that resolves a conflict "
+                      "can take 30m per pull request): if it is not landing, it is stuck; ask the human to end it", stuck)
+        self.assertIn("pgrep -fl 'factory watch'", stuck)
+        self.assertEqual(os.stat(path).st_mtime, NOW - factory.TICK_LATE - factory.LAND_TIMEOUT - 120)
+
+    def test_a_held_lock_between_the_two_thresholds_is_no_line_and_a_free_one_is(self):
         path = self.lock_file(factory.TICK_LATE + 120)
         [free] = self.health_lines()
         self.assertIn("no tick has begun for 16m and none is running", free)
         with open(path, "a") as held:
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            [stuck] = self.health_lines()
-        self.assertIn("the last tick began 16m ago and is still running (one begins every 2m, its longest step is 10m): it is stuck", stuck)
-        self.assertIn("pgrep -fl 'factory watch'", stuck)
-        self.assertEqual(os.stat(path).st_mtime, NOW - factory.TICK_LATE - 120)
+            self.assertEqual(self.health_lines(), [])
 
     def test_a_recent_tick_or_no_lock_file_is_no_line(self):
         self.assertEqual(self.health_lines(), [])

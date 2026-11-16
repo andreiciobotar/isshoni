@@ -3385,9 +3385,10 @@ def strangers():
 
 
 def tick_lines(repo):
-    """One line when the last tick began more than TICK_LATE ago: still running (the watch lock is held) or not started.
-    Nothing for a repository whose watch lock file does not exist. Read-only: the lock is tried and dropped, the file
-    is not touched."""
+    """One line when the last tick began long ago: more than TICK_LATE and the watch lock is free (not started), or more
+    than TICK_LATE + LAND_TIMEOUT and it is held (the lander's loop runs the tick again each pass, and a pass with a
+    conflict run takes up to LAND_TIMEOUT per pull request). Nothing for a repository whose watch lock file does not
+    exist. Read-only: the lock is tried and dropped, the file is not touched."""
     path = repo_state(repo.root, "watch", "lock")
     try:
         late = time.time() - os.stat(path).st_mtime
@@ -3400,8 +3401,11 @@ def tick_lines(repo):
     if free:
         return [f"watch: no tick has begun for {late // 60:.0f}m and none is running: the schedule is not starting them "
                 f"(factory schedule shows it; a machine that just woke runs one within {WATCH_INTERVAL // 60}m)"]
-    return [f"watch: the last tick began {late // 60:.0f}m ago and is still running (one begins every {WATCH_INTERVAL // 60}m, "
-            f"its longest step is {WATCH_TIMEOUT // 60}m): it is stuck; ask the human to end it (pgrep -fl 'factory watch')"]
+    if late <= TICK_LATE + LAND_TIMEOUT:
+        return []
+    return [f"watch: the last tick began {late // 60:.0f}m ago and is still running (one begins every {WATCH_INTERVAL // 60}m; "
+            f"a pass that resolves a conflict can take {LAND_TIMEOUT // 60}m per pull request): if it is not landing, it is stuck; "
+            f"ask the human to end it (pgrep -fl 'factory watch')"]
 
 
 def stale_lines(repo):
