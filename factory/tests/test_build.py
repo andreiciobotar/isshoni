@@ -1,13 +1,16 @@
 import io
 import json
+import os
+import subprocess
+import tempfile
 import re
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from test_factory import BIN, LEAN_SETTINGS, factory
-from test_tech_lead import DEFAULT, N, OLD, Case, Machine, SLUG, URL
+from test_factory import BIN, LEAN_SETTINGS, NO_ATTRIBUTION, factory, porcelain
+from test_tech_lead import DEFAULT, ISOLATED_SETTINGS, N, OLD, Case, Machine, SLUG, URL
 
 HEAD = "d" * 40
 SPEC_TEXT = "the spec"
@@ -67,7 +70,7 @@ class LaunchTests(BuildCase):
         self.assertEqual(argv[:-1], [
             "claude", "-p", "--model", "opus", "--agents", json.dumps(factory.agent_definitions(factory.SETTINGS_DEFAULTS, self.root)),
             "--permission-mode", "auto", "--plugin-dir", str(BIN.parent.parent),
-            "--strict-mcp-config", "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}",
+            "--worktree", SLUG, "--strict-mcp-config", "--settings", json.dumps(ISOLATED_SETTINGS), f"--tools={factory.LEAD_TOOLS}",
             "--disallowedTools", *factory.BUILD_DENIED,
             "--max-budget-usd", "15.00", "--output-format", "json", "--json-schema", json.dumps(factory.BUILD_SCHEMA),
             "--append-system-prompt", role])
@@ -78,7 +81,76 @@ class LaunchTests(BuildCase):
             "The task's stated size is medium."))
         i = m.calls.index(argv)
         self.assertEqual((m.cwds[i], m.timeouts[i], m.envs[i]["FACTORY_ROLE"], m.groups[i]),
-                         (f"{self.root}/.claude/worktrees/{SLUG}", 5400, "tech-lead", True))
+                         (self.root, 5400, "tech-lead", True))
+        self.assertIn(["git", "worktree", "unlock", f"{self.root}/.claude/worktrees/{SLUG}"], m.calls)
+
+    def test_without_the_lean_start_the_run_still_gets_the_worktree_and_the_base_ref_in_one_settings(self):
+        (self.store / "settings.toml").write_text('[sessions]\nlean_start = false\n')
+        *_, m = self.build()
+        argv = m.tech_lead_calls()[0]
+        i = argv.index("--worktree")
+        self.assertEqual((argv[i:i + 4], argv.count("--settings"), "--strict-mcp-config" in argv),
+                         (["--worktree", SLUG, "--settings", json.dumps({**NO_ATTRIBUTION, **factory.BASE_REF})], 1, False))
+        self.assertEqual(m.cwds[m.calls.index(argv)], self.root)
+
+    def test_the_lock_the_harness_leaves_is_released_when_the_run_fails(self):
+        code, *_, m = self.build(claude=(1, "", "boom"))
+        self.assertIn(["git", "worktree", "unlock", f"{self.root}/.claude/worktrees/{SLUG}"], m.calls)
+
+    def lock_after_run(self, lock_before):
+        """The lock of a real worktree after `run_in_worktree`, whose session locks it as the harness does."""
+        with tempfile.TemporaryDirectory() as tmp:
+            git = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True, capture_output=True, text=True).stdout
+            git("init", "-q", "-b", "main")
+            git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x")
+            wt = os.path.join(os.path.realpath(tmp), ".claude", "worktrees", "w")
+            git("worktree", "add", "-q", "-b", "w", wt)
+            if lock_before:
+                git("worktree", "lock", "--reason", "claude session w (pid 1)", wt)
+            git_calls = []
+
+            def session(argv, **kw):
+                if not lock_before:
+                    git("worktree", "lock", wt)
+                return 0, "", ""
+            real_run = factory.run
+
+            def run(argv, **kw):
+                git_calls.append(argv)
+                return session(argv, **kw) if argv[0] == "claude" else real_run(argv, **kw)
+            with mock.patch.object(factory, "run", side_effect=run):
+                factory.run_in_worktree(factory.Repo(tmp), wt, ["claude", "-p"])
+            locks = [l for l in git("worktree", "list", "--porcelain").splitlines() if l.startswith("locked")]
+            return locks, [c for c in git_calls if c[:3] == ["git", "worktree", "unlock"]]
+
+    def test_a_lock_that_was_there_before_the_run_is_left_alone_with_its_reason(self):
+        locks, unlocks = self.lock_after_run(True)
+        self.assertEqual(locks, ["locked claude session w (pid 1)"])
+        self.assertEqual(unlocks, [])
+
+    def test_the_lock_the_run_left_is_released(self):
+        self.assertEqual(self.lock_after_run(False)[0], [])
+
+    def test_a_failed_unlock_that_is_not_a_missing_lock_is_said(self):
+        err = io.StringIO()
+        repo = mock.Mock(root=self.root, worktree_path=lambda name: f"{self.root}/.claude/worktrees/{name}")
+        repo.git.side_effect = [(0, porcelain((self.root, DEFAULT, False), (f"{self.root}/.claude/worktrees/{SLUG}", "b", False)), ""),
+                                (128, "", "fatal: cannot unlock")]
+        with mock.patch.object(factory, "run", return_value=(0, "", "")), redirect_stderr(err):
+            factory.run_in_worktree(repo, f"{self.root}/.claude/worktrees/{SLUG}", ["claude", "-p"])
+        self.assertIn("worktree unlock", err.getvalue())
+
+    def test_a_worktree_outside_the_task_directory_keeps_the_old_start_and_says_it_is_not_isolated(self):
+        repo, outside = mock.Mock(root=self.root, worktree_path=lambda name: f"{self.root}/.claude/worktrees/{name}"), f"{self.root}/elsewhere/{SLUG}"
+        self.assertEqual(factory.isolated_name(repo, outside), None)
+        with mock.patch.object(factory, "session_flags", return_value=["--strict-mcp-config"]):
+            self.assertEqual(factory.worktree_flags(None, True), ["--strict-mcp-config"])
+        self.assertEqual(factory.worktree_flags(None, False), ["--settings", json.dumps(NO_ATTRIBUTION)])
+        err = io.StringIO()
+        with mock.patch.object(factory, "run", return_value=(0, "", "")) as run, redirect_stderr(err):
+            factory.run_in_worktree(repo, outside, ["claude", "-p"], timeout=1)
+        run.assert_called_once_with(["claude", "-p"], cwd=outside, timeout=1)
+        self.assertIn("not isolated to its worktree", err.getvalue())
 
     def test_the_prompt_sends_a_later_run_to_the_hand_over_file_and_says_nothing_of_a_missing_note_or_size(self):
         self.handover.write_text("## Run 1: question (x)\n")

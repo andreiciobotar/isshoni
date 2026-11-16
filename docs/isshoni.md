@@ -121,7 +121,7 @@ Per task (listed by `started`, tasks without one first, then slug):
 medians of `cost`, `brief_to_pr_s`, `pr_to_merge_s`, `review_rounds`; `first_pass`
 (`yes` of `of`); `rework_share` (rework over cost); `by_role`; `time` (`building_s` is
 `brief_to_pr_s` minus `stopped_s`, never below 0, plus `stopped_s` and `merge_wait_s`).
-`tasks` counts all, `in_flight` those not landed and not `acknowledged` or `dismissed`, and
+`tasks` counts all, `in_flight` those not landed and not `acknowledged`, `dismissed` or `closed`, and
 `defects` sums every task's newest retro. `trend` is null below `trend_min` (10) landed
 tasks; else the median of each measure over the latest half (`latest_n`) against the rest.
 

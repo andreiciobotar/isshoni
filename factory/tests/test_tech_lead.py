@@ -12,7 +12,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from test_factory import BIN, LEAN_SETTINGS, FakeRun, factory, porcelain
+from test_factory import BIN, LEAN_SETTINGS, NO_ATTRIBUTION, FakeRun, factory, porcelain
 
 SLUG, N, DEFAULT = "task1", 7, "main"
 OLD, NEW, DEFAULT_REF = "a" * 40, "b" * 40, "c" * 40
@@ -21,6 +21,7 @@ CONFLICT = "it conflicts with main in a.txt"
 RED = "red checks: test https://x/run/2"
 COURIER_LINE = re.compile(r"nothing else: (.*)\. Then reply", re.S)
 SETTINGS = {"models": {"tech_lead": "opus"}}
+ISOLATED_SETTINGS = {**NO_ATTRIBUTION, "disableBundledSkills": True, **factory.BASE_REF, "enabledPlugins": LEAN_SETTINGS["enabledPlugins"]}
 ANSWER = {"outcome": "resolved", "note": "Kept both paragraphs in docs/factory.md; make test passes; no reviewer."}
 
 
@@ -35,7 +36,8 @@ class Machine(FakeRun):
     def __init__(self, root, claude=None, after=None, comment=(0, "", ""), lead=True, push=(0, "", ""), config=None):
         super().__init__({})
         self.root, self.claude, self.after, self.comment, self.push = root, claude or said(), after or {}, comment, push
-        self.state = {"head": OLD, "remote": OLD, "dirty": False, "branch": f"worktree-{SLUG}", "ancestor": True, "merged": True}
+        self.state = {"head": OLD, "remote": OLD, "dirty": False, "branch": f"worktree-{SLUG}", "ancestor": True, "merged": True,
+                      "tip_merged": True, "fetch": 0, "pr_state": "OPEN", "pr_head": OLD, "checks": [("test", "pass")]}
         self.config = dict(config or {})
         self.cwds, self.groups, self.comments, self.lines, self.prompts, self.lead, self.pushes = [], [], [], [], [], lead, []
 
@@ -65,7 +67,12 @@ class Machine(FakeRun):
             self.lines.append(COURIER_LINE.search(a[-1])[1])
             return 0, json.dumps({"result": "sent"}), ""
         if a[:3] == ["gh", "pr", "view"]:
-            return 0, json.dumps({"number": N, "url": URL, "headRefName": s["branch"], "headRefOid": OLD}), ""
+            return 0, json.dumps({"number": N, "url": URL, "headRefName": s["branch"], "headRefOid": s["pr_head"],
+                                  "state": s["pr_state"]}), ""
+        if a[:3] == ["gh", "pr", "checks"]:
+            return 0, json.dumps([{"name": name, "bucket": bucket} for name, bucket in s["checks"]]), ""
+        if a[:2] == ["git", "fetch"]:
+            return s["fetch"], "", "fetch failed" if s["fetch"] else ""
         if a[:3] == ["gh", "pr", "comment"]:
             self.comments.append(a[a.index("--body") + 1])
             return self.comment
@@ -86,7 +93,7 @@ class Machine(FakeRun):
         if a[:3] == ["git", "status", "--porcelain"]:
             return 0, " M a.txt\n" if s["dirty"] else "", ""
         if a[:3] == ["git", "merge-base", "--is-ancestor"]:
-            return (0 if s["merged" if a[3] == DEFAULT_REF else "ancestor"] else 1), "", ""
+            return (0 if s[{DEFAULT_REF: "merged", "origin/main": "tip_merged"}.get(a[3], "ancestor")] else 1), "", ""
         if a[:2] == ["git", "push"]:
             self.pushes.append(a)
             if self.push[0] == 0:
@@ -167,6 +174,14 @@ class SendBackTests(Case):
         self.assertTrue(self.machine.ran("gh", "pr", "ready", "--undo"))
         self.assertEqual(self.records("techlead"), [])
 
+    def test_a_send_back_posts_one_comment_saying_who_was_told_and_a_failed_one_changes_nothing(self):
+        for who, comment, expect in (("tech lead", (0, "", ""), "Started: a tech lead run."), ("lead", (1, "", "boom"), "Told: the lead.")):
+            with self.subTest(who=who), mock.patch.object(factory, "spawn", side_effect=None if who == "tech lead" else OSError("no fork")):
+                m = Machine(self.root, comment=comment)
+                with redirect_stdout(io.StringIO()):
+                    to, _ = self.send_back(machine=m)
+                self.assertEqual((to, m.comments), (who, [f"Merge queue: back to draft: {CONFLICT}. {expect}"]))
+
     def test_without_a_dispatcher_name_the_run_gets_no_dispatcher_flag(self):
         self.use(Machine(self.root))
         with mock.patch.object(factory, "spawn") as spawn:
@@ -216,6 +231,16 @@ class SendBackTests(Case):
             self.assertEqual(to, "tech lead")
             spawn.assert_called_once()
 
+    def test_red_checks_at_the_head_of_a_run_that_changed_nothing_go_to_the_lead(self):
+        self.go(evidence=RED)
+        [r] = self.records("techlead")
+        self.assertEqual((r["outcome"], r["head_before"], r["head_after"]), ("resolved", OLD, OLD))
+        with mock.patch.object(factory, "spawn") as spawn:
+            to, _ = self.send_back(RED)
+        spawn.assert_not_called()
+        self.assertEqual(to, "lead")
+        self.assertEqual(self.records("techlead")[-1]["reason"], "red at the head the tech lead resolved")
+
     def test_red_checks_at_another_head_start_a_tech_lead(self):
         factory.log_tech_lead(mock.Mock(root=self.root), SETTINGS, SLUG, N, CONFLICT, "resolved", head_after=NEW)
         with mock.patch.object(factory, "spawn") as spawn:
@@ -232,11 +257,11 @@ class RunTests(Case):
         self.assertEqual(argv[:-1], [
             "claude", "-p", "--model", "opus", "--permission-mode", "auto",
             "--agents", json.dumps(factory.agent_definitions(factory.SETTINGS_DEFAULTS, self.root)), "--plugin-dir", str(BIN.parent.parent),
-            "--strict-mcp-config", "--settings", json.dumps(LEAN_SETTINGS),
+            "--worktree", SLUG, "--strict-mcp-config", "--settings", json.dumps(ISOLATED_SETTINGS),
             "--tools=Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch",
             "--allowedTools", "Read", "Edit", "Write", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "Bash(git *)",
             "Bash(make *)", "Bash(gh pr view *)", "Bash(gh pr diff *)", "Bash(gh pr checks *)", "Bash(gh run view *)",
-            "--disallowedTools", *factory.ROLE_DENIED, "Bash(git push*)",
+            "--disallowedTools", *factory.ROLE_DENIED, "Bash(git push*)", "Bash(gh run rerun*)",
             "--max-budget-usd", "5.00", "--output-format", "json", "--json-schema", json.dumps(factory.TECH_LEAD_SCHEMA),
             "--append-system-prompt", role])
         self.assertEqual(argv[-1], (
@@ -246,7 +271,8 @@ class RunTests(Case):
             "\n\nEarlier tech lead runs on this pull request:\nnone"))
         i = m.calls.index(argv)
         self.assertEqual((m.cwds[i], m.timeouts[i], m.envs[i]["FACTORY_ROLE"], m.groups[i]),
-                         (f"{self.root}/.claude/worktrees/{SLUG}", 1800, "tech-lead", True))
+                         (self.root, 1800, "tech-lead", True))
+        self.assertIn(["git", "worktree", "unlock", f"{self.root}/.claude/worktrees/{SLUG}"], m.calls)
 
     def test_the_prompt_carries_the_stated_commands(self):
         self.use(Machine(self.root)).config.update({f"branch.worktree-{SLUG}.factoryTest": "./check.sh",
@@ -281,7 +307,7 @@ class RunTests(Case):
         code, out, _, m = self.go(after={"head": NEW})
         self.assertEqual(code, 0)
         self.assertEqual(m.pushes, [["git", "push", "origin", f"HEAD:refs/heads/worktree-{SLUG}"]])
-        self.assertEqual(m.comments, [f"Tech lead: {ANSWER['note']}"])
+        self.assertEqual(m.comments, [f"Tech lead: {ANSWER['note']}\n\nBack in the merge queue."])
         self.assertEqual(m.lines, [])
         self.assertEqual(self.declared(), [("working", "tech-lead", None), ("handed-over", "tech-lead", URL)])
         [r] = self.records("techlead")
@@ -314,7 +340,6 @@ class RunTests(Case):
             "the worktree is not on": {"head": NEW, "branch": "elsewhere"},
             "not an ancestor of HEAD": {"head": NEW, "ancestor": False},
             "origin/main as of the start of the run is not merged in": {"head": NEW, "merged": False},
-            "the head did not move": {},
             "the spec changed": self.edit_spec,
         }
         for reason, after in cases.items():
@@ -332,6 +357,48 @@ class RunTests(Case):
                 self.assertIn(reason, line)
                 self.assertNotIn("handed-over", [s for s, *_ in self.declared()][-1:])
                 self.assertTrue(out.startswith(f"#{N} tech lead stopped: "))
+
+    def test_a_run_that_changed_nothing_returns_the_pull_request_without_its_lead(self):
+        code, out, _, m = self.go(evidence=RED)
+        self.assertEqual((code, m.pushes, m.lines), (0, [], []))
+        self.assertEqual(m.comments, [f"Tech lead: nothing to change, back in the merge queue: every check is green on aaaaaaa, "
+                                      f"which contains main at ccccccc. {ANSWER['note']}"])
+        self.assertEqual(self.declared(), [("working", "tech-lead", None), ("handed-over", "tech-lead", URL)])
+        [r] = self.records("techlead")
+        self.assertEqual((r["outcome"], r["reason"], r["head_before"], r["head_after"], r["noted"]), ("resolved", None, OLD, OLD, True))
+        self.assertEqual(out, f"#{N} tech lead resolved: {ANSWER['note']}\n")
+
+    def test_each_fact_a_run_that_changed_nothing_needs_stops_it_when_it_fails(self):
+        cases = [("failed or cancelled checks: test", {"checks": [("test", "fail")]}),
+                 ("checks are still running", {"checks": [("test", "pending")]}),
+                 ("origin/main is not merged in", {"tip_merged": False}),
+                 ("git fetch origin failed", {"fetch": 1}),
+                 ("the pull request's head is not the worktree's", {"pr_head": NEW}),
+                 ("the pull request's head is not the worktree's", {"pr_state": "MERGED"}),
+                 ("the worktree is not clean", {"dirty": True})]
+        for reason, state in cases:
+            with self.subTest(reason=reason, state=state):
+                code, out, _, m = self.go(evidence=RED, after=state)
+                self.assertEqual((code, m.pushes), (1, []))
+                r = self.records("techlead")[-1]
+                self.assertEqual((r["outcome"], r["head_after"]), ("stopped", OLD))
+                self.assertIn(reason, r["reason"])
+                self.assertTrue(m.comments[-1].startswith("Tech lead: stopped, the lead decides. "))
+                [line] = m.lines
+                self.assertTrue(line.startswith(f"TECH LEAD: {SLUG}: #{N} came back from the merge queue ({RED}) and is yours: "))
+                self.assertEqual(self.declared()[-1], ("working", "tech-lead", None))
+                self.assertTrue(out.startswith(f"#{N} tech lead stopped: "))
+
+    def test_an_unreadable_check_list_is_a_failed_fact(self):
+        class Unreadable(Machine):
+            def resolve(self, a):
+                return (1, "", "boom") if a[:3] == ["gh", "pr", "checks"] else super().resolve(a)
+        code, _, _, m = self.go_with(Unreadable, evidence=RED)
+        self.assertEqual((code, len(m.lines), self.records("techlead")[-1]["outcome"]), (1, 1, "stopped"))
+
+    def test_an_escalation_that_changed_nothing_still_tells_the_lead(self):
+        code, _, _, m = self.go(evidence=RED, claude=said("escalate", "a question."))
+        self.assertEqual((code, len(m.lines), self.records("techlead")[-1]["outcome"]), (1, 1, "escalated"))
 
     def test_a_failed_check_tells_the_lead_the_reason_and_the_note(self):
         *_, m = self.go(after={"head": NEW, "dirty": True})
@@ -526,18 +593,16 @@ class RealRepositoryTests(Case):
         def spec():
             self.merge_main()
             self.spec.write_text("another")
-        cases = [("the worktree is not clean", dirty, False), ("the worktree is not on", elsewhere, False),
-                 ("not an ancestor of HEAD", rewritten, False), ("is not merged in", unmerged, False),
-                 ("the spec changed", spec, False), ("the head did not move", self.merge_main, True)]
-        for reason, act, came_back_here in cases:
+        cases = [("the worktree is not clean", dirty), ("the worktree is not on", elsewhere),
+                 ("not an ancestor of HEAD", rewritten), ("is not merged in", unmerged), ("the spec changed", spec)]
+        for reason, act in cases:
             with self.subTest(reason=reason):
                 self.git(self.tree, "checkout", "-q", "-B", self.branch, self.old)
                 self.git(self.tree, "clean", "-fdq")
                 self.spec.write_text("the spec")
                 before = factory.spec_hash(self.spec)
                 act()
-                head = self.git(self.tree, "rev-parse", "HEAD")
-                flaw = self.state(old=head if came_back_here else None, before=before)[2]
+                flaw = self.state(before=before)[2]
                 self.assertIn(reason, flaw)
 
     def resolve_with(self, session):
