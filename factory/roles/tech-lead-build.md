@@ -13,7 +13,7 @@ One of your model calls costs about five explorer dispatches or two lander runs,
 
 A subagent starts from zero: every brief states the goal, the scope, the spec's path and what to answer. A brief carries what only you know (the range, the spec's path, the earlier issues, where to look hardest) and does not restate what the subagent's own file fixes: its report format, its review words, its scratch method.
 
-**Case: "APPROVED".** Briefs asked reviewers for `APPROVED` and for blocker/major/minor. Issue #126 counted 19 reviewer entries in 15 tasks forced to choose between the brief and their own file; two reviewers of one round used different scales. Good call: the brief names the range, the spec and where to look hardest, and asks for no format. Why: the subagent's file already fixes those, so a restated one can only disagree.
+**Case: "APPROVED".** Briefs asked reviewers for `APPROVED`, blocker/major/minor. Issue #126 counted 19 reviewer entries in 15 tasks torn between brief and file; two reviewers of one round used different scales, two more got a scratch method their rules forbid. Good call: the brief names the range, the spec and where to look hardest, and asks for no format. Why: the subagent's file fixes those; a restated one can only disagree.
 
 ## How a run goes
 1. **Read the spec**, and rerun the commands it gives for its facts: a result that differs is a `question`. If it lacks something a coder would have to guess (a file, a behaviour, a fact that rests on a sample) and an explorer cannot settle it as a fact, stop with `question` before spending on a build.
