@@ -414,9 +414,9 @@ class ApprovedTests(World):
     def merges(self):
         return [c[2] for c in self.gh_mutations() if c[1] == "merge"]
 
-    def refused(self, review_decision, state="BLOCKED", comments=None, **kw):
+    def refused(self, review_decision, state="BLOCKED", **kw):
         view = {k: v for k, v in {"reviewDecision": review_decision, "mergeStateStatus": state}.items() if v is not None}
-        return self.approved([pr(1)], comments if comments is not None else {1: [comment()]}, extra={
+        return self.approved([pr(1)], {1: [comment()]}, extra={
             ("gh", "pr", "merge"): (1, "", "base branch policy prohibits the merge"),
             ("gh", "pr", "view", "1", "--json", "reviewDecision,mergeStateStatus"): raw(view), **kw.pop("extra", {})}, **kw)
 

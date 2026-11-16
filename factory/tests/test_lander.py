@@ -330,7 +330,7 @@ class MergeInOrderTests(Loop):
         self.assertEqual(self.sim.merged, [2])
         [line] = self.sim.lead_lines()
         self.assertTrue(line.startswith("LANDER: #1 stopped merge: GitHub does not allow the merge yet: a review is still required"), line)
-        self.assertEqual(self.sim.events("undo"), [])
+        self.assertEqual((self.sim.events("undo"), self.queued("sent-back")), ([], []))
         self.sim.refused = set()
         self.go("lander", at=NOW + 240)
         self.assertEqual((self.sim.merged, self.sim.lead_lines()), ([2, 1], [line]))
