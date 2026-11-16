@@ -62,10 +62,13 @@ How to use a look: you are given facts and what changed since the last look. Mos
 
 ## merged-not-cleaned
 **What:** A task's pull request was merged, or the task settled, a while ago and it has not been cleaned (`merged` in its row).
-**Why it matters:** A leftover worktree costs a slot; the human or `factory clean` clears it.
+**Why it matters:** A leftover worktree costs a slot; the script cleans after every merge; what remains is kept for a stated reason, which `factory clean --dry-run` prints.
 **What it has looked like:** The script used to fire this at 2 hours. It fired 5 times in two days, all suppressed.
-**A good call:** Already visible to the human and needs nothing yet (a worktree merged a short while ago): suppress.
+**A good call:** Already visible to the human and needs nothing yet (a worktree merged a short while ago): suppress. A merged task something open is stacked on waits for it: suppress and name the stacked task.
 **Score (to 2026-11-15):** fired 5; escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 5; missed 0.
+
+### Cases
+1. `site-manager-sees-collisions` (#114 merged, 2026-11-16). Escalated (14cb3aeaceff) as "only needs cleanup" while open #115 was stacked on its branch; cleaning would have removed #115's base; the dispatcher marked it ignored. Good call: suppress and name the stacked task.
 
 ## cost-outlier
 **What:** A working or blocked task has cost many times the median landed task of the repository (`cost_usd`, `landed_median_usd`; a price the monitor did not give is `unpriced`, never zero).
@@ -180,6 +183,9 @@ How to use a look: you are given facts and what changed since the last look. Mos
 **What it has looked like:** The script used to fire this after 10 minutes of nothing, on the full pass. It fired 3 times in two days: 2 acted on, 1 ignored. `kaizen-review-role` (2026-11-15) fired at 15:22:43Z, "active 47m ago", seen 47 minutes after its lead went; escalated, acted on. `kaizen-review-role`'s lead session went at 13:33:49Z while its build run held the lock until 14:54:10Z; the firing waits for the run to end, and the row shows `session: none` before that.
 **A good call:** Escalate, unless the tail shows the hand-over was under way minutes ago. A headless session in a task's worktree while the task is `working` by role `lander` or `tech-lead` is a tech lead run (bounded at 30 minutes; a build run, started by the lead's `factory build`, at 90 minutes, and its lead waits on it, idle: neither is a stray nor ended): never messaged.
 **Score (to 2026-11-15):** fired 3; escalated 3 (acted 2, ignored 1, no outcome 0); suppressed 0; missed 0.
+
+### Cases
+1. `kaizen-review-role` (2026-11-15). Lead gone 13:33Z, escalated 15:22Z (09cac29411fb), acted on by starting `kaizen-review-finish` stacked on its branch, merged as #113. The task stayed `working` for 19 hours: head in main, clean, no remote branch, no session. Good call once the replacement has merged: `closed`, `superseded_by` the replacement. While the replacement is open and stacked on its branch, close is still right; the script keeps the worktree until the replacement merges. Lead gone and nobody took the work over: escalate; whether it is abandoned is the human's.
 
 ## unlisted
 **What:** Something worth a call that no other entry names.
