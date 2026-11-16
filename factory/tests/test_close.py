@@ -603,7 +603,7 @@ class OverTests(CloseBase):
 
     def found(self):
         repo = factory.Repo(str(self.root))
-        return factory.c_merged_not_cleaned({"repo": repo, "sessions": self.sessions, "rows": factory.collect(repo, self.sessions, 2)}, None)
+        return factory.c_merged_not_cleaned({"repo": repo, "sessions": self.sessions, "rows": factory.collect(repo, self.sessions, 2, deep=True)}, None)
 
     def kept(self, why):
         code, out, _ = self.go("clean")
@@ -713,7 +713,7 @@ class StackedFactTests(StackedTests):
     def test_a_merged_task_kept_only_for_a_task_stacked_on_it_is_not_fired(self):
         self.declare("t1", "handed-over", deliverable="https://x/pull/1")
         repo = factory.Repo(str(self.root))
-        rows = factory.collect(repo, [], 2)
+        rows = factory.collect(repo, [], 2, deep=True)
         [t1] = [r for r in rows if r["slug"] == "t1"]
         self.assertEqual((t1["phase"], factory.keep_rule(repo, t1, rows)), ("merged", ("t2 is stacked on it", True)))
         self.assertEqual(factory.c_merged_not_cleaned({"repo": repo, "sessions": [], "rows": rows}, None), [])
@@ -728,6 +728,69 @@ class StackedKeptTests(StackedTests):
         self.assertIsNone(rows["t2"]["kept"])
         self.assertEqual(doc["in_motion"], 1)  # t2 alone
         self.assertIn("kept: t2 is stacked on it", self.go("status")[1])
+
+
+class StackedUnmergedTests(CloseBase):
+    """t1 is closed with no merged pull request and t2 is stacked on it: the stack keeps it before any open-file or remote check."""
+
+    def test_a_closed_task_whose_pull_request_is_none_or_closed_shows_the_task_stacked_on_it(self):
+        self.add_task("t2")
+        self.git("config", "branch.worktree-t2.factoryBase", "worktree-t1")
+        self.declare("t2", "working")
+        self.declare("t1", "closed", reason="replaced by t2")
+        for state in ("none", "CLOSED"):
+            with self.subTest(state):
+                self.prs.clear()
+                if state != "none":
+                    self.pr(state)
+                for argv in (("status", "--json"), ("status", "--cached", "--json")):
+                    row = next(r for r in json.loads(self.go(*argv)[1])["rows"] if r["slug"] == "t1")
+                    self.assertEqual((row["pr_state"], row["kept"], row["kept_elsewhere"]), (state.lower(), "t2 is stacked on it", True))
+
+
+class KeptDepthTests(CloseBase):
+    """A closed task's `kept` needs `lsof` and the remote: `status --cached` asks neither, and says so."""
+
+    def setUp(self):
+        super().setUp()
+        self.sha = self.own_commit("only here")
+        self.declare("t1", "closed", reason="abandoned")
+
+    def kept(self, *argv):
+        self.calls.clear()
+        [row] = json.loads(self.go(*argv, "--json")[1])["rows"]
+        return row["kept"], row["kept_elsewhere"]
+
+    def asked(self):
+        return [c for c in self.calls if c[0] in ("lsof", "gh") or "ls-remote" in c]
+
+    def test_status_asks_lsof_and_the_remote_and_gives_the_real_reason(self):
+        self.assertEqual(self.kept("status"), (f"{ONLY_HERE}{self.sha[:7]} only here", False))
+        self.assertEqual([c[0] for c in self.asked()].count("lsof"), 1)
+        self.assertTrue(any("ls-remote" in c for c in self.asked()))
+
+    def test_status_cached_asks_neither_and_says_they_were_not_checked(self):
+        self.go("status")  # fills the cache
+        self.assertEqual(self.kept("status", "--cached"), (factory.NOT_CHECKED, False))
+        self.assertEqual(self.asked(), [])
+        self.assertIn("were not checked", factory.NOT_CHECKED)
+        self.assertIn("`factory status` (without --cached)", factory.NOT_CHECKED)
+
+    def test_the_full_pass_asks_lsof_once_and_the_remote_once_per_closed_task(self):
+        self.calls.clear()
+        code, out, _ = self.go("health")
+        self.assertIn(f"merged-not-cleaned  t1  kept: {ONLY_HERE}{self.sha[:7]} only here", out)
+        self.assertEqual([c[0] for c in self.calls].count("lsof"), 1)
+        self.assertEqual(sum("ls-remote" in c for c in self.calls), 1)
+
+
+class SessionsUnlistedTests(CloseBase):
+    def test_a_closed_task_nothing_else_keeps_says_sessions_cannot_be_listed_not_null(self):
+        self.declare("t1", "closed", reason="abandoned")
+        self.assertIsNone(json.loads(self.go("status", "--json")[1])["rows"][0]["kept"])
+        self.sessions = None
+        row = json.loads(self.go("status", "--json")[1])["rows"][0]
+        self.assertEqual((row["kept"], row["kept_elsewhere"]), (factory.NOT_LISTED, False))
 
 
 class MergedNotCleanedWatchTests(Harness):
