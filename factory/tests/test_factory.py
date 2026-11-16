@@ -21,8 +21,9 @@ os.environ.pop("FACTORY_ROLE", None)  # a tech lead session runs `make test`: th
 BIN = Path(__file__).resolve().parent.parent / "bin" / "factory"
 os.environ.pop("FACTORY_HOME", None)  # the tests make their own homes; an ambient one would move the script's store
 _loader = importlib.machinery.SourceFileLoader("factory_bin", str(BIN))
-factory = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_bin", _loader))
-_loader.exec_module(factory)
+entry = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_bin", _loader))
+_loader.exec_module(entry)
+factory = entry.factory_core  # the one core instance of the test process; every other test file imports it from here
 
 # No test may write the real settings file: a write to the real ~/.claude/factory (taken before any test changes HOME) fails.
 _REAL_FACTORY_HOME = Path("~/.claude/factory").expanduser().resolve()
