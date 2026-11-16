@@ -21,6 +21,12 @@ const (
 	shimmerFor   = 3 * time.Second        // the rewards line shimmers this long after it is shown
 )
 
+const (
+	liveNone = iota
+	liveAsked
+	liveDone
+)
+
 type kaizenPage int
 
 const (
@@ -38,6 +44,8 @@ type kaizenState struct {
 	busy      bool
 	busyRange int // the range the load in flight reads
 	gen       int // a result carrying an older generation was superseded
+	pending   int // loads of this generation not yet returned; busy while any is
+	live      int // the generation's load that may ask GitHub: liveNone, liveAsked (started) or liveDone (succeeded)
 	doneAt    time.Time
 	doneRange int
 	err       string // the last load failed: the first line of why; doc is the result before it
@@ -60,8 +68,9 @@ var kaizenCounters = []string{"kz-landed", "kz-cost", "kz-brief", "kz-merge", "k
 
 // loadKaizen starts a load when the view is shown and the range's result is neither in
 // flight nor fresher than kaizenFresh. A load of another range replaces the one running.
-// It reads the cache first, so the numbers show at once; applyKaizen follows it with a
-// load that may ask GitHub when the pull request data is old.
+// It reads the cache first, so the numbers show at once. With no document yet, or one
+// whose pull request data is old, a load that may ask GitHub starts beside it;
+// otherwise applyKaizen follows the cached load with one when its data is old.
 func (m *model) loadKaizen() tea.Cmd {
 	k := &m.kz
 	if m.view != viewKaizen || m.runner == nil || m.fatal != nil {
@@ -74,8 +83,13 @@ func (m *model) loadKaizen() tea.Cmd {
 		return nil
 	}
 	k.gen++
-	k.busy, k.busyRange = true, m.rangeIdx
-	return m.kaizenCmd(true)
+	k.busy, k.busyRange, k.pending, k.live = true, m.rangeIdx, 1, liveNone
+	cmds := []tea.Cmd{m.kaizenCmd(true)}
+	if k.doc == nil || m.kaizenPRsOld(k.doc) {
+		k.pending, k.live = 2, liveAsked
+		cmds = append(cmds, m.kaizenCmd(false))
+	}
+	return tea.Batch(cmds...)
 }
 
 // kaizenCmd loads the document of the range in flight, under the current generation.
@@ -98,31 +112,42 @@ func (m *model) kaizenPRsOld(doc *data.Kaizen) bool {
 }
 
 // applyKaizen takes a load's result whole. A failure keeps the result before it. The
-// cached load of old pull request data is followed by one that may ask GitHub, which
-// settles the error line either way.
+// load that may ask GitHub settles the error line; a cached result that comes after
+// its success is dropped. The cached load of old pull request data, when no such load
+// was started, is followed by one.
 func (m *model) applyKaizen(msg kaizenMsg) tea.Cmd {
 	k := &m.kz
 	if msg.gen != k.gen {
 		return nil
 	}
-	k.busy = false
-	if msg.err != nil {
-		k.err = firstLine(msg.err.Error())
+	k.pending--
+	if msg.cached && k.live == liveDone {
+		k.busy = k.pending > 0
 		return nil
 	}
-	fresh := k.doc == nil || !reflect.DeepEqual(k.doc, msg.doc)
-	k.doc, k.doneAt, k.doneRange = msg.doc, m.now(), msg.rng
-	if fresh {
-		k.born, k.shownAt = m.now(), m.now()
+	var next tea.Cmd
+	if msg.err != nil {
+		k.err = firstLine(msg.err.Error())
+	} else {
+		fresh := k.doc == nil || !reflect.DeepEqual(k.doc, msg.doc)
+		k.doc, k.doneAt, k.doneRange = msg.doc, m.now(), msg.rng
+		if fresh {
+			k.born, k.shownAt = m.now(), m.now()
+		}
+		m.kaizenRetarget(m.opts.Static)
+		m.fixScroll()
+		switch {
+		case !msg.cached:
+			k.live, k.err = liveDone, ""
+		case k.live == liveNone && m.kaizenPRsOld(msg.doc):
+			k.pending, k.live = k.pending+1, liveAsked
+			next = m.kaizenCmd(false)
+		case k.live == liveNone:
+			k.err = ""
+		}
 	}
-	m.kaizenRetarget(m.opts.Static)
-	m.fixScroll()
-	if msg.cached && m.kaizenPRsOld(msg.doc) {
-		k.busy = true
-		return m.kaizenCmd(false)
-	}
-	k.err = ""
-	return nil
+	k.busy = k.pending > 0
+	return next
 }
 
 // kaizenRetarget points the tile counters at the document's numbers; jump skips the count-up.
