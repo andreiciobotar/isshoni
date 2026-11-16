@@ -72,6 +72,10 @@ class HostEndToEnd(unittest.TestCase):
         self.state = self.tmp / "state"
         (self.state / "stub").mkdir(parents=True)
         write_exe(self.state / "stub/claude", CLAUDE_STUB)
+        # Nothing is fetched while the test runs: the container's `make install` has GOPROXY=off and finds the modules `make modules` downloaded.
+        modcache = Path(subprocess.run(["go", "env", "GOMODCACHE"], capture_output=True, text=True, check=True, timeout=60).stdout.strip())
+        self.assertTrue((modcache / "cache/download").is_dir(), "run `make modules` first: the Go modules are fetched before the tests, never by them")
+        shutil.copytree(modcache / "cache/download", self.state / "home/go/pkg/mod/cache/download")
         fh, bin_dir, laptop = self.tmp / "fh", self.tmp / "bin", self.tmp / "laptop"
         for d in (fh / "identity", bin_dir, laptop):
             d.mkdir(parents=True)
@@ -81,7 +85,7 @@ class HostEndToEnd(unittest.TestCase):
         write_exe(bin_dir / "ssh", FAKE_SSH)
         # The "server" is Docker's Linux machine, which on a Mac is not this one.
         write_exe(bin_dir / "uname", "#!/bin/sh\nexec %s info -f '{{.Architecture}}'\n" % real_docker)
-        write_exe(bin_dir / "docker", '#!/bin/sh\nif [ "$1" = exec ]; then shift; exec %s exec -e PATH=%s "$@"; fi\nexec %s "$@"\n'
+        write_exe(bin_dir / "docker", '#!/bin/sh\nif [ "$1" = exec ]; then shift; exec %s exec -e PATH=%s -e GOPROXY=off -e GOTOOLCHAIN=local "$@"; fi\nexec %s "$@"\n'
                   % (real_docker, STUB_PATH, real_docker))
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(laptop / "id")], check=True, timeout=60)
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(laptop / "stranger")], check=True, timeout=60)
