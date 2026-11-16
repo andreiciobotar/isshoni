@@ -3,8 +3,10 @@ import json
 import os
 import plistlib
 import stat
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -466,13 +468,20 @@ class ListTests(OpsHarness):
 
 
 class DrainTests(unittest.TestCase):
+    def setUp(self):  # drain reads the watch lock's mtime from the store
+        store = tempfile.TemporaryDirectory()
+        self.addCleanup(store.cleanup)
+        patcher = mock.patch.object(factory, "STORE", Path(store.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_a_ticking_drain_gives_every_pass_to_the_ops_looks(self):
         passes = []
 
         def snapshot(repo):
             passes.append(1)
             raise factory.NotEvaluated("stop here")
-        for tick, expected in ((True, 1), (False, 0)):
+        for tick, expected in ((mock.Mock(), 1), (None, 0)):
             ops = mock.Mock()
             with mock.patch.object(factory, "ops_tick", ops), mock.patch.object(factory, "snapshot", snapshot), \
                     mock.patch.object(factory, "end_priorities"), mock.patch.object(factory, "release_paused"):
