@@ -28,6 +28,7 @@ class Sim:
 
     def __init__(self):
         self.prs, self.merged, self.tip, self.log, self.lines, self.cwd_of = {}, [], 0, [], [], {}
+        self.refused = set()  # numbers whose `gh pr merge` GitHub refuses: a review is required
         self.comments, self.comment_fails, self.model = [], False, None  # `gh pr comment` bodies; what the tech lead's model run does and answers
 
     def add(self, n, behind=True, base="main", approved=True, draft=False, checks=None, after=None, conflicts=(),
@@ -85,11 +86,15 @@ class Sim:
         if a[:3] == ["gh", "pr", "comment"]:
             self.comments.append(a[a.index("--body") + 1])
             return (1, "", "boom") if self.comment_fails else (0, "", "")
+        if a[:3] == ["gh", "pr", "view"] and "reviewDecision" in a[a.index("--json") + 1]:
+            return 0, json.dumps({"reviewDecision": "REVIEW_REQUIRED", "mergeStateStatus": "BLOCKED"}), ""
         if a[:3] == ["gh", "pr", "view"]:
             script = self.prs[int(a[3])]["mergeable"]
             return 0, json.dumps({"mergeable": script.pop(0) if len(script) > 1 else script[0]}), ""
         if a[:3] == ["gh", "pr", "merge"]:
             n = int(a[3])
+            if n in self.refused:
+                return 1, "", "the base branch policy prohibits the merge"
             assert a[-1] == self.prs[n]["head"], "merged a head other than the one whose checks were read"
             self.log.append(("merge", n, a[-1]))
             self.merged.append(n)
@@ -315,6 +320,20 @@ class MergeInOrderTests(Loop):
         self.go("lander", at=NOW + 120)
         self.assertEqual(len(self.sim.lines), 1)
         self.assertTrue(self.sim.lines[0].startswith("LANDER: #1 stopped base:"))
+
+    def test_a_merge_github_refuses_for_a_review_is_told_once_and_the_loop_merges_it_when_the_review_comes(self):
+        self.sim.add(1, behind=False)
+        self.sim.add(2, behind=False)
+        self.sim.refused = {1}
+        self.go("lander")
+        self.go("lander", at=NOW + 120)
+        self.assertEqual(self.sim.merged, [2])
+        [line] = self.sim.lead_lines()
+        self.assertTrue(line.startswith("LANDER: #1 stopped merge: GitHub does not allow the merge yet: a review is still required"), line)
+        self.assertEqual(self.sim.events("undo"), [])
+        self.sim.refused = set()
+        self.go("lander", at=NOW + 240)
+        self.assertEqual((self.sim.merged, self.sim.lead_lines()), ([2, 1], [line]))
 
     def test_a_red_check_that_rerun_restarts_is_not_sent_back_stays_in_flight_and_merges_when_green(self):
         self.sim.add(1, behind=False, checks=[RED])

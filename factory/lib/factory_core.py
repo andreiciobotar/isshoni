@@ -1644,9 +1644,15 @@ def cmd_status(args):
         print("acting on GitHub with your gh login (" + (
             f"this repository is not on GitHub under {stored.get('owner')}, the App's owner" if stored and stored.get("bot_login") else
             "the App is stored but not installed: factory wizard" if stored else "no App identity: factory wizard") + ")")
+    refused = {s["head"]: s["text"] for s in read_lander(repo)["stopped"].values()
+               if s["kind"] == "merge" and s["text"].startswith(REFUSED)}
     for r in rows:
         if r["phase"] == "review":
-            print(f"waiting on {'checks' if r['pr_draft'] else 'the human'}: {r['slug']} {r['deliverable'] or r['pr_url'] or '-'}")
+            where = f"{r['slug']} {r['deliverable'] or r['pr_url'] or '-'}"
+            if r["pr_head"] in refused:
+                print(f"waiting on GitHub: {where}: {refused[r['pr_head']][len(REFUSED):].split('; ')[0]}")
+            else:
+                print(f"waiting on {'checks' if r['pr_draft'] else 'the human'}: {where}")
     return 0
 
 
@@ -4568,6 +4574,7 @@ MERGEABLE_WAIT = 3
 PR_FIELDS = "number,url,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,author"
 ACTIVITY = "repos/{owner}/{repo}/activity"
 FORK = ("fork", "its head is in another repository")
+REFUSED = "GitHub does not allow the merge yet: "
 STALE_REVIEW = ("stale", "its head changed after the approval; a fresh approval is needed")
 
 
@@ -4697,6 +4704,21 @@ def mergeability(p, n):
     return None
 
 
+def refusal(p, n, stop):
+    """`stop`, the failed `gh pr merge` step of pull request `n`, with its reason in words when GitHub's
+    `reviewDecision` names a review requirement; else unchanged."""
+    try:
+        view = p["gh"](dict, "pr", "view", n, "--json", "reviewDecision,mergeStateStatus")
+    except NotEvaluated:
+        return stop
+    what = {"REVIEW_REQUIRED": "a review is still required", "CHANGES_REQUESTED": "a reviewer requested changes"}.get(
+        view.get("reviewDecision"))
+    if not what:
+        return stop
+    state = f", mergeStateStatus {view['mergeStateStatus']}" if view.get("mergeStateStatus") else ""
+    return stop[0], f"{REFUSED}{what} (reviewDecision {view['reviewDecision']}{state}); {stop[1]}"
+
+
 def checks_stop(p, n):
     """(kind, reason) of what the checks of pull request `n` stop, or None when they pass; NotEvaluated when unreadable."""
     checks = p["gh"](list, "pr", "checks", n, "--json", "name,bucket")
@@ -4805,7 +4827,7 @@ def merge_one(p, pr, merged, dry, permission=None):
                  ["pr", "merge", n, "--merge", "--match-head-commit", pr["headRefOid"]]]:
         stop = gh_step(repo, *step)
         if stop:
-            return stop
+            return refusal(p, n, stop) if step[1] == "merge" else stop
     log_queue(repo, pr["number"], task_slug(repo, pr), pr["headRefOid"], "merged", approved_at=approved_at)
     return None
 

@@ -414,6 +414,51 @@ class ApprovedTests(World):
     def merges(self):
         return [c[2] for c in self.gh_mutations() if c[1] == "merge"]
 
+    def refused(self, review_decision, state="BLOCKED", comments=None, **kw):
+        view = {k: v for k, v in {"reviewDecision": review_decision, "mergeStateStatus": state}.items() if v is not None}
+        return self.approved([pr(1)], comments if comments is not None else {1: [comment()]}, extra={
+            ("gh", "pr", "merge"): (1, "", "base branch policy prohibits the merge"),
+            ("gh", "pr", "view", "1", "--json", "reviewDecision,mergeStateStatus"): raw(view), **kw.pop("extra", {})}, **kw)
+
+    def test_a_merge_github_refuses_for_a_review_says_so_before_the_raw_text(self):
+        raw_text = "gh pr merge 1 --merge --match-head-commit sha-1: base branch policy prohibits the merge"
+        for decision, what in (("REVIEW_REQUIRED", "a review is still required"),
+                               ("CHANGES_REQUESTED", "a reviewer requested changes")):
+            with self.subTest(decision):
+                self.setUp()
+                code, out, _ = self.refused(decision)
+                self.assertEqual(code, 1)
+                self.assertIn(f"#1 stopped: {factory.REFUSED}{what} (reviewDecision {decision}, mergeStateStatus BLOCKED); {raw_text}\n", out)
+
+    def test_the_merge_state_is_left_out_when_empty_or_absent(self):
+        for label, state in (("empty", ""), ("absent", None)):
+            with self.subTest(label):
+                self.setUp()
+                _, out, _ = self.refused("REVIEW_REQUIRED", state)
+                self.assertIn(f"{factory.REFUSED}a review is still required (reviewDecision REVIEW_REQUIRED); gh pr merge 1", out)
+
+    def test_any_other_answer_leaves_the_refusal_as_it_is(self):
+        raw_line = "#1 stopped: gh pr merge 1 --merge --match-head-commit sha-1: base branch policy prohibits the merge\n"
+        view = ("gh", "pr", "view", "1", "--json", "reviewDecision,mergeStateStatus")
+        for label, decision, extra in (("empty", "", {}), ("absent", None, {}), ("approved", "APPROVED", {}),
+                                       ("unreadable", "", {view: (1, "", "boom")})):
+            with self.subTest(label):
+                self.setUp()
+                code, out, _ = self.refused(decision, extra=extra)
+                self.assertEqual(code, 1)
+                self.assertIn(raw_line, out)
+                self.assertNotIn(factory.REFUSED, out)
+
+    def test_a_human_authors_own_lgtm_is_refused_for_a_review_and_nothing_is_read_before_a_merge_that_succeeds(self):
+        code, out, _ = self.refused("REVIEW_REQUIRED")
+        self.assertEqual(code, 1)
+        self.assertIn(f"{factory.REFUSED}a review is still required (reviewDecision REVIEW_REQUIRED, mergeStateStatus BLOCKED); gh pr merge 1 --merge --match-head-commit", out)
+        self.setUp()
+        code, out, _ = self.approved([pr(1)], {1: [comment()]})
+        self.assertEqual((code, self.merges()), (0, ["1"]))
+        self.assertIn("#1 merged", out)
+        self.assertFalse(any("reviewDecision" in part for c in self.pr_calls() for part in c))
+
     def test_a_review_on_the_head_merges(self):
         code, out, _ = self.approved([pr(1)], reviews={1: [review()]})
         self.assertEqual(code, 0)
@@ -874,6 +919,23 @@ class SyncDraftTests(World):
                 _, out, _ = self.cli("status", answers=answers, sessions=sessions, entries=slugs)
                 self.assertEqual([l for l in out.splitlines() if l.startswith("waiting on")],
                                  [] if line is None else [f"{line}t1 https://x/pull/1"])
+
+    def test_status_says_waiting_on_github_for_a_head_whose_merge_it_refused(self):
+        said = factory.REFUSED + "a review is still required (reviewDecision REVIEW_REQUIRED, mergeStateStatus BLOCKED); gh pr merge 1 ..."
+        cases = {"this head": ({"head": SHA, "kind": "merge", "text": said},
+                               "waiting on GitHub: t1 https://x/pull/1: a review is still required "
+                               "(reviewDecision REVIEW_REQUIRED, mergeStateStatus BLOCKED)"),
+                 "another head": ({"head": "old", "kind": "merge", "text": said}, "waiting on the human: t1 https://x/pull/1"),
+                 "another kind": ({"head": SHA, "kind": "ci", "text": said}, "waiting on the human: t1 https://x/pull/1"),
+                 "raw text": ({"head": SHA, "kind": "merge", "text": "gh pr merge 1: head moved"},
+                              "waiting on the human: t1 https://x/pull/1")}
+        for label, (record, line) in cases.items():
+            with self.subTest(label):
+                self.setUp()
+                factory.repo_state(ROOT, "lander", "json").write_text(json.dumps({"stopped": {"1": record}}))
+                answers, sessions, slugs = self.world([pr(1)])
+                _, out, _ = self.cli("status", answers=answers, sessions=sessions, entries=slugs)
+                self.assertEqual([l for l in out.splitlines() if l.startswith("waiting on")], [line])
 
     def test_the_draft_flag_of_a_pull_request_that_is_not_the_recorded_one_is_left_alone(self):
         for label, kw in {"a draft that would be marked ready": dict(prs=[pr(1), namesake(draft=True)]),
