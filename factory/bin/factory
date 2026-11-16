@@ -44,6 +44,8 @@ SETTINGS_PATH = STORE / "settings.toml"
 IDENTITY = STORE / "identity"
 CACHE = STORE / "cache"
 GH_TIMEOUT = 30
+STACKS_VERSION = "X-GitHub-Api-Version: 2026-03-10"
+STACKS = "repos/{owner}/{repo}/stacks"
 RUN_TIMEOUT = 120
 NETWORK_TIMEOUT = 300
 JOBS_DIR = Path("~/.claude/jobs")
@@ -4125,6 +4127,68 @@ def gh_step(repo, *args):
     return None if rc == 0 else ("merge", f"gh {' '.join(args)}: {(err or out).strip() or rc}")
 
 
+def stacks_call(*args):
+    return ["api", "-H", STACKS_VERSION, *args]
+
+
+def dissolve(repo, n):
+    """None when pull request `n` is in no stack or its stack is dissolved (GitHub refuses to retarget or merge a
+    stack member); else the stop, as gh_step gives it. HTTP 200 means locked members remain."""
+    try:
+        found = gh_json(repo, list, *stacks_call(f"{STACKS}?pull_request={n}"))
+        number = found[0]["number"] if found else None
+    except NotEvaluated as e:
+        return "merge", f"{STACKS}?pull_request={n}: {e}"
+    except (LookupError, TypeError) as e:
+        return "merge", f"{STACKS}?pull_request={n}: {e!r}"
+    if number is None:
+        return None
+    args = stacks_call("-i", "-X", "POST", f"{STACKS}/{number}/unstack")
+    rc, out, err = run(["gh", *args], cwd=repo.root)
+    if rc != 0 or out.split(None, 2)[1:2] != ["204"]:
+        return "merge", f"gh {' '.join(args)}: {(err or out).strip() or rc}"
+    return None
+
+
+def chains(snap, default):
+    """The pull-request numbers of each chain of two or more open same-repository pull requests, bottom to top: the
+    bottom's base is `default`, each next one's base is the head of the one below, and a head with two pull
+    requests on it ends the chain."""
+    mine = [pr for pr in snap if not pr["isCrossRepository"]]
+    found = []
+    for bottom in (pr for pr in mine if pr["baseRefName"] == default):
+        chain = [bottom]
+        while len(above := [pr for pr in mine if pr["baseRefName"] == chain[-1]["headRefName"]]) == 1 and above[0] not in chain:
+            chain.append(above[0])
+        if len(chain) > 1:
+            found.append([pr["number"] for pr in chain])
+    return found
+
+
+def ensure_stacks(repo, snap):
+    """Make each chain of `snap` one GitHub stack: create it, or append to the stack of its lower members. Only
+    adds; one `lander: stacks:` line when a call fails, and the rest is left to the next pass."""
+    found = chains(snap, repo.default)
+    if not found:
+        return
+    try:
+        stacks = gh_json(repo, list, *stacks_call(f"{STACKS}?per_page=100"))
+        in_stack = {m["number"]: s for s in stacks if s.get("open") for m in s["pull_requests"]}
+        for nums in found:
+            stack = in_stack.get(nums[0])
+            members = [m["number"] for m in stack["pull_requests"]] if stack else []
+            rest = nums[len(members):]
+            if members != nums[:len(members)] or not rest or any(n in in_stack for n in rest):
+                continue
+            path = f"{STACKS}/{stack['number']}/add" if stack else STACKS
+            stop = gh_step(repo, *stacks_call(path, "-X", "POST", *[a for n in rest for a in ("-F", f"pull_requests[]={n}")]))
+            if stop:
+                print(f"lander: stacks: {stop[1]}")
+                return
+    except (NotEvaluated, LookupError, TypeError) as e:
+        print(f"lander: stacks: {STACKS}?per_page=100: {e}")
+
+
 def mergeability(p, n):
     """(kind, reason) of what stops the merge of pull request `n`, or None when it is mergeable."""
     try:
@@ -4234,7 +4298,7 @@ def merge_one(p, pr, merged, dry, permission=None):
         return stop
     retarget = base != repo.default
     if retarget and not dry:
-        stop = gh_step(repo, "pr", "edit", n, "--base", repo.default)
+        stop = dissolve(repo, n) or gh_step(repo, "pr", "edit", n, "--base", repo.default)
         if stop:
             return stop
     if not (retarget and dry):
@@ -4243,6 +4307,9 @@ def merge_one(p, pr, merged, dry, permission=None):
             return stop
     if dry:
         return None
+    stop = None if retarget else dissolve(repo, n)
+    if stop:
+        return stop
     for step in [*([["pr", "ready", n]] if pr["isDraft"] else []),
                  ["pr", "merge", n, "--merge", "--match-head-commit", pr["headRefOid"]]]:
         stop = gh_step(repo, *step)
@@ -5815,7 +5882,7 @@ class Landing:
         """None, or why the pull request could not be moved onto the target branch."""
         if self.pr_base == self.target_branch:
             return None
-        stop = gh_step(self.repo, "pr", "edit", self.url, "--base", self.target_branch)
+        stop = dissolve(self.repo, self.url.rsplit("/", 1)[1]) or gh_step(self.repo, "pr", "edit", self.url, "--base", self.target_branch)
         return stop and stop[1]
 
     def announce(self, new_head, kind, details, retarget_error=None):
@@ -6917,6 +6984,7 @@ def drain(repo, fallback, tick=False, deadline=None):
             print(f"lander: {e}")
             break
         stopped &= {pr["number"] for pr in snap}
+        ensure_stacks(repo, snap)
         if tick and time.time() - cheap_at >= WATCH_INTERVAL:
             watch_snapshot(repo, fallback, snap)
             cheap_at = time.time()

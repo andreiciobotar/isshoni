@@ -32,6 +32,8 @@ elif a[:2] in (["pr", "edit"], ["pr", "comment"]):
     open(f"{d}/gh.jsonl", "a").write(json.dumps(rec) + "\\n")
 elif a[:2] == ["pr", "ready"]:
     open(f"{d}/ready.jsonl", "a").write(json.dumps(a) + "\\n")
+elif a[:1] == ["api"]:
+    print("[]")
 else:
     sys.exit(1)
 """
