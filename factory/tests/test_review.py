@@ -297,7 +297,7 @@ class RunTests(Session):
         for lean in ("true", "false"):
             with self.subTest(lean_start=lean):
                 self.settings_file(f"[sessions]\nlean_start = {lean}\n")
-                with mock.patch.object(factory, "lean_flags", return_value=["--strict-mcp-config"]):
+                with mock.patch.object(factory, "session_flags", side_effect=lambda lean: ["--strict-mcp-config"] if lean else []):
                     argv = factory.review_argv(factory.load_settings(), self.tmp, "p")
                 self.assertEqual(argv.count("--strict-mcp-config"), 1)
 
