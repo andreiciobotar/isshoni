@@ -23,7 +23,7 @@ COPY --from=go /usr/local/go /usr/local/go
 
 # Each download is checked against the checksum its publisher lists for that version.
 RUN set -eu; \
- get() { curl -fsSL --retry 3 --retry-all-errors "$@" || { echo "network: download failed after 3 retries: $*; not caused by this change" >&2; return 1; }; }; \
+ get() { curl -fsSL --retry 3 --retry-all-errors "$@" || { echo "network: download failed after 3 retries: $*; a network failure, not caused by the code" >&2; return 1; }; }; \
  cd /tmp \
  && claude_arch=$([ "$TARGETARCH" = amd64 ] && echo x64 || echo "$TARGETARCH") \
  && claude=https://downloads.claude.ai/claude-code-releases/$CLAUDE_VERSION \
