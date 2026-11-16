@@ -554,10 +554,12 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   `isshoni kaizen --json` reports (see [Kaizen measures](#kaizen-measures)). It loads when
   the view is shown (unless a result under 30 seconds old is held) and when the range
   changes; there is no periodic refresh. The first load is `isshoni kaizen --json
-  --cached`, which never contacts GitHub, so the numbers show at once; when any
-  repository's pull request data is missing or older than 10 minutes a second load
-  without `--cached` follows in the background and replaces the document. If it fails
-  the first document stays. A repository whose pull request data is over 15 minutes
+  --cached`, which never contacts GitHub, so the numbers show at once. A second load
+  without `--cached` starts beside it when no document is held yet or the held one has
+  a repository whose pull request data is missing or older than 10 minutes (two
+  processes for a moment), and follows it otherwise when the cached result is that old.
+  The second load's document replaces the first and a cached result that arrives after it is
+  dropped. If it fails the first document stays. A repository whose pull request data is over 15 minutes
   old, or whose refresh failed, gets a line `⚠ pull requests for <repo> as of 12m ago:
   <why>` on the Pulse and Anatomy pages. Four pages, switched with `←` `→`, each
   scrolled with the move keys: **Pulse** (the landed count and the median cost, brief to
