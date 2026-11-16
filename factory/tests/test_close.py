@@ -97,7 +97,6 @@ class CloseBase(ScratchRepoBase):
         self.sessions = [{"id": "sx", "name": "t1", "cwd": str(self.wt), "kind": "background", "state": "done"}] if session else []
 
     def removal_commands(self):
-        """The commands of the removal that were run: `claude rm`, `git worktree remove`, `git update-ref`."""
         return [c for c in self.calls if c[:2] == ["claude", "rm"] or c[:3] == ["git", "worktree", "remove"] or "update-ref" in c]
 
     def pr(self, state, branch="worktree-t1", head=None, base="main"):
@@ -239,6 +238,13 @@ class StackedTests(CloseBase):
         self.assertTrue(self.wt.is_dir())
         self.assertIn("worktree-t1", self.branches())
 
+    def test_a_merged_task_with_a_session_is_kept_while_its_stack_is_open(self):
+        self.sessions = [{"id": "sx", "name": "t1", "cwd": str(self.wt), "kind": "background", "state": "done"}]
+        self.pr("OPEN", branch="worktree-t2")
+        _, out, _ = self.go("clean")
+        self.assertIn("kept t1: t2 is stacked on it", out)
+        self.assertNotIn(["claude", "rm", "sx"], self.calls)
+        self.assertTrue(self.wt.is_dir())
 
     def test_a_merged_task_whose_stack_merged_too_is_removed_through_its_session_without_a_close(self):
         self.sessions = [{"id": "sx", "name": "t1", "cwd": str(self.wt), "kind": "background", "state": "done"}]
