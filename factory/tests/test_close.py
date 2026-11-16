@@ -7,6 +7,7 @@ import re
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import ROOT, factory, git_task_answers
@@ -784,11 +785,25 @@ class KeptDepthTests(CloseBase):
         self.assertEqual(sum("ls-remote" in c for c in self.calls), 1)
 
 
+    def test_the_watch_full_pass_is_deep(self):
+        repo = factory.Repo(str(self.root))
+        factory.repo_state(repo.root, "watch", "lock").touch()
+        factory.watch_tick(SimpleNamespace(dispatcher=None), repo)
+        [f] = [r for r in self.records("firings") if r["criterion"] == "merged-not-cleaned"]
+        self.assertEqual(f["detail"], f"kept: {ONLY_HERE}{self.sha[:7]} only here")
+
+
 class SessionsUnlistedTests(CloseBase):
     def test_a_closed_task_nothing_else_keeps_says_sessions_cannot_be_listed_not_null(self):
         self.declare("t1", "closed", reason="abandoned")
         self.assertIsNone(json.loads(self.go("status", "--json")[1])["rows"][0]["kept"])
         self.sessions = None
+        row = json.loads(self.go("status", "--json")[1])["rows"][0]
+        self.assertEqual((row["kept"], row["kept_elsewhere"]), (factory.NOT_LISTED, False))
+
+    def test_a_closed_task_with_an_unfinished_session_without_a_cwd_says_so_not_null(self):
+        self.declare("t1", "closed", reason="abandoned")
+        self.sessions = [{"id": "sx", "name": "other", "kind": "background", "state": "busy"}]
         row = json.loads(self.go("status", "--json")[1])["rows"][0]
         self.assertEqual((row["kept"], row["kept_elsewhere"]), (factory.NOT_LISTED, False))
 

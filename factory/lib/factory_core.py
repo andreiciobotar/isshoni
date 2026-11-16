@@ -1155,7 +1155,7 @@ def collect(repo, sessions, limit_hours, prs=None, deep=False):
         rows.append(row)
     files = OpenFiles() if deep else None
     for row in rows:
-        row["kept"], row["kept_elsewhere"] = kept(repo, row, rows, files, sessions is not None)
+        row["kept"], row["kept_elsewhere"] = kept(repo, row, rows, files, placed)
     stops(repo, declared, rows)
     return rows
 
@@ -1702,7 +1702,7 @@ def reported(row):
 
 NOT_CHECKED = ("closed, but open files and the remote were not checked; "
                "`factory status` (without --cached) checks them")
-NOT_LISTED = "sessions cannot be listed with `claude agents --json --all`, so a session holding it is not known"
+NOT_LISTED = "sessions cannot be listed or placed (`claude agents --json --all`), so a session holding it is not known"
 
 
 def keep_rule(repo, row, rows, files=None):
@@ -1738,7 +1738,7 @@ def keep_rule(repo, row, rows, files=None):
 
 def kept(repo, row, rows, files, listed=True):
     """`keep_rule` for a task whose work is over (merged, settled, closed or a report), `(None, False)` for any other.
-    When the sessions could not be listed (`listed` False), no session is known not to hold it: that is said, not None."""
+    When the sessions could not be listed or placed (`listed` False), no session is known not to hold it: that is said, not None."""
     if row["phase"] == "merged" or row["state"] in (*SETTLED, "closed") or reported(row):
         reason, elsewhere = keep_rule(repo, row, rows, files)
         return (reason, elsewhere) if reason or listed else (NOT_LISTED, False)
