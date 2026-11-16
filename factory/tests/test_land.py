@@ -10,7 +10,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from test_factory import factory
+from test_factory import NO_ATTRIBUTION, factory
 
 BIN = Path(__file__).resolve().parent.parent / "bin" / "factory"
 
@@ -345,7 +345,7 @@ class LandTests(unittest.TestCase):
         self.assertFalse(any(a.startswith("--strict") for a in call["argv"]))
         i = call["argv"].index("--worktree")
         self.assertEqual((call["argv"][i:i + 4], call["argv"].count("--settings")),
-                         (["--worktree", "t1", "--settings", json.dumps(FACTORY.BASE_REF)], 1))
+                         (["--worktree", "t1", "--settings", json.dumps({**NO_ATTRIBUTION, **FACTORY.BASE_REF})], 1))
 
     def test_the_lander_runs_on_the_configured_model(self):
         (self.home / ".claude" / "factory").mkdir(parents=True)
@@ -378,7 +378,7 @@ class LandTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "auto")
         i = argv.index("--strict-mcp-config")
         self.assertEqual(argv[i:i + 3], ["--strict-mcp-config", "--settings", json.dumps(
-            {"disableBundledSkills": True, **FACTORY.BASE_REF, "enabledPlugins": {"alpha@m": False}})])
+            {**NO_ATTRIBUTION, "disableBundledSkills": True, **FACTORY.BASE_REF, "enabledPlugins": {"alpha@m": False}})])
         tools = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
         self.assertEqual(tools, ["Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
                                  "Bash(gh pr edit *)", "Bash(factory overlap *)"])

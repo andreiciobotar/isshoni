@@ -77,7 +77,8 @@ class StartScript(unittest.TestCase):
                 done = self.start()
                 # Linux's sh reports the dashboard child that the stop killed; nothing else may be said.
                 self.assertEqual((done.returncode, done.stderr.replace("Terminated\n", "")), (0, ""))
-                self.assertEqual(self.bg(), [{"argv": ["--bg", "-n", "dispatcher-b", "--permission-mode", "auto", "/factory:dispatch"],
+                self.assertEqual(self.bg(), [{"argv": ["--bg", "-n", "dispatcher-b", "--permission-mode", "auto",
+                                                       "--settings", '{"attribution":{"commit":"","pr":"","sessionUrl":false}}', "/factory:dispatch"],
                                               "cwd": str(self.home / "code/b")}])
 
     def test_the_list_comes_from_settings_toml_else_from_a_legacy_settings_json(self):

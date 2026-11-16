@@ -633,15 +633,22 @@ def agent_models(models):
     return {f.stem: models[model_key(f)] for f in sorted((PLUGIN_ROOT / "agents").glob("*.md")) if model_key(f) in models}
 
 
-def lean_flags(extra=None):
-    """The flags of a lean start: no MCP servers, no bundled skills, and every installed plugin but the factory off.
-    `extra` is more settings for the one `--settings` it passes."""
+# The harness's commit and pull request attribution, off: an empty string hides that part, `sessionUrl` the session link.
+ATTRIBUTION_OFF = {"commit": "", "pr": "", "sessionUrl": False}
+
+
+def session_flags(lean, extra=None):
+    """The one `--settings` every session the factory starts gets: attribution off, and `extra` (more settings) merged
+    in. A lean start adds no MCP servers, no bundled skills, and every installed plugin but the factory off."""
+    settings = {"attribution": ATTRIBUTION_OFF}
+    if not lean:
+        return ["--settings", json.dumps({**settings, **(extra or {})})]
     rc, out, _ = run(["claude", "plugin", "list", "--json"], timeout=20)
     try:
         ids = sorted({e["id"] for e in json.loads(out) if e["id"].partition("@")[0] != "factory"}) if rc == 0 else None
     except (ValueError, TypeError, KeyError, AttributeError):
         ids = None
-    settings = {"disableBundledSkills": True, **(extra or {})}
+    settings |= {"disableBundledSkills": True, **(extra or {})}
     if ids is None:
         print("factory: claude plugin list gave no plugin list; other plugins stay on", file=sys.stderr)
     else:
@@ -661,10 +668,11 @@ def isolated_name(repo, path):
 
 def worktree_flags(name, lean):
     """The flags of a headless session in the worktree `name` (None: not under `.claude/worktrees`): `--worktree` and the
-    base-ref setting, so that Claude Code isolates it as it does a lead; else the lean flags, or none."""
+    base-ref setting in the one `--settings` of `session_flags`, so that Claude Code isolates it as it does a lead; else
+    just `session_flags`."""
     if name is None:
-        return lean_flags() if lean else []
-    return ["--worktree", name, *(lean_flags(BASE_REF) if lean else ["--settings", json.dumps(BASE_REF)])]
+        return session_flags(lean)
+    return ["--worktree", name, *session_flags(lean, BASE_REF)]
 
 
 def run_in_worktree(repo, path, argv, **kw):
@@ -729,14 +737,14 @@ def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limi
         + (f"{setup} " if setup else "") +
         f"Your brief follows.\n\n{brief}"
     )
-    lean = [*lean_flags(), f"--tools={LEAD_TOOLS}"] if settings["lean_start"] else []
+    lean = [f"--tools={LEAD_TOOLS}"] if settings["lean_start"] else []
     return [
         "claude", "--bg", "--worktree", slug, "-n", slug,
         "--model", settings["models"]["lead"],
         "--agents", json.dumps(agent_definitions(settings, root)),
         "--permission-mode", settings["lead_permission_mode"],
         "--plugin-dir", str(PLUGIN_ROOT),
-        *lean,
+        *session_flags(settings["lean_start"]), *lean,
         "--disallowedTools", *LEAD_DENIED,
         "--append-system-prompt", lead_rules,
         prompt,
@@ -3145,9 +3153,9 @@ def site_manager_argv(p, firings, job="watch", look=None):
                            "since": last and last["ts"]}, "findings": body}
     prompt = (f"Job: {job}. Repo: {p['repo'].root}. The dispatcher's session name is {p['dispatcher']}.\n\n"
               f"{json.dumps(body, indent=2)}")
-    lean = [*lean_flags(), "--disable-slash-commands"] if p["lean_start"] else []
+    lean = ["--disable-slash-commands"] if p["lean_start"] else []
     monitor = [f"Bash({p['monitor']} sessions *)"] if p["monitor"] else []
-    return ["claude", "-p", "--model", load_settings()["models"]["site_manager"], "--permission-mode", "dontAsk", *lean,
+    return ["claude", "-p", "--model", load_settings()["models"]["site_manager"], "--permission-mode", "dontAsk", *session_flags(p["lean_start"]), *lean,
             "--tools=Read,Grep,Glob,Bash,SendMessage,ToolSearch", "--allowedTools", *SITE_MANAGER_TOOLS, *monitor,
             "--disallowedTools", "Edit", "Write", "NotebookEdit", *SETTINGS_ISOLATION,
             "--max-turns", str(SITE_MANAGER_TURNS), "--max-budget-usd", SITE_MANAGER_BUDGET,
@@ -3585,8 +3593,8 @@ def ops_argv(repo, w, final, cap):
               f"Checks: {checks}\nThe last {OPS_NOTES_KEPT} entries of the notes, oldest first:\n" + "\n".join(entries))
     return ["claude", "-p", "--model", settings["models"]["ops_watch"],
             "--agents", json.dumps({OPS_AGENT: agent_definitions(settings, repo.root)[OPS_AGENT]}),
-            "--permission-mode", "dontAsk", "--plugin-dir", str(PLUGIN_ROOT), "--strict-mcp-config",
-            *(lean_flags()[1:] if settings["lean_start"] else []), "--tools=Agent", "--allowedTools", f"Agent({OPS_AGENT})",
+            "--permission-mode", "dontAsk", "--plugin-dir", str(PLUGIN_ROOT),
+            *session_flags(settings["lean_start"]), *([] if settings["lean_start"] else ["--strict-mcp-config"]), "--tools=Agent", "--allowedTools", f"Agent({OPS_AGENT})",
             *SETTINGS_ISOLATION, "--max-turns", str(OPS_TICK_TURNS), "--max-budget-usd", str(round(cap, 4)),
             "--output-format", "json", "--json-schema", json.dumps(OPS_SCHEMA), "--append-system-prompt", OPS_ROLE.read_text(), prompt]
 
@@ -4889,7 +4897,7 @@ def write_batch(slug, pr, items):
 def courier(repo, name, line):
     """Whether a headless run sent `line` to the session `name`: the only way to put text into a live session."""
     argv = ["claude", "-p", "--model", load_settings()["models"]["courier"], "--permission-mode", "dontAsk", "--allowedTools", "SendMessage",
-            "ToolSearch", "--output-format", "json", COURIER.format(name=name, line=line)]
+            "ToolSearch", *session_flags(False), "--output-format", "json", COURIER.format(name=name, line=line)]
     rc, out, _ = run(argv, cwd=repo.root, timeout=COMMENT_TIMEOUT, group=True)
     try:
         reply = json.loads(out).get("result")
@@ -7197,8 +7205,8 @@ def review_post(target, settings, folder, issues, started):
 def review_argv(settings, folder, prompt):
     """The review session's launch command, the one place another runner would plug in. It reads anywhere and writes
     only under `folder`; the flags cannot stop `python3` from writing elsewhere, the charter says so."""
-    lean = [*lean_flags(), "--disable-slash-commands"] if settings["lean_start"] else ["--strict-mcp-config"]
-    return ["claude", "-p", "--model", settings["models"]["kaizen_review"], "--permission-mode", "dontAsk", *lean,
+    lean = ["--disable-slash-commands"] if settings["lean_start"] else ["--strict-mcp-config"]
+    return ["claude", "-p", "--model", settings["models"]["kaizen_review"], "--permission-mode", "dontAsk", *session_flags(settings["lean_start"]), *lean,
             "--tools=Read,Grep,Glob,Bash,Write", "--allowedTools", "Read", "Grep", "Glob", "Bash", f"Edit(/{folder}/**)",
             "--disallowedTools", *REVIEW_DENIED, *SETTINGS_ISOLATION, "--max-budget-usd", REVIEW_BUDGET,
             "--output-format", "json", "--append-system-prompt", REVIEW_ROLE.read_text(), prompt]

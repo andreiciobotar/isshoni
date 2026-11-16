@@ -12,7 +12,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from test_factory import BIN, LEAN_SETTINGS, FakeRun, factory, porcelain
+from test_factory import BIN, LEAN_SETTINGS, NO_ATTRIBUTION, FakeRun, factory, porcelain
 
 SLUG, N, DEFAULT = "task1", 7, "main"
 OLD, NEW, DEFAULT_REF = "a" * 40, "b" * 40, "c" * 40
@@ -21,7 +21,7 @@ CONFLICT = "it conflicts with main in a.txt"
 RED = "red checks: test https://x/run/2"
 COURIER_LINE = re.compile(r"nothing else: (.*)\. Then reply", re.S)
 SETTINGS = {"models": {"tech_lead": "opus"}}
-ISOLATED_SETTINGS = {"disableBundledSkills": True, **factory.BASE_REF, "enabledPlugins": LEAN_SETTINGS["enabledPlugins"]}
+ISOLATED_SETTINGS = {**NO_ATTRIBUTION, "disableBundledSkills": True, **factory.BASE_REF, "enabledPlugins": LEAN_SETTINGS["enabledPlugins"]}
 ANSWER = {"outcome": "resolved", "note": "Kept both paragraphs in docs/factory.md; make test passes; no reviewer."}
 
 

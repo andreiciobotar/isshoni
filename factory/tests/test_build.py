@@ -9,7 +9,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from test_factory import BIN, LEAN_SETTINGS, factory, porcelain
+from test_factory import BIN, LEAN_SETTINGS, NO_ATTRIBUTION, factory, porcelain
 from test_tech_lead import DEFAULT, ISOLATED_SETTINGS, OLD, Case, Machine, SLUG, URL
 
 HEAD = "d" * 40
@@ -88,7 +88,7 @@ class LaunchTests(BuildCase):
         argv = m.tech_lead_calls()[0]
         i = argv.index("--worktree")
         self.assertEqual((argv[i:i + 4], argv.count("--settings"), "--strict-mcp-config" in argv),
-                         (["--worktree", SLUG, "--settings", json.dumps(factory.BASE_REF)], 1, False))
+                         (["--worktree", SLUG, "--settings", json.dumps({**NO_ATTRIBUTION, **factory.BASE_REF})], 1, False))
         self.assertEqual(m.cwds[m.calls.index(argv)], self.root)
 
     def test_the_lock_the_harness_leaves_is_released_when_the_run_fails(self):
@@ -141,9 +141,9 @@ class LaunchTests(BuildCase):
     def test_a_worktree_outside_the_task_directory_keeps_the_old_start_and_says_it_is_not_isolated(self):
         repo, outside = mock.Mock(root=self.root, worktree_path=lambda name: f"{self.root}/.claude/worktrees/{name}"), f"{self.root}/elsewhere/{SLUG}"
         self.assertEqual(factory.isolated_name(repo, outside), None)
-        with mock.patch.object(factory, "lean_flags", return_value=["--strict-mcp-config"]):
+        with mock.patch.object(factory, "session_flags", return_value=["--strict-mcp-config"]):
             self.assertEqual(factory.worktree_flags(None, True), ["--strict-mcp-config"])
-        self.assertEqual(factory.worktree_flags(None, False), [])
+        self.assertEqual(factory.worktree_flags(None, False), ["--settings", json.dumps(NO_ATTRIBUTION)])
         err = io.StringIO()
         with mock.patch.object(factory, "run", return_value=(0, "", "")) as run, redirect_stderr(err):
             factory.run_in_worktree(repo, outside, ["claude", "-p"], timeout=1)
