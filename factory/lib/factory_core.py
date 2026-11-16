@@ -1813,10 +1813,12 @@ def record_pull_request(repo, task, url):
     """Record the number of the open pull request `url` on the task's branch when it is at the worktree's head: this is
     how a replaced pull request is adopted. A link that is not that pull request is left alone, silently."""
     branch = task["branch"]
+    if not url.rsplit("/", 1)[1].isdigit():
+        return
     prs, error = gh_list(repo, "--head", branch, "--state", "open")
     found = next((pr for pr in prs or [] if pr["url"] == url), None)
     if error or found and found["headRefOid"] != repo.git("rev-parse", "HEAD", path=task["path"])[1].strip():
-        print(f"{url}: its number was not recorded: {error or 'its head is not the worktree head'}")
+        print(f"{url}: its number was not recorded: {error or 'its head is not the worktree head'}", file=sys.stderr)
     elif found:
         repo.git("config", f"branch.{branch}.factoryPr", found["url"].rsplit("/", 1)[1])
 
@@ -6548,8 +6550,9 @@ def delivery_gap(repo, slug, branch, git):
     state, url, head = pull_request(repo, branch)[:3]
     report = STORE.expanduser() / "deliverables" / slug / "report.md"
     if state == "open":
-        if not config_value(repo, f"branch.{branch}.factoryPr") and head == git("rev-parse", "HEAD"):
-            repo.git("config", f"branch.{branch}.factoryPr", url.rsplit("/", 1)[1])
+        number = url.rsplit("/", 1)[1]
+        if number.isdigit() and not config_value(repo, f"branch.{branch}.factoryPr") and head == git("rev-parse", "HEAD"):
+            repo.git("config", f"branch.{branch}.factoryPr", number)
         return None
     if state == "unknown":
         return f"cannot check for a pull request on {branch}"

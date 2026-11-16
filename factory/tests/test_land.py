@@ -146,12 +146,12 @@ class LandTests(unittest.TestCase):
         self.edit(self.other, line, text, name)
         self.git("push", "-q", "origin", "main", cwd=self.other)
 
-    def task(self, slug, line=20, text="task line", base="main", state="handed-over", start="main", name="a.txt"):
+    def task(self, slug, line=20, text="task line", base="main", state="handed-over", start="main", name="a.txt", number=None):
         wt = self.repo / ".claude" / "worktrees" / slug
         self.git("worktree", "add", "-q", "-b", f"worktree-{slug}", str(wt), start)
         self.edit(wt, line, text, name)
         self.git("push", "-q", "-u", "origin", f"worktree-{slug}", cwd=wt)
-        url = f"https://x/pull/{slug}"
+        url = f"https://x/pull/{number or slug}"
         self.prs[f"worktree-{slug}"] = [{"state": "OPEN", "url": url, "baseRefName": base,
                                          "headRefOid": self.git("rev-parse", "HEAD", cwd=wt)}]
         self.write_state()
@@ -624,6 +624,24 @@ class LandTests(unittest.TestCase):
         ready = self.state / "ready.jsonl"
         self.assertEqual([json.loads(l) for l in ready.read_text().splitlines()],
                          [["pr", "ready", "--undo", "worktree-t1"]])
+
+    def test_declaring_working_puts_the_recorded_pull_request_back_to_draft_by_its_number(self):
+        self.task("t1", line=20, number=5)
+        self.advance_main(2, "main line")
+        self.land("t1")
+        ready = self.state / "ready.jsonl"
+        self.assertEqual([json.loads(l) for l in ready.read_text().splitlines()], [["pr", "ready", "--undo", "5"]])
+
+    def test_a_pull_request_other_than_the_recorded_one_on_the_branch_is_a_stop_that_names_both(self):
+        wt = self.task("t1", number=5)
+        self.prs["worktree-t1"][0]["url"] = "https://x/pull/6"
+        self.write_state()
+        old = self.git("rev-parse", "HEAD", cwd=wt)
+        p = self.land("t1")
+        self.assertEqual((p.returncode, self.result(p)), (1, "`STOPPED other`"))
+        self.assertIn("https://x/pull/6 is not the pull request recorded for t1 (#5)", p.stdout)
+        self.assertIn("`factory state handed-over https://x/pull/6` adopts it", p.stdout)
+        self.assertEqual((self.remote_head(), self.git("rev-parse", "HEAD", cwd=wt)), (old, old))
 
     def test_declaring_working_on_a_branchless_landing_makes_no_gh_call(self):
         with mock.patch.object(factory, "declare") as declare, mock.patch.object(factory, "run") as run:
