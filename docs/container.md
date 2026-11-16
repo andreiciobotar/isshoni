@@ -33,7 +33,7 @@ The laptop keeps its records in `~/.claude/factory/hosts.json` (`$FACTORY_HOME` 
 8. **Settings.** Sets `paths.monitor` and `sessions.dispatchers` in the container's `~/.claude/factory/settings.toml` with the checkout's `factory settings set`, which changes those two lines and keeps every other byte; a `settings.json` from an older install is read once by the same command to write the TOML, and is left as it is.
 9. **Repositories.** `git clone https://github.com/owner/name` into `~/code/<name>`; a private repository is instead fetched as the App (`factory env`). The factory's own tooling lives apart, in `~/.isshoni`, so a repository of this name can be one of them.
 10. **Dashboard key.** Lists your public key in `~/.claude/factory/dashboard/authorized_keys` with `write` (an existing line without it is upgraded). The container's start script serves the dashboard only if the file and the binary exist when the container starts; when it is not serving, `host add` starts it in place with `docker exec -d` and never restarts the container, which would stop the running sessions.
-11. **Dispatchers.** For each repository where `factory dispatcher` finds no registered dispatcher (it registers itself on start): `claude --bg -n dispatcher-<name> --permission-mode auto "/factory:dispatch"` in `~/code/<name>`.
+11. **Dispatchers.** For each repository where `factory dispatcher` finds no registered dispatcher (it registers itself on start): `claude --bg -n dispatcher-<name> --permission-mode auto --settings '{"attribution":{"commit":"","pr":"","sessionUrl":false}}' "/factory:dispatch"` in `~/code/<name>`.
 12. **Connect.** Prints how to reach the dashboard.
 
 ### The Claude login

@@ -63,13 +63,13 @@ class Attribution(unittest.TestCase):
         }
 
     def test_every_session_start_has_one_settings_flag_with_attribution_off(self):
+        self.assertEqual(factory.ATTRIBUTION_OFF, NO_ATTRIBUTION["attribution"])
         for name, build in self.builders().items():
             for lean in (True, False):
                 with self.subTest(session=name, lean_start=lean):
                     argv = self.argv(build, lean)
                     self.assertEqual(argv.count("--settings"), 1)
                     self.assertEqual(json.loads(argv[argv.index("--settings") + 1])["attribution"], factory.ATTRIBUTION_OFF)
-                    self.assertEqual(factory.ATTRIBUTION_OFF, NO_ATTRIBUTION["attribution"])
 
     def test_a_new_session_start_must_be_added_to_this_test(self):
         starts = re.findall(r'"claude", "(?:-p|--bg)"', Path(factory.__file__).read_text())
