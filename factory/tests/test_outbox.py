@@ -150,33 +150,93 @@ class TickTests(Outbox):
         self.assertEqual(self.fake.calls, [])
 
     def tick(self, sessions=(), drain=None):
-        """`factory watch` with the tick's own work stubbed, `watch_tick` noted; (what it printed, whether `watch_tick` ran)."""
-        ticked, out = [], io.StringIO()
-        patches = [mock.patch.object(factory, "Repo", lambda: self.repo), mock.patch.object(factory, "ops_tick"),
-                   mock.patch.object(factory, "watch_tick", lambda args, repo: ticked.append(1)),
-                   mock.patch.object(factory, "read_word", lambda repo: {"all": False, "prs": False}),
-                   mock.patch.object(factory, "handed_over", lambda repo: False),
-                   mock.patch.object(factory, "paused_rows", lambda repo: {}),
-                   mock.patch.object(factory, "run", self.stage(sessions))]
+        """`watch_tick` as far as its drain: it stops where the tick's own work would begin. The listing is staged."""
+        patches = [mock.patch.object(factory, "load_criteria", side_effect=Stop), mock.patch.object(factory, "run", self.stage(sessions))]
         if drain:
             patches.append(mock.patch.object(factory, "drain_outbox", drain))
-        with redirect_stdout(out):
+        out = io.StringIO()
+        with redirect_stdout(out), self.assertRaises(Stop):
             for patch in patches:
                 patch.start()
                 self.addCleanup(patch.stop)
-            factory.cmd_watch(SimpleNamespace(dispatcher=None))
-        return out.getvalue(), bool(ticked)
+            factory.watch_tick(SimpleNamespace(dispatcher=None), self.repo)
+        return out.getvalue()
 
     def test_a_drain_that_raises_does_not_stop_the_tick(self):
         def boom(repo, fallback):
             raise OSError("disk")
-        out, ticked = self.tick(drain=boom)
-        self.assertEqual((ticked, "outbox: OSError: disk" in out), (True, True))
+        self.assertIn("outbox: OSError: disk", self.tick(drain=boom))  # `Stop` after it: the tick went on
 
     def test_the_tick_delivers_the_outbox_before_and_apart_from_the_site_manager(self):
         factory.outbox_put(self.repo, "x", "L1")
-        self.assertEqual(self.tick([DISPATCHER_SESSION, LIVE])[1], True)
+        self.tick([DISPATCHER_SESSION, LIVE])
         self.assertEqual(self.couriers(), [("x", "L1")])
+
+    def test_a_tick_the_lander_loop_runs_delivers_the_outbox_too(self):
+        factory.outbox_put(self.repo, "x", "L1")
+        calls, loop = [], []
+        real = factory.watch_tick
+        patches = [mock.patch.object(factory, "Repo", lambda: self.repo), mock.patch.object(factory, "ops_tick"),
+                   mock.patch.object(factory, "review_tick"), mock.patch.object(factory, "handed_over", lambda repo: True),
+                   mock.patch.object(factory, "read_word", lambda repo: {"all": False, "prs": False}),
+                   mock.patch.object(factory, "read_lander", lambda repo: {"health": 0}),
+                   mock.patch.object(factory, "watch_tick", lambda args, repo: calls.append(1) or (len(calls) > 1 and real(args, repo))),
+                   mock.patch.object(factory, "drain", lambda repo, fallback, tick, deadline: loop.append(tick)),
+                   mock.patch.object(factory, "load_criteria", side_effect=Stop), mock.patch.object(factory, "run", self.stage([DISPATCHER_SESSION, LIVE]))]
+        with redirect_stdout(io.StringIO()):
+            for patch in patches:
+                patch.start()
+                self.addCleanup(patch.stop)
+            factory.cmd_watch(SimpleNamespace(dispatcher=None))  # the outer tick is stubbed: the loop's `tick` is what runs
+            self.assertEqual(self.couriers(), [])
+            with self.assertRaises(Stop):
+                loop[0]()
+        self.assertEqual(self.couriers(), [("x", "L1")])
+
+
+class Stop(Exception):
+    pass
+
+
+class ClosedTests(Outbox):
+    """The lead of a task declared `closed` is never reached or resumed: its lines go to the dispatcher in one LEAD GONE line."""
+    LEAD_GONE = "LEAD GONE: x (its task is closed): 2 line(s) not delivered, oldest first: L1 | L2"
+
+    def setUp(self):
+        super().setUp()
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "role": "lead", "state": "closed", "ts": iso(NOW)}])
+
+    def nothing_reached_the_lead(self):
+        self.assertEqual(self.resumes(), [])
+        self.assertNotIn("x", [name for name, _ in self.couriers()])
+
+    def test_the_tick_hands_pending_rows_to_the_dispatcher_at_once_and_a_second_tick_sends_nothing(self):
+        for line in ("L1", "L2"):
+            factory.outbox_put(self.repo, "x", line)
+        self.drain([DISPATCHER_SESSION, GONE])
+        self.assertEqual(self.couriers(), [("dispatcher-repo", self.LEAD_GONE)])
+        self.nothing_reached_the_lead()
+        self.assertEqual(factory.outbox(self.repo), [])
+        self.drain([DISPATCHER_SESSION, GONE])
+        self.assertEqual(self.fake.calls, [])
+
+    def test_a_live_lead_of_a_closed_task_is_not_sent_to_either(self):
+        for line in ("L1", "L2"):
+            factory.outbox_put(self.repo, "x", line)
+        self.drain([DISPATCHER_SESSION, LIVE])
+        self.assertEqual(self.couriers(), [("dispatcher-repo", self.LEAD_GONE)])
+
+    def test_forward_to_a_closed_task_puts_its_line_with_the_pending_ones_in_one_lead_gone_line(self):
+        factory.outbox_put(self.repo, "x", "L1")
+        self.assertEqual(self.forward([DISPATCHER_SESSION, GONE], said="L2"), "dispatcher")
+        self.assertEqual(self.couriers(), [("dispatcher-repo", self.LEAD_GONE.replace("L2", "TECH LEAD: x: L2"))])
+        self.nothing_reached_the_lead()
+        self.assertEqual(factory.outbox(self.repo), [])
+
+    def test_factory_lead_refuses_a_closed_task(self):
+        code, out, err = self.cli("lead", "x", "hi", sessions=[DISPATCHER_SESSION], entries=["x"])
+        self.assertEqual((code, out, factory.outbox(self.repo)), (2, "", []))
+        self.assertIn("x is closed", err)
 
 
 class LeadCommandTests(Outbox):

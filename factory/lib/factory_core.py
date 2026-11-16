@@ -3929,10 +3929,6 @@ def cmd_watch(args):
         if not free:
             print("watch: a tick is already running")
             return 0
-        try:
-            drain_outbox(repo, args.dispatcher)
-        except Exception as e:  # the tick goes on without it
-            print(f"outbox: {why(e)}")
         watch_tick(args, repo)
         word = read_word(repo)
         if handed_over(repo) or word["all"] or word["prs"] or any("human" not in (r.get("waits_on") or []) for r in paused_rows(repo).values()):  # last: the loop runs until health is next due, with a tick every WATCH_INTERVAL
@@ -3954,6 +3950,8 @@ def cmd_lead(args):
     repo = Repo()
     if args.slug not in {os.path.basename(t["path"]) for t in repo.tasks}:
         raise Fail(f"{args.slug} is not a task of this repository")
+    if read_tasks(repo.root).get(args.slug, {}).get("state") == "closed":
+        raise Fail(f"{args.slug} is closed")
     outbox_put(repo, args.slug, args.message)
     print(f"queued for {args.slug}: the next tick delivers it")
     return 0
@@ -3982,6 +3980,10 @@ def with_dispatcher(p, fallback):
 def watch_tick(args, repo):
     """The cheap part every time (comments, draft flags, approvals), the facts of every tick, and every HEALTH_SECONDS the
     rest of them and the digest. What wakes the site manager (see `wake_events`) gathers the full picture and runs it once."""
+    try:
+        drain_outbox(repo, args.dispatcher)
+    except Exception as e:  # the tick goes on without it
+        print(f"outbox: {why(e)}")
     every = load_criteria()
     t = time.time()
     os.utime(repo_state(repo.root, "watch", "lock"), (t, t))  # the tick's age, read by `health` and by `drain`
@@ -5174,10 +5176,15 @@ def courier(repo, name, line):
     return ((text or "").strip().splitlines() or [f"exit {rc}, no output"])[0][:200]
 
 
+CLOSED = "its task is closed"  # `reach_lead`'s final why: the lead of a closed task is never reached or resumed
+
+
 def reach_lead(repo, sessions, slug, lines):
     """Put `lines` into the session of the lead of `slug`: (True, None), else (False, why). A live lead gets one courier send
     per line; a retired one is resumed once by id, flag-free so that its saved options stay, with the lines as its next prompt.
     Only the factory's unattended processes may call this: a model's shell is refused the resume."""
+    if read_tasks(repo.root).get(slug, {}).get("state") == "closed":
+        return False, CLOSED
     session = lead_session(sessions, repo, slug)
     if session is None:
         return False, f"its lead is gone: no session named {slug}"
@@ -5246,7 +5253,7 @@ def drain_outbox(repo, fallback):
     for slug in slugs:
         ok, why = deliver(repo, sessions, slug)
         rows = outbox(repo, slug)
-        if not ok and max(r["tries"] for r in rows) >= OUTBOX_TRIES:
+        if not ok and (why == CLOSED or max(r["tries"] for r in rows) >= OUTBOX_TRIES):
             lead_gone(repo, fallback, slug, why, rows)
 
 
@@ -5263,6 +5270,8 @@ def forward(repo, fallback, slug, head, said, lead=True):
         ok, why = deliver(repo, sessions, slug)
         if ok:
             return "lead"
+        if why == CLOSED:
+            return lead_gone(repo, fallback, slug, why, outbox(repo, slug))
         session = lead_session(sessions, repo, slug)
         if session and "pid" not in session:
             return "queued"
