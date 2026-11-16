@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from test_factory import DISPATCHER, LEAN_SETTINGS, ROOT, factory
+from test_factory import DISPATCHER, LEAN_SETTINGS, NO_ATTRIBUTION, ROOT, factory
 from test_health import NOW, SchedHarness, iso
 
 CHECKS = {"read": "mcp__metrics__query: errors in the last 10m", "fine": "0 errors", "alarm": "any error", "done": "served reaches 30"}
@@ -194,12 +194,12 @@ class LookTests(OpsHarness):
         self.assertIn("first look", argv[-1])
         self.assertIn("Final look: no", argv[-1])
 
-    def test_without_lean_start_only_the_strict_flag_remains(self):
+    def test_without_lean_start_only_the_strict_flag_and_the_attribution_setting_remain(self):
         (self.store / "settings.toml").write_text('[sessions]\nlean_start = false\n[ops]\ntools = ["mcp__metrics__query"]\n')
         self.tick()
         [argv] = self.ops_runs()
         self.assertIn("--strict-mcp-config", argv)
-        self.assertNotIn("--settings", argv)
+        self.assertEqual(argv[argv.index("--settings") + 1], json.dumps(NO_ATTRIBUTION))
 
     def test_a_missed_gap_is_counted_once_and_never_caught_up(self):
         self.tick()

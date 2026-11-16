@@ -14,7 +14,7 @@ from unittest import mock
 import test_health
 from test_factory import ROOT, WT, FakeRun, factory
 from test_health import NOW, iso, register
-from test_merge import SESSION, World, pr, review
+from test_merge import RECORDED, SESSION, World, pr, review
 
 GREEN = [{"name": "test", "bucket": "pass"}]
 PENDING = [{"name": "test", "bucket": "pending"}]
@@ -185,9 +185,9 @@ class Loop(World):
 
     rerun_answer = (False, "no rerun: test double", None)
 
-    def go(self, *argv, leads=True, dispatcher=True, state="handed-over", at=None):
+    def go(self, *argv, leads=True, dispatcher=True, state="handed-over", at=None, **world):
         prs = [pr(n) for n in sorted(self.sim.prs)]
-        answers, sessions, slugs = self.world(prs, state=state)
+        answers, sessions, slugs = self.world(prs, state=state, **world)
         sessions = [s if (i == 0 or not leads) else {**s, "name": os.path.basename(s["cwd"])} for i, s in enumerate(sessions)]
         answers[("osascript",)] = (0, "", "")
         return self.cli(*argv, answers=answers, sessions=sessions if dispatcher else sessions[1:], entries=slugs, at=at)
@@ -236,6 +236,23 @@ class MergeInOrderTests(Loop):
         self.sim.lines.clear()
         self.go("lander")
         self.assertEqual(self.sim.lines, [])
+
+    def namesake_of_t1(self, **kw):
+        """Pull request #2 shares the head branch of t1, whose recorded pull request is #1 (the sim lists #1 as it is)."""
+        self.sim.add(1, approved=False)
+        self.sim.add(2, **kw)
+        listed = self.sim.listed
+        self.sim.listed = lambda n: {**listed(n), "headRefName": "worktree-t1"} if n == 2 else listed(n)
+        return self.go("lander", tasks=["t1"], extra=RECORDED)
+
+    def test_a_pull_request_that_only_shares_the_branch_of_the_recorded_one_is_not_queued_nor_updated(self):
+        code, out, _ = self.namesake_of_t1()
+        self.assertEqual((code, self.sim.log, self.sim.merged), (0, [], []))
+        self.assertNotIn("#2", out)
+
+    def test_a_conflicting_pull_request_that_only_shares_the_branch_is_not_sent_back(self):
+        self.namesake_of_t1(approved=False, conflicts=["a.txt"])
+        self.assertEqual((self.sim.log, self.sim.lines, self.claude_runs()), ([], [], []))
 
     def test_a_stacked_pull_request_in_no_queue_is_not_conflict_checked(self):
         self.sim.add(1, approved=False, behind=False)

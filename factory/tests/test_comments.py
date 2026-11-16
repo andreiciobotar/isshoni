@@ -233,6 +233,15 @@ class WatchCommentsTests(Comments):
         self.assertEqual(self.tick([pr(), theirs(comment("IC_1"))]), "")
         self.assertEqual((self.logs(), self.couriers()), ([], []))
 
+    def test_comments_on_a_pull_request_that_only_shares_the_branch_of_the_recorded_one_are_not_forwarded(self):
+        self.repo.tasks[0]["pr"] = "1"
+        namesake = lambda *comments: pr(comments=comments, n=2)
+        self.tick([pr(), namesake()])
+        self.assertEqual(self.tick([pr(), namesake(comment("IC_1"))]), "")
+        self.assertEqual((self.logs(), self.couriers()), ([], []))
+        self.tick([pr(comments=[comment("IC_2")]), namesake()])
+        self.assertEqual(self.decisions(), {"IC_2": "forward"})
+
     def test_gh_failure_prints_and_keeps_the_state(self):
         self.prime()
         state = factory.repo_state(self.repo.root, "comments", "json")

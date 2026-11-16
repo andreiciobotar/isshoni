@@ -633,14 +633,22 @@ def agent_models(models):
     return {f.stem: models[model_key(f)] for f in sorted((PLUGIN_ROOT / "agents").glob("*.md")) if model_key(f) in models}
 
 
-def lean_flags():
-    """The flags of a lean start: no MCP servers, no bundled skills, and every installed plugin but the factory off."""
+# The harness's commit and pull request attribution, off: an empty string hides that part, `sessionUrl` the session link.
+ATTRIBUTION_OFF = {"commit": "", "pr": "", "sessionUrl": False}
+
+
+def session_flags(lean):
+    """The one `--settings` every session the factory starts gets: attribution off. A lean start adds no MCP servers, no
+    bundled skills, and every installed plugin but the factory off."""
+    settings = {"attribution": ATTRIBUTION_OFF}
+    if not lean:
+        return ["--settings", json.dumps(settings)]
     rc, out, _ = run(["claude", "plugin", "list", "--json"], timeout=20)
     try:
         ids = sorted({e["id"] for e in json.loads(out) if e["id"].partition("@")[0] != "factory"}) if rc == 0 else None
     except (ValueError, TypeError, KeyError, AttributeError):
         ids = None
-    settings = {"disableBundledSkills": True}
+    settings["disableBundledSkills"] = True
     if ids is None:
         print("factory: claude plugin list gave no plugin list; other plugins stay on", file=sys.stderr)
     else:
@@ -685,14 +693,14 @@ def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limi
         + (f"{setup} " if setup else "") +
         f"Your brief follows.\n\n{brief}"
     )
-    lean = [*lean_flags(), f"--tools={LEAD_TOOLS}"] if settings["lean_start"] else []
+    lean = [f"--tools={LEAD_TOOLS}"] if settings["lean_start"] else []
     return [
         "claude", "--bg", "--worktree", slug, "-n", slug,
         "--model", settings["models"]["lead"],
         "--agents", json.dumps(agent_definitions(settings, root)),
         "--permission-mode", settings["lead_permission_mode"],
         "--plugin-dir", str(PLUGIN_ROOT),
-        *lean,
+        *session_flags(settings["lean_start"]), *lean,
         "--disallowedTools", *LEAD_DENIED,
         "--append-system-prompt", lead_rules,
         prompt,
@@ -728,6 +736,14 @@ class Repo:
         live = [e for e in entries[1:] if not e["prunable"]]
         under = [e for e in live if os.path.dirname(e["path"]) == base]
         self.tasks = [e for e in under if not os.path.basename(e["path"]).startswith("agent-")]
+        rc, out, _ = run(["git", "config", "--get-regexp", r"^branch\..*\.factorypr$"], cwd=self.root)
+        recorded = {}
+        for line in out.splitlines() if rc == 0 else []:
+            key, _, number = line.partition(" ")
+            recorded[key.removeprefix("branch.").removesuffix(".factorypr")] = number.strip()
+        for t in self.tasks:
+            if t["branch"] in recorded:
+                t["pr"] = recorded[t["branch"]]
         self.agents = [e for e in under if os.path.basename(e["path"]).startswith("agent-")]
         self.leftover = len(self.agents)
         self.outside = len(live) - len(under)
@@ -1014,7 +1030,7 @@ def collect(repo, sessions, limit_hours, prs=None):
     for wt in repo.tasks:
         path, branch = wt["path"], wt["branch"]
         slug = os.path.basename(path)
-        row = {"slug": slug, "branch": branch, "path": path, "locked": wt["locked"]}
+        row = {"slug": slug, "branch": branch, "path": path, "locked": wt["locked"], **({"pr": wt["pr"]} if "pr" in wt else {})}
         mine = sessions_in(sessions, repo.root, path) if sessions is not None else []
         session = next((s for s in mine if s.get("name") == slug),
                        next((s for s in mine if s.get("kind") == "background"), mine[0] if mine else None))
@@ -1838,6 +1854,20 @@ def args_state(parser):
                              "human (default), dispatcher or the slug of another open task")
 
 
+def record_pull_request(repo, task, url):
+    """Record the number of the open pull request `url` on the task's branch when it is at the worktree's head: this is
+    how a replaced pull request is adopted. A link that is not that pull request is left alone, silently."""
+    branch = task["branch"]
+    if not url.rsplit("/", 1)[1].isdigit():
+        return
+    prs, error = gh_list(repo, "--head", branch, "--state", "open")
+    found = next((pr for pr in prs or [] if pr["url"] == url), None)
+    if error or found and found["headRefOid"] != repo.git("rev-parse", "HEAD", path=task["path"])[1].strip():
+        print(f"{url}: its number was not recorded: {error or 'its head is not the worktree head'}", file=sys.stderr)
+    elif found:
+        repo.git("config", f"branch.{branch}.factoryPr", found["url"].rsplit("/", 1)[1])
+
+
 @command("state", "declare the state of the task whose worktree this is (a lead runs it)", args_state)
 def cmd_state(args):
     repo = Repo()
@@ -1866,6 +1896,8 @@ def cmd_state(args):
     declare(repo, slug, "lead", args.state, deliverable, waits_on, args.paused)
     if args.paused:
         task_event("TaskPaused", repo, slug, waits_on=waits_on)
+    if args.state == "handed-over" and task["branch"] and LINK_RE.match(deliverable):
+        record_pull_request(repo, task, deliverable)
     stated = args.state == "handed-over" and task["branch"] and config_value(repo, f"branch.{task['branch']}.factoryTest")
     if stated and stated != "none":
         repo.git("config", "factory.lastTest", stated)
@@ -3102,9 +3134,9 @@ def site_manager_argv(p, firings, job="watch", look=None):
                            "since": last and last["ts"]}, "findings": body}
     prompt = (f"Job: {job}. Repo: {p['repo'].root}. The dispatcher's session name is {p['dispatcher']}.\n\n"
               f"{json.dumps(body, indent=2)}")
-    lean = [*lean_flags(), "--disable-slash-commands"] if p["lean_start"] else []
+    lean = ["--disable-slash-commands"] if p["lean_start"] else []
     monitor = [f"Bash({p['monitor']} sessions *)"] if p["monitor"] else []
-    return ["claude", "-p", "--model", load_settings()["models"]["site_manager"], "--permission-mode", "dontAsk", *lean,
+    return ["claude", "-p", "--model", load_settings()["models"]["site_manager"], "--permission-mode", "dontAsk", *session_flags(p["lean_start"]), *lean,
             "--tools=Read,Grep,Glob,Bash,SendMessage,ToolSearch", "--allowedTools", *SITE_MANAGER_TOOLS, *monitor,
             "--disallowedTools", "Edit", "Write", "NotebookEdit", *SETTINGS_ISOLATION,
             "--max-turns", str(SITE_MANAGER_TURNS), "--max-budget-usd", SITE_MANAGER_BUDGET,
@@ -3562,8 +3594,8 @@ def ops_argv(repo, w, final, cap):
               f"Checks: {checks}\nThe last {OPS_NOTES_KEPT} entries of the notes, oldest first:\n" + "\n".join(entries))
     return ["claude", "-p", "--model", settings["models"]["ops_watch"],
             "--agents", json.dumps({OPS_AGENT: agent_definitions(settings, repo.root)[OPS_AGENT]}),
-            "--permission-mode", "dontAsk", "--plugin-dir", str(PLUGIN_ROOT), "--strict-mcp-config",
-            *(lean_flags()[1:] if settings["lean_start"] else []), "--tools=Agent", "--allowedTools", f"Agent({OPS_AGENT})",
+            "--permission-mode", "dontAsk", "--plugin-dir", str(PLUGIN_ROOT),
+            *session_flags(settings["lean_start"]), *([] if settings["lean_start"] else ["--strict-mcp-config"]), "--tools=Agent", "--allowedTools", f"Agent({OPS_AGENT})",
             *SETTINGS_ISOLATION, "--max-turns", str(OPS_TICK_TURNS), "--max-budget-usd", str(round(cap, 4)),
             "--output-format", "json", "--json-schema", json.dumps(OPS_SCHEMA), "--append-system-prompt", OPS_ROLE.read_text(), prompt]
 
@@ -4350,14 +4382,24 @@ def bottom_up(prs):
     return ordered
 
 
+def is_task_of(entry, pr):
+    """Whether the task `entry` (of repo.tasks or a row) owns `pr`: its branch is the head, and the pull request is the
+    recorded one when a number is recorded. The one place the test is written."""
+    return entry["branch"] == pr["headRefName"] and (entry.get("pr") is None or entry["pr"] == str(pr["number"]))
+
+
 def task_of(p, pr):
-    return next((r for r in p["rows"] or [] if r["branch"] == pr["headRefName"]), None)
+    return next((r for r in p["rows"] or [] if is_task_of(r, pr)), None)
 
 
 def handover_reason(p, pr):
     """Why the task of `pr` has not handed it over, or None."""
     row = task_of(p, pr)
     if row is None:
+        other = next((r for r in p["rows"] or [] if r["branch"] == pr["headRefName"]), None)
+        if other:
+            return (f"task {other['slug']} recorded #{other['pr']} as its pull request, not this one "
+                    f"(opened by {(pr.get('author') or {}).get('login') or 'unknown'})")
         return "no task worktree has its head branch"
     if row["phase"] != "review":
         return f"task {row['slug']} is in phase {row['phase']} (declared {row['state'] or 'none'})"
@@ -4496,7 +4538,8 @@ def sync_drafts(p, prs):
 def to_draft(repo, branch):
     """Back to draft at once; the result is ignored (a task often has no pull request yet), the tick reports failures."""
     if branch:
-        run(["gh", "pr", "ready", "--undo", branch], cwd=repo.root)
+        task = next((t for t in repo.tasks if t["branch"] == branch), {})
+        run(["gh", "pr", "ready", "--undo", task.get("pr", branch)], cwd=repo.root)
 
 
 def log_queue(repo, pr_number, slug, head, step, **fields):
@@ -4787,8 +4830,8 @@ def snapshot(repo):
 
 
 def task_slug(repo, pr):
-    """The slug of the task worktree whose branch is the head of `pr`, or None."""
-    return next((os.path.basename(t["path"]) for t in repo.tasks if t["branch"] == pr["headRefName"]), None)
+    """The slug of the task worktree that owns `pr` (is_task_of), or None."""
+    return next((os.path.basename(t["path"]) for t in repo.tasks if is_task_of(t, pr)), None)
 
 
 def owned(repo, pr):
@@ -4868,7 +4911,7 @@ def write_batch(slug, pr, items):
 def courier(repo, name, line):
     """Whether a headless run sent `line` to the session `name`: the only way to put text into a live session."""
     argv = ["claude", "-p", "--model", load_settings()["models"]["courier"], "--permission-mode", "dontAsk", "--allowedTools", "SendMessage",
-            "ToolSearch", "--output-format", "json", COURIER.format(name=name, line=line)]
+            "ToolSearch", *session_flags(False), "--output-format", "json", COURIER.format(name=name, line=line)]
     rc, out, _ = run(argv, cwd=repo.root, timeout=COMMENT_TIMEOUT, group=True)
     try:
         reply = json.loads(out).get("result")
@@ -5640,7 +5683,7 @@ class Landing:
 
     def __init__(self, repo, task, lean, mode):
         self.repo, self.path, self.branch, self.remote = repo, task["path"], task["branch"], repo.remote
-        self.slug = os.path.basename(self.path)
+        self.slug, self.recorded = os.path.basename(self.path), task.get("pr")
         self.lean, self.mode = lean, mode
         self.declared = False
 
@@ -5680,6 +5723,9 @@ class Landing:
         pushed = self.out("rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/{branch}")
         if state != "open":
             return self.stop("other", f"its pull request is {state}")
+        if self.recorded and self.url.rsplit("/", 1)[1] != self.recorded:
+            return self.stop("other", f"{self.url} is not the pull request recorded for {self.slug} (#{self.recorded}); "
+                                      f"`factory state handed-over {self.url}` adopts it")
         if self.old_head != pushed:
             return self.stop("other", f"HEAD {self.old_head} is not {remote}/{branch} ({pushed or 'not pushed'})")
         if self.old_head != pr_head:
@@ -5800,9 +5846,8 @@ class Landing:
             f"The golden files this task means to change: {', '.join(task_files) or 'none'}. A generated file on this "
             "list may be regenerated with the repository's documented command; any other golden that changes is a stop.",
             commands_line(self.repo, self.path, self.branch)])
-        lean = lean_flags() if self.lean else []
         argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", load_settings()["models"]["lander"],
-                "--permission-mode", self.mode, *lean, "--allowedTools", *LAND_TOOLS,
+                "--permission-mode", self.mode, *session_flags(self.lean), "--allowedTools", *LAND_TOOLS,
                 "--disallowedTools", *ROLE_DENIED, "--output-format", "json", brief]
         rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT, group=True)
         try:
@@ -6279,10 +6324,9 @@ def tech_lead_prompt(repo, slug, pr, evidence, spec):
 
 def tech_lead_argv(repo, slug, pr, evidence, spec, settings):
     """The tech lead's launch command, the one place another runner would plug in."""
-    lean = lean_flags() if settings["lean_start"] else []
     return ["claude", "-p", "--model", settings["models"]["tech_lead"], "--permission-mode", settings["lead_permission_mode"],
             "--agents", json.dumps(agent_definitions(settings, repo.root)),
-            "--plugin-dir", str(PLUGIN_ROOT), *lean, f"--tools={TECH_LEAD_KIT}",
+            "--plugin-dir", str(PLUGIN_ROOT), *session_flags(settings["lean_start"]), f"--tools={TECH_LEAD_KIT}",
             "--allowedTools", *TECH_LEAD_TOOLS, "--disallowedTools", *TECH_LEAD_DENIED,
             "--max-budget-usd", TECH_LEAD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(TECH_LEAD_SCHEMA),
             "--append-system-prompt", TECH_LEAD_ROLE.read_text(), tech_lead_prompt(repo, slug, pr, evidence, spec)]
@@ -6392,6 +6436,9 @@ def tech_lead_run(repo, settings, args, learned):
     hand-over (or the line to the lead): the last step is the one that can leave the task `working`."""
     slug, n, evidence = args.slug, args.pr, args.evidence
     pr = gh_json(repo, dict, "pr", "view", str(n), "--json", "number,url,headRefName,headRefOid")
+    if task_slug(repo, pr) != slug:
+        recorded = next((t.get("pr") for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
+        raise Fail(f"#{n} is not the pull request of task {slug} (it recorded {'#' + recorded if recorded else 'none'})")
     worktree, spec, branch = *tech_lead_paths(repo, slug), pr["headRefName"]
     declare(repo, slug, "tech-lead", "working")
     to_draft(repo, branch)
@@ -6453,10 +6500,9 @@ def build_prompt(repo, slug, spec, handover, note, findings=()):
 
 def build_argv(repo, slug, spec, handover, note, settings, findings=()):
     """The build's launch command, the one place another runner would plug in."""
-    lean = lean_flags() if settings["lean_start"] else []
     return ["claude", "-p", "--model", settings["models"]["tech_lead"],
             "--agents", json.dumps(agent_definitions(settings, repo.root)), "--permission-mode", settings["lead_permission_mode"],
-            "--plugin-dir", str(PLUGIN_ROOT), *lean, f"--tools={LEAD_TOOLS}", "--disallowedTools", *BUILD_DENIED,
+            "--plugin-dir", str(PLUGIN_ROOT), *session_flags(settings["lean_start"]), f"--tools={LEAD_TOOLS}", "--disallowedTools", *BUILD_DENIED,
             "--max-budget-usd", BUILD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(BUILD_SCHEMA),
             "--append-system-prompt", BUILD_ROLE.read_text(), build_prompt(repo, slug, spec, handover, note, findings)]
 
@@ -6575,9 +6621,12 @@ def reported_findings(out):
 def delivery_gap(repo, slug, branch, git):
     """Why a `built` run has delivered nothing, or None: an open pull request, or a report task's end: no pull request, the
     report on disk and no commit the base lacks (the worktree is removed after acceptance, so a commit would be lost)."""
-    state = pull_request(repo, branch)[0]
+    state, url, head = pull_request(repo, branch)[:3]
     report = STORE.expanduser() / "deliverables" / slug / "report.md"
     if state == "open":
+        number = url.rsplit("/", 1)[1]
+        if number.isdigit() and not config_value(repo, f"branch.{branch}.factoryPr") and head == git("rev-parse", "HEAD"):
+            repo.git("config", f"branch.{branch}.factoryPr", number)
         return None
     if state == "unknown":
         return f"cannot check for a pull request on {branch}"
@@ -7188,8 +7237,8 @@ def review_post(target, settings, folder, issues, started):
 def review_argv(settings, folder, prompt):
     """The review session's launch command, the one place another runner would plug in. It reads anywhere and writes
     only under `folder`; the flags cannot stop `python3` from writing elsewhere, the charter says so."""
-    lean = [*lean_flags(), "--disable-slash-commands"] if settings["lean_start"] else ["--strict-mcp-config"]
-    return ["claude", "-p", "--model", settings["models"]["kaizen_review"], "--permission-mode", "dontAsk", *lean,
+    lean = ["--disable-slash-commands"] if settings["lean_start"] else ["--strict-mcp-config"]
+    return ["claude", "-p", "--model", settings["models"]["kaizen_review"], "--permission-mode", "dontAsk", *session_flags(settings["lean_start"]), *lean,
             "--tools=Read,Grep,Glob,Bash,Write", "--allowedTools", "Read", "Grep", "Glob", "Bash", f"Edit(/{folder}/**)",
             "--disallowedTools", *REVIEW_DENIED, *SETTINGS_ISOLATION, "--max-budget-usd", REVIEW_BUDGET,
             "--output-format", "json", "--append-system-prompt", REVIEW_ROLE.read_text(), prompt]

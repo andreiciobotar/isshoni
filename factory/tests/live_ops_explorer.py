@@ -7,7 +7,7 @@
 `--read-tool` (repeatable) goes into `ops.tools` of a scratch FACTORY_HOME; `--write-tool` is a tool that is NOT on that
 list. The servers are read from your own Claude Code configuration (see "Reading production" in docs/factory.md), so the
 run reaches them for real. The parent session is started the way a task's session is: this checkout's `agent_definitions`,
-`lean_flags`, plugin and permission mode, model haiku, `--tools=Agent`. It is told to state its own tools, to dispatch
+`session_flags`, plugin and permission mode, model haiku, `--tools=Agent`. It is told to state its own tools, to dispatch
 `factory:ops-explorer` with the question, and to dispatch it once more to call the write tool.
 
 Checks: the parent held no `mcp__` tool; at least one evidence file of a read tool has a non-empty `response`; no evidence
@@ -68,7 +68,7 @@ def check(ok, what):
 
 def session_argv(settings, agents, prompt, *flags):
     return ["claude", "-p", "--model", "haiku", "--agents", json.dumps(agents), "--permission-mode", settings["lead_permission_mode"],
-            "--plugin-dir", str(factory.PLUGIN_ROOT), *factory.lean_flags(), "--tools=Agent",
+            "--plugin-dir", str(factory.PLUGIN_ROOT), *factory.session_flags(True), "--tools=Agent",
             "--max-budget-usd", "1", *flags, prompt]
 
 
