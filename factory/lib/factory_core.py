@@ -1239,8 +1239,10 @@ def transcript_model(path):
 def tags(payload=None):
     """The record tags for a hook payload, or for the calling session when there is none."""
     p = payload or {}
-    repo, slug = os.environ.get("CLAUDE_PROJECT_DIR") or p.get("cwd") or os.getcwd(), None
-    match = WORKTREE_RE.match(repo)
+    sources = [d for d in (os.environ.get("CLAUDE_PROJECT_DIR"), p.get("cwd")) if d] or [os.getcwd()]
+    matches = [m for m in map(WORKTREE_RE.match, sources) if m]
+    match = next((m for m in matches if not m.group(2).startswith("agent-")), None) or WORKTREE_RE.match(sources[0])
+    repo, slug = sources[0], None
     if match:
         repo = match.group(1)
         slug = None if match.group(2).startswith("agent-") else match.group(2)
