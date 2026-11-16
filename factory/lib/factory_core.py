@@ -44,6 +44,7 @@ SETTINGS_PATH = STORE / "settings.toml"
 IDENTITY = STORE / "identity"
 CACHE = STORE / "cache"
 GH_TIMEOUT = 30
+SETUP_TIMEOUT = 90
 STACKS_VERSION = "X-GitHub-Api-Version: 2026-03-10"
 STACKS = "repos/{owner}/{repo}/stacks"
 RUN_TIMEOUT = 120
@@ -618,8 +619,13 @@ def agent_definitions(settings, root):
 
 
 LEAD_TOOLS = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch,SendMessage,WebFetch,WebSearch,TaskStop,Monitor"
+# `:**`, not `:*`: a rule ending in `:*` is the matcher's old prefix syntax and would stop matching a delete refspec.
+PUSH_DENIED = tuple(f"Bash({p} {rest})" for p in ("git push", "git -C * push") for rest in (
+    "*--delete*", "-d *", "* -d *", "* -d", "*--force*", "-f*", "* -f*", "*--mirror*", "*--prune*",
+    "* :**", '* ":**', "* ':**", "* +*", '* "+*', "* '+*"))
 LEAD_DENIED = ("Agent(factory:coder)", "Agent(factory:reviewer)", "Agent(factory:lander)", "Agent(coder)",
-               "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)")
+               "Agent(reviewer)", "Agent(general-purpose)", "Agent(claude)", *PUSH_DENIED,
+               "Bash(gh pr merge*)", "Bash(gh pr review*)")
 
 
 def agent_models(models):
@@ -667,7 +673,7 @@ def span(secs):
     return f"{h}h" * (h > 0) + f"{m}m" * (m > 0 or h == 0)
 
 
-def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limit, root):
+def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limit, root, setup=""):
     """The lead's launch command: the one place another runner would plug in. Its tools refuse the writing subagents
     (`--disallowedTools` is variadic: the flag after it ends the list, and the prompt stays last)."""
     lead_rules = (PLUGIN_ROOT / "roles" / "lead.md").read_text()
@@ -676,6 +682,7 @@ def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limi
         f"it prints its current session name (now {dispatcher}). "
         f"Your base branch is {base} (remote {remote}). You started at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))}. "
         f"Your time limit is {limit // 60} minutes. "
+        + (f"{setup} " if setup else "") +
         f"Your brief follows.\n\n{brief}"
     )
     lean = [*lean_flags(), f"--tools={LEAD_TOOLS}"] if settings["lean_start"] else []
@@ -1424,6 +1431,7 @@ def cmd_new(args):
         raise Fail(f"branch {branch} already exists on {repo.remote} (another machine's task?); pick another slug")
     if rc != 2:
         sys.stderr.write(f"factory: warning: cannot check {repo.remote} for branch {branch}: {err.strip()}; continuing\n")
+    setup = config_value(repo, "factory.setup")
     if args.base:
         for argv in (["worktree", "add", "-b", branch, path, base],
                      ["config", f"branch.{branch}.factoryBase", base]):
@@ -1432,12 +1440,23 @@ def cmd_new(args):
                 if argv[0] == "config":
                     remove_stacked(repo, path, branch)
                 raise Fail(f"git {' '.join(argv)} failed: {err.strip()}", code=1)
+    elif setup:
+        if (fetched := act_git(repo.root, "fetch", repo.remote, repo.default, timeout=GH_TIMEOUT))[0] != 0:
+            sys.stderr.write(f"factory: warning: cannot fetch {repo.default} from {repo.remote}: {fetched[2].strip()}; continuing\n")
+        rc, _, err = repo.git("worktree", "add", "--no-track", "-b", branch, path, f"{repo.remote}/{repo.default}")
+        if rc != 0:
+            raise Fail(f"git worktree add failed: {err.strip()}", code=1)
+    made = bool(args.base or setup)
+    sentence = ""
+    if setup:
+        sentence, line = run_setup(setup, path, tech_lead_paths(repo, args.slug)[1].with_suffix(".setup.log"))
+        print(line)
     rc, out, err = run(build_launch_argv(args.slug, dispatcher, brief, settings, base, repo.remote, time.time(),
-                                         task_limit(size, settings["task_time_limit_hours"]), repo.root),
+                                         task_limit(size, settings["task_time_limit_hours"]), repo.root, sentence),
                        cwd=repo.root)
     match = BACKGROUNDED_RE.search(f"{out}\n{err}")
     if rc != 0 and not match:
-        if args.base:
+        if made:
             remove_stacked(repo, path, branch)
         sys.stderr.write(err or out)
         raise Fail("claude did not start the session", code=1)
@@ -1460,8 +1479,26 @@ def cmd_new(args):
     return 0
 
 
+def run_setup(command, path, log_path):
+    """Run the repository's declared setup `command` in the worktree `path`, its output in `log_path` (0600).
+    Returns (the sentence for the lead's first message, the line for stdout). A failure never stops the task."""
+    rc, out, err = run(["sh", "-c", command], cwd=path, timeout=SETUP_TIMEOUT, group=True)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+            f.write(out + err)
+    except OSError as e:
+        sys.stderr.write(f"factory: warning: cannot write {log_path}: {e}\n")
+    head = f"The setup command `{command}` ran in your worktree and "
+    if rc == 0:
+        return f"{head}succeeded (output: {log_path}).", "setup: succeeded"
+    what = f"timed out after {SETUP_TIMEOUT} s" if (rc, err) == (124, "timed out") else f"failed (exit {rc})"
+    return (f"{head}{what}: read {log_path}, and make the worktree ready before you trust a test result.",
+            f"setup: {what}, see {log_path}")
+
+
 def remove_stacked(repo, path, branch):
-    """Undo the worktree and branch `new --base` created; they hold no work of their own."""
+    """Undo the worktree and branch `new` made itself (`--base`, or a declared setup); they hold no work of their own."""
     repo.git("worktree", "remove", "--force", path)
     repo.git("branch", "-D", branch)
 
@@ -4334,17 +4371,17 @@ def dissolve(repo, n):
     return None
 
 
-def chains(snap, default):
-    """The pull-request numbers of each chain of two or more open same-repository pull requests, bottom to top: the
-    bottom's base is `default`, each next one's base is the head of the one below, and a head with two pull
-    requests on it ends the chain."""
+def chains(repo, snap):
+    """The pull-request numbers of each chain of two or more open same-repository pull requests, all of them this
+    factory's, bottom to top: the bottom's base is `repo.default`, each next one's base is the head of the one
+    below, and a head with two pull requests on it ends the chain."""
     mine = [pr for pr in snap if not pr["isCrossRepository"]]
     found = []
-    for bottom in (pr for pr in mine if pr["baseRefName"] == default):
+    for bottom in (pr for pr in mine if pr["baseRefName"] == repo.default):
         chain = [bottom]
         while len(above := [pr for pr in mine if pr["baseRefName"] == chain[-1]["headRefName"]]) == 1 and above[0] not in chain:
             chain.append(above[0])
-        if len(chain) > 1:
+        if len(chain) > 1 and all(owned(repo, pr) for pr in chain):
             found.append([pr["number"] for pr in chain])
     return found
 
@@ -4352,7 +4389,7 @@ def chains(snap, default):
 def ensure_stacks(repo, snap):
     """Make each chain of `snap` one GitHub stack: create it, or append to the stack of its lower members. Only
     adds; one `lander: stacks:` line when a call fails, and the rest is left to the next pass."""
-    found = chains(snap, repo.default)
+    found = chains(repo, snap)
     if not found:
         return
     try:
@@ -4729,6 +4766,11 @@ def snapshot(repo):
 def task_slug(repo, pr):
     """The slug of the task worktree whose branch is the head of `pr`, or None."""
     return next((os.path.basename(t["path"]) for t in repo.tasks if t["branch"] == pr["headRefName"]), None)
+
+
+def owned(repo, pr):
+    """Whether `pr` is this factory's: same-repository, and a local task worktree is on its head branch."""
+    return not pr["isCrossRepository"] and task_slug(repo, pr) is not None
 
 
 def pr_items(pr):
@@ -5358,7 +5400,7 @@ LAND_TIMEOUT = 1800
 LAND_TOOLS = ("Read", "Edit", "Grep", "Glob", "Bash(git *)", "Bash(make *)", "Bash(gh pr view *)",
               "Bash(gh pr edit *)", "Bash(factory overlap *)")
 ROLE_DENIED = ("Bash(gh pr merge*)", "Bash(gh pr review*)", "Bash(gh pr comment*)", "Bash(gh pr ready*)", "Bash(gh api*)",
-               "Bash(gh repo*)", "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)",
+               "Bash(gh repo*)", *PUSH_DENIED, "Bash(git rebase*)",
                "Bash(git commit --amend*)", "Bash(git worktree*)")
 LAND_REASONS = ("dirty", "conflict", "golden", "tests", "denied", "other")
 LAND_RESULT_RE = re.compile(r"(LANDED, LOOK|LANDED|STOPPED)(?: (\S+))?")
@@ -5398,12 +5440,20 @@ def golden_command(repo, branch):
     return (branch and config_value(repo, f"branch.{branch}.factoryGolden")) or None
 
 
+def setup_line(repo):
+    """The sentence that tells a role the repository's declared setup command ('' when none): `git config factory.setup`."""
+    if not (command := config_value(repo, "factory.setup")):
+        return ""
+    return (f"A fresh worktree or scratch copy of this repository is made ready with `{command}`: run it there first, "
+            "and put it in the brief of a coder that works in an isolated worktree or a reviewer that makes a scratch copy.")
+
+
 def commands_line(repo, path, branch):
     """The line of a model role's brief that gives the commands of the task on `branch`."""
     test, golden = test_command(repo, path, branch)[0], golden_command(repo, branch)
     what = {None: "not stated: find how this repository runs its tests and run that",
             "none": 'none: run no tests and report "NO TESTS WERE RUN: none found"'}.get(test, test)
-    return f"The test command is {what}. The golden command is {golden or 'none'}."
+    return f"The test command is {what}. The golden command is {golden or 'none'}." + (f" {line}" if (line := setup_line(repo)) else "")
 
 
 def args_commands(parser):
@@ -6351,8 +6401,8 @@ def tech_lead_run(repo, settings, args, learned):
 BUILD_TIMEOUT = 5400
 BUILD_BUDGET = "15.00"
 BUILD_ROLE = PLUGIN_ROOT / "roles" / "tech-lead-build.md"
-BUILD_DENIED = ("Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)", "Bash(git commit --amend*)",
-                "Bash(git worktree*)")
+BUILD_DENIED = (*PUSH_DENIED, "Bash(git rebase*)", "Bash(git commit --amend*)", "Bash(git worktree*)",
+                "Bash(gh pr merge*)", "Bash(gh pr review*)")
 BUILD_OUTCOMES = ("built", "question", "stopped")
 BUILD_SCHEMA = {"type": "object", "properties": {"outcome": {"enum": list(BUILD_OUTCOMES)}, "handover": {"type": "string"},
                                                  "findings": {"type": "array", "items": {"type": "object", "required": ["id", "outcome", "note"], "properties": {
@@ -6374,7 +6424,8 @@ def build_prompt(repo, slug, spec, handover, note, findings=()):
     return (f"Task slug: {slug}. The spec is {spec}. The base branch is {base}, on remote {repo.remote}. "
             f"The hand-over file is {handover}: " + ("earlier runs: read it first." if handover.exists() else "this is the first run.")
             + (f" The lead says: {note}" if note else "") + "".join(f" The site manager found ({f['id']}): {f['reason']}" for f in findings)
-            + (f" The task's stated size is {size}." if size in SIZE_LIMIT_MINUTES else ""))
+            + (f" The task's stated size is {size}." if size in SIZE_LIMIT_MINUTES else "")
+            + (f" {line}" if (line := setup_line(repo)) else ""))
 
 
 def build_argv(repo, slug, spec, handover, note, settings, findings=()):
