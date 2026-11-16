@@ -927,7 +927,7 @@ class TickTests(Loop):
                 mock.patch.object(factory, "drain", lambda *a, **kw: order.append("drain") or real_drain(*a, **kw)), \
                 mock.patch.object(factory, "watch_snapshot", wraps=factory.watch_snapshot) as cheap:
             _, out, _ = self.go("watch")
-        self.assertEqual(order, ["health", "drain"])
+        self.assertEqual(order[:2], ["health", "drain"])  # then the tick again in the loop
         self.assertEqual(self.sim.merged, [])
         self.assertGreaterEqual(self.clock, NOW + factory.HEALTH_SECONDS)
         self.assertLess(self.clock, NOW + factory.HEALTH_SECONDS + factory.POLL)
@@ -936,6 +936,49 @@ class TickTests(Loop):
         _, out, _ = self.go("watch")
         self.assertEqual(self.sim.merged, [1])
         self.assertIn("#1 merged https://x/pull/1\n", out)
+
+    def ticks(self, **kw):
+        """Run `watch` with `watch_tick` spied on; the virtual clock at each call. `takes[n]` seconds pass inside call n."""
+        at = []
+        real = factory.watch_tick
+
+        def spy(*a):
+            at.append(self.clock)
+            if kw.get("fail_on") == len(at):
+                raise RuntimeError("boom")
+            result = real(*a)
+            self.clock += kw.get("takes", {}).get(len(at), 0)
+            return result
+        with mock.patch.object(factory, "watch_tick", spy):
+            _, out, _ = self.go(kw.get("command", "watch"))
+        return at, out
+
+    def test_the_whole_tick_runs_again_inside_a_loop_held_open_but_not_before_the_interval(self):
+        self.sim.add(1, after=[PENDING])
+        at, _ = self.ticks()
+        self.assertGreaterEqual(len(at), 8)
+        self.assertEqual(at[0], NOW)
+        self.assertTrue(all(b - a >= factory.WATCH_INTERVAL for a, b in zip(at, at[1:])), at)
+
+    def test_the_first_interval_counts_from_the_outer_tick_that_took_ten_minutes(self):
+        self.sim.add(1, after=[PENDING])
+        at, _ = self.ticks(takes={1: factory.WATCH_TIMEOUT})
+        self.assertEqual(at[1], NOW + factory.WATCH_TIMEOUT)  # due on the loop's first pass, not an interval after it
+        self.assertLessEqual(at[2] - at[1], factory.WATCH_INTERVAL + factory.POLL)
+
+    def test_a_tick_that_raises_in_the_loop_is_printed_and_the_loop_goes_on(self):
+        self.sim.add(1, after=[PENDING])
+        at, out = self.ticks(fail_on=2)
+        self.assertIn("watch: tick failed: RuntimeError: boom\n", out)
+        self.assertGreater(len(at), 2)
+        self.assertGreaterEqual(self.clock, NOW + factory.HEALTH_SECONDS)
+
+    def test_factory_lander_runs_no_tick(self):
+        self.sim.add(1, after=[PENDING] * 40 + [GREEN])
+        at, out = self.ticks(command="lander")
+        self.assertEqual(at, [])
+        self.assertGreater(self.clock, NOW + 2 * factory.WATCH_INTERVAL)  # the loop did outlast an interval
+        self.assertEqual(self.sim.merged, [1])
 
     def test_the_draft_sync_putting_an_in_flight_pull_request_back_to_draft_does_not_start_a_cascade(self):
         self.sim.add(1, after=[PENDING] * 30 + [GREEN])
