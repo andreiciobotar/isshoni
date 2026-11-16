@@ -343,6 +343,9 @@ func TestKaizenCachedFirstThenLiveSettles(t *testing.T) {
 func TestKaizenLiveFirstThenCachedIsDropped(t *testing.T) {
 	m, _, cached, live := firstVisit(t)
 	m.applyKaizen(live)
+	if !m.kz.busy {
+		t.Fatal("busy until the cached load returns too")
+	}
 	doc, doneAt := m.kz.doc, m.kz.doneAt
 	later := m.now().Add(time.Second)
 	m.now = func() time.Time { return later }

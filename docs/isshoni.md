@@ -558,10 +558,11 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   without `--cached` starts beside it when no document is held yet or the held one has
   a repository whose pull request data is missing or older than 10 minutes (two
   processes for a moment), and follows it otherwise when the cached result is that old.
-  The second load's document replaces the first and a cached result that arrives after it is
-  dropped. If it fails the first document stays. A repository whose pull request data is over 15 minutes
-  old, or whose refresh failed, gets a line `⚠ pull requests for <repo> as of 12m ago:
-  <why>` on the Pulse and Anatomy pages. Four pages, switched with `←` `→`, each
+  The second load's document replaces the first and a cached result that arrives after it
+  is dropped. If it fails the first document stays. A repository whose pull request data
+  is over 15 minutes old, or whose refresh failed, gets a line `⚠ pull requests for
+  <repo> as of 12m ago: <why>` on the Pulse and Anatomy pages. Four pages, switched
+  with `←` `→`, each
   scrolled with the move keys: **Pulse** (the landed count and the median cost, brief to
   pull request, pull request to merge and first-pass rate, each with how the latest half
   of the landed tasks compares with the earlier half from 10 landed tasks; beside the cost,
