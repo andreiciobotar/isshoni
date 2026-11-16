@@ -1009,12 +1009,18 @@ def pull_requests(repo, cached=False, max_age=0):
     return (fetched if fetched is not None else have), as_of, error, fetched is not None
 
 
-def session_block(mine):
-    """Why the sessions of one task keep it, or None: only finished background sessions let it go."""
+def over_merged(pr_state, state):
+    """Whether a task's work is over by the script's own records: declared handed over or settled, its pull request merged."""
+    return pr_state == "merged" and state in ("handed-over", *SETTLED)
+
+
+def session_block(mine, over=False):
+    """Why the sessions of one task keep it, or None: only finished background sessions let it go. When the task is
+    `over`, an exited session (no status, no pid) lets it go whatever its `state` says: that is the model's summary."""
     if any(s.get("kind") != "background" for s in mine):
         return "an interactive session is open in it"
     for s in mine:
-        if not finished(s):
+        if not finished(s) and not (over and "status" not in s and "pid" not in s):
             return (f"background session {s.get('id')} is not finished "
                     f"(status {s.get('status', 'missing')}, state {s.get('state', 'missing')})")
     # A session in a worktree belongs to it by its cwd; only pid-less ones at the main checkout, matched by name,
@@ -1028,6 +1034,8 @@ def phase(pr_state, mine, state=None):
     """Where a task stands: 'motion' and 'blocked' hold a slot under the cap, 'review', 'merged' and 'settled'
     do not. `mine` is None when its sessions cannot be told: they cannot be listed, or an unfinished one has
     no cwd and could be in any task. `state` is the declared state, None when undeclared."""
+    if over_merged(pr_state, state):
+        return "merged"
     if mine is None or session_block(mine) or state == "working":
         return "motion"
     if state is None:
@@ -1079,9 +1087,10 @@ def task_start(events, slug, session):
     return started
 
 
-def collect(repo, sessions, limit_hours, prs=None):
+def collect(repo, sessions, limit_hours, prs=None, deep=False):
     """One row per task worktree; `sessions` is None when they cannot be listed. `prs` is the batch of `pull_requests`,
-    asked for here (always from GitHub) when the caller has none."""
+    asked for here (always from GitHub) when the caller has none. `deep` also asks what a closed task's `kept` needs from
+    `lsof` and the remote; without it `kept` says those were not checked."""
     now = time.time()
     placed = sessions is not None and not unplaced_block(sessions)
     declared = read_tasks(repo.root)
@@ -1090,6 +1099,7 @@ def collect(repo, sessions, limit_hours, prs=None):
         prs = (ask_pull_requests(repo, needed)[0] if needed else {}) or {b: UNKNOWN_PR for b in needed}
     prioritized = read_lander(repo)["prioritized"]
     granted = extended(repo)
+    firings = fold(repo_log("firings", repo.root) or [])[0]
     events = repo_log("events", repo.root) or []
     rows = []
     for wt in repo.tasks:
@@ -1102,21 +1112,15 @@ def collect(repo, sessions, limit_hours, prs=None):
         row["session_id"] = session.get("id") if session else None
         row["session"] = "unknown" if sessions is None else (
             (session.get("state") or session.get("status", "unknown")) if session else "none")
-        row["blocked"] = session_block(mine)
         recorded = repo.git("config", "--get", f"branch.{branch}.factoryBase")[1].strip() if branch else ""
         row["stacked_on"] = recorded or None
         row["base"] = recorded if recorded and base_counts(repo, recorded, prs) else repo.base
         started = task_start(events, slug, session)
         row["elapsed"] = int(now - started) if started else None
-        running = bool(session) and not finished(session)
         row["size"] = task_size(repo, branch)
         row["extensions"] = extensions(granted, slug, started)
         row["limit"] = task_limit(row["size"], limit_hours, sum(e["minutes"] for e in row["extensions"]))
         row["state"] = declared.get(slug, {}).get("state")
-        timed = running and row["elapsed"] is not None
-        row["overtime"] = timed and row["elapsed"] > row["limit"]
-        row["nearing"] = bool(timed and not row["overtime"] and row["state"] == "working"
-                              and row["elapsed"] * 100 > row["limit"] * NEARING_PERCENT)
         rc, out, _ = repo.git("status", "--porcelain", path=path)
         row["dirty"] = bool(out.strip()) if rc == 0 else None
         rc, out, _ = repo.git("rev-list", "--left-right", "--count", f"{row['base']}...HEAD", path=path)
@@ -1135,10 +1139,23 @@ def collect(repo, sessions, limit_hours, prs=None):
         row["prioritized"] = {"since": held} if held and now - (epoch(held) or 0) < RELEASE_HOLD_MINUTES * 60 else None
         since = epoch(declared.get(slug, {}).get("ts"))
         row["waited"] = None if since is None else max(0, int(now - since))
+        row["blocked"] = session_block(mine, over_merged(row["pr_state"], row["state"]))
         row["phase"] = phase(row["pr_state"], mine if placed else None, row["state"])
+        decided = [f for f in firings if f["slug"] == slug and not f["cleared"] and f["decision"] in ("suppressed", "escalated")
+                   and f["criterion"] in ("ended-undeclared", "merged-not-cleaned")]
+        row["held"] = {"criterion": decided[-1]["criterion"], "decision": decided[-1]["decision"], "since": decided[-1]["decided"],
+                       "reason": decided[-1]["reason"]} if decided else None
+        timed = (row["phase"] == "motion" and bool(session) and not finished(session) and row["elapsed"] is not None
+                 and not row["held"])
+        row["overtime"] = timed and row["elapsed"] > row["limit"]
+        row["nearing"] = bool(timed and not row["overtime"] and row["state"] == "working"
+                              and row["elapsed"] * 100 > row["limit"] * NEARING_PERCENT)
         times = [t for t in (row["last_commit"], started) if t]
         row["stale"] = bool(times) and now - max(times) > STALE_SECONDS
         rows.append(row)
+    files = OpenFiles() if deep else None
+    for row in rows:
+        row["kept"], row["kept_elsewhere"] = kept(repo, row, rows, files, placed)
     stops(repo, declared, rows)
     return rows
 
@@ -1611,7 +1628,7 @@ def cmd_status(args):
     cap = settings["worktree_cap"]
     held_back = reserve(cap, settings["reserve_percent"])
     prs, as_of, pr_error, fetched = pull_requests(repo, args.cached, args.max_age)
-    rows = collect(repo, list_sessions(), settings["task_time_limit_hours"], prs)
+    rows = collect(repo, list_sessions(), settings["task_time_limit_hours"], prs, deep=not args.cached)
     counts = {key: sum(r["phase"] == p for r in rows)
               for key, p in (("blocked", "blocked"), ("in_review", "review"), ("merged", "merged"),
                              ("settled", "settled"))}
@@ -1638,6 +1655,8 @@ def cmd_status(args):
         pr = r["pr_state"] + (f" {r['pr_url']}" if r["pr_url"] else "")
         flags = " ".join(f for f in ("overtime" if r["overtime"] else "", "nearing" if r["nearing"] else "", "stale" if r["stale"] else "",
                                           f"paused {age(epoch(r['paused']['since']), now)}: waits {', '.join(r['paused']['waits_on'])}" if r["paused"] else "",
+                                          f"kept: {r['kept']}" if r["kept"] else "",
+                                          f"held {age(epoch(r['held']['since']), now)}: {r['held']['criterion']} {r['held']['decision']}" if r["held"] else "",
                                           f"prioritized {age(epoch(r['prioritized']['since']), now)}" if r["prioritized"] else "") if f)
         more = f" (+{sum(e['minutes'] for e in r['extensions'])}m {r['extensions'][-1]['by']})" if r["extensions"] else ""
         elapsed = "-" if r["elapsed"] is None else (
@@ -1679,33 +1698,57 @@ def cmd_status(args):
     return 0
 
 
-def keep_reason(repo, row, rows, files=None):
-    """Why a task must stay, or None when every sign says it is finished. `files` is the `OpenFiles` a closed task is judged by."""
+def reported(row):
+    """A handed-over task with no pull request whose recorded deliverable is a file that exists outside its worktree:
+    a report, over at hand-over."""
+    d = row["deliverable"]
+    return (row["state"] == "handed-over" and row["pr_state"] == "none" and isinstance(d, str)
+            and not LINK_RE.match(d) and not inside(d, row["path"]) and os.path.isfile(d))
+
+
+NOT_CHECKED = ("closed, but open files and the remote were not checked; "
+               "`factory status` (without --cached) checks them")
+NOT_LISTED = "sessions cannot be listed or placed (`claude agents --json --all`), so a session holding it is not known"
+
+
+def keep_rule(repo, row, rows, files=None):
+    """(why a task must stay, or None when every sign says it is finished; whether that reason is somebody else's wait:
+    a session at work, or a task stacked on it). `files` is the `OpenFiles` a closed task is judged by; without it the
+    open files and the remote are not checked, and a closed task not kept by an earlier rule says so."""
     if inside(str(PLUGIN_ROOT), row["path"]):
-        return "this factory runs from it; leads started by it load their plugin from there"
+        return "this factory runs from it; leads started by it load their plugin from there", False
     if not row["branch"]:
-        return "detached HEAD, no branch to judge"
+        return "detached HEAD, no branch to judge", False
     if row["dirty"] is not False:
-        return "uncommitted changes" if row["dirty"] else "cannot read git status"
+        return ("uncommitted changes" if row["dirty"] else "cannot read git status"), False
     if row["blocked"]:
-        return row["blocked"]
+        return row["blocked"], True
     nested = [p for p in repo.worktree_paths if p.startswith(row["path"] + os.sep)]
     if nested:
-        return f"another worktree is registered inside it: {nested[0]}"
+        return f"another worktree is registered inside it: {nested[0]}", False
     stacked = [r["slug"] for r in rows if r["stacked_on"] == row["branch"]
                and not (r["pr_state"] == "merged" and r["pr_base"] == repo.default)]
     if stacked:
-        return f"{', '.join(stacked)} is stacked on it"
+        return f"{', '.join(stacked)} is stacked on it", True
     reason = merged_reason(repo, row)
-    if reason and row["state"] in SETTLED:
+    if reason and (row["state"] in SETTLED or reported(row)):
         reason = settled_reason(repo, row)
     elif reason and row["state"] == "closed":
-        reason = closed_reason(repo, row, rows, files or OpenFiles())
+        reason = NOT_CHECKED if files is None else closed_reason(repo, row, rows, files)
     if reason is None and row["locked"] is not None and not row["session_id"]:
         why = f" ({row['locked']})" if row["locked"] else ""
         return (f"its worktree is locked{why} and no session is left to remove it through; "
-                f"if nothing uses it, run: git worktree unlock {row['path']}")
-    return reason
+                f"if nothing uses it, run: git worktree unlock {row['path']}"), False
+    return reason, False
+
+
+def kept(repo, row, rows, files, listed=True):
+    """`keep_rule` for a task whose work is over (merged, settled, closed or a report), `(None, False)` for any other.
+    When the sessions could not be listed or placed (`listed` False), no session is known not to hold it: that is said, not None."""
+    if row["phase"] == "merged" or row["state"] in (*SETTLED, "closed") or reported(row):
+        reason, elsewhere = keep_rule(repo, row, rows, files)
+        return (reason, elsewhere) if reason or listed else (NOT_LISTED, False)
+    return None, False
 
 
 def settled_reason(repo, row):
@@ -1774,12 +1817,13 @@ def clean_row(repo, row, rows, files, dry_run):
     "failed", why it was kept). A closed task's branch goes by `update-ref -d` at the head judged: its commits may live in
     another task's branch, which `branch -d` refuses, and a branch that moved since stays."""
     slug = row["slug"]
-    reason = keep_reason(repo, row, rows, files)
+    reason = keep_rule(repo, row, rows, files)[0]
     if not reason and not dry_run:
         sessions = list_sessions()
         if sessions is None:
             raise Fail(f"cannot list sessions again before removing {slug}; nothing further removed")
-        reason = unplaced_block(sessions) or session_block(sessions_in(sessions, repo.root, row["path"]))
+        reason = unplaced_block(sessions) or session_block(sessions_in(sessions, repo.root, row["path"]),
+                                                           over_merged(row["pr_state"], row["state"]))
     if reason:
         print(f"kept {slug}: {reason}")
         return "kept", reason
@@ -2027,14 +2071,23 @@ def args_ack(parser):
     parser.add_argument("state", choices=SETTLED)
 
 
+ACK_REFUSED = {"open": "has an open pull request: its approval and merge end it, not ack",
+               "merged": "has a merged pull request: clean ends it, not ack",
+               "unknown": "has a pull request whose state cannot be read"}
+
+
 @command("ack", "record the human's word on a task whose work was handed over", args_ack)
 def cmd_ack(args):
     repo = Repo()
-    if not any(os.path.basename(t["path"]) == args.slug for t in repo.tasks):
+    task = next((t for t in repo.tasks if os.path.basename(t["path"]) == args.slug), None)
+    if task is None:
         raise Fail(f"ack: {args.slug} is not a task worktree")
     last = read_tasks(repo.root).get(args.slug, {})
     if last.get("state") not in ("handed-over", *SETTLED):
         raise Fail(f"ack: {args.slug} has not handed over its work")
+    pr_state = pull_request(repo, task["branch"])[0] if task["branch"] else "none"
+    if pr_state in ACK_REFUSED:
+        raise Fail(f"ack: {args.slug} {ACK_REFUSED[pr_state]}")
     declare(repo, args.slug, "dispatcher", args.state, last.get("deliverable"))
     print(f"{args.slug}: {args.state}")
     return 0
@@ -2432,9 +2485,9 @@ def gh_json(repo, kind, *args):
     return data
 
 
-def gather(repo, fallback, sessions=None):
+def gather(repo, fallback, sessions=None, deep=False):
     """The picture every criterion reads, built once; `sessions` are the ones a tick already listed. `dispatcher` is the
-    dispatcher's current session name, None with the reason in `dispatcher_why`."""
+    dispatcher's current session name, None with the reason in `dispatcher_why`. `deep`: see `collect`."""
     sessions = list_sessions() if sessions is None else sessions
     settings = load_settings()
     found, why = (None, "cannot list sessions") if sessions is None else find_dispatcher(sessions, repo.root, fallback)
@@ -2442,7 +2495,7 @@ def gather(repo, fallback, sessions=None):
             "sessions": sessions,
             "monitor": settings["monitor"], "lgtm_from_author": settings["lgtm_from_author"],
             "lean_start": settings["lean_start"],
-            "rows": None if sessions is None else collect(repo, sessions, settings["task_time_limit_hours"]),
+            "rows": None if sessions is None else collect(repo, sessions, settings["task_time_limit_hours"], deep=deep),
             "declared": read_tasks(repo.root), "events": repo_log("events", repo.root), "models": agent_models(settings["models"]),
             "gh": lambda *args: gh_json(repo, *args)}
 
@@ -2530,6 +2583,13 @@ def c_ended_undeclared(p, _):
         raise NotEvaluated("sessions cannot be listed with `claude agents --json --all`, or one has no working directory")
     return [(slug, slug, f"declared working {age(epoch(r.get('ts')), p['now'])} ago; its lead has no live session and no run holds its lock")
             for slug, path, r in working if not session_block(sessions_in(p["sessions"], repo.root, path)) and not build_running(repo, slug)]
+
+
+def c_merged_not_cleaned(p, _):
+    """A task whose work is over (merged, settled, closed or a report) that `clean` still keeps, with the reason; not one
+    kept for a session at work or for a task stacked on it."""
+    return [(r["slug"], r["slug"], f"kept: {r['kept']}") for r in phased(p)
+            if r["kept"] and not r["kept_elsewhere"] and not r["blocked"]]
 
 
 def churning(p):
@@ -3036,6 +3096,7 @@ CRITERIA = {  # the digest's: name -> (function, whether it needs a threshold)
 FACTS = {  # what happened, which the script sees and fires, the watch's: name -> (function, whether every tick sees it, not only the full pass)
     "run-stopped": (c_run_stopped, True), "collision": (c_collision, True), "new-spec": (c_new_spec, True),
     "churning": (c_churning, True), "ended-undeclared": (c_ended_undeclared, True),
+    "merged-not-cleaned": (c_merged_not_cleaned, False),
     "dispatcher-missing": (c_dispatcher_missing, False), "ci-red-default": (c_ci_red_default, False),
     "ci-red-handover": (c_ci_red_handover, False), "base-merged": (c_base_merged, False), "red-waiting": (c_red_waiting, False),
 }
@@ -3607,7 +3668,7 @@ def args_health(parser):
 @command("health", "print the facts that fire right now (read-only)", args_health)
 def cmd_health(args):
     repo = Repo()
-    p = gather(repo, args.dispatcher)
+    p = gather(repo, args.dispatcher, deep=True)
     firings, skipped = evaluate(p, [{"name": name} for name in FACTS])
     if args.json:
         print(json.dumps({"firings": firings, "not_evaluated": skipped, "tasks": look_picture(p, None, [], [])["tasks"]}, indent=2))
@@ -4043,7 +4104,7 @@ def watch_tick(args, repo):
     full = time.time() - state["health"] >= HEALTH_SECONDS
     if full:
         write_lander(repo, {**state, "health": time.time()})
-        p = gather(repo, args.dispatcher)
+        p = gather(repo, args.dispatcher, deep=True)
     else:
         p = tick_picture(repo, args.dispatcher)
     p["snap"] = snap  # the tick's one `gh pr list`, for `churning` and the pull request events
@@ -4068,10 +4129,11 @@ def watch_tick(args, repo):
                 and p["now"] - (epoch(old["decided"]) or 0) > LEAD_GRACE_MINUTES * 60:
             log_firing(repo, id=old["id"], cleared=True)
             f, old = {**f, "detail": f"{f['detail']}; {LEAD_TOLD}{old['decided']}: {old['reason']}", "lead_told": True}, None
-        elif old and old["decision"] == "escalated" and old.get("to") == "dispatcher" and old["outcome"] == "acted" \
+        elif old and old["decision"] == "escalated" and old.get("to") == "dispatcher" and old["outcome"] in (None, "acted") \
                 and p["now"] - (epoch(old["decided"]) or 0) > RESURFACE_MINUTES * 60:
             log_firing(repo, id=old["id"], cleared=True)
-            f, old = {**f, "detail": f"{f['detail']}; escalated at {old['decided']}, acted on, still true: {old['reason']}"}, None
+            seen = "acted on" if old["outcome"] else "no outcome"
+            f, old = {**f, "detail": f"{f['detail']}; escalated at {old['decided']}, {seen}, still true: {old['reason']}"}, None
         elif old and old["decision"] and set(f.get("files") or []) - set(old.get("files") or []):  # a decided pair that conflicts in a new file
             log_firing(repo, id=old["id"], cleared=True)
             old = None
