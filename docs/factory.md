@@ -13,6 +13,8 @@ A session belongs to a task when its `cwd` is in the task's worktree, or when it
 ## Using it on your own repository
 It needs a git repository with an `origin` on GitHub, `gh` authenticated, the plugin, and a session that runs `/factory:dispatch`. CI checks may have any name. Nothing is configured and nobody is asked for a test command: each lead finds how the repository runs its full tests, as an engineer would (its instructions, README, CI workflow, manifest, Makefile), runs it once and states it for its task with `factory commands test '<command>'` (a golden command likewise with `factory commands golden '<command>'`; it may hold several steps, it is run with `sh -c`). The factory records it in the repository's git config beside the task's base, `branch.<branch>.factoryTest` and `branch.<branch>.factoryGolden`, so it goes with the branch. `factory commands` prints what a task resolves to. A repository with no tests is stated with `factory commands test none`: the landing then runs nothing, says `NO TESTS WERE RUN: none found in this repository` in its report and its pull request comment, and still pushes.
 
+**Setup of a fresh worktree.** A repository whose checkout needs more than `git checkout` (dependencies, a build, an untracked file) declares one command, in its own git config and not in a file a pull request can change: `git config factory.setup '<command>'`, run in the main checkout. With it set, `factory new` makes the worktree itself (without `--base`: `git fetch <remote> <default>`, then `git worktree add --no-track -b worktree-<slug>` from `<remote>/<default>`; with `--base` as before), runs `sh -c '<command>'` in it with `factory new`'s own environment and a limit of 90 s (`SETUP_TIMEOUT`), writes its output to `~/.claude/factory/specs/<repository directory name>/<slug>.setup.log` (mode 0600), prints `setup: succeeded` or `setup: failed (exit N), see <log>` (`timed out after 90 s` for a timeout), and starts the lead whatever the outcome: a failed setup never removes the worktree. The lead's first message names the command, the outcome and the log. The build's tech lead and the lander's brief carry the command too, so a scratch copy or an isolated worktree is made ready the same way. With no key, or an empty one, nothing changes.
+
 It does not assume a language, `make`, the name of a check, or a default branch called `main` (it reads `origin/HEAD`, and uses `main` only when that is unknown). It does need a clone of this repository for the dashboard and the cost criteria (`paths.monitor`). `factory rerun` names only Go and unittest failures: the failed checks of any other runner get no re-run.
 
 ## Commands
@@ -272,6 +274,70 @@ A handed-over pull request that the lander's loop cannot ship (it conflicts with
 - **Observing.** `~/.claude/factory/tech-lead.log` holds the output of every detached run; the `techlead` log (see Logs) has one record per come-back; the pull request carries the note; `events` give the session's role `tech-lead`, not `lead`, through `FACTORY_ROLE`.
 - **Turning it off.** There is no switch. Remove the three lines of `send_back` that start it, or leave a task without its spec file: it then always goes to its lead.
 
+## Worktree isolation and a worker's Bash call
+A Bash call refused with `This session is isolated in the worktree <path>` is refused by Claude Code's worktree isolation, not by a factory hook (the only `PreToolUse` hook matches `mcp__.*`). Its command-shape check cannot be turned off or narrowed by a setting, and it covers every subagent of an isolated session. The owner can report the `$CLAUDE_JOB_DIR` case (rows A20 to A22) through `/feedback`; anything else means not isolating sessions, which the factory relies on.
+
+The lead and its explorers are isolated; a build run (a headless session started in the worktree's directory) and its coder, reviewer, explorer and lander are not. The table's two columns are those two conditions. In the second nothing but the role line keeps git inside the worktree. That line, which begins `- Keep git in this worktree`, is the same in `factory/agents/{coder,explorer,reviewer,lander}.md`, `factory/roles/lead.md` and `.claude/agents/{coder,explorer,reviewer}.md`, and `tests/test_repo.py` holds the eight together.
+
+What the short line leaves out: `$CLAUDE_JOB_DIR` counts as a `$` (print it once, type the path). `$(...)` counts. Another branch is read with `git show <branch>:<path>`. Pipes, `&&`, heredocs and redirects are accepted.
+
+Measured 2026-11-16, each command as one Bash call, once. `S` is the job's scratch directory as a literal path, `MAIN` the main checkout, `WT` the task's worktree; `$CLAUDE_JOB_DIR` was typed where shown.
+
+| # | Command | lead's explorer | build worker |
+|---|---|---|---|
+| A1 | `python3 -c "print('digit')"` | accepted | accepted |
+| A2 | heredoc `python3 - <<'EOF'`, body `print('hello')` | accepted | accepted |
+| A3 | the same with body `print('git')` | accepted | accepted |
+| A4 | `mkdir -p "$CLAUDE_JOB_DIR/tmp/p5" && ls "$CLAUDE_JOB_DIR/tmp/p5"` | accepted | accepted |
+| A5 | `echo digest && echo done` | accepted | accepted |
+| A6 | `ls README.md; git status --short` | accepted | accepted |
+| A7 | `cat .gitignore; ls README.md` | accepted | accepted |
+| A8 | `find . -maxdepth 2 -name '*.md' -not -path '*/.git/*'` | accepted | accepted |
+| A9 | `grep -rn --exclude-dir=.git -m1 "coding-taste" factory/skills` | accepted | accepted |
+| A10 | `for f in README.md CLAUDE.md; do git show HEAD:$f \| head -1; done` | refused, complex | accepted |
+| A11 | `for d in factory docs; do grep -rl --exclude-dir=.git -m1 "lander" $d \| head -1; done` | refused, complex | accepted |
+| A12 | `for f in README.md CLAUDE.md; do wc -l $f; done` | accepted | accepted |
+| A13 | `gh pr view 124 --json title --repo "$(git remote get-url origin)"` | refused, complex | accepted |
+| A14 | `gh pr view 124 --json title` | accepted | accepted |
+| A15 | `git grep -n -m1 "plain command" -- factory/agents/*.md` | accepted | accepted |
+| A16 | `HOME="$CLAUDE_JOB_DIR/tmp/home" ls README.md` | accepted | accepted |
+| A17 | `env HOME="$CLAUDE_JOB_DIR/tmp/home" ls README.md` | accepted | accepted |
+| A18 | `git -C MAIN log -1 --oneline` | refused, via `-C` | accepted |
+| A19 | `git -C WT log -1 --oneline` | accepted | accepted |
+| A20 | `git show HEAD:README.md > "$CLAUDE_JOB_DIR/tmp/readme.txt"` | refused, complex | accepted |
+| A21 | `mkdir -p "$CLAUDE_JOB_DIR/tmp/p24" && git archive HEAD README.md \| tar -x -C "$CLAUDE_JOB_DIR/tmp/p24"` | refused, complex | accepted |
+| A22 | `git archive -o "$CLAUDE_JOB_DIR/tmp/p25.tar" HEAD README.md` | refused, complex | accepted |
+| A23 | heredoc `cat > "$CLAUDE_JOB_DIR/tmp/p26.txt" <<'EOF'`, body `hello` | accepted | accepted |
+| A24 | multi-line `python3 -c "..."` reading `factory/agents/*.md` with pathlib, printing a word count | accepted | accepted |
+| A25 | `python3 factory/bin/factory --help; git diff --stat` | accepted | accepted |
+| A26 | `sed -i '' 's/a/a/' "$CLAUDE_JOB_DIR/tmp/p26.txt"` | accepted | accepted |
+| A27 | `git log -1 --oneline \| cat` | accepted | accepted |
+| B1 | `git show HEAD:README.md > S/a.txt` | accepted | accepted |
+| B2 | `git archive -o S/b.tar HEAD README.md` | accepted | accepted |
+| B3 | `git show HEAD:README.md \| tee S/c.txt \| head -1` | accepted | accepted |
+| B4 | `mkdir -p S/l && git archive HEAD README.md \| tar -x -C S/l` | accepted | accepted |
+| B5 | `git show main:README.md \| head -1` | accepted | accepted |
+| B6 | `git --no-pager diff --stat HEAD~1 HEAD > S/o.txt` | accepted | accepted |
+| B7 | `git ls-files 'factory/agents/*.md' \| xargs wc -l` | accepted | accepted |
+| B8 | `python3 -c "import subprocess; print(subprocess.run(['git','log','-1','--oneline'],capture_output=True,text=True).stdout)"` | accepted | accepted |
+| B9 | `grep -rl --exclude-dir=.git -m1 "lander" "$PWD/docs"` | accepted | accepted |
+| B10 | `echo "$USER"; git status --short` | refused, complex | accepted |
+| B11 | `git log -1 --format=%h -- "$PWD/README.md"` | refused, word | accepted |
+| B12 | `for f in README.md CLAUDE.md; do echo $f; done; git status --short` | refused, complex | accepted |
+| B13 | `git log -1 --oneline $(echo HEAD)` | refused, complex | accepted |
+| B14 | ``git log -1 --oneline `echo HEAD` `` | refused, complex | accepted |
+| B15 | `git ls-files factory/agents \| while read f; do wc -l "$f"; done` | refused, complex | accepted |
+| B16 | `HOME=S/home git status --short` | refused, sets `HOME` | accepted |
+| B17 | `GIT_DIR=MAIN/.git git log -1 --oneline` | refused, sets `GIT_DIR` | accepted |
+| B18 | `git --git-dir=MAIN/.git log -1 --oneline` | refused, via `--git-dir` | accepted |
+| B19 | `cd MAIN && git log -1 --oneline` | refused, changes directory to MAIN | accepted |
+
+Refusal cells abbreviate the message, each of which begins `This session is isolated in the worktree <WT>, but this command`: *complex* is "names git in a form too complex to verify that it stays inside the worktree"; *word* is "has a word that can't be verified before it runs"; *via `-C`* is "redirects git to the shared checkout via -C" (the same with `--git-dir`); *sets `HOME`* is "sets HOME, injecting git configuration whose effect on where git writes can't be verified"; *sets `GIT_DIR`* is "sets GIT_DIR to the shared checkout"; *changes directory to MAIN* is "changes directory to the shared checkout before running git".
+
+A18 and B16 to B19 are what the check exists to stop; B10 to B15, A10, A11, A13 and A20 to A22 are what it stops because it cannot verify them. The build worker column ran every row with the check not active.
+
+**The number.** The review counts distinct `slug` of outbox feedback entries whose text matches, case-insensitive, `worktree[- ](guard|isolation|rule|sandbox)|isolation guard|Bash guard|letters .?.?git|too complex|complex command|one plain command`, over distinct `slug` of all feedback entries in the window: 16 of 37 (43%) in the 24 hours to 2026-11-15T20:24Z. The target is at most 2 of the 20 tasks whose `TaskStarted` follows this change's merge, counted the same way when the 20th has handed over. Of the matching entries in tasks that had a build run, those filed after the task's first run are 4 (lead 2, coder 1, reviewer 1, the last two naming the rule sentence, not a refusal), so the entries now come from leads and their explorers.
+
 ## Team mode
 Since 2026-11-15 every task runs as a lead and a tech lead sharing the work ("team mode" is the only mode; there is no switch). The task's `TaskStarted` event always carries `mode`, always `team`: a record for `isshoni kaizen --modes`, which compares these tasks with those started before.
 
@@ -292,7 +358,7 @@ A task whose deliverable is findings, not a change, runs through the same team a
 ## Stacked tasks
 `new --base <slug>` branches the worktree from the base task's branch and records it in `git config branch.worktree-<slug>.factoryBase`; the pull request targets that branch. The record is never cleared: `status` stops showing a base once it has merged into the default branch, and `clean` stops treating a merged task as stacked. When a base merges, a lead still working on top of it starts a build run, whose lander merges the default branch in (the `base-merged` criterion flags it), and a task already handed over is landed by `factory land`; `merge` retargets a stacked pull request itself when its turn comes.
 
-**GitHub stacks.** The pull requests of a stack also show as a GitHub stack, so the reviewer gets stack navigation and checks judged against the trunk. It is display only: landing is unchanged, the queue merges each pull request bottom-up with `gh pr merge --merge --match-head-commit` after its own gates, and nobody merges with GitHub's stack merge button or `merge-async`. The stack is derived on every `drain` pass from the open pull requests' base and head refs, right after the snapshot: a chain starts at a pull request based on the default branch, and each next one is based on the head of the one below. Two pull requests on one head (siblings) end the chain, a fork pull request never joins, and a chain of one is no stack. The pass only creates a stack or appends to one (`gh api` `repos/{owner}/{repo}/stacks`, header `X-GitHub-Api-Version: 2026-03-10`, through the bot's `gh`); a failure prints one `lander: stacks:` line and landing goes on. GitHub refuses `gh pr edit --base` on a stack member, and its synchronous merge does not support stacks, so the script dissolves the stack (`unstack`, which removes every unmerged member) just before it retargets or merges a member (`merge`, the lander's loop, `factory land`); the next pass re-forms what is left once its bottom targets the default branch. A dissolve that fails, or that leaves locked members (HTTP 200), is a stop. To undo by hand: `gh api -X POST -H "X-GitHub-Api-Version: 2026-03-10" repos/{owner}/{repo}/stacks/<number>/unstack`; the next pass forms it again while the chain holds. GitHub's `gh stack` extension shows and manages these stacks from the terminal; `factory wizard` offers it (step 6, Setup and uninstall).
+**GitHub stacks.** The pull requests of a stack also show as a GitHub stack, so the reviewer gets stack navigation and checks judged against the trunk. It is display only: landing is unchanged, the queue merges each pull request bottom-up with `gh pr merge --merge --match-head-commit` after its own gates, and nobody merges with GitHub's stack merge button or `merge-async`. The stack is derived on every `drain` pass from the open pull requests' base and head refs, right after the snapshot: a chain starts at a pull request based on the default branch, and each next one is based on the head of the one below. Two pull requests on one head (siblings) end the chain, a fork pull request never joins, and a chain of one is no stack. A chain is stacked only when every member is this factory's (a local task worktree is on its head branch); a chain with any other pull request in it is left alone, including an append to an existing stack. The pass only creates a stack or appends to one (`gh api` `repos/{owner}/{repo}/stacks`, header `X-GitHub-Api-Version: 2026-03-10`, through the bot's `gh`); a failure prints one `lander: stacks:` line and landing goes on. GitHub refuses `gh pr edit --base` on a stack member, and its synchronous merge does not support stacks, so the script dissolves the stack (`unstack`, which removes every unmerged member) just before it retargets or merges a member (`merge`, the lander's loop, `factory land`); the next pass re-forms what is left once its bottom targets the default branch. A dissolve that fails, or that leaves locked members (HTTP 200), is a stop. To undo by hand: `gh api -X POST -H "X-GitHub-Api-Version: 2026-03-10" repos/{owner}/{repo}/stacks/<number>/unstack`; the next pass forms it again while the chain holds. GitHub's `gh stack` extension shows and manages these stacks from the terminal; `factory wizard` offers it (step 6, Setup and uninstall).
 
 ## Logs
 All under `~/.claude/factory/`, JSON lines, append-only, mode 0600. Except where noted, a record carries `ts` (UTC, `2026-11-14T00:01:02Z`), `repo` (the main checkout's path), `slug`, `role` (`lead`, `dispatcher`, a subagent's type without the `factory:` prefix such as `coder`, or the same for a session started with `--agent`, as `factory land` starts the lander, `subagent` when it has none, else `other`; `feedback add` stores the `--role` it is given), `model`, `version` (the plugin's), `session`.
@@ -770,7 +836,8 @@ Undo: `factory uninstall` uninstalls the App and removes `identity/`; you delete
 |---|---|---|
 | `RUN_TIMEOUT` | 120 | every call that names no timeout (the other `claude plugin` calls, `git`, `claude agents`, `claude rm`, `launchctl`, `systemctl`, `crontab`, `openssl`, `ps`, `lsof`, the launch of a lead) |
 | `NETWORK_TIMEOUT` | 300 | `git` through the App (`pull`, `fetch`, `merge`, `push`) and `claude plugin marketplace add` and `install` |
-| `GH_TIMEOUT` | 30 | `gh`, and `factory new`'s `git ls-remote` (`act_git`), unless the caller names one (`PR_TIMEOUT` 10, `NOTICE_TIMEOUT` 20, the head-branch lookups 10) |
+| `GH_TIMEOUT` | 30 | `gh`, and `factory new`'s `git ls-remote` and `git fetch` (`act_git`), unless the caller names one (`PR_TIMEOUT` 10, `NOTICE_TIMEOUT` 20, the head-branch lookups 10) |
+| `SETUP_TIMEOUT` | 90 | the repository's `factory.setup` command, run by `factory new` in a worktree it made |
 | `MONITOR_TIMEOUT` | 120 | the monitor's `isshoni` |
 | `COMMENT_TIMEOUT` | 120 | the courier run (`claude -p`) |
 | `WATCH_TIMEOUT` | 600 | the site manager run (`claude -p`) |
