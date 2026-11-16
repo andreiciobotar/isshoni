@@ -58,6 +58,9 @@ type FactoryTask struct {
 	Prioritized *FactoryFlag `json:"prioritized"` // the queue prioritizes this task: in motion, in review, or a still-blocked task just released; nil likewise
 
 	Extensions []FactoryExtension `json:"extensions"` // limit extensions granted, oldest first; Limit already includes them; nil from a script before the field
+
+	Kept string       `json:"kept"` // why cleanup keeps a task whose work is over; empty when null
+	Held *FactoryHeld `json:"held"` // the site manager's standing call on it; nil when none, or from a script before the field
 }
 
 // FactoryExtension is one grant of more time on a task's limit.
@@ -88,6 +91,27 @@ func (f *FactoryFlag) UnmarshalJSON(b []byte) error {
 	}
 	since, _ := time.Parse(time.RFC3339, raw.Since)
 	*f = FactoryFlag{Since: since, WaitsOn: raw.WaitsOn}
+	return nil
+}
+
+// FactoryHeld is the site manager's newest uncleared call that a task stays as it is.
+// Since is the zero time when the script's timestamp does not parse.
+type FactoryHeld struct {
+	Criterion string
+	Decision  string // suppressed or escalated
+	Since     time.Time
+	Reason    string
+}
+
+// UnmarshalJSON reads {"criterion": "...", "decision": "...", "since": "2026-11-14T19:00:00Z",
+// "reason": "..."}; a bad since leaves Since zero rather than failing the status.
+func (h *FactoryHeld) UnmarshalJSON(b []byte) error {
+	var raw struct{ Criterion, Decision, Since, Reason string }
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	since, _ := time.Parse(time.RFC3339, raw.Since)
+	*h = FactoryHeld{Criterion: raw.Criterion, Decision: raw.Decision, Since: since, Reason: raw.Reason}
 	return nil
 }
 

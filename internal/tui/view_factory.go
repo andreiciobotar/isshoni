@@ -498,13 +498,51 @@ func baseText(base string) (text string, stacked bool) {
 
 func flagPills(p paint, t data.FactoryTask) string {
 	var ps []string
-	if t.Overtime {
+	if t.Overtime && !standing(t) {
 		ps = append(ps, p.pill("overtime", p.th.Red))
 	}
 	if t.Stale {
 		ps = append(ps, p.pill("stale", p.th.Yellow))
 	}
+	if t.Held != nil {
+		ps = append(ps, p.pill(heldWord(t.Held), p.th.Muted))
+	}
+	if t.Kept != "" {
+		ps = append(ps, p.pill("kept", p.th.Muted))
+	}
 	return strings.Join(ps, p.sp(1))
+}
+
+// standing says a task is on the board on purpose: its work is over and cleanup keeps it,
+// or the site manager holds it. Such a row is never shown as over its time.
+func standing(t data.FactoryTask) bool { return t.Kept != "" || t.Held != nil }
+
+// heldWord is "held" for a suppressed firing and the decision's own word otherwise: an
+// escalated one was passed on, which is not held on purpose.
+func heldWord(h *data.FactoryHeld) string {
+	if h.Decision == "suppressed" {
+		return "held"
+	}
+	return cmp.Or(h.Decision, "held")
+}
+
+// standingLine is the one detail line of a kept or held task.
+func standingLine(t data.FactoryTask, now time.Time) string {
+	var parts []string
+	if t.Kept != "" {
+		parts = append(parts, "kept: "+t.Kept)
+	}
+	if h := t.Held; h != nil {
+		word := heldWord(h)
+		if !h.Since.IsZero() {
+			word += " " + limitSpan(int64(max(0, now.Sub(h.Since)).Seconds()))
+		}
+		parts = append(parts, word, h.Criterion)
+		if reason := strings.Join(strings.Fields(h.Reason), " "); reason != "" {
+			parts = append(parts, reason)
+		}
+	}
+	return strings.Join(parts, " · ")
 }
 
 // elapsedLeast is the ELAPSED width of the bare elapsed time (FmtDuration).
@@ -638,13 +676,15 @@ func extensionLine(t data.FactoryTask) string {
 }
 
 // taskRow is a task's table line, and under it, faint, from the PHASE column, the reason a
-// task blocked on someone else gave or the reason a task in motion got more time.
+// task blocked on someone else gave, the reason a task in motion got more time, or why a
+// kept or held task is still here.
 func (m *model) taskRow(p paint, c factoryCols, t data.FactoryTask, w int) block {
 	th := m.th
 	glyph, label, col := m.phaseLook(t, m.w >= 100)
 	pr := prText(t)
 	elapsedCol := th.Muted
 	switch {
+	case standing(t):
 	case t.Overtime:
 		elapsedCol = th.Red
 	case t.Nearing:
@@ -674,6 +714,9 @@ func (m *model) taskRow(p paint, c factoryCols, t data.FactoryTask, w int) block
 	detail := extensionLine(t)
 	if reason := strings.Join(strings.Fields(t.StopSummary), " "); t.Phase == "blocked" && !t.WaitsOnHuman() && reason != "" {
 		detail = reason
+	}
+	if standing(t) {
+		detail = standingLine(t, m.now())
 	}
 	if detail != "" {
 		indent := 2 + c.slug + 2
