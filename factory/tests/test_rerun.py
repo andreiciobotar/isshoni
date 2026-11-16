@@ -56,7 +56,7 @@ class Rerun(unittest.TestCase):
         factory.write_lander(SimpleNamespace(root=ROOT), {"stopped": {n: {"head": "h1", "kind": "not-ours", "text": "t", "ts": factory.now(),
                                                                           "tests": ["TestAttachFollows"], "checks": ["test"]}}})
 
-    def rerun(self, over=None):
+    def rerun(self, over=None, word=False):
         self.fake, self.bodies = FakeRun(answers(over or {})), []
 
         def run(argv, **kw):
@@ -64,7 +64,7 @@ class Rerun(unittest.TestCase):
                 self.bodies.append(Path(argv[-1]).read_text())
             return self.fake(argv, **kw)
         with mock.patch.object(factory, "run", run), mock.patch.object(factory, "act_git", lambda path, *a: run(["git", *a])):
-            return factory.rerun_line(factory.Repo(), "7")
+            return factory.rerun_line(factory.Repo(), "7", word=word)
 
     def assertNoRerun(self, result, text, asked=False):
         self.assertEqual(result[0], False)
@@ -119,7 +119,7 @@ class Flake(Rerun):
 
 
 class Held(Rerun):
-    """A pull request the queue holds is re-run on the human's word: the three flake conditions do not apply."""
+    """With `word` (the caller has the human's word for a held pull request): the three flake conditions do not apply."""
 
     LINE = "rerun: test: attempt 2 started on the human's word"
 
@@ -127,7 +127,7 @@ class Held(Rerun):
         self.hold()
         started, line = self.rerun({(*Q, "diff", "--name-only"): (0, "cmd/isshoni-tui/main.go\n", ""),
                                     ("gh", "api"): (0, json.dumps({"check_runs": []}), ""),
-                                    ("gh", "run", "view", RUN, "--json", "attempt"): (0, '{"attempt": 2}', "")})
+                                    ("gh", "run", "view", RUN, "--json", "attempt"): (0, '{"attempt": 2}', "")}, word=True)
         self.assertEqual((started, line), (True, self.LINE))
         self.assertEqual([c for c in self.fake.calls if c[:3] == ["gh", "run", "rerun"]], [["gh", "run", "rerun", RUN, "--failed"]])
         self.assertEqual(self.bodies, ["Re-ran the failed jobs of test on the human's word (by factory rerun)."])
@@ -140,15 +140,15 @@ class Held(Rerun):
 
     def test_the_other_conditions_still_apply(self):
         self.hold()
-        self.assertNoRerun(self.rerun({("gh", "run", "view", RUN, "--log-failed"): (0, f"{PREFIX}##[error]exit 1\n", "")}),
+        self.assertNoRerun(self.rerun({("gh", "run", "view", RUN, "--log-failed"): (0, f"{PREFIX}##[error]exit 1\n", "")}, word=True),
                            "no failing test could be named in test's log")
-        self.assertNoRerun(self.rerun({(*Q, "grep"): (1, "", "")}), "TestAttachFollows was not found in the branch")
+        self.assertNoRerun(self.rerun({(*Q, "grep"): (1, "", "")}, word=True), "TestAttachFollows was not found in the branch")
         closed = (0, json.dumps({"state": "MERGED", "headRefName": "feat", "baseRefName": "main"}), "")
-        self.assertNoRerun(self.rerun({("gh", "pr", "view", "7"): closed}), "the pull request is not open")
+        self.assertNoRerun(self.rerun({("gh", "pr", "view", "7"): closed}, word=True), "the pull request is not open")
 
     def test_a_refusal_hands_the_human_the_command(self):
         self.hold()
-        result = self.rerun({("gh", "run", "rerun"): (1, "", REFUSED)})
+        result = self.rerun({("gh", "run", "rerun"): (1, "", REFUSED)}, word=True)
         self.assertNoRerun(result, "the App may not re-run checks; looks like a flake: TestAttachFollows "
                                    f"(cmd/isshoni-tui/attach_test.go). From your own terminal: gh run rerun {RUN} --failed ({REFUSED})", asked=True)
 

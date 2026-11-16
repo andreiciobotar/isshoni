@@ -6036,10 +6036,10 @@ def failure_facts(repo, listed, pr, logs):
     return runs, tests, head, diff.splitlines(), found
 
 
-def rerun_line(repo, n, logs=None):
+def rerun_line(repo, n, logs=None, word=False):
     """(whether a re-run started, the line to print after `#n `) for the failed checks of pull request `n`, as
-    docs/factory.md defines it. NotEvaluated when GitHub cannot be read. A pull request the queue holds as not its branch's
-    skips the three flake conditions: it is re-run on the human's word."""
+    docs/factory.md defines it. NotEvaluated when GitHub cannot be read. With `word` (the caller has the human's word for a pull request held as not
+    its branch's) the three flake conditions are skipped."""
     gh = lambda *args: gh_json(repo, *args)
     no = lambda why: (False, f"no rerun: {why}")
     listed = gh(list, "pr", "checks", n, "--json", "name,bucket,link")
@@ -6052,7 +6052,7 @@ def rerun_line(repo, n, logs=None):
         runs, tests, head, changed, found = failure_facts(repo, listed, pr, {} if logs is None else logs)
     except NotEvaluated as e:
         return no(e)
-    base, word = pr["baseRefName"], n in held_prs(read_lander(repo))
+    base = pr["baseRefName"]
     where, own = {}, []
     for name, files in found.items():
         touched = [f for f in files if any(os.path.dirname(c) == os.path.dirname(f) for c in changed)]
@@ -6106,9 +6106,13 @@ def args_rerun(parser):
 @command("rerun", "re-run the failed jobs of a pull request's red check once, when the failure looks like a flake", args_rerun)
 def cmd_rerun(args):
     repo = Repo()
-    hold = held_prs(read_lander(repo)).get(str(args.pr))
     try:
-        started, line = rerun_line(repo, str(args.pr))
+        head = gh_json(repo, dict, "pr", "view", str(args.pr), "--json", "headRefOid").get("headRefOid")
+    except NotEvaluated:
+        head = None
+    hold = held_at(read_lander(repo), {"number": args.pr, "headRefOid": head})
+    try:
+        started, line = rerun_line(repo, str(args.pr), word=bool(hold))
     except NotEvaluated as e:
         started, line = False, f"no rerun: {e}"
     if started and hold:
@@ -6846,6 +6850,8 @@ def settle(repo, fallback, stops):
     `handover` of a pull request already sent back at this head (its task is working) stays quiet."""
     state, waiting, stopped, news = read_lander(repo), {}, {}, []
     for n, (pr, kind, line) in stops.items():
+        if kind == "not-ours" and str(n) in state["unblocked"]:  # released while the pass ran
+            continue
         since, head = waiting_since(state, n, pr, kind), pr["headRefOid"]
         old = state["stopped"].get(str(n)) or {}
         if kind == "handover" and old.get("head") == head or (old.get("head"), old.get("kind")) == (head, kind):

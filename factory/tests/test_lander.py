@@ -228,7 +228,7 @@ class Loop(World):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def rerun_line(self, repo, n, logs=None):
+    def rerun_line(self, repo, n, logs=None, word=False):
         """The function behind `factory rerun`: what the test says it answers, and what it did to the checks."""
         self.reruns.append(n)
         started, line, checks = self.rerun_answer
@@ -462,8 +462,8 @@ class HoldTests(Loop):
         self.sim.logs1["201"] = failed_log("test_two")
         self.sim.shared = {"abc1234567": "independent"}
 
-    def rerun_line(self, repo, n, logs=None):
-        return REAL_RERUN(repo, n, logs)
+    def rerun_line(self, repo, n, logs=None, word=False):
+        return REAL_RERUN(repo, n, logs, word)
 
     HOLD = ("test: test_one (factory/tests/test_a.py) is outside what the branch changes and failed without it: test_two on other "
             "at abc1234 (run 201). It stays ready and approved and is not updated until a fix merges. The human decides: "
@@ -612,6 +612,60 @@ class HoldTests(Loop):
         self.assertEqual(code, 1)
         self.assertIn("From your own terminal: gh run rerun 101 --failed (HTTP 403)", out)
         self.assertEqual(self.queued("rerun"), [])
+
+    def test_7_a_new_red_head_is_not_a_word_and_the_queue_re_runs_nothing(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        self.go("lander")
+        self.sim.prs[1]["head"] = "h1b"  # pushed since the hold; red again, and now the branch changes the failing test's file
+        self.sim.changed[1] = [TEST_FILE]
+        self.sim.lines.clear()
+        self.go("lander", at=NOW + 120)
+        self.assertFalse(self.fake.ran("gh", "run", "rerun"))
+        self.assertEqual(self.sim.events("undo"), [("undo", 1)])
+        self.assertEqual(self.queued("rerun"), [])
+
+    def test_7_a_rerun_by_hand_on_a_new_head_is_not_a_word(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        self.go("lander")
+        self.sim.prs[1]["head"] = "h1b"
+        self.sim.changed[1] = ["factory/tests/test_other.py"]
+        code, out, _ = self.cli("rerun", "1", answers={("gh", "run", "rerun"): (0, "", "")})
+        self.assertEqual(code, 1)
+        self.assertTrue(out.startswith("#1 no rerun: "))
+        self.assertFalse(self.fake.ran("gh", "run", "rerun"))
+
+    def test_1_a_changed_file_beside_the_failing_test_but_not_it_still_holds(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        self.sim.changed[1] = ["factory/tests/test_other.py"]
+        self.go("lander")
+        self.assertEqual(self.sim.events("undo"), [])
+        self.assertEqual(self.lander_json()["stopped"]["1"]["kind"], "not-ours")
+
+    def test_3_a_held_behind_pull_request_whose_checks_cannot_be_read_stays_held_and_is_not_updated(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        self.go("lander")
+        self.sim.prs[1].update(behind=True, checks=[None])  # `gh pr checks` fails
+        self.sim.lines.clear()
+        self.sim.comments.clear()
+        self.go("lander", at=NOW + 120)
+        self.assertEqual((self.sim.pushes(), self.sim.events("undo"), self.sim.lines, self.sim.comments), ([], [], [], []))
+        self.assertEqual(self.lander_json()["stopped"]["1"]["kind"], "not-ours")
+
+    def test_8_an_unblock_during_a_pass_is_not_reported_as_a_new_hold(self):
+        self.sim.add(1, behind=False, checks=[RED_RUN])
+        self.go("lander")
+        self.sim.prs[1]["behind"] = True
+        self.sim.lines.clear()
+        real = factory.settle
+
+        def unblocked_meanwhile(repo, fallback, stops):
+            factory.unblock(repo, stops[1][0], "word")
+            real(repo, fallback, stops)
+
+        with mock.patch.object(factory, "settle", unblocked_meanwhile):
+            self.go("lander", at=NOW + 120)
+        self.assertEqual((self.sim.lines, len(self.queued("stopped"))), ([], 1))
+        self.assertEqual(self.lander_json()["stopped"], {})
 
     def test_8_unblock_releases_a_held_pull_request_and_a_closed_number_exits_1(self):
         self.sim.add(1, behind=False, checks=[RED_RUN])
