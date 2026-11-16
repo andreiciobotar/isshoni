@@ -117,9 +117,9 @@ func TestFactoryNoFetchPassOffTheViewOrWhenFreshOrWithoutRows(t *testing.T) {
 		t.Fatalf("off the view only the cached pass runs: %d fetches", fetchCount(t, dir))
 	}
 
-	writeStub(t, dir, "status.json", passStatus("alpha-task", now.Add(-10*time.Second)))
 	send(m, "3")
 	*now = now.Add(factoryEvery + time.Second)
+	writeStub(t, dir, "status.json", passStatus("alpha-task", now.Add(-10*time.Second)))
 	if _, cmd := m.Update(only[factoryMsg](upd(m, tickMsg{}))[0]); cmd != nil || fetchCount(t, dir) != 0 {
 		t.Fatalf("data from under a minute ago starts no fetch pass: %d", fetchCount(t, dir))
 	}

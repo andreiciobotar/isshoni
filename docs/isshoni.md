@@ -537,7 +537,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   `paused 12m: waits a, b` in place of `blocked on a, b`, yellow from 30 minutes on (a
   stale pause); a task the queue prioritizes reads `motion · prioritized 3m` (or
   `review · …`, or `blocked · …` for a released task still declared paused) in the phase
-  column. It refreshes every 30 seconds while shown, every 2
+  column. It refreshes every 105 seconds while shown, every 2
   minutes otherwise, in two passes. The first, for every repository, is
   `factory status --json --cached` (10 s limit): it never contacts GitHub, so the rows
   show at once. The second, only while the view is shown, is
