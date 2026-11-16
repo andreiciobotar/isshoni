@@ -69,7 +69,8 @@ import json, os, sys
 env = json.load(open(os.path.expanduser("~/.claude/settings.json"))).get("env", {})
 sys.exit(not env.get("CLAUDE_CODE_OAUTH_TOKEN"))
 """
-LOGIN_OK = 'python3 -c "$1" && claude -p "reply with ok"'
+ATTRIBUTION_OFF = "--settings '" + json.dumps({"attribution": {"commit": "", "pr": "", "sessionUrl": False}}, separators=(",", ":")) + "'"
+LOGIN_OK = 'python3 -c "$1" && claude -p ' + ATTRIBUTION_OFF + ' "reply with ok"'
 IDENTITY_SUMS = (
     'cd ~/.claude/factory/identity && python3 -c \'import hashlib; '
     '[print(hashlib.sha256(open(f, "rb").read()).hexdigest(), f) for f in ("key.pem", "app.json")]\''
@@ -468,7 +469,7 @@ def dispatchers(c):
         name = "dispatcher-" + short
         if dispatcher_runs(c.target, short):
             continue
-        need(box(c.target, 'cd "$HOME/code/$1" && claude --bg -n "$2" --permission-mode auto "/factory:dispatch"',
+        need(box(c.target, 'cd "$HOME/code/$1" && claude --bg -n "$2" --permission-mode auto ' + ATTRIBUTION_OFF + ' "/factory:dispatch"',
                  short, name), "starting %s" % name)
         if not dispatcher_runs(c.target, short):
             raise Stop("%s was started but `factory dispatcher` does not find it; see `ssh %s docker exec %s claude agents`."
