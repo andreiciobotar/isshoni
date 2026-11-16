@@ -4796,10 +4796,10 @@ def mergeability(p, n):
     return None
 
 
-def refusal(p, n, stop, retarget):
+def refusal(p, n, stop):
     """`stop`, the failed `gh pr merge` step of pull request `n`, with what GitHub's records say explains it: a review
     requirement (kind `merge`), a check that started again (kind `pending`), else that nothing does (kind `refused`).
-    `retarget`: this call changed its base."""
+    """
     def read(*argv):
         try:
             return p["gh"](*argv)
@@ -4812,15 +4812,12 @@ def refusal(p, n, stop, retarget):
         return stop[0], f"{REFUSED}{what} (reviewDecision {decision}{f', mergeStateStatus {state}' if state else ''}); {stop[1]}"
     checks = read(list, "pr", "checks", n, "--json", "name,bucket,startedAt")
     running = [f"{c.get('name')} (started {c.get('startedAt')})" for c in checks or [] if c.get("bucket") == "pending"]
-    default = p["repo"].default
     if running:
-        after = f", after its base was changed to {default} in this pass" if retarget else ""
-        return "pending", f"GitHub refused the merge while a check ran again on this head: {', '.join(running)}{after}; {stop[1]}"
+        return "pending", f"GitHub refused the merge while a check ran again on this head: {', '.join(running)}; {stop[1]}"
     seen = ("reviewDecision unreadable, mergeStateStatus unreadable" if view is None
             else f"reviewDecision {decision or 'none'}, mergeStateStatus {state or 'none'}")
-    after = f"; its base was changed to {default} in this pass, which can start a required check again" if retarget else ""
     return "refused", (f"GitHub refused the merge and nothing it shows explains why ({seen}, "
-                       f"checks {'unreadable' if checks is None else 'passed'}){after}; {stop[1]}")
+                       f"checks {'unreadable' if checks is None else 'passed'}); {stop[1]}")
 
 
 def checks_stop(p, n):
@@ -4916,25 +4913,24 @@ def merge_one(p, pr, merged, dry, permission=None):
         return "ci", str(e)
     if stop:
         return stop
-    retarget = base != repo.default
-    if retarget and not dry:
-        stop = dissolve(repo, n) or gh_step(repo, "pr", "edit", n, "--base", repo.default)
-        if stop:
-            return stop
-    if not (retarget and dry):
-        stop = mergeability(p, n)
-        if stop:
-            return stop
+    if base != repo.default:
+        if dry:
+            return None
+        return dissolve(repo, n) or gh_step(repo, "pr", "edit", n, "--base", repo.default) or \
+            ("pending", f"its base was changed to {repo.default} in this pass: it merges on the next one")
+    stop = mergeability(p, n)
+    if stop:
+        return stop
     if dry:
         return None
-    stop = None if retarget else dissolve(repo, n)
+    stop = dissolve(repo, n)
     if stop:
         return stop
     for step in [*([["pr", "ready", n]] if pr["isDraft"] else []),
                  ["pr", "merge", n, "--merge", "--match-head-commit", pr["headRefOid"]]]:
         stop = gh_step(repo, *step)
         if stop:
-            return refusal(p, n, stop, retarget) if step[1] == "merge" else stop
+            return refusal(p, n, stop) if step[1] == "merge" else stop
     log_queue(repo, pr["number"], task_slug(repo, pr), pr["headRefOid"], "merged", approved_at=approved_at)
     return None
 
@@ -5012,7 +5008,7 @@ def cmd_merge(args):
             print(f"#{pr['number']} merged {pr['url']}")
         else:
             print(f"#{pr['number']} would merge"
-                  + (f" (retarget onto {repo.default} first; mergeability is checked after that)"
+                  + (f" (its base is changed to {repo.default} first; it merges on the pass after that)"
                      if pr["baseRefName"] != repo.default else "")
                   + (" (draft: would be marked ready)" if pr["isDraft"] else ""))
     if merged and not args.dry_run:
