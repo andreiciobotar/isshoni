@@ -9,9 +9,11 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from tests.support import ROOT  # noqa: F401  (puts the repository root on sys.path)
@@ -181,7 +183,7 @@ class HostTests(unittest.TestCase):
                "FAKE_IDENTITY": "~/.ssh/id_test", "CLAUDE_CODE_OAUTH_TOKEN": TOKEN}
         self.enterContext(mock.patch.dict(os.environ, env))
         self.enterContext(mock.patch.object(host, "ROOT", self.repo))
-        self.enterContext(mock.patch.object(host.time, "sleep"))
+        self.enterContext(mock.patch.object(host, "time", SimpleNamespace(**{**vars(time), "sleep": lambda seconds: None})))
 
     def commit(self, message):
         sh(self.repo, "git", "add", "-A")

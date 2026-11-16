@@ -28,6 +28,7 @@ class Sim:
 
     def __init__(self):
         self.prs, self.merged, self.tip, self.log, self.lines, self.cwd_of = {}, [], 0, [], [], {}
+        self.comments, self.comment_fails, self.model = [], False, None  # `gh pr comment` bodies; what the tech lead's model run does and answers
 
     def add(self, n, behind=True, base="main", approved=True, draft=False, checks=None, after=None, conflicts=(),
             update_conflict=(), local=None, diverged=False, mergeable=("MERGEABLE",), lag=False, stays_behind=False, ahead=False):
@@ -77,6 +78,13 @@ class Sim:
             return (1, "", "no checks reported") if answer is None else (0, json.dumps(answer), "")
         if a[:3] == ["gh", "pr", "view"] and a[3].startswith("http"):
             return 0, "{}", ""
+        if a[:3] == ["gh", "pr", "view"] and "headRefOid" in a[a.index("--json") + 1]:  # the tech lead's reads
+            n = int(a[3])
+            return 0, json.dumps({"number": n, "url": f"https://x/pull/{n}", "headRefName": f"worktree-t{n}",
+                                  "headRefOid": self.prs[n]["head"], "state": "OPEN"}), ""
+        if a[:3] == ["gh", "pr", "comment"]:
+            self.comments.append(a[a.index("--body") + 1])
+            return (1, "", "boom") if self.comment_fails else (0, "", "")
         if a[:3] == ["gh", "pr", "view"]:
             script = self.prs[int(a[3])]["mergeable"]
             return 0, json.dumps({"mergeable": script.pop(0) if len(script) > 1 else script[0]}), ""
@@ -123,6 +131,10 @@ class Sim:
                 return 0, f"{p['head']}\n", ""  # the branch as the remote has it
             if a[:3] == ["git", "rev-parse", "HEAD"]:
                 return 0, f"{p['local'] or p['head']}\n", ""
+            if a[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+                return 0, f"worktree-t{n}\n", ""
+            if a[:3] == ["git", "status", "--porcelain"]:
+                return 0, " M a.txt\n" if p.get("dirty") else "", ""
             if a[:3] == ["git", "merge", "--ff-only"]:
                 if p["diverged"]:
                     return 1, "", "not possible to fast-forward"
@@ -142,6 +154,8 @@ class Sim:
                 p["shown"], p["stale"] = p["head"], 1 if p["lag"] else 0  # GitHub still lists the old head once
                 p["head"], p["behind"], p["checks"] = f"h{n}.{len(self.pushes())}", p["stays_behind"], list(p["after"])
                 return 0, "", ""
+        if self.model and a[:2] == ["claude", "-p"] and "--append-system-prompt" in a:  # a tech lead run
+            return self.model()
         if a[:2] == ["claude", "-p"] and "--json-schema" in a:  # a site manager run: it decides nothing
             return test_health.reply()
         if a[:2] == ["claude", "-p"]:
@@ -510,6 +524,82 @@ class PatienceTests(Loop):
         self.assertEqual(self.lander_json()["waiting"], {})
 
 
+class NoLeadTests(Loop):
+    """The sequence of a pull request the queue sends back for a red check that the tech lead finds green again."""
+
+    RED_BY_NAME = "no rerun: TestAlpha (pkg/alpha_test.go) is in what the branch changes"
+    answer = {"outcome": "resolved", "note": "TestAlpha passes here; nothing to change."}
+
+    def setUp(self):
+        super().setUp()
+        self.spawned = []
+        for patcher in (mock.patch.object(factory, "spawn", lambda argv, *rest: self.spawned.append(argv)),
+                        mock.patch.object(factory, "tech_lead_missing", lambda repo, slug: None),
+                        mock.patch.object(factory, "has_test_rule", lambda path: False)):  # the worktree is not on disk
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.sim.add(1, after=[RED])
+        self.rerun_answer = (False, self.RED_BY_NAME, None)
+
+    def model_run(self, *, moves=False, dirty=False, green=True, answer=None):
+        def model():
+            p = self.sim.prs[1]
+            p["checks"] = [GREEN if green else RED]
+            p["local"] = "h1.moved" if moves else None
+            p["dirty"] = dirty
+            return 0, json.dumps({"subtype": "success", "session_id": "sid", "total_cost_usd": 1.0,
+                                  "structured_output": answer or self.answer}), ""
+        self.sim.model = model
+
+    def send_back_then_run(self):
+        """The first tick sends #1 back; the tech lead run is the one the tick started, run here in process."""
+        code, out, _ = self.go("lander")
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped ci:", out)
+        self.assertEqual((len(self.spawned), self.sim.prs[1]["draft"], self.sim.merged), (1, True, []))
+        self.assertEqual(self.sim.comments, [f"Merge queue: back to draft: red checks: test https://x/run/2; {self.RED_BY_NAME}. "
+                                             "Started: a tech lead run."])
+        with mock.patch.object(factory, "validate_slug"):  # the harness's slugs (t1) are shorter than a real one
+            return self.go("tech-lead", *self.spawned[0][3:6], "--dispatcher", SESSION, state="working")
+
+    def test_a_send_back_whose_comment_fails_is_still_recorded(self):
+        self.sim.comment_fails = True
+        code, out, _ = self.go("lander")
+        self.assertEqual(len(self.sim.comments), 1)
+        self.assertIn("#1 comment not posted:", out)
+        self.assertEqual([r["step"] for r in self.records("queue")], ["updated", "sent-back"])
+
+    def test_a_run_that_changed_nothing_returns_the_pull_request_and_it_merges_without_its_lead(self):
+        self.model_run()
+        code, out, _ = self.send_back_then_run()
+        self.assertEqual((code, self.sim.pushes()), (0, [1]))  # the queue's update; the tech lead pushed nothing
+        self.assertIn("#1 tech lead resolved", out)
+        self.assertEqual(self.sim.comments[-1].split(":")[0:2], ["Tech lead", " nothing to change, back in the merge queue"])
+        code, out, _ = self.go("lander", at=NOW + 120)
+        self.assertEqual((code, self.sim.merged, self.sim.lines), (0, [1], []))
+        self.assertEqual(len(self.sim.comments), 2)
+
+    def test_a_run_that_moved_the_head_and_failed_a_check_wakes_the_lead_and_nothing_merges(self):
+        self.model_run(moves=True, dirty=True)
+        code, *_ = self.send_back_then_run()
+        self.assertEqual(code, 1)
+        [line] = self.sim.lines
+        self.assertTrue(line.startswith("TECH LEAD: t1: #1 came back from the merge queue"))
+        self.assertIn("the worktree is not clean", line)
+        self.go("lander", at=NOW + 120)
+        self.assertEqual(self.sim.merged, [])
+
+    def test_a_check_that_is_still_red_wakes_the_lead_and_nothing_merges(self):
+        self.model_run(green=False)
+        code, *_ = self.send_back_then_run()
+        self.assertEqual(code, 1)
+        [line] = self.sim.lines
+        self.assertTrue(line.startswith("TECH LEAD: t1: #1 came back from the merge queue"))
+        self.assertIn("failed or cancelled checks: test", line)
+        self.go("lander", at=NOW + 120)
+        self.assertEqual(self.sim.merged, [])
+
+
 class ToldTests(Loop):
     def test_without_a_live_lead_the_dispatcher_hears_it_did_not_reach_its_lead(self):
         self.sim.add(1, behind=False, checks=[RED])
@@ -553,7 +643,7 @@ class TickTests(Loop):
                 mock.patch.object(factory, "drain", lambda *a, **kw: order.append("drain") or real_drain(*a, **kw)), \
                 mock.patch.object(factory, "watch_snapshot", wraps=factory.watch_snapshot) as cheap:
             _, out, _ = self.go("watch")
-        self.assertEqual(order, ["health", "drain"])
+        self.assertEqual(order[:2], ["health", "drain"])  # then the tick again in the loop
         self.assertEqual(self.sim.merged, [])
         self.assertGreaterEqual(self.clock, NOW + factory.HEALTH_SECONDS)
         self.assertLess(self.clock, NOW + factory.HEALTH_SECONDS + factory.POLL)
@@ -562,6 +652,49 @@ class TickTests(Loop):
         _, out, _ = self.go("watch")
         self.assertEqual(self.sim.merged, [1])
         self.assertIn("#1 merged https://x/pull/1\n", out)
+
+    def ticks(self, **kw):
+        """Run `watch` with `watch_tick` spied on; the virtual clock at each call. `takes[n]` seconds pass inside call n."""
+        at = []
+        real = factory.watch_tick
+
+        def spy(*a):
+            at.append(self.clock)
+            if kw.get("fail_on") == len(at):
+                raise RuntimeError("boom")
+            result = real(*a)
+            self.clock += kw.get("takes", {}).get(len(at), 0)
+            return result
+        with mock.patch.object(factory, "watch_tick", spy):
+            _, out, _ = self.go(kw.get("command", "watch"))
+        return at, out
+
+    def test_the_whole_tick_runs_again_inside_a_loop_held_open_but_not_before_the_interval(self):
+        self.sim.add(1, after=[PENDING])
+        at, _ = self.ticks()
+        self.assertGreaterEqual(len(at), 8)
+        self.assertEqual(at[0], NOW)
+        self.assertTrue(all(b - a >= factory.WATCH_INTERVAL for a, b in zip(at, at[1:])), at)
+
+    def test_the_first_interval_counts_from_the_outer_tick_that_took_ten_minutes(self):
+        self.sim.add(1, after=[PENDING])
+        at, _ = self.ticks(takes={1: factory.WATCH_TIMEOUT})
+        self.assertEqual(at[1], NOW + factory.WATCH_TIMEOUT)  # due on the loop's first pass, not an interval after it
+        self.assertLessEqual(at[2] - at[1], factory.WATCH_INTERVAL + factory.POLL)
+
+    def test_a_tick_that_raises_in_the_loop_is_printed_and_the_loop_goes_on(self):
+        self.sim.add(1, after=[PENDING])
+        at, out = self.ticks(fail_on=2)
+        self.assertIn("watch: tick failed: RuntimeError: boom\n", out)
+        self.assertGreater(len(at), 2)
+        self.assertGreaterEqual(self.clock, NOW + factory.HEALTH_SECONDS)
+
+    def test_factory_lander_runs_no_tick(self):
+        self.sim.add(1, after=[PENDING] * 40 + [GREEN])
+        at, out = self.ticks(command="lander")
+        self.assertEqual(at, [])
+        self.assertGreater(self.clock, NOW + 2 * factory.WATCH_INTERVAL)  # the loop did outlast an interval
+        self.assertEqual(self.sim.merged, [1])
 
     def test_the_draft_sync_putting_an_in_flight_pull_request_back_to_draft_does_not_start_a_cascade(self):
         self.sim.add(1, after=[PENDING] * 30 + [GREEN])

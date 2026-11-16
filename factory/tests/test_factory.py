@@ -85,6 +85,16 @@ class StubProcess:
         pass
 
 
+class FakeTime:
+    """The script's `time` with `fakes` in place of its attributes and the real module's for the rest; patch it on `factory`,
+    never on the `time` module, which the standard library shares (`Popen._wait` sleeps on it)."""
+    def __init__(self, **fakes):
+        self.__dict__.update(fakes)
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 def stub_popen(spawn):
     return lambda argv, **kw: StubProcess(spawn, argv, **kw)
 
@@ -1317,7 +1327,7 @@ class NewTests(unittest.TestCase):
         return repo_answers(entries, [dict(DISPATCHER, name=dispatcher), *sessions], *extras)
 
     def test_launch_argv(self):
-        with mock.patch.object(factory.time, "time", return_value=1794610677):
+        with mock.patch.object(factory, "time", FakeTime(time=lambda: 1794610677)):
             code, out, err, fake = invoke(self.ARGS, self.answers([], (), self.OK))
         self.assertEqual(code, 0, err)
         self.assertIn("96dc4869", out)
@@ -1361,7 +1371,7 @@ class NewTests(unittest.TestCase):
         self.assertNotIn("lead-team", lead)
 
     def test_lean_start_off_launches_the_old_argv_without_listing_plugins(self):
-        with mock.patch.object(factory.time, "time", return_value=1794610677):
+        with mock.patch.object(factory, "time", FakeTime(time=lambda: 1794610677)):
             _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), '[sessions]\nlean_start = false\n')
         plugin = str(BIN.resolve().parent.parent)
         lead = (BIN.resolve().parent.parent / "roles" / "lead.md").read_text()
@@ -2797,6 +2807,23 @@ print(os.environ["FAKE_LSOF"])
         return subprocess.run([sys.executable, str(BIN), *args], cwd=cwd or self.repo, env={**self.env, **(env or {})},
                               capture_output=True, text=True, input=input)
 
+    def test_the_tick_stamp_is_in_the_log_file_while_the_tick_still_runs(self):
+        bindir = Path(self.tmp.name).resolve() / "bin"
+        (bindir / "claude").write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(600)\n")  # the full pass lists sessions: a stalled step
+        log = Path(self.tmp.name).resolve() / "watch.log"
+        with open(log, "w") as out:
+            proc = subprocess.Popen([sys.executable, str(BIN), "watch"], cwd=self.repo, env=self.env, stdout=out,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            deadline = time.monotonic() + 30
+            while "watch repo" not in log.read_text() and proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertIn("watch repo", log.read_text())
+            self.assertIsNone(proc.poll())
+        finally:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+
     def test_new_status_clean(self):
         p = self.factory("new", "demo-task", "--brief", "build it")
         self.assertEqual((p.returncode, p.stderr), (0, ""))
@@ -3138,7 +3165,7 @@ class PullRequestBatchTests(unittest.TestCase):
             return self.gh if "--head" not in argv else (0, json.dumps([{"state": "OPEN"}]), "")
         clock = iter([0.0, 12.0, 25.0, 25.0, 25.0])
         repo = mock.Mock(root="/repo")
-        with mock.patch.object(factory, "run", run), mock.patch.object(factory.time, "monotonic", lambda: next(clock)):
+        with mock.patch.object(factory, "run", run), mock.patch.object(factory, "time", FakeTime(monotonic=lambda: next(clock))):
             found, error = factory.ask_pull_requests(repo, ["worktree-a", "worktree-b", "worktree-c"])
         self.assertEqual((found, timeouts, error), (None, [10, 8], f"no answer within {factory.PR_BUDGET} s"))
 
@@ -3186,7 +3213,7 @@ class GhLogTests(unittest.TestCase):
             if isinstance(result, Exception):
                 raise result
             return subprocess.CompletedProcess(argv, *result)
-        with mock.patch.object(factory.subprocess, "Popen", stub_popen(spawn)), mock.patch.object(factory.time, "monotonic", lambda: next(clock)), \
+        with mock.patch.object(factory.subprocess, "Popen", stub_popen(spawn)), mock.patch.object(factory, "time", FakeTime(monotonic=lambda: next(clock))), \
                 mock.patch.object(factory, "acting_identity", lambda cwd=None: None):
             factory.run(argv, cwd="/some/repo")
         return [r for _, path in factory.log_files("gh") for r in factory.read_file(path)]

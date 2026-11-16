@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest import mock
 
 from tests.support import AGENTS, PRICES_PATH, ROOT
@@ -555,7 +556,7 @@ class SiteManagerTests(Store):
         self.assertEqual(p.returncode, 0, p.stderr)
         theirs = json.loads(p.stdout)["summary"]
         self.assertEqual((theirs["escalated"], theirs["missed"]), (4, 2))
-        theirs = {k: v for k, v in theirs.items() if not k.startswith("told") and k != "entries"}  # the dashboard counts neither `told` nor the score per entry
+        theirs = {k: v for k, v in theirs.items() if not k.startswith("told") and k not in ("entries", "closed", "stood", "reopened")}  # the dashboard counts neither `told`, `closed` nor the score per entry
         theirs.update({k: round(theirs[k], 6) for k in ("precision", "recall")})
         self.assertEqual(self.record(), theirs)
 
@@ -768,6 +769,12 @@ class SmallTests(Store):
                         ("events-old.jsonl", 9)):
             self.log(name, ['{"n": %d}' % n, "garbage", '{"n": %d}' % (n * 10)])
         self.assertEqual([r["n"] for r in kaizen.read_log(self.factory, "events")], [1, 10, 2, 20, 3, 30])
+
+    def test_a_closed_task_is_not_in_flight(self):
+        self.log("tasks.jsonl", [{"ts": "%sT09:00:00Z" % DAY, "repo": ALPHA, "slug": slug, "state": state}
+                                 for slug, state in (("w", "working"), ("c", "closed"))])
+        s = self.build(lambda p: [])["summary"]
+        self.assertEqual((s["tasks"], s["in_flight"]), (2, 1))
 
     def test_field_poor_records_still_make_a_task(self):
         self.log("events.jsonl", [{"repo": ALPHA, "slug": "bare"}, {"repo": ALPHA, "slug": "bare", "ts": 5, "version": 3}])
@@ -1203,7 +1210,7 @@ class GhTests(unittest.TestCase):
     def test_slow_and_failed_calls_are_logged_and_fast_ones_are_not(self):
         self.gh(reply())
         self.assertEqual(self.logged(), [])
-        with mock.patch.object(kaizen.time, "monotonic", side_effect=[0, 3.5]):
+        with mock.patch.object(kaizen, "time", SimpleNamespace(**{**vars(time), "monotonic": mock.Mock(side_effect=[0, 3.5])})):
             self.gh(reply())
         (slow,) = self.logged()
         self.assertEqual((slow["rc"], slow["seconds"], slow["error"], slow["cwd"], slow["argv"][:2]), (0, 3.5, "", ROOT, ["gh", "api"]))
