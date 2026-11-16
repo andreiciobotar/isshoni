@@ -1142,12 +1142,12 @@ class BaseMergedTests(unittest.TestCase):
 class SharedCodeTests(unittest.TestCase):
     def test_the_plugins_own_worktree_is_kept(self):
         with mock.patch.object(factory, "PLUGIN_ROOT", Path(f"{WT}/x/factory")):
-            reason = factory.keep_reason(None, {"path": f"{WT}/x"}, [])
+            reason = factory.keep_rule(None, {"path": f"{WT}/x"}, [])[0]
         self.assertEqual(reason, "this factory runs from it; leads started by it load their plugin from there")
 
     def test_another_worktree_is_judged_as_before(self):
         with mock.patch.object(factory, "PLUGIN_ROOT", Path(f"{WT}/xy/factory")):
-            reason = factory.keep_reason(None, {"path": f"{WT}/x", "branch": None}, [])
+            reason = factory.keep_rule(None, {"path": f"{WT}/x", "branch": None}, [])[0]
         self.assertEqual(reason, "detached HEAD, no branch to judge")
 
     def test_collect_sets_stacked_on(self):
