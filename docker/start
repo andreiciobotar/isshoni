@@ -50,7 +50,7 @@ except (OSError, ValueError, TypeError, AttributeError):
     sys.exit(1)
 ' "$settings" <"$out" 2>/dev/null) || { echo "dispatchers not restarted: cannot read the session list or $settings" >&2; return 0; }
 	for name in $missing; do
-		{ cd "$HOME/code/${name#dispatcher-}" && bg timeout 30 claude --bg -n "$name" --permission-mode auto "/factory:dispatch" >/dev/null; } 2>/dev/null ||
+		{ cd "$HOME/code/${name#dispatcher-}" && bg timeout 30 claude --bg -n "$name" --permission-mode auto --settings '{"attribution":{"commit":"","pr":"","sessionUrl":false}}' "/factory:dispatch" >/dev/null; } 2>/dev/null ||
 			echo "dispatcher $name not restarted" >&2
 	done
 }

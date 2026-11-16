@@ -68,8 +68,7 @@ class LaunchTests(BuildCase):
             "claude", "-p", "--model", "opus", "--agents", json.dumps(factory.agent_definitions(factory.SETTINGS_DEFAULTS, self.root)),
             "--permission-mode", "auto", "--plugin-dir", str(BIN.parent.parent),
             "--strict-mcp-config", "--settings", json.dumps(LEAN_SETTINGS), f"--tools={factory.LEAD_TOOLS}",
-            "--disallowedTools", "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git rebase*)",
-            "Bash(git commit --amend*)", "Bash(git worktree*)",
+            "--disallowedTools", *factory.BUILD_DENIED,
             "--max-budget-usd", "15.00", "--output-format", "json", "--json-schema", json.dumps(factory.BUILD_SCHEMA),
             "--append-system-prompt", role])
         self.assertEqual(json.loads(argv[argv.index("--json-schema") + 1])["required"], ["outcome", "handover"])
