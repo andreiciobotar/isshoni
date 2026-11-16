@@ -1,12 +1,15 @@
 import io
 import json
+import os
+import subprocess
+import tempfile
 import re
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from test_factory import BIN, LEAN_SETTINGS, factory
+from test_factory import BIN, LEAN_SETTINGS, factory, porcelain
 from test_tech_lead import DEFAULT, ISOLATED_SETTINGS, OLD, Case, Machine, SLUG, URL
 
 HEAD = "d" * 40
@@ -91,6 +94,43 @@ class LaunchTests(BuildCase):
     def test_the_lock_the_harness_leaves_is_released_when_the_run_fails(self):
         code, *_, m = self.build(claude=(1, "", "boom"))
         self.assertIn(["git", "worktree", "unlock", f"{self.root}/.claude/worktrees/{SLUG}"], m.calls)
+
+    def lock_after_run(self, lock_before):
+        """The lock of a real worktree after `run_in_worktree`, whose session locks it as the harness does."""
+        with tempfile.TemporaryDirectory() as tmp:
+            git = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True, capture_output=True, text=True).stdout
+            git("init", "-q", "-b", "main")
+            git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x")
+            wt = os.path.join(os.path.realpath(tmp), ".claude", "worktrees", "w")
+            git("worktree", "add", "-q", "-b", "w", wt)
+            if lock_before:
+                git("worktree", "lock", "--reason", "claude session w (pid 1)", wt)
+            seen = []
+
+            def session(argv, **kw):
+                seen.append(argv)
+                if not lock_before:
+                    git("worktree", "lock", wt)
+                return 0, "", ""
+            real_run = factory.run
+            with mock.patch.object(factory, "run", side_effect=lambda argv, **kw: session(argv, **kw) if argv[0] == "claude" else real_run(argv, **kw)):
+                factory.run_in_worktree(factory.Repo(tmp), wt, ["claude", "-p"])
+            return [l for l in git("worktree", "list", "--porcelain").splitlines() if l.startswith("locked")]
+
+    def test_a_lock_that_was_there_before_the_run_is_left_alone_with_its_reason(self):
+        self.assertEqual(self.lock_after_run(True), ["locked claude session w (pid 1)"])
+
+    def test_the_lock_the_run_left_is_released(self):
+        self.assertEqual(self.lock_after_run(False), [])
+
+    def test_a_failed_unlock_that_is_not_a_missing_lock_is_said(self):
+        err = io.StringIO()
+        repo = mock.Mock(root=self.root, worktree_path=lambda name: f"{self.root}/.claude/worktrees/{name}")
+        repo.git.side_effect = [(0, porcelain((self.root, DEFAULT, False), (f"{self.root}/.claude/worktrees/{SLUG}", "b", False)), ""),
+                                (128, "", "fatal: cannot unlock")]
+        with mock.patch.object(factory, "run", return_value=(0, "", "")), redirect_stderr(err):
+            factory.run_in_worktree(repo, f"{self.root}/.claude/worktrees/{SLUG}", ["claude", "-p"])
+        self.assertIn("worktree unlock", err.getvalue())
 
     def test_a_worktree_outside_the_task_directory_keeps_the_old_start_and_says_it_is_not_isolated(self):
         repo, outside = mock.Mock(root=self.root, worktree_path=lambda name: f"{self.root}/.claude/worktrees/{name}"), f"{self.root}/elsewhere/{SLUG}"

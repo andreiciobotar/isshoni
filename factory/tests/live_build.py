@@ -10,7 +10,8 @@ real store) and the `gh` shim of live_land.py extended with `pr create`. A task 
 `factory build <slug> --run` runs synchronously. It asserts only on what the script owns: the build is `built` with its
 hand-over file; the origin holds the task branch at the worktree's HEAD and the shim saw one `pr create --draft`; every
 state record of the task has role `tech-lead` (the lander declared nothing as the lead); the scratch store holds no
-`PermissionDenied` hook record (the hooks of the nested sessions write to FACTORY_HOME, which they inherit).
+`PermissionDenied` hook record (the hooks of the nested sessions write to FACTORY_HOME, which they inherit); no line of the
+real store's logs names the run. The nested sessions' transcripts land in the real Claude projects directory; that is accepted.
 
 With --isolation the models are cheap (settings.toml of the scratch store: tech lead sonnet, the rest haiku) and the spec has
 the coder attempt, one Bash call each, `git -C MAIN commit`, `GIT_DIR=MAIN/.git git commit` and `cd MAIN && git commit`
@@ -28,6 +29,7 @@ import time
 from pathlib import Path
 
 import live_land as L
+import real_store
 
 SLUG = "add-greeting"
 SPEC = ("# add-greeting\n\nSmall task. Append the line `hello` to `a.txt` and commit it. Test command: `none` (there is "
@@ -89,6 +91,7 @@ def main():
         lab = L.Lab(tmp, os.path.abspath(args.factory))
         if Path(lab.home).resolve() == real:
             sys.exit("FACTORY_HOME is the real store")
+        real_store.refuse(lab.home)
         L.say(f"build run of {SLUG} (scratch store {lab.home})")
         tree = lab.tree(SLUG)
         lab.git("worktree", "add", "-q", "-b", f"worktree-{SLUG}", tree, "main")
@@ -130,6 +133,7 @@ def main():
         L.check(any(r.get("event") == "SessionStart" for r in monthly(lab.home, "events")),
                 "the nested sessions' hooks reached the scratch store (a SessionStart record is there)")
         L.check(any(r.get("role") == "lander" for r in monthly(lab.home, "events")), "a lander subagent ran (an events record has role lander)")
+        L.check(not (leaked := real_store.leaked(Path(tmp).name)), f"{leaked} line(s) of the real store's logs name this run")
     finally:
         if args.keep:
             L.say(f"kept: {tmp}")

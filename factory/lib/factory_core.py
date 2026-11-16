@@ -668,17 +668,28 @@ def worktree_flags(name, lean):
 
 
 def run_in_worktree(repo, path, argv, **kw):
-    """`run` for a session started with `worktree_flags`: from the main checkout when isolated (the harness leaves the
-    worktree locked: released after the run), else in the worktree, said once to be not isolated."""
+    """`run` for a session started with `worktree_flags`: from the main checkout when isolated, else in the worktree,
+    said once to be not isolated. A lock the harness leaves on an isolated run is released after it, only when the
+    worktree was not locked before: a lock that was already there (a live lead's) is never touched."""
     name = isolated_name(repo, path)
     if name is None:
         print(f"factory: {path} is not under {repo.root}/.claude/worktrees: this session is not isolated to its worktree",
               file=sys.stderr)
+    was_locked = name is not None and worktree_locked(repo, path)
     try:
         return run(argv, cwd=path if name is None else repo.root, **kw)
     finally:
-        if name is not None:
-            repo.git("worktree", "unlock", path)
+        if name is not None and not was_locked:
+            rc, _, err = repo.git("worktree", "unlock", path)
+            if rc != 0 and "not locked" not in err:
+                print(f"factory: git worktree unlock {path} failed: {err.strip()}", file=sys.stderr)
+
+
+def worktree_locked(repo, path):
+    """Whether `path` is locked, whatever the reason; also True when that cannot be told, so nothing is unlocked blind."""
+    rc, out, _ = repo.git("worktree", "list", "--porcelain")
+    mine = [e for e in parse_worktrees(out) if e["path"] == os.path.realpath(path)] if rc == 0 else []
+    return not mine or mine[0]["locked"] is not None
 
 
 SIZE_LIMIT_MINUTES = {"small": 45, "medium": 90, "large": 120}

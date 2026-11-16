@@ -277,7 +277,7 @@ A handed-over pull request that the lander's loop cannot ship (it conflicts with
 ## Worktree isolation and a worker's Bash call
 A Bash call refused with `This session is isolated in the worktree <path>` is refused by Claude Code's worktree isolation, not by a factory hook (the only `PreToolUse` hook matches `mcp__.*`). Its command-shape check cannot be turned off or narrowed by a setting, and it covers every subagent of an isolated session. The owner can report the `$CLAUDE_JOB_DIR` case (rows A20 to A22) through `/feedback`; anything else means not isolating sessions, which the factory relies on.
 
-The lead and its explorers are isolated; a build run (a headless session started in the worktree's directory) and its coder, reviewer, explorer and lander are not. The table's two columns are those two conditions. In the second nothing but the role line keeps git inside the worktree. That line, which begins `- Keep git in this worktree`, is the same in `factory/agents/{coder,explorer,reviewer,lander}.md`, `factory/roles/lead.md` and `.claude/agents/{coder,explorer,reviewer}.md`, and `tests/test_repo.py` holds the eight together.
+The lead and its explorers are isolated. A build run (a headless session started in the worktree's directory) and its coder, reviewer, explorer and lander were not, until they were started with `--worktree` (see Isolation to the worktree). The table's two columns are those two conditions. In the second, the one that held for them before, nothing but the role line keeps git inside the worktree. That line, which begins `- Keep git in this worktree`, is the same in `factory/agents/{coder,explorer,reviewer,lander}.md`, `factory/roles/lead.md` and `.claude/agents/{coder,explorer,reviewer}.md`, and `tests/test_repo.py` holds the eight together.
 
 What the short line leaves out: `$CLAUDE_JOB_DIR` counts as a `$` (print it once, type the path). `$(...)` counts. Another branch is read with `git show <branch>:<path>`. Pipes, `&&`, heredocs and redirects are accepted.
 
@@ -363,7 +363,7 @@ A task whose deliverable is findings, not a change, runs through the same team a
 ## Isolation to the worktree
 Claude Code isolates a session to one worktree only when the session is started with `--worktree <name>` from the main checkout (`MAIN`): a `claude -p` started with its working directory already in a worktree (`WT`) is not isolated. The harness then refuses a command that runs git in another checkout (`git -C`, `--git-dir`, `GIT_DIR`, `GIT_WORK_TREE`, a `cd` there first) and a file edit into `MAIN`, and it refuses the compound commands that name git, which is why the role files tell their agents to run one plain command per Bash call. Deny rules cannot do this: they match the text of a command, not where it would act.
 
-The build run, the merge-queue tech lead and the `factory land` lander are therefore started `claude -p --worktree <name> --settings '{"worktree":{"baseRef":"head"}}'` (the lean start passes that setting inside its own `--settings`: one flag) with their working directory `MAIN`, when `WT` is `MAIN/.claude/worktrees/<name>`. `baseRef=head` is there so that a reopened worktree keeps its tip. Under another path the start is as before (working directory `WT`, no flag) and the run prints `this session is not isolated to its worktree` to stderr. The session's own `pwd` is `WT` either way. The harness leaves the worktree locked after a `-p` run; the factory runs `git worktree unlock WT` when the run ends.
+The build run, the merge-queue tech lead and the `factory land` lander are therefore started `claude -p --worktree <name> --settings '{"worktree":{"baseRef":"head"}}'` (the lean start passes that setting inside its own `--settings`: one flag) with their working directory `MAIN`, when `WT` is `MAIN/.claude/worktrees/<name>`. `baseRef=head` is there so that a reopened worktree keeps its tip; it is kept on the documentation's word (a reopen resets a clean worktree to the default branch under the default `fresh` base), documented and not reproduced: the probe's P3 showed no reset without it. Under another path the start is as before (working directory `WT`, no flag) and the run prints `this session is not isolated to its worktree` to stderr. The session's own `pwd` is `WT` either way. The harness leaves the worktree locked after a `-p` run. The factory reads whether `WT` is locked before the run and, when the run ends, runs `git worktree unlock WT` only if it was not: a lock that was already there (a live lead's, whatever its reason) is never unlocked or re-locked. An unlock that fails for a reason other than "not locked" prints one line to stderr.
 
 | session | start | isolated before | isolated after | shown by |
 |---|---|---|---|---|
@@ -378,7 +378,36 @@ The build run, the merge-queue tech lead and the `factory land` lander are there
 | courier | `claude -p`, SendMessage only | no | no | not probed: no shell |
 | dispatcher | `claude --bg` in `MAIN` (`docker/start`) | no | no | not probed: no worktree |
 
-**What the probe measured** (`python3 factory/tests/live_isolation.py`; scratch repository, Haiku, the build run's tools and deny list). R1..R7 are the commands that reach outside the worktree: `git -C MAIN commit`, `GIT_DIR=MAIN/.git git commit`, `cd MAIN && git commit`, `git -C <other worktree> commit`, `git -C MAIN reset --hard`, `git -C MAIN stash push -u`, `git -C MAIN config`. All seven were accepted under S1 (`claude -p`, cwd `WT`) and refused under S2 (`--worktree`, cwd `MAIN`), S3 (S2, the command run by a subagent) and S4 (S2 launched with cwd `WT`: not refused at launch, ran isolated). What a build needs (commit, push, fetch and merge, reading `MAIN`'s files, writing under `FACTORY_HOME` and the scratch directory) worked under S1..S4; `gh` was not probed (a scratch repository has no network identity). A reopen did not move the branch with or without `baseRef=head`; the lock was left, and `git worktree unlock` cleared it.
+**What the probe measured** (`python3 factory/tests/live_isolation.py`; scratch repository, Haiku, the build run's tools and deny list; `MAIN`, `WT` and `<TMP>` stand for the scratch paths). R1..R7 are the commands that reach outside the worktree: `git -C MAIN commit`, `GIT_DIR=MAIN/.git git commit`, `cd MAIN && git commit`, `git -C <other worktree> commit`, `git -C MAIN reset --hard`, `git -C MAIN stash push -u`, `git -C MAIN config`. R8 is `git stash push -u` in `WT`, R9 `git config` in `WT`. N1..N5 are what a build needs. S1 is `claude -p` with cwd `WT`, S2 `claude -p --worktree` with cwd `MAIN`, S3 is S2 with the commands run by a subagent (the rows ran by the session or its subagent: not told apart), S4 is S2 launched with cwd `WT`.
+
+```
+row  S1        S2        S3        S4
+R1   ACCEPTED  REFUSED   REFUSED   REFUSED
+R2   ACCEPTED  REFUSED   REFUSED   REFUSED
+R3   ACCEPTED  REFUSED   REFUSED   REFUSED
+R4   ACCEPTED  REFUSED   REFUSED   REFUSED
+R5   ACCEPTED  REFUSED   REFUSED   REFUSED
+R6   ACCEPTED  REFUSED   REFUSED   REFUSED
+R7   ACCEPTED  REFUSED   REFUSED   REFUSED
+R8   ACCEPTED  ACCEPTED  ACCEPTED  ACCEPTED
+R9   ACCEPTED  REFUSED   REFUSED   REFUSED
+N1   PASS      PASS      PASS      PASS
+N2   PASS      PASS      PASS      PASS
+N3   PASS      PASS      PASS      PASS
+N4   PASS      PASS      PASS      PASS
+N5   PASS      PASS      PASS      PASS
+N6   gh: not probed (no network identity in a scratch repository)
+P3 [baseRef=head] a clean=True, branch=worktree-a, HEAD unchanged
+P4 [baseRef=head] locked=True, after `worktree unlock` locked=False, `worktree remove` works
+P5 [baseRef=head] JSON parsed=True is_error=False pwd=WT
+P3 [no baseRef] a clean=True, branch=worktree-a, HEAD unchanged
+P4 [no baseRef] locked=True, after `worktree unlock` locked=False, `worktree remove` works
+P5 [no baseRef] JSON parsed=True is_error=False pwd=WT
+S4: not refused at launch; ran isolated; "This session is isolated in the worktree WT, but this command redirects git to the shared checkout via -C. Refusing to run it ..."
+PROBE PASSED
+```
+
+S4 is stated as measured: launching from inside the worktree was not refused and ran isolated. R9 is measured too: refused under isolation. R8 is not contained.
 
 **What isolation does not stop.**
 - The stash is shared by every worktree: `git stash push -u` in `WT` (R8) was accepted under every start.

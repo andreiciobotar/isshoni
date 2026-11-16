@@ -16,7 +16,8 @@ effect is there, REFUSED when it is not and the model said REFUSED, UNSURE other
 Further checks on S2 with a trivial prompt: P3 (the worktree's HEAD does not move on reopen, with and without baseRef=head),
 P4 (no lock left, `git worktree remove` works), P5 (the JSON result parses with --json-schema and --append-system-prompt,
 and pwd is a). `gh` is not probed. Exit 1 unless R1..R7 are ACCEPTED under S1 and REFUSED under S2 and S3, and every N row
-passes under S2 and S3."""
+passes under S2 and S3, or P3/P5 with baseRef=head fail, or a line of the real store's logs names this run.
+The nested sessions' transcripts land in the real Claude projects directory; that is accepted."""
 import argparse
 import json
 import os
@@ -54,8 +55,8 @@ class World:
         self.a, self.b = self.main / ".claude/worktrees/a", self.main / ".claude/worktrees/b"
         self.outside = self.root / "outside"
         self.outside.mkdir(parents=True)
-        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(self.origin)], check=True)
-        subprocess.run(["git", "init", "-q", "-b", "main", str(self.main)], check=True)
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(self.origin)], check=True, timeout=60)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.main)], check=True, timeout=60)
         git("config", "user.name", "probe", cwd=self.main)
         git("config", "user.email", "probe@example.test", cwd=self.main)
         (self.main / ".gitignore").write_text(".claude/worktrees/\n")
@@ -111,7 +112,7 @@ class World:
             "R9": git("config", "--get", "probe.own", cwd=self.main) == "1",
             "N1": "commit: probe-N1" in a_log,
             "N2": "probe-N1" in git("log", "--format=%s", "worktree-a", cwd=self.origin),
-            "N3": subprocess.run(["git", "merge-base", "--is-ancestor", self.origin_main, "HEAD"], cwd=self.a).returncode == 0,
+            "N3": subprocess.run(["git", "merge-base", "--is-ancestor", self.origin_main, "HEAD"], cwd=self.a, timeout=60).returncode == 0,
             "N5": (Path(home) / "deliverables/x/n5.txt").exists() and (self.outside / "n5.txt").exists(),
         }
 
@@ -187,10 +188,11 @@ def run_p(root, name, base_ref):
     if locked():
         git("worktree", "unlock", str(w.a), cwd=w.main)
         p4 += f", after `worktree unlock` locked={locked()}"
-    p4 += f", `worktree remove` {'works' if subprocess.run(['git', 'worktree', 'remove', str(w.a)], cwd=w.main, capture_output=True).returncode == 0 else 'FAILS'}"
+    p4 += f", `worktree remove` {'works' if subprocess.run(['git', 'worktree', 'remove', str(w.a)], cwd=w.main, capture_output=True, timeout=60).returncode == 0 else 'FAILS'}"
     pwd = (doc.get("structured_output") or {}).get("pwd")
     p5 = f"JSON parsed={bool(doc)} is_error={doc.get('is_error')} pwd={pwd} {'= a' if pwd and Path(pwd).resolve() == w.a.resolve() else '!= a'}" + ("" if doc else f" ({err})")
-    return p3, p4, p5, doc
+    ok = after == before and doc.get("is_error") is False and bool(pwd) and Path(pwd).resolve() == w.a.resolve()
+    return p3, p4, p5, doc, ok
 
 
 def main():
@@ -212,7 +214,7 @@ def main():
             if not docs[name]:
                 docs[name] = {"result": f"(no result) {err}"}
         p = {label: run_p(root, f"P-{label}", ref) for label, ref in (("baseRef=head", True), ("no baseRef", False))}
-        cost += sum(doc.get("total_cost_usd") or 0 for *_, doc in p.values())
+        cost += sum(v[3].get("total_cost_usd") or 0 for v in p.values())
         leaked = real_store.leaked(root.name)
     finally:
         if keep:
@@ -223,13 +225,16 @@ def main():
     for k in ROWS:
         print(f"{k:4} " + " ".join(f"{results[s][k]:9}" for s in results))
     print(f"{'N6':4} gh: not probed (no network identity in a scratch repository)")
-    for label, (p3, p4, p5, _) in p.items():
+    for label, (p3, p4, p5, *_) in p.items():
         print(f"P3 [{label}] {p3}\nP4 [{label}] {p4}\nP5 [{label}] {p5}")
+    print("S3: the rows ran by the session or its subagent: not told apart")
     print(f"S4 result: {docs['S4'].get('result', '')[:1500]!r}")
     print(f"total cost: ${cost:.4f}" + (f"; {leaked} line(s) of the real store's logs name this run" if leaked else ""))
     bad = [f"{k} under S1 is {results['S1'][k]}" for k in ROWS[:7] if results["S1"][k] != "ACCEPTED"]
     bad += [f"{k} under {s} is {results[s][k]}" for s in ("S2", "S3") for k in ROWS[:7] if results[s][k] != "REFUSED"]
     bad += [f"{k} under {s} is {results[s][k]}" for s in ("S2", "S3") for k in ROWS[9:] if results[s][k] != "PASS"]
+    bad += ["P3 or P5 with baseRef=head failed"] * (not p["baseRef=head"][4])
+    bad += [f"{leaked} line(s) of the real store's logs name this run"] * bool(leaked)
     print("PROBE FAILED: " + "; ".join(bad) if bad else "PROBE PASSED")
     return 1 if bad else 0
 
