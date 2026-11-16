@@ -2722,6 +2722,23 @@ print(os.environ["FAKE_LSOF"])
         return subprocess.run([sys.executable, str(BIN), *args], cwd=cwd or self.repo, env={**self.env, **(env or {})},
                               capture_output=True, text=True, input=input)
 
+    def test_the_tick_stamp_is_in_the_log_file_while_the_tick_still_runs(self):
+        bindir = Path(self.tmp.name).resolve() / "bin"
+        (bindir / "claude").write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(600)\n")  # the full pass lists sessions: a stalled step
+        log = Path(self.tmp.name).resolve() / "watch.log"
+        with open(log, "w") as out:
+            proc = subprocess.Popen([sys.executable, str(BIN), "watch"], cwd=self.repo, env=self.env, stdout=out,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            deadline = time.monotonic() + 30
+            while "watch repo" not in log.read_text() and proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertIn("watch repo", log.read_text())
+            self.assertIsNone(proc.poll())
+        finally:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+
     def test_new_status_clean(self):
         p = self.factory("new", "demo-task", "--brief", "build it")
         self.assertEqual((p.returncode, p.stderr), (0, ""))

@@ -2162,6 +2162,7 @@ LEAD_TOLD = "lead told at "
 WATCH_INTERVAL = 120
 HEALTH_SECONDS = 1800 - 60
 WATCH_TIMEOUT = 600
+TICK_LATE = WATCH_TIMEOUT + 2 * WATCH_INTERVAL  # one full site manager run and two intervals
 MONITOR_TIMEOUT = 120
 MIN_LANDED = 5
 DIGEST_HOURS = 24
@@ -3313,7 +3314,7 @@ def cmd_health(args):
         print("nothing fired")
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
-    for line in stale_lines(repo):
+    for line in [*tick_lines(repo), *stale_lines(repo)]:
         print(line)
     return 0
 
@@ -3344,6 +3345,26 @@ def strangers():
     home = STORE.expanduser()
     return sorted(p for p in home.iterdir() if not (HOME_FILE_RE.fullmatch(p.name) or STORE_WRITTEN_RE.fullmatch(p.name))
                   ) if home.is_dir() else []
+
+
+def tick_lines(repo):
+    """One line when the last tick began more than TICK_LATE ago: still running (the watch lock is held) or not started.
+    Nothing for a repository whose watch lock file does not exist. Read-only: the lock is tried and dropped, the file
+    is not touched."""
+    path = repo_state(repo.root, "watch", "lock")
+    try:
+        late = time.time() - os.stat(path).st_mtime
+    except OSError:
+        return []
+    if late <= TICK_LATE:
+        return []
+    with file_lock(path) as free:
+        pass
+    if free:
+        return [f"watch: no tick has begun for {late // 60:.0f}m and none is running: the schedule is not starting them "
+                f"(`factory schedule` shows it; a machine that just woke runs one within {WATCH_INTERVAL // 60}m)"]
+    return [f"watch: the last tick began {late // 60:.0f}m ago and is still running (one begins every {WATCH_INTERVAL // 60}m, "
+            f"its longest step is {WATCH_TIMEOUT // 60}m): it is stuck; ask the human to end it (pgrep -fl 'factory watch')"]
 
 
 def stale_lines(repo):
@@ -3652,10 +3673,10 @@ def cmd_watch(args):
             return 0
         watch_tick(args, repo)
         word = read_word(repo)
-        if handed_over(repo) or word["all"] or word["prs"] or any("human" not in (r.get("waits_on") or []) for r in paused_rows(repo).values()):  # last: the loop runs until health is next due
+        if handed_over(repo) or word["all"] or word["prs"] or any("human" not in (r.get("waits_on") or []) for r in paused_rows(repo).values()):  # last: the loop runs until health is next due, with a tick every WATCH_INTERVAL
             with repo_lock(repo, "lander") as free:
                 if free:
-                    drain(repo, args.dispatcher, tick=True, deadline=read_lander(repo)["health"] + HEALTH_SECONDS)
+                    drain(repo, args.dispatcher, tick=lambda: watch_tick(args, repo), deadline=read_lander(repo)["health"] + HEALTH_SECONDS)
         return 0
 
 
@@ -3683,7 +3704,8 @@ def watch_tick(args, repo):
     """The cheap part every time (comments, draft flags, approvals), the facts of every tick, and every HEALTH_SECONDS the
     rest of them and the digest. What wakes the site manager (see `wake_events`) gathers the full picture and runs it once."""
     every = load_criteria()
-    print(f"{now()} watch {os.path.basename(repo.root)}")
+    os.utime(repo_state(repo.root, "watch", "lock"))  # the tick's age, read by `health`
+    print(f"{now()} watch {os.path.basename(repo.root)}", flush=True)
     snap = cheap_tick(repo, args.dispatcher)
     state = read_lander(repo)
     full = time.time() - state["health"] >= HEALTH_SECONDS
@@ -6841,17 +6863,23 @@ def wait(p, flight, deadline):
                 return
 
 
-def drain(repo, fallback, tick=False, deadline=None):
+def drain(repo, fallback, tick=None, deadline=None):
     """Merge every pull request that is ready, one full pass after another (`merge_one` gates and merges; `update_branch`
     brings one pull request up to date), and wait for the checks of the one in flight.
-    Ends when nothing merged and nothing is in flight, or at `deadline`; the numbers still stopped. With `tick` the
-    comments and draft flags are looked at again every WATCH_INTERVAL."""
-    stopped, updated, cheap_at, first = set(), {}, time.time(), True
+    Ends when nothing merged and nothing is in flight, or at `deadline`; the numbers still stopped. `tick`, when given,
+    is run again every WATCH_INTERVAL; one that raises is printed and the loop goes on."""
+    stopped, updated, ticked, first = set(), {}, time.time(), True
     end_priorities(repo, fallback)
     release_paused(repo, fallback)
     while not (deadline and time.time() >= deadline):
         if tick:
             ops_tick(repo)  # a pass can wait on checks for the whole interval to the next health run
+            if time.time() - ticked >= WATCH_INTERVAL:
+                try:
+                    tick()
+                except Exception as e:
+                    print(f"watch: tick failed: {why(e)}")
+                ticked = time.time()
         try:
             snap = snapshot(repo)
             p = gather(repo, None)
@@ -6861,9 +6889,6 @@ def drain(repo, fallback, tick=False, deadline=None):
             break
         stopped &= {pr["number"] for pr in snap}
         ensure_stacks(repo, snap)
-        if tick and time.time() - cheap_at >= WATCH_INTERVAL:
-            watch_snapshot(repo, fallback, snap)
-            cheap_at = time.time()
         line = lander_queue(repo, snap, read_word(repo))
         if first and (holders := queue_holders(repo)):
             print("the queue serves " + ", ".join(f"{s} first until {time.strftime('%H:%M:%SZ', time.gmtime(end))}" for s, end in holders.items()))

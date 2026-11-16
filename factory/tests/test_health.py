@@ -1,3 +1,4 @@
+import fcntl
 import io
 import json
 import os
@@ -510,6 +511,38 @@ class HealthTests(Harness):
         code, out, _ = self.cli("health", answers={("claude", "agents"): (1, "", "boom")})
         self.assertEqual(code, 0)
         self.assertIn("not evaluated: dispatcher-missing: sessions cannot be listed", out)
+
+    def lock_file(self, age):
+        path = factory.repo_state(ROOT, "watch", "lock")
+        path.touch()
+        os.utime(path, (NOW - age, NOW - age))
+        return path
+
+    def health_lines(self):
+        return [l for l in self.cli("health")[1].splitlines() if l.startswith("watch:")]
+
+    def test_a_late_tick_is_a_line_that_tells_a_held_lock_from_a_free_one(self):
+        path = self.lock_file(factory.TICK_LATE + 120)
+        [free] = self.health_lines()
+        self.assertIn("no tick has begun for 16m and none is running", free)
+        with open(path, "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            [stuck] = self.health_lines()
+        self.assertIn("the last tick began 16m ago and is still running (one begins every 2m, its longest step is 10m): it is stuck", stuck)
+        self.assertIn("pgrep -fl 'factory watch'", stuck)
+        self.assertEqual(os.stat(path).st_mtime, NOW - factory.TICK_LATE - 120)
+
+    def test_a_recent_tick_or_no_lock_file_is_no_line(self):
+        self.assertEqual(self.health_lines(), [])
+        path = self.lock_file(factory.TICK_LATE - 1)
+        self.assertEqual(self.health_lines(), [])
+        self.assertEqual(os.stat(path).st_mtime, NOW - factory.TICK_LATE + 1)
+
+    def test_a_tick_moves_the_mtime_of_the_watch_lock(self):
+        path = self.lock_file(NOW)
+        self.assertEqual(os.stat(path).st_mtime, 0)
+        self.tick()
+        self.assertGreater(os.stat(path).st_mtime, 1_000_000_000)  # the real clock: `utime` is not the patched `time.time`
 
     def test_the_dispatcher_option(self):
         _, out, _ = self.cli("health", "--dispatcher", "boss", entries=["x"])
