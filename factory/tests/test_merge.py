@@ -990,6 +990,13 @@ class ApprovedTests(World):
         self.approved([pr(1)], {1: [comment()]})
         self.assertFalse(any("commits" in part for c in self.fake.calls for part in c))
 
+    def test_a_valid_lgtm_is_checked_before_a_stale_review_reads_any_commit(self):
+        head, old, extra = self.rebased()
+        code, out, _ = self.approved([pr(1, sha=head)], {1: [comment()]}, reviews={1: [review(sha=old)]}, extra=extra,
+                                     activity={1: [{"after": head, "timestamp": iso(NOW - 3600)}]}, local=head)
+        self.assertEqual((code, self.merges()), (0, ["1"]))
+        self.assertFalse(any("commits" in part for c in self.fake.calls for part in c))
+
     def test_plain_merge_reads_no_approval(self):
         self.merge("1", prs=[pr(1)])
         self.assertFalse(any(c[:2] == ["gh", "api"] and factory.STACKS_VERSION not in c for c in self.fake.calls))
