@@ -69,7 +69,7 @@ The human should be able to decide to merge in one or two minutes. Write as if e
 3. **Look here:** the one to three places that deserve the reviewer's eyes (a decision that could reasonably have gone the other way, a risky change, a behavior someone may not expect), each as `path:line` with one line on why. If nothing deserves a look, say so.
 4. **Verified:** one line: tests, the review verdict, what you checked on real data.
 5. **Not verified / risks:** one line, or "none".
-A stacked pull request starts with "Stacked on #N". The pull requests of a stack show as a GitHub stack, formed by the lander's loop; nobody creates, edits or merges a stack by hand. Everything else goes below, collapsed in `<details>`: the spec's path (not its text: the pull request is public, the spec is not), your full quality assessment, test output. Keep the visible part under about 120 words.
+A stacked pull request starts with "Stacked on #N". The pull requests of a stack show as a GitHub stack, formed by the lander's loop; nobody creates, edits or merges a stack by hand. Everything else goes below, collapsed in `<details>`: the spec's path (not its text: the pull request is public, the spec is not), your full quality assessment, test output. Keep the visible part under about 120 words. A task that fixes a failing check that other pull requests wait on carries one line in the body, `Unblocks: #12, #15`: the queue reads it when the pull request merges and releases those held pull requests.
 
 ## A report task
 When the brief asks for a report (an investigation, an audit, a measurement), the deliverable is `~/.claude/factory/deliverables/<slug>/report.md`, and the task makes no commit and no pull request. Everything above holds, except:
