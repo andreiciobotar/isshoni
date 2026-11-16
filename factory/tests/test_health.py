@@ -542,7 +542,7 @@ class HealthTests(Harness):
         path = self.lock_file(NOW)
         self.assertEqual(os.stat(path).st_mtime, 0)
         self.tick()
-        self.assertGreater(os.stat(path).st_mtime, 1_000_000_000)  # the real clock: `utime` is not the patched `time.time`
+        self.assertEqual(os.stat(path).st_mtime, NOW)  # set from `time.time()`, so `drain` and a patched clock agree
 
     def test_the_dispatcher_option(self):
         _, out, _ = self.cli("health", "--dispatcher", "boss", entries=["x"])

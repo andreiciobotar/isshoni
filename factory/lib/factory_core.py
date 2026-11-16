@@ -3362,7 +3362,7 @@ def tick_lines(repo):
         pass
     if free:
         return [f"watch: no tick has begun for {late // 60:.0f}m and none is running: the schedule is not starting them "
-                f"(`factory schedule` shows it; a machine that just woke runs one within {WATCH_INTERVAL // 60}m)"]
+                f"(factory schedule shows it; a machine that just woke runs one within {WATCH_INTERVAL // 60}m)"]
     return [f"watch: the last tick began {late // 60:.0f}m ago and is still running (one begins every {WATCH_INTERVAL // 60}m, "
             f"its longest step is {WATCH_TIMEOUT // 60}m): it is stuck; ask the human to end it (pgrep -fl 'factory watch')"]
 
@@ -3704,7 +3704,8 @@ def watch_tick(args, repo):
     """The cheap part every time (comments, draft flags, approvals), the facts of every tick, and every HEALTH_SECONDS the
     rest of them and the digest. What wakes the site manager (see `wake_events`) gathers the full picture and runs it once."""
     every = load_criteria()
-    os.utime(repo_state(repo.root, "watch", "lock"))  # the tick's age, read by `health`
+    t = time.time()
+    os.utime(repo_state(repo.root, "watch", "lock"), (t, t))  # the tick's age, read by `health` and by `drain`
     print(f"{now()} watch {os.path.basename(repo.root)}", flush=True)
     snap = cheap_tick(repo, args.dispatcher)
     state = read_lander(repo)
@@ -6868,18 +6869,24 @@ def drain(repo, fallback, tick=None, deadline=None):
     brings one pull request up to date), and wait for the checks of the one in flight.
     Ends when nothing merged and nothing is in flight, or at `deadline`; the numbers still stopped. `tick`, when given,
     is run again every WATCH_INTERVAL; one that raises is printed and the loop goes on."""
-    stopped, updated, ticked, first = set(), {}, time.time(), True
+    stopped, updated, first = set(), {}, True
+    ticked = time.time()
+    if tick:  # the last tick began with the outer one, which can be long ago
+        try:
+            ticked = os.stat(repo_state(repo.root, "watch", "lock")).st_mtime
+        except OSError:
+            pass
     end_priorities(repo, fallback)
     release_paused(repo, fallback)
     while not (deadline and time.time() >= deadline):
         if tick:
             ops_tick(repo)  # a pass can wait on checks for the whole interval to the next health run
             if time.time() - ticked >= WATCH_INTERVAL:
+                ticked = time.time()
                 try:
                     tick()
                 except Exception as e:
                     print(f"watch: tick failed: {why(e)}")
-                ticked = time.time()
         try:
             snap = snapshot(repo)
             p = gather(repo, None)

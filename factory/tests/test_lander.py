@@ -547,7 +547,7 @@ class TickTests(Loop):
         self.assertIn("#1 merged https://x/pull/1\n", out)
 
     def ticks(self, **kw):
-        """Run `watch` with `watch_tick` spied on; the virtual clock at each call."""
+        """Run `watch` with `watch_tick` spied on; the virtual clock at each call. `takes[n]` seconds pass inside call n."""
         at = []
         real = factory.watch_tick
 
@@ -555,7 +555,9 @@ class TickTests(Loop):
             at.append(self.clock)
             if kw.get("fail_on") == len(at):
                 raise RuntimeError("boom")
-            return real(*a)
+            result = real(*a)
+            self.clock += kw.get("takes", {}).get(len(at), 0)
+            return result
         with mock.patch.object(factory, "watch_tick", spy):
             _, out, _ = self.go(kw.get("command", "watch"))
         return at, out
@@ -566,6 +568,12 @@ class TickTests(Loop):
         self.assertGreaterEqual(len(at), 8)
         self.assertEqual(at[0], NOW)
         self.assertTrue(all(b - a >= factory.WATCH_INTERVAL for a, b in zip(at, at[1:])), at)
+
+    def test_the_first_interval_counts_from_the_outer_tick_that_took_ten_minutes(self):
+        self.sim.add(1, after=[PENDING])
+        at, _ = self.ticks(takes={1: factory.WATCH_TIMEOUT})
+        self.assertEqual(at[1], NOW + factory.WATCH_TIMEOUT)  # due on the loop's first pass, not an interval after it
+        self.assertLessEqual(at[2] - at[1], factory.WATCH_INTERVAL + factory.POLL)
 
     def test_a_tick_that_raises_in_the_loop_is_printed_and_the_loop_goes_on(self):
         self.sim.add(1, after=[PENDING])

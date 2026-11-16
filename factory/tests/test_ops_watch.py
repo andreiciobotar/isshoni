@@ -477,8 +477,29 @@ class DrainTests(unittest.TestCase):
             with mock.patch.object(factory, "ops_tick", ops), mock.patch.object(factory, "snapshot", snapshot), \
                     mock.patch.object(factory, "end_priorities"), mock.patch.object(factory, "release_paused"):
                 with redirect_stdout(io.StringIO()):
-                    factory.drain(mock.Mock(), None, tick=tick)
+                    factory.drain(mock.Mock(root="/none"), None, tick=tick)
             self.assertEqual(ops.call_count, expected)
+
+    def test_the_interval_counts_from_the_start_of_a_tick_not_its_end(self):
+        clock, began = [0], []
+
+        def snapshot(repo):
+            clock[0] += 50
+            return []
+
+        def tick():
+            began.append(clock[0])
+            clock[0] += 100
+
+        with mock.patch.object(factory.time, "time", lambda: clock[0]), mock.patch.object(factory, "ops_tick"), \
+                mock.patch.object(factory, "snapshot", snapshot), mock.patch.object(factory, "end_priorities"), \
+                mock.patch.object(factory, "release_paused"), mock.patch.object(factory, "gather"), \
+                mock.patch.object(factory, "tasks"), mock.patch.object(factory, "ensure_stacks"), \
+                mock.patch.object(factory, "lander_queue", return_value=[]), mock.patch.object(factory, "read_word"), \
+                mock.patch.object(factory, "queue_holders", return_value={}), \
+                mock.patch.object(factory, "lander_pass", return_value=([1], [], set())):
+            factory.drain(mock.Mock(root="/none"), None, tick=tick, deadline=500)
+        self.assertEqual(began[:2], [150, 300])  # counted from the end, the second would begin at 400
 
 
 if __name__ == "__main__":
