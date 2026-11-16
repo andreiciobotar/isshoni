@@ -11,7 +11,7 @@ from test_factory import ROOT, WT, DISPATCHER, FakeRun, factory
 from test_health import NOW, Harness, Home, iso
 
 SENT = (0, json.dumps({"result": "sent"}), "")
-LEAD = {"sessionId": "sid-t1", "name": "t1", "cwd": f"{WT}/t1", "kind": "background", "status": "idle", "state": "done"}
+LEAD = {"sessionId": "sid-t1", "name": "t1", "cwd": f"{WT}/t1", "kind": "background", "pid": 7, "status": "idle", "state": "done"}
 DISPATCHER_SESSION = DISPATCHER | {"name": "dispatcher-repo"}
 PERMISSION = "repos/{owner}/{repo}/collaborators/%s/permission"
 LINES = "repos/{owner}/{repo}/pulls/1/comments"
@@ -191,7 +191,7 @@ class WatchCommentsTests(Comments):
         self.tick([pr(comments=[comment("IC_1")])], sessions=[DISPATCHER_SESSION])
         prompt = self.couriers()[0][-1]
         self.assertIn("session named dispatcher-repo", prompt)
-        self.assertIn("PR COMMENTS: t1 (not delivered to its lead): 1 new from the human on #1: read ", prompt)
+        self.assertIn("PR COMMENTS: t1 (its lead is gone: no session named t1): 1 new from the human on #1: read ", prompt)
         self.assertEqual(self.logs()[0]["to"], "dispatcher")
 
     def test_the_courier_is_sent_to_the_name_the_registered_dispatcher_has_now(self):
