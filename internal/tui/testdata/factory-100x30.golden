@@ -15,7 +15,7 @@
   SLUG               PHASE                       ELAPSED  PR                      FLAGS             
   needs-an-answer    ▲ blocked, needs you         10m40s  example.com/design/doc                    
   login-flow         ⠋ in motion                   2h15m  -                       [overtime]        
-  lost-its-lead      ⠋ in motion                   9h00m  -                       [held]            
+  lost-its-lead      ● in motion                   9h00m  -                       [held]            
                      held 9h · ended-undeclared · its replacement redo-plumbing is in review: this… 
   quiet-refactor     ⠋ in motion                   4m12s  -                                         
   rate-limit-docs    ● in motion                       -  #40 closed              [stale]           

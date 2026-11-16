@@ -15,7 +15,7 @@
   SLUG               PHASE                                           ELAPSED  SIZE    PR                      BASE          FLAGS           
   needs-an-answer    ▲ blocked, needs you                             10m40s  -       example.com/design/doc  main                          
   login-flow         ⠋ in motion                               2h15m / 1h30m  medium  -                       main          [overtime]      
-  lost-its-lead      ⠋ in motion                                    9h / 45m  -       -                       main          [held]          
+  lost-its-lead      ● in motion                                    9h / 45m  -       -                       main          [held]          
                      held 9h · ended-undeclared · its replacement redo-plumbing is in review: this one is closed when that lands            
   quiet-refactor     ⠋ in motion                                    4m / 45m  small   -                       main                          
   rate-limit-docs    ● in motion                                           -  -       #40 closed              main          [stale]         

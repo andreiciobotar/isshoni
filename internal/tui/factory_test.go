@@ -1629,7 +1629,7 @@ func TestSnapshotFactory(t *testing.T) {
 // heldBy is a task in motion the site manager decided on age ago.
 func heldBy(decision, reason string, age time.Duration) data.FactoryTask {
 	x := ftask("lost-its-lead", "motion")
-	x.Session, x.Elapsed, x.Limit = "working", ptr(int64(32400)), ptr(int64(2700))
+	x.Session, x.Elapsed, x.Limit = "done", ptr(int64(32400)), ptr(int64(2700))
 	x.Held = &data.FactoryHeld{Criterion: "ended-undeclared", Decision: decision, Reason: reason}
 	if age > 0 {
 		x.Held.Since = fakeNow.Add(-age)

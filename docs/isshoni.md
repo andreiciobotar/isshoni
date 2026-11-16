@@ -541,7 +541,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   column. A task whose work is over but which cleanup keeps shows a `kept` pill and the
   faint line `kept: uncommitted changes`; a task the site manager decided to leave as it
   is shows a `held` pill (`escalated` when it passed the call on) and the line
-  `held 9h · <criterion> · <reason>`. Such a row replaces its other detail line and is
+  `held 9h · <criterion> · <reason>`. Its line replaces the other detail line, and the row is
   never shown as overtime: its elapsed time is not red or yellow and it has no
   `overtime` pill. It refreshes every 105 seconds while shown, every 2
   minutes otherwise, in two passes. The first, for every repository, is
