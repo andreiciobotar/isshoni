@@ -9,11 +9,24 @@ import unittest
 from tests.support import ROOT
 
 NOLEFT = os.path.join(ROOT, "tools", "noleft.py")
-# Starts a detached sleep, records its pid, lives on for a moment, and exits 0.
+# Starts a detached sleep, records its pid, lives on for a moment, and exits 0. The child is a shell that
+# becomes the sleep after 1 s (same pid): the report must name the sleep. The 1 s only makes the test fail
+# without the fix, which reported a process under the command it had when first seen; it is not a pass condition.
 LEAK = ("import subprocess, sys, time\n"
-        "p = subprocess.Popen(['sleep', '63.25'], start_new_session=True)\n"
+        "p = subprocess.Popen(['sh', '-c', 'sleep 1; exec sleep 63.25'], start_new_session=True)\n"
         "open(sys.argv[1], 'w').write(str(p.pid))\n"
         "time.sleep(2)\n")
+# Sends itself SIGTERM just before the command starts, then runs `sleep 30` through the wrapper.
+EARLY = ("import importlib.util, os, signal, sys\n"
+         "spec = importlib.util.spec_from_file_location('noleft', sys.argv[1])\n"
+         "noleft = importlib.util.module_from_spec(spec)\n"
+         "spec.loader.exec_module(noleft)\n"
+         "real = noleft.subprocess.Popen\n"
+         "def popen(*args, **kwargs):\n"
+         "    os.kill(os.getpid(), signal.SIGTERM)\n"
+         "    return real(*args, **kwargs)\n"
+         "noleft.subprocess.Popen = popen\n"
+         "sys.exit(noleft.main(['sleep', '30']))\n")
 
 
 def alive(pid):
@@ -43,7 +56,12 @@ class NoLeftTests(unittest.TestCase):
         self.assertEqual(p.returncode, 1)
         self.assertIn("left behind: 1", p.stdout)
         self.assertIn("%d sleep 63.25" % pid, p.stdout)
-        time.sleep(0.2)
+        self.assertGone(pid)
+
+    def assertGone(self, pid):
+        deadline = time.monotonic() + 10  # the failure bound, not the fix
+        while alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
         self.assertFalse(alive(pid))
 
     @staticmethod
@@ -76,8 +94,7 @@ class NoLeftTests(unittest.TestCase):
         self.assertEqual(wrapper.wait(timeout=10), 1)  # without the fix it polls `ps` for ever
         out.seek(0)
         self.assertIn("left behind: 1", out.read())
-        time.sleep(0.2)
-        self.assertFalse(alive(self.pid(pidfile)))
+        self.assertGone(self.pid(pidfile))
 
     def test_a_first_signal_after_the_command_ended_still_reports_and_kills(self):
         d = self.enterContext(tempfile.TemporaryDirectory())
@@ -98,15 +115,21 @@ class NoLeftTests(unittest.TestCase):
         self.assertEqual(wrapper.wait(timeout=10), 1)
         out.seek(0)
         self.assertIn("left behind: 1", out.read())
-        time.sleep(0.2)
-        self.assertFalse(alive(self.pid(pidfile)))
+        self.assertGone(self.pid(pidfile))
 
     def test_a_signal_gives_exit_code_128_plus_its_number(self):
-        wrapper = subprocess.Popen([sys.executable, NOLEFT, "sleep", "30"], stdout=subprocess.DEVNULL, start_new_session=True)
+        started = os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "started")
+        wrapper = subprocess.Popen([sys.executable, NOLEFT, "sh", "-c", "echo > %s; exec sleep 30" % started],
+                                   stdout=subprocess.DEVNULL, start_new_session=True)
         self.addCleanup(self.kill_group, wrapper)
-        time.sleep(1)
+        while not os.path.exists(started):  # the command runs, so the handlers are installed
+            time.sleep(0.01)
         os.kill(wrapper.pid, signal.SIGHUP)
         self.assertEqual(wrapper.wait(timeout=10), 129)
+
+    def test_a_signal_before_the_command_started_still_reports(self):
+        p = subprocess.run([sys.executable, "-c", EARLY, NOLEFT], capture_output=True, text=True, timeout=60)
+        self.assertEqual((p.returncode, p.stdout), (143, "left behind: 0\n"))
 
     @staticmethod
     def kill_group(wrapper):
