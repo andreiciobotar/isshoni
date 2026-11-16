@@ -118,5 +118,3 @@ Every view, the Agents one too, and its keys: [docs/isshoni.md](docs/isshoni.md#
 ## Status
 
 Early and changing; built with itself. Source-available, not open source ([MIT with the Commons Clause](LICENSE)): use it, at work too, change it, [contribute](CONTRIBUTING.md). Don't sell it.
-<!-- scratch: stack landing experiment 1 -->
-<!-- scratch: stack landing experiment 2 -->
