@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -43,7 +45,12 @@ def answers(over):
 
 
 class Rerun(unittest.TestCase):
-    def rerun(self, over=None):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.enterContext(mock.patch.dict(os.environ, {"HOME": tmp.name}))
+
+    def rerun(self, over=None, word=False):
         self.fake, self.bodies = FakeRun(answers(over or {})), []
 
         def run(argv, **kw):
@@ -51,7 +58,7 @@ class Rerun(unittest.TestCase):
                 self.bodies.append(Path(argv[-1]).read_text())
             return self.fake(argv, **kw)
         with mock.patch.object(factory, "run", run), mock.patch.object(factory, "act_git", lambda path, *a: run(["git", *a])):
-            return factory.rerun_line(factory.Repo(), "7")
+            return factory.rerun_line(factory.Repo(), "7", word=word)
 
     def assertNoRerun(self, result, text, asked=False):
         self.assertEqual(result[0], False)
@@ -103,6 +110,33 @@ class Flake(Rerun):
             ("gh", "run", "view", RUN2, "--log-failed"): (0, GO_LOG, ""),
             ("gh", "run", "view", RUN2, "--json", "attempt"): (0, '{"attempt": 2}', "")})
         self.assertNoRerun(result, "already re-run once; looks like a flake: TestAttachFollows (cmd/isshoni-tui/attach_test.go)")
+
+
+class Held(Rerun):
+    """With `word` (the caller has the human's word for a held pull request): the three flake conditions do not apply."""
+
+    LINE = "rerun: test: attempt 2 started on the human's word"
+
+    def test_a_held_pull_request_is_rerun_past_the_directory_the_base_and_the_attempt(self):
+        started, line = self.rerun({(*Q, "diff", "--name-only"): (0, "cmd/isshoni-tui/main.go\n", ""),
+                                    ("gh", "api"): (0, json.dumps({"check_runs": []}), ""),
+                                    ("gh", "run", "view", RUN, "--json", "attempt"): (0, '{"attempt": 2}', "")}, word=True)
+        self.assertEqual((started, line), (True, self.LINE))
+        self.assertEqual([c for c in self.fake.calls if c[:3] == ["gh", "run", "rerun"]], [["gh", "run", "rerun", RUN, "--failed"]])
+        self.assertEqual(self.bodies, ["Re-ran the failed jobs of test on the human's word (by factory rerun)."])
+        self.assertFalse(self.fake.ran("gh", "api") or self.fake.ran("gh", "run", "view", RUN, "--json"))
+
+    def test_the_other_conditions_still_apply(self):
+        self.assertNoRerun(self.rerun({("gh", "run", "view", RUN, "--log-failed"): (0, f"{PREFIX}##[error]exit 1\n", "")}, word=True),
+                           "no failing test could be named in test's log")
+        self.assertNoRerun(self.rerun({(*Q, "grep"): (1, "", "")}, word=True), "TestAttachFollows was not found in the branch")
+        closed = (0, json.dumps({"state": "MERGED", "headRefName": "feat", "baseRefName": "main"}), "")
+        self.assertNoRerun(self.rerun({("gh", "pr", "view", "7"): closed}, word=True), "the pull request is not open")
+
+    def test_a_refusal_hands_the_human_the_command(self):
+        result = self.rerun({("gh", "run", "rerun"): (1, "", REFUSED)}, word=True)
+        self.assertNoRerun(result, "the App may not re-run checks; looks like a flake: TestAttachFollows "
+                                   f"(cmd/isshoni-tui/attach_test.go). From your own terminal: gh run rerun {RUN} --failed ({REFUSED})", asked=True)
 
 
 class OwnTest(Rerun):
