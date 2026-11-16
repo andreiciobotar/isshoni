@@ -7,7 +7,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 from test_factory import BIN, LEAN_SETTINGS, factory
-from test_tech_lead import DEFAULT, OLD, Case, Machine, SLUG, URL
+from test_tech_lead import DEFAULT, N, OLD, Case, Machine, SLUG, URL
 
 HEAD = "d" * 40
 SPEC_TEXT = "the spec"
@@ -30,7 +30,9 @@ class Build(Machine):
             return 0, json.dumps([{"state": self.pr, "url": URL, "headRefOid": HEAD, "baseRefName": DEFAULT, "isDraft": True}]
                                  if self.pr else []), ""
         if a[:3] == ["git", "config", "--get"]:
-            return (0, self.size + "\n", "") if a[3].endswith("factorySize") and self.size else (1, "", "")
+            if a[3].endswith("factorySize"):
+                return (0, self.size + "\n", "") if self.size else (1, "", "")
+            return super().resolve(a)
         if a[:3] == ["git", "rev-list", "--count"]:
             return 0, f"{self.ahead}\n", ""
         return super().resolve(a)
@@ -174,6 +176,19 @@ class OutcomeTests(BuildCase):
                 self.assertEqual((code, r["outcome"], r["reason"]), (1, "stopped", reason))
                 self.assertIn(f"build run {len(self.records('techlead'))} stopped: {reason}. Read", m.lines[0])
                 self.assertIn("## Run %d: stopped" % len(self.records("techlead")), self.handover.read_text())
+
+    def test_a_built_run_records_the_number_of_the_pull_request_at_the_worktree_head_once(self):
+        key = f"branch.worktree-{SLUG}.factoryPr"
+        recorded = lambda m: [c for c in m.calls if c[:2] == ["git", "config"] and key in c and "--get" not in c]
+        with self.subTest("at the head"):
+            code, *_, m = self.build(after={"head": HEAD})
+            self.assertEqual((code, recorded(m)), (0, [["git", "config", key, str(N)]]))
+        with self.subTest("another value is not rewritten"):
+            code, *_, m = self.build(after={"head": HEAD}, config={key: "99"})
+            self.assertEqual((code, recorded(m)), (0, []))
+        with self.subTest("a head that differs"):
+            code, *_, m = self.build()
+            self.assertEqual((code, recorded(m)), (0, []))
 
     def edit_spec(self):
         self.spec.write_text("another spec")
