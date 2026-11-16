@@ -73,6 +73,11 @@ class TagTests(StoreCase):
         with mock.patch.object(os, "getcwd", return_value=TASK):
             self.assertEqual(factory.tags()["slug"], "my-task")
 
+    def test_resumed_lead_keeps_its_worktree_from_the_payload(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": REPO}):
+            t = factory.tags({"cwd": TASK})
+        self.assertEqual((t["role"], t["slug"], t["repo"]), ("lead", "my-task", REPO))
+
     def test_role(self):
         self.assertEqual(factory.tags({"cwd": TASK, "agent_type": "factory:coder"})["role"], "coder")
         self.assertEqual(factory.tags({"cwd": TASK})["role"], "lead")
