@@ -1444,7 +1444,7 @@ def cmd_new(args):
     made = bool(args.base or setup)
     sentence = ""
     if setup:
-        sentence, line = run_setup(setup, path, STORE.expanduser() / "specs" / os.path.basename(repo.root) / f"{args.slug}.setup.log")
+        sentence, line = run_setup(setup, path, tech_lead_paths(repo, args.slug)[1].with_suffix(".setup.log"))
         print(line)
     rc, out, err = run(build_launch_argv(args.slug, dispatcher, brief, settings, base, repo.remote, time.time(),
                                          task_limit(size, settings["task_time_limit_hours"]), repo.root, sentence),

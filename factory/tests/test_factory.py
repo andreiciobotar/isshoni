@@ -116,10 +116,12 @@ class FakeRun:
         self.envs = []
         self.timeouts = []
         self.dirs = []
+        self.grouped = []
 
-    def __call__(self, argv, cwd=None, input=None, timeout=None, env=None, **_):
+    def __call__(self, argv, cwd=None, input=None, timeout=None, env=None, group=False, **_):
         self.calls.append(list(argv))
         self.dirs.append(cwd)
+        self.grouped.append(group)
         self.inputs.append(input)
         self.envs.append(env)
         self.timeouts.append(timeout)
@@ -1560,7 +1562,7 @@ class NewTests(unittest.TestCase):
         self.assertLess(fake.calls.index(sh), len(fake.calls) - 1)
         self.assertEqual(fake.calls[-1][:2], ["claude", "--bg"])
         at = fake.calls.index(sh)
-        self.assertEqual((fake.dirs[at], fake.timeouts[at], fake.envs[at]), (f"{WT}/demo-task", 90, None))
+        self.assertEqual((fake.dirs[at], fake.timeouts[at], fake.envs[at], fake.grouped[at]), (f"{WT}/demo-task", 90, None, True))
         self.assertFalse(fake.ran("git", "config", "branch.worktree-demo-task.factoryBase"))
         self.assertIn("Your time limit is 120 minutes. The setup command `make deps` ran in your worktree and succeeded "
                       f"(output: {log}). Your brief follows.\n\ndo it", fake.calls[-1][-1])
