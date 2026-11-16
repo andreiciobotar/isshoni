@@ -200,7 +200,8 @@ def invoke(argv, answers, settings=None, env=None, tasks=(), cwd=None, events=No
 
 PLUGINS = [{"id": "zeta@m", "enabled": True}, {"id": "factory@factory", "enabled": True},
            {"id": "alpha@m", "enabled": False}, {"id": "factory@inline", "enabled": True}]
-LEAN_SETTINGS = {"disableBundledSkills": True, "enabledPlugins": {"alpha@m": False, "zeta@m": False}}
+NO_ATTRIBUTION = {"attribution": {"commit": "", "pr": "", "sessionUrl": False}}
+LEAN_SETTINGS = {**NO_ATTRIBUTION, "disableBundledSkills": True, "enabledPlugins": {"alpha@m": False, "zeta@m": False}}
 
 
 def repo_answers(entries, sessions=(), *extras):
@@ -1210,7 +1211,7 @@ class NewTests(unittest.TestCase):
         self.assertEqual(fake.calls[-1], [
             "claude", "--bg", "--worktree", "demo-task", "-n", "demo-task", "--model", "fable",
             "--agents", fake.calls[-1][fake.calls[-1].index("--agents") + 1],
-            "--permission-mode", "auto", "--plugin-dir", plugin, "--disallowedTools", *self.DENIED, "--append-system-prompt", lead,
+            "--permission-mode", "auto", "--plugin-dir", plugin, "--settings", json.dumps(NO_ATTRIBUTION), "--disallowedTools", *self.DENIED, "--append-system-prompt", lead,
             "Your task slug is demo-task. Before each message to the dispatcher run `factory dispatcher`: "
                 "it prints its current session name (now d1). "
             "Your base branch is main (remote origin). You started at 2026-11-13T22:57:57Z. "
@@ -1225,7 +1226,7 @@ class NewTests(unittest.TestCase):
                 code, _, err, fake = invoke(self.ARGS, answers)
                 argv = fake.calls[-1]
                 self.assertEqual(code, 0, err)
-                self.assertEqual(json.loads(argv[argv.index("--settings") + 1]), {"disableBundledSkills": True})
+                self.assertEqual(json.loads(argv[argv.index("--settings") + 1]), {**NO_ATTRIBUTION, "disableBundledSkills": True})
                 self.assertIn("plugin list", err)
                 self.assertTrue(argv[-1].endswith("do it"))
 
