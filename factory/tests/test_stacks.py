@@ -9,7 +9,7 @@ from test_factory import ROOT, FakeRun, factory
 from test_merge import World, pr
 
 V, STACKS = factory.STACKS_VERSION, factory.STACKS
-REPO = SimpleNamespace(root=ROOT, default="main")
+REPO = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"/w/{h}", "branch": h} for h in "abcdef"])
 LIST = ("gh", "api", "-H", V, f"{STACKS}?per_page=100")
 UNSTACK = ("gh", "api", "-H", V, "-i", "-X", "POST", f"{STACKS}/7/unstack")
 NO_CONTENT = (0, "HTTP/2.0 204 No Content\n\n", "")
@@ -70,6 +70,29 @@ class EnsureTests(unittest.TestCase):
         closed = {**stack(5, 1, 2), "open": False}
         fake, _ = self.ensure([node(1, "main", "a"), node(2, "a", "b")], [closed])
         self.assertEqual(len(posts(fake)), 1)
+
+    def test_a_chain_with_no_task_on_its_heads_gets_no_call(self):
+        fake, _ = self.ensure([node(1, "main", "x"), node(2, "x", "y")])
+        self.assertEqual(fake.calls, [])
+
+    def test_a_chain_with_a_foreign_member_gets_no_post_even_beside_an_existing_stack(self):
+        for foreign in range(3):
+            heads = ["a", "b", "c"]
+            heads[foreign] = "x"
+            snap = [node(1, "main", heads[0]), node(2, heads[0], heads[1]), node(3, heads[1], heads[2])]
+            for stacks in ([], [stack(5, 1, 2)]):
+                with self.subTest(foreign=foreign, stacks=stacks):
+                    fake, _ = self.ensure(snap, stacks)
+                    self.assertEqual(posts(fake), [])
+
+    def test_an_owned_chain_is_stacked_beside_a_foreign_chain(self):
+        snap = [node(1, "main", "a"), node(2, "a", "b"), node(3, "main", "x"), node(4, "x", "y")]
+        fake, _ = self.ensure(snap)
+        self.assertEqual(posts(fake), [["gh", "api", "-H", V, STACKS, "-X", "POST", "-F", "pull_requests[]=1",
+                                        "-F", "pull_requests[]=2"]])
+        snap = [node(1, "main", "a"), node(2, "a", "b"), node(3, "b", "c"), node(4, "main", "x"), node(5, "x", "y")]
+        fake, _ = self.ensure(snap, [stack(5, 1, 2)])
+        self.assertEqual(posts(fake), [["gh", "api", "-H", V, f"{STACKS}/5/add", "-X", "POST", "-F", "pull_requests[]=3"]])
 
     def test_a_failing_stacks_call_prints_one_line(self):
         fake, out = self.ensure([node(1, "main", "a"), node(2, "a", "b")], answers={("gh", "api", "-H", V, STACKS): (1, "", "boom")})
