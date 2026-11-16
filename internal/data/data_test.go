@@ -500,14 +500,20 @@ func TestScannerDropsDeletedSessionsAndProjects(t *testing.T) {
 func TestScannerDropsADeletedHotSessionWithoutMovingItsDirectory(t *testing.T) {
 	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	root, s := scannerRoot(t, now)
-	// restat is what runs when the project directory did not move
-	p := s.project["proj"]
-	if err := os.Remove(filepath.Join(root, "proj", "hot.jsonl")); err != nil {
+	dir := filepath.Join(root, "proj")
+	fi, err := os.Stat(dir)
+	if err != nil {
 		t.Fatal(err)
 	}
-	p.restat(filepath.Join(root, "proj"), now)
-	if _, ok := p.times["hot"]; ok || len(p.times) != 1 {
-		t.Fatalf("a hot session whose transcript is gone is dropped: %v", p.times)
+	if err := os.Remove(filepath.Join(dir, "hot.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(dir, fi.ModTime(), fi.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Scan(root, now.Add(time.Second))
+	if _, ok := got["hot"]; ok || len(got) != 2 {
+		t.Fatalf("a hot session whose transcript is gone is dropped: %v", got)
 	}
 }
 

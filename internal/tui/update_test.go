@@ -606,3 +606,41 @@ func TestPollSeesHotAppendsAndNewSessionsAtOnce(t *testing.T) {
 		t.Fatalf("a new session reaches the next poll: %v", seen)
 	}
 }
+
+// An append to a session idle for over hotFor waits for the scanner's next sweep; the
+// model keeps one scanner, so the sweep clock runs across polls.
+func TestPollSeesAColdAppendAtTheNextSweep(t *testing.T) {
+	m, _ := stubModel(t)
+	root := t.TempDir()
+	m.runner.ProjectsDir = root
+	cold := filepath.Join(root, "proj", "cold.jsonl")
+	os.MkdirAll(filepath.Dir(cold), 0o755)
+	os.WriteFile(cold, []byte("{}\n"), 0o644)
+	t1 := fakeNow.Add(-time.Hour)
+	os.Chtimes(cold, t1, t1)
+	m.loaded = true
+	const sweepEvery = 10 * time.Second // data.sweepEvery
+	now := fakeNow
+	m.now = func() time.Time { return now }
+	poll := func(at time.Duration) map[string]time.Time {
+		t.Helper()
+		now = fakeNow.Add(at)
+		m.polledAt, m.scanning = time.Time{}, false
+		got := only[scanMsg](upd(m, tickMsg{gen: m.tickGen}))
+		if len(got) != 1 || got[0].err != nil {
+			t.Fatalf("one scan expected: %+v", got)
+		}
+		return got[0].seen
+	}
+	if seen := poll(0); !seen["cold"].Equal(t1) {
+		t.Fatalf("first poll: %v", seen)
+	}
+	t2 := fakeNow.Add(-30 * time.Minute)
+	os.Chtimes(cold, t2, t2)
+	if seen := poll(sweepEvery - time.Second); !seen["cold"].Equal(t1) {
+		t.Fatalf("a cold append waits for the sweep: %v", seen)
+	}
+	if seen := poll(sweepEvery); !seen["cold"].Equal(t2) {
+		t.Fatalf("the sweep sees the cold append: %v", seen)
+	}
+}
