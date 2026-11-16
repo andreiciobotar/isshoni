@@ -61,14 +61,15 @@ How to use a look: you are given facts and what changed since the last look. Mos
 **Score (to 2026-11-15):** fired 0; escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 0; missed 0.
 
 ## merged-not-cleaned
-**What:** A task's pull request was merged, or the task settled, a while ago and it has not been cleaned (`merged` in its row).
+**What:** The script fires this on the full pass for a task whose work is over (pull request merged, declared settled or `closed`, or a handed-over report) and that `factory clean` still keeps; the detail is `kept: <the reason>`. A task kept for a live or interactive session, or because another task is stacked on it, is not fired.
 **Why it matters:** A leftover worktree costs a slot; the script cleans after every merge; what remains is kept for a stated reason, which `factory clean --dry-run` prints.
-**What it has looked like:** The script used to fire this at 2 hours. It fired 5 times in two days, all suppressed.
-**A good call:** Already visible to the human and needs nothing yet (a worktree merged a short while ago): suppress. A merged task something open is stacked on waits for it: suppress and name the stacked task.
+**What it has looked like:** The script used to fire this at 2 hours. It fired 5 times in two days, all suppressed. From 2026-11-16 the script removes a merged task whose exited lead session only says `blocked`, and a handed-over report, so what is left is kept for a reason that names something.
+**A good call:** The reason names work that would be lost (uncommitted changes, commits newer than the merged pull request or in no branch): escalate to the dispatcher quoting the reason; it is the human's. A reason that ends by itself: suppress.
 **Score (to 2026-11-15):** fired 5; escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 5; missed 0.
 
 ### Cases
 1. `site-manager-sees-collisions` (#114 merged, 2026-11-16). Escalated (14cb3aeaceff) as "only needs cleanup" while open #115 was stacked on its branch; cleaning would have removed #115's base; the dispatcher marked it ignored. Good call: suppress and name the stacked task.
+2. `split-1-land` (#124 merged 2026-11-16 09:36Z). Kept 8 hours as "background session ... is not finished (status missing, state blocked)", in motion and over its limit, and no firing named it; the lead had handed over and its exited session's summary said blocked. Good call now: nothing, the script removes it.
 
 ## cost-outlier
 **What:** A working or blocked task has cost many times the median landed task of the repository (`cost_usd`, `landed_median_usd`; a price the monitor did not give is `unpriced`, never zero).

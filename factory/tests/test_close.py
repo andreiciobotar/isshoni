@@ -9,7 +9,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from test_factory import ROOT, factory
+from test_factory import ROOT, factory, git_task_answers
 from test_health import HOUR, NOW, Harness, decided, fired, iso
 from test_lander import ScratchRepoBase
 
@@ -543,14 +543,25 @@ class WakingTests(Harness):
         self.tick()
         self.assertEqual((self.claude_runs(), len(self.records())), ([], 3))
 
-    def test_an_ignored_or_outcome_less_escalation_stays_as_it_is(self):
-        for outcome in ("ignored", None):
-            with self.subTest(outcome):
-                for _, path in factory.log_files("firings"):
-                    path.unlink()
-                self.escalated(300, outcome)
-                self.tick()
-                self.assertEqual((self.claude_runs(), len(self.records())), ([], 2 + bool(outcome)))
+    def test_an_ignored_escalation_stays_as_it_is(self):
+        self.escalated(300, "ignored")
+        self.tick()
+        self.assertEqual((self.claude_runs(), len(self.records())), ([], 3))
+
+    def test_an_escalation_with_no_outcome_is_fired_again_with_the_marker(self):
+        self.escalated(121)
+        self.tick()
+        [argv] = self.claude_runs()
+        records = self.records()
+        self.assertEqual([r.get("cleared") for r in records[2:3]], [True])
+        new = records[-1]
+        self.assertTrue(new["detail"].endswith(f"; escalated at {iso(NOW - 121 * 60)}, no outcome, still true: start a replacement"), new["detail"])
+        self.assertEqual(json.loads(argv[-1].partition("\n\n")[2])["firings"][0]["id"], new["id"])
+
+    def test_an_escalation_with_no_outcome_less_than_the_resurface_time_ago_stays_as_it_is(self):
+        self.escalated(119)
+        self.tick()
+        self.assertEqual((self.claude_runs(), len(self.records())), ([], 2))
 
     def test_a_closed_decision_whose_worktree_is_gone_stands_on_the_full_pass(self):
         self.seed("tasks", [{"repo": ROOT, "slug": "x", "role": "site-manager", "state": "closed", "ts": iso(NOW - HOUR)}])
@@ -563,6 +574,186 @@ class WakingTests(Harness):
         self.assertIn("closed", item["decision"]["enum"])
         self.assertEqual(item["superseded_by"]["type"], "string")
         self.assertIn("Bash(factory clean --dry-run)", factory.SITE_MANAGER_TOOLS)
+
+
+class OverTests(CloseBase):
+    """A task whose work is over by the script's own records leaves by itself: merged and handed over (or settled) whatever
+    its exited lead's summary says, a handed-over report with a file deliverable. Nothing unpushed or unmerged goes."""
+
+    LEAD = {"id": "sx", "name": "t1", "kind": "background", "state": "blocked"}  # exited: no status, no pid
+
+    def setUp(self):
+        super().setUp()
+        self.lead(self.LEAD)
+
+    def lead(self, session):
+        self.sessions = [{**session, "cwd": str(self.wt), "startedAt": int((time.time() - 3 * 3600) * 1000)}]
+
+    def merged(self, state="handed-over"):
+        self.pr("MERGED")
+        self.declare("t1", state, deliverable="https://x/pull/1")
+
+    def report(self, deliverable=None):
+        out = self.root.parent / "report.md"
+        out.write_text("done\n")
+        self.declare("t1", "handed-over", deliverable=deliverable or str(out))
+
+    def status(self):
+        return json.loads(self.go("status", "--json")[1])
+
+    def found(self):
+        repo = factory.Repo(str(self.root))
+        return factory.c_merged_not_cleaned({"repo": repo, "sessions": self.sessions, "rows": factory.collect(repo, self.sessions, 2)}, None)
+
+    def kept(self, why):
+        code, out, _ = self.go("clean")
+        self.assertEqual((code, out), (0, f"kept t1: {why}\n"))
+        self.assertEqual(self.removal_commands(), [])
+        self.assertTrue(self.wt.is_dir())
+
+    def removed(self):
+        code, out, _ = self.go("clean")
+        self.assertEqual((code, out), (0, "removed t1\n"))
+        self.assertEqual(self.removal_commands(), [["claude", "rm", "sx"]])
+        self.assertEqual(self.event_names(), ["TaskRemoved"])
+
+    def test_a_merged_handed_over_task_with_an_exited_lead_that_says_blocked_is_over_and_removed(self):
+        for state in ("handed-over", "acknowledged", "dismissed"):
+            with self.subTest(state):
+                self.merged(state)
+                doc = self.status()
+                [row] = doc["rows"]
+                self.assertEqual((row["phase"], row["overtime"], row["nearing"], row["blocked"], doc["in_motion"]),
+                                 ("merged", False, False, None, 0))
+        self.removed()
+        self.assertEqual([r["state"] for r in self.records("tasks")], ["working", "handed-over", "acknowledged", "dismissed"])
+
+    def test_a_merged_task_declared_working_or_blocked_is_kept_whatever_its_lead_says(self):
+        self.pr("MERGED")
+        for state in ("working", "blocked"):
+            with self.subTest(state):
+                self.declare("t1", state, ts=ago(60))
+                self.assertEqual(self.status()["rows"][0]["phase"], "motion")
+                self.kept("background session sx is not finished (status missing, state blocked)")
+
+    def test_a_merged_handed_over_task_is_kept_while_its_session_has_a_process_or_is_interactive(self):
+        self.merged()
+        for name, session, why in (("busy", {"status": "busy", "state": "working"},
+                                    "background session sx is not finished (status busy, state working)"),
+                                   ("process, no status", {"pid": 7},
+                                    "background session sx is not finished (status missing, state blocked)"),
+                                   ("interactive", {"kind": "interactive"}, "an interactive session is open in it")):
+            with self.subTest(name):
+                self.lead({**self.LEAD, **session})
+                self.assertEqual(self.status()["rows"][0]["phase"], "merged")
+                self.kept(why)
+
+    def test_a_merged_handed_over_task_with_a_newer_commit_or_uncommitted_changes_is_kept(self):
+        self.merged()
+        self.write(self.wt, "notes.txt", "mine\n")
+        self.kept("uncommitted changes")
+        (self.wt / "notes.txt").unlink()
+        sha = self.own_commit("after the merge")
+        self.kept("commits newer than its merged pull request")
+        self.assertEqual(self.git("rev-parse", "worktree-t1"), sha)
+
+    def test_a_handed_over_report_with_a_file_deliverable_is_removed_without_an_ack(self):
+        self.report()
+        self.lead({**self.LEAD, "state": "done"})
+        self.removed()
+        self.assertEqual([r["state"] for r in self.records("tasks")], ["working", "handed-over"])
+
+    def test_a_report_is_kept_for_unpushed_work_uncommitted_changes_a_busy_or_blocked_lead(self):
+        self.report()
+        self.lead({**self.LEAD, "status": "busy", "state": "working"})
+        self.kept("background session sx is not finished (status busy, state working)")
+        self.lead(self.LEAD)  # exited and saying blocked: the relaxed rule is for merged tasks only
+        self.kept("background session sx is not finished (status missing, state blocked)")
+        self.lead({**self.LEAD, "state": "done"})
+        self.write(self.wt, "notes.txt", "mine\n")
+        self.kept("uncommitted changes")
+        (self.wt / "notes.txt").unlink()
+        sha = self.own_commit("only here")
+        self.kept("settled, but its head commit is on no remote-tracking branch")
+        self.assertEqual(self.git("rev-parse", "worktree-t1"), sha)
+
+    def test_a_report_whose_deliverable_is_a_link_or_missing_or_inside_the_worktree_is_kept(self):
+        self.lead({**self.LEAD, "state": "done"})
+        for deliverable, why in (("https://x/report", "no merged pull request (none)"),
+                                 (str(self.root.parent / "gone.md"), "no merged pull request (none)"),
+                                 (str(self.wt / "a.txt"), "settled, but its deliverable is inside the worktree")):
+            with self.subTest(deliverable):
+                self.declare("t1", "handed-over", deliverable=deliverable)
+                self.kept(why)
+
+    def test_the_merged_not_cleaned_fact_names_what_clean_keeps(self):
+        self.merged()
+        self.assertEqual(self.found(), [])  # clean removes it
+        self.write(self.wt, "notes.txt", "mine\n")
+        self.assertEqual(self.found(), [("t1", "t1", "kept: uncommitted changes")])
+        (self.wt / "notes.txt").unlink()
+        self.lead({**self.LEAD, "status": "busy"})
+        self.assertEqual(self.found(), [])  # a session at work is somebody at work
+        self.lead(self.LEAD)
+        self.removed()
+        self.assertEqual(self.found(), [])
+
+    def test_the_fact_fires_for_a_report_and_a_closed_task_kept_for_an_unpushed_commit(self):
+        self.lead({**self.LEAD, "state": "done"})
+        self.report()
+        sha = self.own_commit("only here")
+        self.assertEqual(self.found(), [("t1", "t1", "kept: settled, but its head commit is on no remote-tracking branch")])
+        self.declare("t1", "closed", reason="abandoned")
+        self.assertEqual(self.found(), [("t1", "t1", f"kept: {ONLY_HERE}{sha[:7]} only here")])
+        self.assertEqual(self.git("rev-parse", "worktree-t1"), sha)
+
+
+class StackedFactTests(StackedTests):
+    def test_a_merged_task_kept_only_for_a_task_stacked_on_it_is_not_fired(self):
+        self.declare("t1", "handed-over", deliverable="https://x/pull/1")
+        repo = factory.Repo(str(self.root))
+        rows = factory.collect(repo, [], 2)
+        [t1] = [r for r in rows if r["slug"] == "t1"]
+        self.assertEqual((t1["phase"], factory.keep_rule(repo, t1, rows)), ("merged", ("t2 is stacked on it", True)))
+        self.assertEqual(factory.c_merged_not_cleaned({"repo": repo, "sessions": [], "rows": rows}, None), [])
+
+
+class MergedNotCleanedWatchTests(Harness):
+    """The watch's full pass: the fact's firing folds like any other."""
+
+    def answers(self, dirty=""):
+        pr = [{"state": "MERGED", "url": "u", "headRefOid": "sha-x", "baseRefName": "main"}]
+        return {**git_task_answers("x", NOW, dirty=dirty), ("gh", "pr", "list"): (0, json.dumps(pr), ""),
+                ("gh", "pr", "list", "--state", "open"): (0, "[]", "")}
+
+    def setUp(self):
+        super().setUp()
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "role": "lead", "state": "handed-over", "ts": iso(NOW - HOUR)}])
+
+    def test_a_merged_task_clean_keeps_is_fired_with_the_reason(self):
+        self.tick(answers=self.answers(" M a\n"))
+        [f] = [r for r in self.records() if r.get("criterion") == "merged-not-cleaned"]
+        self.assertEqual((f["slug"], f["subject"], f["detail"]), ("x", "x", "kept: uncommitted changes"))
+
+    def suppressed(self, minutes):
+        self.seed("firings", [fired("aaa", criterion="merged-not-cleaned"), decided("aaa", "suppressed", ts=NOW - minutes * 60)])
+        self.tick(answers=self.answers(" M a\n"))
+        return self.records()
+
+    def test_a_firing_suppressed_less_than_120_minutes_ago_stays_suppressed(self):
+        self.assertEqual(len(self.suppressed(119)), 2)
+
+    def test_a_firing_suppressed_more_than_120_minutes_ago_is_fired_again(self):
+        new = self.suppressed(121)[-1]
+        self.assertNotEqual(new["id"], "aaa")
+        self.assertEqual(new["criterion"], "merged-not-cleaned")
+        self.assertIn("; suppressed earlier: why", new["detail"])
+
+    def test_the_firing_is_cleared_when_nothing_keeps_the_task_any_more(self):
+        self.seed("firings", [fired("aaa", criterion="merged-not-cleaned")])
+        self.tick(answers=self.answers())
+        self.assertEqual([r for r in self.records() if r["id"] == "aaa" and "cleared" in r][0]["cleared"], True)
+        self.assertEqual([r for r in self.records() if r.get("criterion") == "merged-not-cleaned" and r["id"] != "aaa"], [])
 
 
 if __name__ == "__main__":

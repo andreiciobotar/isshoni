@@ -205,7 +205,7 @@ class CriteriaTests(Home):
         firings, skipped = factory.evaluate(pic(sessions=None, rows=None, events=None, models={}, declared=handed, repo=repo), facts)
         self.assertEqual(firings, [])
         names = {s["criterion"] for s in skipped}
-        self.assertEqual(names, {"dispatcher-missing", "ended-undeclared", "ci-red-handover", "base-merged"})
+        self.assertEqual(names, {"dispatcher-missing", "ended-undeclared", "ci-red-handover", "base-merged", "merged-not-cleaned"})
         self.assertIn("sessions cannot be listed", {s["criterion"]: s["why"] for s in skipped}["dispatcher-missing"])
 
     def test_gh_failing_is_not_evaluated(self):
