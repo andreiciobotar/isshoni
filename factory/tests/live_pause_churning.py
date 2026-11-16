@@ -157,6 +157,7 @@ def main():
     loader = importlib.machinery.SourceFileLoader("factory_bin", args.factory)
     factory = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_bin", loader))
     loader.exec_module(factory)
+    factory = getattr(factory, "factory_core", factory)
     if not factory.other_home() or factory.STORE.expanduser().resolve() == REAL_HOME.resolve():
         sys.exit("refusing to run: the factory's home is the real one")
     try:

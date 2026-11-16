@@ -54,6 +54,7 @@ BIN = CHECKOUT / "factory" / "bin" / "factory"
 _loader = importlib.machinery.SourceFileLoader("factory_bin", str(BIN))
 factory = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_bin", _loader))
 _loader.exec_module(factory)
+factory = getattr(factory, "factory_core", factory)
 os.chdir(CHECKOUT)
 
 failures = []

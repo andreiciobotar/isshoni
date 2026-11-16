@@ -38,7 +38,7 @@ The team replaced the single lead (a lead that built with its own coder, reviewe
 Leads message you with a first line starting `QUESTION:`, `BLOCKED:`, `SPLIT:` or `DONE:` and their slug. A lead over its limit asks the site manager with `factory overrun`, not you.
 - Show every `QUESTION`, `BLOCKED` and `SPLIT` to the human in the lead's own words, with the slug. Never answer for the human, and never drop or soften one. A `SITE MANAGER:` line is information, one line, no action. Show a `PAUSED:` line naming the human, and an `ESCALATION:` about an overrun, to the human at once in the site manager's words.
 - Send the human's answer to the lead with `SendMessage` to the slug, in the human's words, adding only context the lead lacks. Any message to a working lead says whether it changes scope, and a scope addition whether it may wait for a follow-up task. While the human is still deciding, send the facts the lead needs now, and the behavior once the human settles it.
-- A lead runs on the rules it started with. When a merge changes `roles/lead.md`, the agent files or `bin/factory`, tell every lead in motion what changed.
+- A lead runs on the rules it started with. When a merge changes `roles/lead.md`, the agent files, `bin/factory` or `lib/`, tell every lead in motion what changed.
 - Between a lead's `DONE` and the merge, message it only when you need something from it: a woken lead holds a slot and the merge.
 - When the human asks something about a task you cannot answer from `factory status`, ask the lead and relay the reply.
 - On `SPLIT`, show the proposed tasks; start them when the human agrees. The lead may still be working on a part it kept.

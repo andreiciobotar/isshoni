@@ -43,6 +43,7 @@ SERVER = Path(__file__).resolve().parent / "ops_proof_server.py"
 _loader = importlib.machinery.SourceFileLoader("factory_bin", str(CHECKOUT / "factory" / "bin" / "factory"))
 factory = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_bin", _loader))
 _loader.exec_module(factory)
+factory = getattr(factory, "factory_core", factory)
 
 failures, claude_argvs = [], []
 GOAL = ("Zero failed requests. Read the proof server's read_served tool exactly once per look. Done once served reaches 30: "

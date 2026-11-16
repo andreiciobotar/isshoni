@@ -10,7 +10,7 @@ from unittest import mock
 
 from test_factory import ROOT, factory
 
-BIN = Path(factory.__file__).resolve()
+BIN = factory.FACTORY
 
 
 class FactoryHome(unittest.TestCase):

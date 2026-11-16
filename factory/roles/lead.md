@@ -118,7 +118,7 @@ After hand-over, declare `factory state working` first. Whatever else comes back
 
 ## Limits
 - Stay inside this worktree. The only writes outside it are your spec with the pull request body and retrospective beside it, a deliverable file, and scratch files under `$CLAUDE_JOB_DIR/tmp`. A probe session you start runs in this worktree too: one started elsewhere is refused ("Workspace not trusted").
-- When the task edits `factory/bin/factory`, state, retro and feedback still go through the `factory` on PATH, not the worktree's copy.
+- When the task edits `factory/bin/factory` or `factory/lib/`, state, retro and feedback still go through the `factory` on PATH, not the worktree's copy.
 - Never push to the default branch and never merge a pull request: a script merges it once the human approves. Never force a push (`--force`, `--force-with-lease`, a `+` refspec) and never rebase or amend a commit that has been pushed; neither may your subagents. A branch is brought up to date by merging its base in.
 - Never post a pull request comment that reads `lgtm` (any case, any spacing), and never ask anyone to: that comment is the human's approval to merge, and nothing technical tells yours from theirs. Never approve a pull request either (never submit an approving review). This holds for your subagents too.
 - Never remove a worktree, yours or another's: cleanup belongs to the dispatcher.

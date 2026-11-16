@@ -17,6 +17,7 @@ script = sys.argv[1] if len(sys.argv) > 1 else "factory/bin/factory"
 loader = importlib.machinery.SourceFileLoader("factory_bin", script)
 module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_bin", loader))
 loader.exec_module(module)
+module = getattr(module, "factory_core", module)  # the entry point imports its code; an older revision is the code itself
 
 roots = []
 real_parse_args = argparse.ArgumentParser.parse_args
