@@ -4334,17 +4334,17 @@ def dissolve(repo, n):
     return None
 
 
-def chains(snap, default):
-    """The pull-request numbers of each chain of two or more open same-repository pull requests, bottom to top: the
-    bottom's base is `default`, each next one's base is the head of the one below, and a head with two pull
-    requests on it ends the chain."""
+def chains(repo, snap):
+    """The pull-request numbers of each chain of two or more open same-repository pull requests, all of them this
+    factory's, bottom to top: the bottom's base is `repo.default`, each next one's base is the head of the one
+    below, and a head with two pull requests on it ends the chain."""
     mine = [pr for pr in snap if not pr["isCrossRepository"]]
     found = []
-    for bottom in (pr for pr in mine if pr["baseRefName"] == default):
+    for bottom in (pr for pr in mine if pr["baseRefName"] == repo.default):
         chain = [bottom]
         while len(above := [pr for pr in mine if pr["baseRefName"] == chain[-1]["headRefName"]]) == 1 and above[0] not in chain:
             chain.append(above[0])
-        if len(chain) > 1:
+        if len(chain) > 1 and all(owned(repo, pr) for pr in chain):
             found.append([pr["number"] for pr in chain])
     return found
 
@@ -4352,7 +4352,7 @@ def chains(snap, default):
 def ensure_stacks(repo, snap):
     """Make each chain of `snap` one GitHub stack: create it, or append to the stack of its lower members. Only
     adds; one `lander: stacks:` line when a call fails, and the rest is left to the next pass."""
-    found = chains(snap, repo.default)
+    found = chains(repo, snap)
     if not found:
         return
     try:
@@ -4729,6 +4729,11 @@ def snapshot(repo):
 def task_slug(repo, pr):
     """The slug of the task worktree whose branch is the head of `pr`, or None."""
     return next((os.path.basename(t["path"]) for t in repo.tasks if t["branch"] == pr["headRefName"]), None)
+
+
+def owned(repo, pr):
+    """Whether `pr` is this factory's: same-repository, and a local task worktree is on its head branch."""
+    return not pr["isCrossRepository"] and task_slug(repo, pr) is not None
 
 
 def pr_items(pr):
