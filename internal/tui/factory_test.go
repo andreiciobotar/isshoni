@@ -1248,14 +1248,14 @@ func TestFactoryCadence(t *testing.T) {
 	if got := only[factoryMsg](upd(m, tickMsg{})); len(got) != 0 {
 		t.Fatal("a tick right after a result starts nothing")
 	}
-	*now = now.Add(29 * time.Second)
+	*now = now.Add(factoryEvery - time.Second)
 	if got := only[factoryMsg](upd(m, tickMsg{})); len(got) != 0 {
-		t.Fatal("a tick before 30 s starts nothing")
+		t.Fatal("a tick before factoryEvery starts nothing")
 	}
 	*now = now.Add(2 * time.Second)
 	got := only[factoryMsg](upd(m, tickMsg{}))
 	if len(got) != 1 || factoryCalls(t, dir) != 4 {
-		t.Fatalf("a tick after 30 s starts one refresh: %d, %d calls", len(got), factoryCalls(t, dir))
+		t.Fatalf("a tick after factoryEvery starts one refresh: %d, %d calls", len(got), factoryCalls(t, dir))
 	}
 	if more := only[factoryMsg](upd(m, tickMsg{})); len(more) != 0 {
 		t.Fatal("a tick while one is in flight starts nothing")
