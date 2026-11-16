@@ -633,14 +633,22 @@ def agent_models(models):
     return {f.stem: models[model_key(f)] for f in sorted((PLUGIN_ROOT / "agents").glob("*.md")) if model_key(f) in models}
 
 
-def lean_flags():
-    """The flags of a lean start: no MCP servers, no bundled skills, and every installed plugin but the factory off."""
+# The harness's commit and pull request attribution, off: an empty string hides that part, `sessionUrl` the session link.
+ATTRIBUTION_OFF = {"commit": "", "pr": "", "sessionUrl": False}
+
+
+def session_flags(lean):
+    """The one `--settings` every session the factory starts gets: attribution off. A lean start adds no MCP servers, no
+    bundled skills, and every installed plugin but the factory off."""
+    settings = {"attribution": ATTRIBUTION_OFF}
+    if not lean:
+        return ["--settings", json.dumps(settings)]
     rc, out, _ = run(["claude", "plugin", "list", "--json"], timeout=20)
     try:
         ids = sorted({e["id"] for e in json.loads(out) if e["id"].partition("@")[0] != "factory"}) if rc == 0 else None
     except (ValueError, TypeError, KeyError, AttributeError):
         ids = None
-    settings = {"disableBundledSkills": True}
+    settings["disableBundledSkills"] = True
     if ids is None:
         print("factory: claude plugin list gave no plugin list; other plugins stay on", file=sys.stderr)
     else:
@@ -685,14 +693,14 @@ def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limi
         + (f"{setup} " if setup else "") +
         f"Your brief follows.\n\n{brief}"
     )
-    lean = [*lean_flags(), f"--tools={LEAD_TOOLS}"] if settings["lean_start"] else []
+    lean = [f"--tools={LEAD_TOOLS}"] if settings["lean_start"] else []
     return [
         "claude", "--bg", "--worktree", slug, "-n", slug,
         "--model", settings["models"]["lead"],
         "--agents", json.dumps(agent_definitions(settings, root)),
         "--permission-mode", settings["lead_permission_mode"],
         "--plugin-dir", str(PLUGIN_ROOT),
-        *lean,
+        *session_flags(settings["lean_start"]), *lean,
         "--disallowedTools", *LEAD_DENIED,
         "--append-system-prompt", lead_rules,
         prompt,
@@ -3101,9 +3109,9 @@ def site_manager_argv(p, firings, job="watch", look=None):
                            "since": last and last["ts"]}, "findings": body}
     prompt = (f"Job: {job}. Repo: {p['repo'].root}. The dispatcher's session name is {p['dispatcher']}.\n\n"
               f"{json.dumps(body, indent=2)}")
-    lean = [*lean_flags(), "--disable-slash-commands"] if p["lean_start"] else []
+    lean = ["--disable-slash-commands"] if p["lean_start"] else []
     monitor = [f"Bash({p['monitor']} sessions *)"] if p["monitor"] else []
-    return ["claude", "-p", "--model", load_settings()["models"]["site_manager"], "--permission-mode", "dontAsk", *lean,
+    return ["claude", "-p", "--model", load_settings()["models"]["site_manager"], "--permission-mode", "dontAsk", *session_flags(p["lean_start"]), *lean,
             "--tools=Read,Grep,Glob,Bash,SendMessage,ToolSearch", "--allowedTools", *SITE_MANAGER_TOOLS, *monitor,
             "--disallowedTools", "Edit", "Write", "NotebookEdit", *SETTINGS_ISOLATION,
             "--max-turns", str(SITE_MANAGER_TURNS), "--max-budget-usd", SITE_MANAGER_BUDGET,
@@ -3541,8 +3549,8 @@ def ops_argv(repo, w, final, cap):
               f"Checks: {checks}\nThe last {OPS_NOTES_KEPT} entries of the notes, oldest first:\n" + "\n".join(entries))
     return ["claude", "-p", "--model", settings["models"]["ops_watch"],
             "--agents", json.dumps({OPS_AGENT: agent_definitions(settings, repo.root)[OPS_AGENT]}),
-            "--permission-mode", "dontAsk", "--plugin-dir", str(PLUGIN_ROOT), "--strict-mcp-config",
-            *(lean_flags()[1:] if settings["lean_start"] else []), "--tools=Agent", "--allowedTools", f"Agent({OPS_AGENT})",
+            "--permission-mode", "dontAsk", "--plugin-dir", str(PLUGIN_ROOT),
+            *session_flags(settings["lean_start"]), *([] if settings["lean_start"] else ["--strict-mcp-config"]), "--tools=Agent", "--allowedTools", f"Agent({OPS_AGENT})",
             *SETTINGS_ISOLATION, "--max-turns", str(OPS_TICK_TURNS), "--max-budget-usd", str(round(cap, 4)),
             "--output-format", "json", "--json-schema", json.dumps(OPS_SCHEMA), "--append-system-prompt", OPS_ROLE.read_text(), prompt]
 
@@ -4845,7 +4853,7 @@ def write_batch(slug, pr, items):
 def courier(repo, name, line):
     """Whether a headless run sent `line` to the session `name`: the only way to put text into a live session."""
     argv = ["claude", "-p", "--model", load_settings()["models"]["courier"], "--permission-mode", "dontAsk", "--allowedTools", "SendMessage",
-            "ToolSearch", "--output-format", "json", COURIER.format(name=name, line=line)]
+            "ToolSearch", *session_flags(False), "--output-format", "json", COURIER.format(name=name, line=line)]
     rc, out, _ = run(argv, cwd=repo.root, timeout=COMMENT_TIMEOUT, group=True)
     try:
         reply = json.loads(out).get("result")
@@ -5777,9 +5785,8 @@ class Landing:
             f"The golden files this task means to change: {', '.join(task_files) or 'none'}. A generated file on this "
             "list may be regenerated with the repository's documented command; any other golden that changes is a stop.",
             commands_line(self.repo, self.path, self.branch)])
-        lean = lean_flags() if self.lean else []
         argv = ["claude", "-p", "--agent", "factory:lander", "--plugin-dir", str(PLUGIN_ROOT), "--model", load_settings()["models"]["lander"],
-                "--permission-mode", self.mode, *lean, "--allowedTools", *LAND_TOOLS,
+                "--permission-mode", self.mode, *session_flags(self.lean), "--allowedTools", *LAND_TOOLS,
                 "--disallowedTools", *ROLE_DENIED, "--output-format", "json", brief]
         rc, out, _ = run(argv, cwd=self.path, timeout=LAND_TIMEOUT, group=True)
         try:
@@ -6256,10 +6263,9 @@ def tech_lead_prompt(repo, slug, pr, evidence, spec):
 
 def tech_lead_argv(repo, slug, pr, evidence, spec, settings):
     """The tech lead's launch command, the one place another runner would plug in."""
-    lean = lean_flags() if settings["lean_start"] else []
     return ["claude", "-p", "--model", settings["models"]["tech_lead"], "--permission-mode", settings["lead_permission_mode"],
             "--agents", json.dumps(agent_definitions(settings, repo.root)),
-            "--plugin-dir", str(PLUGIN_ROOT), *lean, f"--tools={TECH_LEAD_KIT}",
+            "--plugin-dir", str(PLUGIN_ROOT), *session_flags(settings["lean_start"]), f"--tools={TECH_LEAD_KIT}",
             "--allowedTools", *TECH_LEAD_TOOLS, "--disallowedTools", *TECH_LEAD_DENIED,
             "--max-budget-usd", TECH_LEAD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(TECH_LEAD_SCHEMA),
             "--append-system-prompt", TECH_LEAD_ROLE.read_text(), tech_lead_prompt(repo, slug, pr, evidence, spec)]
@@ -6430,10 +6436,9 @@ def build_prompt(repo, slug, spec, handover, note, findings=()):
 
 def build_argv(repo, slug, spec, handover, note, settings, findings=()):
     """The build's launch command, the one place another runner would plug in."""
-    lean = lean_flags() if settings["lean_start"] else []
     return ["claude", "-p", "--model", settings["models"]["tech_lead"],
             "--agents", json.dumps(agent_definitions(settings, repo.root)), "--permission-mode", settings["lead_permission_mode"],
-            "--plugin-dir", str(PLUGIN_ROOT), *lean, f"--tools={LEAD_TOOLS}", "--disallowedTools", *BUILD_DENIED,
+            "--plugin-dir", str(PLUGIN_ROOT), *session_flags(settings["lean_start"]), f"--tools={LEAD_TOOLS}", "--disallowedTools", *BUILD_DENIED,
             "--max-budget-usd", BUILD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(BUILD_SCHEMA),
             "--append-system-prompt", BUILD_ROLE.read_text(), build_prompt(repo, slug, spec, handover, note, findings)]
 
@@ -7156,8 +7161,8 @@ def review_post(target, settings, folder, issues, started):
 def review_argv(settings, folder, prompt):
     """The review session's launch command, the one place another runner would plug in. It reads anywhere and writes
     only under `folder`; the flags cannot stop `python3` from writing elsewhere, the charter says so."""
-    lean = [*lean_flags(), "--disable-slash-commands"] if settings["lean_start"] else ["--strict-mcp-config"]
-    return ["claude", "-p", "--model", settings["models"]["kaizen_review"], "--permission-mode", "dontAsk", *lean,
+    lean = ["--disable-slash-commands"] if settings["lean_start"] else ["--strict-mcp-config"]
+    return ["claude", "-p", "--model", settings["models"]["kaizen_review"], "--permission-mode", "dontAsk", *session_flags(settings["lean_start"]), *lean,
             "--tools=Read,Grep,Glob,Bash,Write", "--allowedTools", "Read", "Grep", "Glob", "Bash", f"Edit(/{folder}/**)",
             "--disallowedTools", *REVIEW_DENIED, *SETTINGS_ISOLATION, "--max-budget-usd", REVIEW_BUDGET,
             "--output-format", "json", "--append-system-prompt", REVIEW_ROLE.read_text(), prompt]

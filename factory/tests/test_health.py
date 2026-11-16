@@ -574,7 +574,7 @@ class WatchTests(Harness):
         for lean in (True, False):
             with self.subTest(lean_start=lean):
                 p = pic(dispatcher="d", lean_start=lean, monitor="/m/isshoni")
-                with mock.patch.object(factory, "lean_flags", return_value=["--strict-mcp-config"]):
+                with mock.patch.object(factory, "session_flags", side_effect=lambda lean: ["--strict-mcp-config"] if lean else []):
                     argv = factory.site_manager_argv(p, [])
                 [tools] = [a for a in argv if a.startswith("--tools=")]
                 self.assertEqual(tools, "--tools=Read,Grep,Glob,Bash,SendMessage,ToolSearch")
