@@ -1,6 +1,7 @@
 """`factory wizard` and `factory uninstall`: set the factory up on this machine, and take it away."""
 import collections
 import json
+import re
 import shlex
 import shutil
 import sys
@@ -158,6 +159,26 @@ def cost_act(args, detail):
     return f"set monitor to {target}" + (f" (it pointed at {old}, which is missing)" if old else "")
 
 
+def stack_state():
+    # "/" is no repository, so the human's login is used: this is the human's tool
+    rc, out, _ = core.run(["gh", "extension", "list"], cwd="/")
+    found = rc == 0 and any("github/gh-stack" in line.split("\t") for line in out.splitlines())
+    return found, "github/gh-stack" if found else "not installed; optional, the factory works without it"
+
+
+def stack_act(args, detail):
+    version = re.search(r"gh version ((\d+)\.\d+\S*)", core.run(["gh", "--version"], cwd="/")[1])
+    if version and int(version[2]) < 2:
+        raise Skip(f"gh {version[1]} is older than 2.0, which extensions need: upgrade gh (https://cli.github.com), then run the wizard again")
+    if not core.ask("Install GitHub's stack extension (gh extension install github/gh-stack)? "
+                    "Optional: it shows and manages stacks from the terminal; the factory works without it.", args.yes):
+        raise Skip("declined")
+    rc, out, err = core.run(["gh", "extension", "install", "github/gh-stack"], cwd="/", timeout=core.RUN_TIMEOUT)
+    if rc != 0:
+        raise core.Fail(f"gh extension install github/gh-stack failed: {((err or out).strip().splitlines() or ['no output'])[-1]}")
+    return "installed GitHub's stack extension (gh extension install github/gh-stack)"
+
+
 def setup_app(args, detail):
     """The GitHub App: create it when there is none, then verify and repair it online. None when nothing changed."""
     identity = core.load_identity()
@@ -202,6 +223,7 @@ WIZARD_STEPS = (
     Step("plugin", "install the factory plugin into Claude Code", False, plugin_state, plugin_act),
     Step("settings", "write the factory's settings file", False, settings_state, settings_act),
     Step("cost criteria", "cost alerts and the daily digest", True, cost_state, cost_act),
+    Step("gh stack", "GitHub's stack extension for gh", True, stack_state, stack_act),
     Step("GitHub App", "the factory's own GitHub identity", True, app_state, setup_app, recheck=True),
 )
 
@@ -413,7 +435,7 @@ def cmd_uninstall(args):
     for line in ("Claude Code's own transcripts and settings (~/.claude/projects)",
                  "your repositories, their task worktrees (.claude/worktrees/) and worktree-* branches: "
                  "`factory clean` or `git worktree remove` removes them, before the plugin is uninstalled",
-                 *([f"this clone ({clone()})"] if clone() else []), "git, gh, Go, Claude Code", *left):
+                 *([f"this clone ({clone()})"] if clone() else []), "git, gh and its stack extension (gh extension remove stack), Go, Claude Code", *left):
         print(f"  {line}")
     if args.list:
         try:
