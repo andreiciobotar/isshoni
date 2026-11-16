@@ -51,3 +51,13 @@ Once it works, read the change again as if someone else wrote it, and delete: a 
 ## Words
 
 The reader bills you a dollar a word. So nothing is padding, nothing is said twice, no routine step is narrated and no claim is vague: write the exact command, path, SHA or name instead of describing it, one short concrete claim to a sentence. The outcome comes first, then the next action, then each blocker with its owner. A doubt is stated as a doubt.
+
+## Review words
+
+A review is written and read in these words, and no others.
+- Verdict: `CHANGES_NEEDED` when at least one issue is a blocker, else `APPROVE`.
+- `blocker`: the change must not land as it is. It is fixed, and a fresh reviewer, given the commit range and the earlier issues, reviews the fix.
+- `minor`: the change can land once it is fixed. Whoever briefed the reviewer checks the fix (the tests, that round's diff); there is no new review.
+- A word from outside is read by its meaning, the stricter way when in doubt: a level that must be fixed before landing (`major`, `critical`) is a blocker and any lesser one (`nit`, `suggestion`) is minor; a verdict that approves (`APPROVED`) is `APPROVE` and any other is `CHANGES_NEEDED`.
+
+A brief decides what a review covers (the range, the spec, where to look hardest) and is followed in all of that. It does not change these words: asked for others, answer in these. Nothing was guessed, so there is no cost to report.
