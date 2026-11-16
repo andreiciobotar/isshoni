@@ -1,9 +1,12 @@
 import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
-from test_factory import FakeRun, factory, invoke, repo_answers
+from test_factory import ROOT, FakeRun, factory, invoke, repo_answers
 
 PREFIX = "test\tRun go test -race ./...\t2026-11-14T16:28:27.2263559Z "
 GO_LOG = (f"test\tRun go test -race ./...\t\ufeff2026-11-14T16:27:48.8671256Z ##[group]Run go test -race ./...\n"
@@ -43,6 +46,16 @@ def answers(over):
 
 
 class Rerun(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.enterContext(mock.patch.dict(os.environ, {"HOME": tmp.name}))
+
+    def hold(self, n="7"):
+        """The queue holds pull request `n` as red for a reason not its branch's."""
+        factory.write_lander(SimpleNamespace(root=ROOT), {"stopped": {n: {"head": "h1", "kind": "not-ours", "text": "t", "ts": factory.now(),
+                                                                          "tests": ["TestAttachFollows"], "checks": ["test"]}}})
+
     def rerun(self, over=None):
         self.fake, self.bodies = FakeRun(answers(over or {})), []
 
@@ -103,6 +116,41 @@ class Flake(Rerun):
             ("gh", "run", "view", RUN2, "--log-failed"): (0, GO_LOG, ""),
             ("gh", "run", "view", RUN2, "--json", "attempt"): (0, '{"attempt": 2}', "")})
         self.assertNoRerun(result, "already re-run once; looks like a flake: TestAttachFollows (cmd/isshoni-tui/attach_test.go)")
+
+
+class Held(Rerun):
+    """A pull request the queue holds is re-run on the human's word: the three flake conditions do not apply."""
+
+    LINE = "rerun: test: attempt 2 started on the human's word"
+
+    def test_a_held_pull_request_is_rerun_past_the_directory_the_base_and_the_attempt(self):
+        self.hold()
+        started, line = self.rerun({(*Q, "diff", "--name-only"): (0, "cmd/isshoni-tui/main.go\n", ""),
+                                    ("gh", "api"): (0, json.dumps({"check_runs": []}), ""),
+                                    ("gh", "run", "view", RUN, "--json", "attempt"): (0, '{"attempt": 2}', "")})
+        self.assertEqual((started, line), (True, self.LINE))
+        self.assertEqual([c for c in self.fake.calls if c[:3] == ["gh", "run", "rerun"]], [["gh", "run", "rerun", RUN, "--failed"]])
+        self.assertEqual(self.bodies, ["Re-ran the failed jobs of test on the human's word (by factory rerun)."])
+        self.assertFalse(self.fake.ran("gh", "api") or self.fake.ran("gh", "run", "view", RUN, "--json"))
+
+    def test_another_pull_request_held_changes_nothing_for_this_one(self):
+        self.hold("8")
+        self.assertNoRerun(self.rerun({(*Q, "diff", "--name-only"): (0, "cmd/isshoni-tui/main.go\n", "")}),
+                           "TestAttachFollows (cmd/isshoni-tui/attach_test.go) is in what the branch changes")
+
+    def test_the_other_conditions_still_apply(self):
+        self.hold()
+        self.assertNoRerun(self.rerun({("gh", "run", "view", RUN, "--log-failed"): (0, f"{PREFIX}##[error]exit 1\n", "")}),
+                           "no failing test could be named in test's log")
+        self.assertNoRerun(self.rerun({(*Q, "grep"): (1, "", "")}), "TestAttachFollows was not found in the branch")
+        closed = (0, json.dumps({"state": "MERGED", "headRefName": "feat", "baseRefName": "main"}), "")
+        self.assertNoRerun(self.rerun({("gh", "pr", "view", "7"): closed}), "the pull request is not open")
+
+    def test_a_refusal_hands_the_human_the_command(self):
+        self.hold()
+        result = self.rerun({("gh", "run", "rerun"): (1, "", REFUSED)})
+        self.assertNoRerun(result, "the App may not re-run checks; looks like a flake: TestAttachFollows "
+                                   f"(cmd/isshoni-tui/attach_test.go). From your own terminal: gh run rerun {RUN} --failed ({REFUSED})", asked=True)
 
 
 class OwnTest(Rerun):

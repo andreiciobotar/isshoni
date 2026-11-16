@@ -572,7 +572,7 @@ class WatchTests(Harness):
     def test_the_site_manager_can_read_and_cannot_write_with_or_without_lean_start(self):
         read_only = {"Read", "Grep", "Glob", "SendMessage", "ToolSearch",
                      "Bash(factory status)", "Bash(factory status *)", "Bash(factory health)", "Bash(factory health *)",
-                     "Bash(factory log *)", "Bash(factory firings)", "Bash(factory firings *)", "Bash(factory feedback)",
+                     "Bash(factory log *)", "Bash(factory firings)", "Bash(factory firings *)", "Bash(factory unblock *)", "Bash(factory feedback)",
                      "Bash(factory feedback --json)", "Bash(ps *)", "Bash(pgrep *)", "Bash(gh pr view *)",
                      "Bash(gh pr checks *)", "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(gh run list *)",
                      "Bash(claude agents --json --all)", "Bash(/m/isshoni sessions *)"}
@@ -893,6 +893,71 @@ class WatchTests(Harness):
         self.assertEqual(code, 1)
         self.assertIn("no such file", err)
 
+
+class HeldPullRequestTests(Harness):
+    """#1 is held by the queue as red for a reason not its branch's, on task x's pull request."""
+
+    NAMES = ("gh", "pr", "list", "--state", "open", "--limit", "100", "--json", "number,body")
+    DETAIL = ("#1 has waited 31 min on test_one (test), judged not its branch's; no open pull request names it "
+              '("Unblocks: #1")')
+
+    def hold(self, minutes=31):
+        record = {"head": "h1", "kind": "not-ours", "text": "t", "ts": iso(NOW - minutes * 60), "tests": ["test_one"], "checks": ["test"], "slug": "x"}
+        factory.write_lander(SimpleNamespace(root=ROOT), {"health": 0, "stopped": {"1": record}})
+
+    def named(self, *numbers):
+        """The open pull requests as `gh pr list` shows them: each of `numbers` names #1 in its body."""
+        return {self.NAMES: (0, json.dumps([{"number": n, "body": "Fixes it.\nUnblocks: #1, #9\n"} for n in numbers] + [{"number": 5, "body": None}]), "")}
+
+    def waiting(self):
+        return [(r["slug"], r["subject"], r["detail"]) for r in self.records() if r.get("criterion") == "red-waiting"]
+
+    def tick_handed_over(self, **kw):
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "role": "lead", "state": "handed-over", "ts": iso(NOW - HOUR)}])
+        return self.cli("watch", entries=["x"], **kw)
+
+    def test_6_a_hold_unnamed_past_the_grace_fires_once_and_the_watch_body_lists_it(self):
+        self.hold()
+        self.tick_handed_over(answers=self.named())
+        self.assertEqual(self.waiting(), [("x", "#1", self.DETAIL)])
+        [argv] = self.claude_runs()
+        body = json.loads(argv[-1].partition("\n\n")[2])
+        self.assertEqual(body["waiting"], [{"pr": 1, "slug": "x", "since": iso(NOW - 31 * 60), "tests": ["test_one"], "named_by": []}])
+        self.tick_handed_over(at=NOW + 60, answers=self.named())
+        self.assertEqual(len(self.waiting()), 1)
+
+    def test_6_a_hold_named_by_an_open_pull_request_does_not_fire_and_the_body_says_who_names_it(self):
+        self.hold()
+        self.tick_handed_over(answers=self.named(7, 8))
+        self.assertEqual(self.waiting(), [])
+        self.assertEqual(self.claude_runs(), [])
+        self.hold()  # the loop of the tick, finding no such pull request open, dropped it
+        body = factory.waiting_body(pic(gh=lambda *a: [{"number": 7, "body": "Unblocks: #1"}, {"number": 8, "body": "Unblocks: #2, #1"},
+                                                       {"number": 9, "body": "unblocks: #1"}]))
+        self.assertEqual(body["waiting"][0]["named_by"], [7, 8])
+
+    def test_6_a_hold_inside_the_grace_or_none_fires_nothing_and_asks_nothing(self):
+        asked = []
+        gh = lambda *a: asked.append(a) or []
+        self.hold(minutes=29)
+        self.assertEqual(check("red-waiting", pic(gh=gh)), [])
+        factory.write_lander(SimpleNamespace(root=ROOT), {"health": 0})
+        self.assertEqual((check("red-waiting", pic(gh=gh)), factory.waiting_body(pic(gh=gh))), ([], {}))
+        self.assertEqual(len(asked), 1)  # only the first, which holds one, asked who names it
+
+    def test_6_pull_requests_that_cannot_be_read_are_not_evaluated_and_the_body_says_null(self):
+        def broken(*a):
+            raise factory.NotEvaluated("gh pr list failed: no auth")
+        self.hold()
+        _, skipped = factory.evaluate(pic(gh=broken), [{"name": "red-waiting"}])
+        self.assertEqual([s["criterion"] for s in skipped], ["red-waiting"])
+        self.assertEqual(factory.waiting_body(pic(gh=broken))["waiting"][0]["named_by"], None)
+
+    def test_6_ci_red_handover_leaves_out_a_held_pull_request_and_keeps_the_others(self):
+        self.hold()
+        failed = lambda *a: [{"name": "test", "bucket": "fail"}]
+        rows = [row("x", phase="review", pr_url="https://pr/1"), row("y", phase="review", pr_url="https://pr/2")]
+        self.assertEqual(check("ci-red-handover", pic(rows=rows, gh=failed)), [("y", "y", "failed: test https://pr/2")])
 
 class RepoWideTests(Harness):
     def test_a_repo_wide_firing_carries_no_task(self):
