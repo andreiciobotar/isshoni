@@ -866,6 +866,17 @@ class SyncDraftTests(World):
                 self.assertEqual(code, 0)
                 self.assertEqual(self.flips(), flips)
 
+    def test_a_red_pull_request_the_sync_made_a_draft_is_ready_again_once_held(self):
+        hold = {"stopped": {"1": {"head": SHA, "kind": "not-ours", "text": "t", "ts": iso(NOW)}}}
+        self.tick([pr(1)], checks=FAILED)  # the tick's sync runs before the pass that holds it
+        self.assertEqual(self.flips(), [["pr", "ready", "1", "--undo"]])
+        self.setUp()
+        factory.write_lander(SimpleNamespace(root=ROOT), hold)
+        code, out, _ = self.tick([pr(1, draft=True)], checks=FAILED)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.flips(), [["pr", "ready", "1"]])
+        self.assertIn("#1 ready for review\n", out)
+
     def test_status_agrees_with_what_the_sync_leaves_on_github(self):
         cases = {
             "working": (dict(state="working", prs=[pr(1)]), True, "motion", None),

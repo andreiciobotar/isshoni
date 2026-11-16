@@ -4757,8 +4757,9 @@ def checks_stop(p, n):
 
 def sync_drafts(p, prs):
     """Make the draft flag of each pull request of `prs` (the open ones) that belongs to a task follow its task:
-    ready exactly when handed over (as handover_reason says) with passing checks, else a draft. Changes no flag
-    for what it cannot read."""
+    ready exactly when handed over (as handover_reason says) with passing checks, or held (its red check is not its
+    branch's: it stays ready, whichever of this and the queue's pass saw the red check first), else a draft. Reads no
+    checks of a held one. Changes no flag for what it cannot read."""
     try:
         phased(p)
     except NotEvaluated as e:
@@ -4768,19 +4769,18 @@ def sync_drafts(p, prs):
         row, n = task_of(p, pr), str(pr["number"])
         if pr["isCrossRepository"] or row is None or row["phase"] in ("settled", "merged"):
             continue
-        if held_at(lander, pr):
-            print(f"#{n} draft flag not changed: held, its red check is not its branch's")
-            continue
         if row["last_commit"] is None:
             print(f"#{n} draft flag not changed: its task's head cannot be read")
             continue
-        why = handover_reason(p, pr)
-        try:
-            stop = None if why else checks_stop(p, n)
-        except NotEvaluated as e:
-            print(f"#{n} draft flag not changed: {e}")
-            continue
-        why = why or stop and stop[1]
+        why = None
+        if not held_at(lander, pr):
+            why = handover_reason(p, pr)
+            try:
+                stop = None if why else checks_stop(p, n)
+            except NotEvaluated as e:
+                print(f"#{n} draft flag not changed: {e}")
+                continue
+            why = why or stop and stop[1]
         if (not why) != pr["isDraft"]:
             continue
         error = gh_step(p["repo"], "pr", "ready", n, *(["--undo"] if why else []))
