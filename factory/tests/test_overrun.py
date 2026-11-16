@@ -44,7 +44,7 @@ class Overrun(Harness):
         return {("claude", "-p"): answer}
 
     def pending(self):
-        return next(r["id"] for r in self.records() if r.get("criterion") in ("overrun", "run-stopped") and "decision" not in r)
+        return next(f["id"] for f in factory.fold(self.records())[0] if f["criterion"] in ("overrun", "run-stopped") and f["decision"] is None)
 
     def watch(self, *decisions, **kw):
         return self.cli("watch", answers=self.decide(*decisions, **{k: kw.pop(k) for k in ("sent", "fail", "deaf") if k in kw}), **kw)
@@ -81,16 +81,17 @@ class AskTests(Overrun):
         [sent] = json.loads(run[-1].partition("\n\n")[2])["firings"]
         self.assertEqual((sent["criterion"], sent["detail"], sent["extension_left_minutes"], sent["extended_minutes"], sent["runs"]),
                          ("overrun", ASK, 60, 0, []))
-        until = STARTED + 140 * 60
+        self.assertEqual(sent["limit_left_minutes"], -10)
+        until = NOW + 20 * 60
         [d] = self.decisions()
-        self.assertEqual((d["id"], d["decision"], d["minutes"], d["until"], d["by"], d["reason"], d["looked"]),
-                         (ask["id"], "extended", 20, iso(until), "site-manager", "landing left", ["factory status"]))
+        self.assertEqual((d["id"], d["decision"], d["minutes"], d["from"], d["until"], d["by"], d["reason"], d["looked"]),
+                         (ask["id"], "extended", 20, iso(NOW), iso(until), "site-manager", "landing left", ["factory status"]))
         self.assertEqual(self.lines(), [
             ("x", f"SITE MANAGER: x: extended 20 min, limit now {clock(until)}: landing left"),
             ("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {clock(until)}, no answer needed: landing left")])
         self.assertIn({"repo": ROOT, "id": ask["id"], "cleared": True, "ts": iso(NOW)}, self.records())
         after = json.loads(self.cli("status", "--json")[1])["rows"][0]
-        self.assertEqual((after["limit"], after["overtime"]), (140 * 60, False))
+        self.assertEqual((after["limit"], after["overtime"]), (until - STARTED, False))
         self.assertEqual([(e["minutes"], e["by"], e["reason"]) for e in after["extensions"]], [(20, "site-manager", "landing left")])
         self.assertEqual(before["extensions"], [])
         self.assertIn("(+20m site-manager)", self.cli("status")[1])
@@ -123,7 +124,7 @@ class IdleLeadTests(Overrun):
         self.ask()
         self.sessions = [DISPATCHER_NAME, self.idle_lead()]
         self.watch({"decision": "extended", "minutes": 20, "reason": "landing left"})
-        until = clock(STARTED + 140 * 60)
+        until = clock(NOW + 20 * 60)
         self.assertEqual(self.lines(), [
             ("x", f"SITE MANAGER: x: extended 20 min, limit now {until}: landing left"),
             ("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {until}, no answer needed: landing left")])
@@ -148,7 +149,7 @@ class IdleLeadTests(Overrun):
         return [c for c in self.fake.calls if c[:3] == ["claude", "--bg", "--resume"]]
 
     def test_a_retired_lead_is_resumed_with_the_line_and_the_dispatcher_hears_the_extension(self):
-        until = clock(STARTED + 140 * 60)
+        until = clock(NOW + 20 * 60)
         [resume] = self.retired((0, "backgrounded · ab · x\n", ""))
         self.assertEqual(resume, ["claude", "--bg", "--resume", SID, f"SITE MANAGER: x: extended 20 min, limit now {until}: landing left"])
         self.assertEqual(self.lines(), [("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {until}, no answer needed: landing left")])
@@ -162,9 +163,9 @@ class IdleLeadTests(Overrun):
         self.ask()
         self.watch({"decision": "extended", "minutes": 20, "reason": "landing left"}, deaf=["x", "dispatcher-repo"])
         self.assertEqual(self.lines(), [
-            ("x", f"SITE MANAGER: x: extended 20 min, limit now {clock(STARTED + 140 * 60)}: landing left"),
+            ("x", f"SITE MANAGER: x: extended 20 min, limit now {clock(NOW + 20 * 60)}: landing left"),
             ("dispatcher-repo", f"SITE MANAGER: x (not delivered to its lead: no such session): extended 20 min, limit now "
-                                f"{clock(STARTED + 140 * 60)}: landing left")])
+                                f"{clock(NOW + 20 * 60)}: landing left")])
         self.assertEqual(self.told(), ["nobody"])
 
     def test_task_lead_names_a_lead_live_idle_or_retired(self):
@@ -239,7 +240,7 @@ class OutcomeTests(Overrun):
     def extension(self, decided=NOW - 600):
         self.seed("firings", [fired("e1", criterion="overrun", ts=decided - 60),
                               {"ts": iso(decided), "repo": ROOT, "id": "e1", "decision": "extended", "reason": "r", "by": "site-manager",
-                               "minutes": 20, "until": iso(self.UNTIL)}])
+                               "minutes": 20, "from": iso(decided), "until": iso(self.UNTIL)}])
 
     def full_pass(self, handed_over=None):
         factory.write_lander(SimpleNamespace(root=ROOT), {"health": 0})
@@ -285,6 +286,128 @@ class OutcomeTests(Overrun):
         self.extension()
         self.cli("watch", at=NOW + 12 * 60)
         self.assertEqual(self.outcome(), [])
+
+
+class ResumeTests(Overrun):
+    """The task's start is its TaskStarted event, whatever happened to its lead's session."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed("events", [ev("x", "TaskStarted", ts=iso(STARTED))])
+        self.seed("firings", [fired("e1", criterion="overrun", ts=STARTED + 3500),
+                              {"ts": iso(STARTED + 3600), "repo": ROOT, "id": "e1", "decision": "extended", "reason": "r",
+                               "by": "site-manager", "minutes": 20, "until": "u"}])
+
+    def row(self):
+        return json.loads(self.cli("status", "--json")[1])["rows"][0]
+
+    def test_a_lead_resumed_in_a_new_session_keeps_elapsed_limit_and_extended_minutes(self):
+        before = self.row()
+        self.sessions = [DISPATCHER_NAME, lead("x", pid=4243, startedAt=(NOW - 6 * 60) * 1000)]
+        after = self.row()
+        self.assertEqual((before["elapsed"], before["limit"], [e["minutes"] for e in before["extensions"]]), (130 * 60, 140 * 60, [20]))
+        self.assertEqual({k: after[k] for k in ("elapsed", "limit", "extensions")}, {k: before[k] for k in ("elapsed", "limit", "extensions")})
+
+    def test_with_no_session_listed_the_start_and_the_total_are_still_the_events(self):
+        p = {"repo": SimpleNamespace(root=ROOT)}
+        self.assertEqual(factory.extension_state(p, "x", None), (STARTED, 20, 40))
+
+
+class GrantTests(Overrun):
+    """An extension of N minutes gives the lead N minutes from the time it is decided, or from its limit when that is later."""
+
+    def started(self, minutes_ago):
+        self.sessions = [DISPATCHER_NAME, lead("x", pid=4242, startedAt=(NOW - minutes_ago * 60) * 1000)]
+        return NOW - minutes_ago * 60
+
+    def decide_after(self, delay, minutes, reason="landing left"):
+        """A watch tick whose site manager run takes `delay` seconds and extends by `minutes`."""
+        answers = self.decide({"decision": "extended", "minutes": minutes, "reason": reason})
+        inner = answers[("claude", "-p")]
+
+        def answer():
+            self.clock += delay * ("--json-schema" in self.fake.calls[-1])
+            return inner()
+        return self.cli("watch", answers={("claude", "-p"): answer})
+
+    def status_row(self, **kw):
+        return json.loads(self.cli("status", "--json", **kw)[1])["rows"][0]
+
+    def previous(self, decided, minutes, **old):
+        """An earlier decision on x: `from` is `decided` and `until` the minutes after it, unless `old` says otherwise."""
+        self.seed("firings", [fired("e1", criterion="overrun", ts=decided - 60),
+                              {"ts": iso(decided), "repo": ROOT, "id": "e1", "decision": "extended", "reason": "r", "by": "site-manager",
+                               "minutes": minutes, **(old or {"from": iso(decided), "until": iso(decided + minutes * 60)})},
+                              {"repo": ROOT, "id": "e1", "cleared": True}])
+
+    def test_an_ask_past_the_limit_counts_from_the_decision_not_from_the_old_limit(self):
+        started = self.started(140)  # the limit, 2 h, ended 20 minutes ago
+        self.ask()
+        self.decide_after(4 * 60, 15)  # the site manager's run took 4 minutes
+        [d] = self.decisions()
+        self.assertEqual((d["from"], d["until"]), (iso(NOW + 4 * 60), iso(NOW + 19 * 60)))
+        self.assertEqual(self.lines()[0][1], f"SITE MANAGER: x: extended 15 min, limit now {clock(NOW + 19 * 60)}: landing left")
+        row = self.status_row(at=NOW + 5 * 60)
+        self.assertEqual(started + row["limit"], NOW + 19 * 60)
+        self.assertFalse(row["overtime"])
+        self.assertIn("(+15m site-manager)", self.cli("status")[1])
+
+    def test_an_ask_before_the_limit_keeps_what_was_left(self):
+        self.started(110)  # 10 minutes left
+        self.ask()
+        self.watch({"decision": "extended", "minutes": 15, "reason": "landing left"})
+        [d] = self.decisions()
+        self.assertEqual((d["from"], d["until"]), (iso(NOW + 10 * 60), iso(NOW + 25 * 60)))
+
+    def test_a_second_extension_counts_from_the_first_ones_until_and_the_ceiling_falls_by_both(self):
+        started = self.started(140)
+        self.previous(NOW - 600, 15)  # from NOW-10m, until NOW+5m
+        self.ask()
+        self.watch({"decision": "extended", "minutes": 10, "reason": "more"})
+        [d] = [d for d in self.decisions() if d["id"] != "e1"]
+        self.assertEqual((d["from"], d["until"]), (iso(NOW + 5 * 60), iso(NOW + 15 * 60)))
+        self.assertEqual(factory.extension_state({"repo": SimpleNamespace(root=ROOT)}, "x", None)[1:], (25, 35))
+        self.assertEqual(started + self.status_row()["limit"], NOW + 15 * 60)
+
+    def test_an_old_rule_extension_keeps_its_arithmetic_and_a_new_one_follows_it(self):
+        started = self.started(150)
+        self.previous(NOW - 1800, 20, until="u")  # the limit is 2 h + 20 min: ended 10 minutes ago
+        self.assertEqual(self.status_row()["limit"], 140 * 60)
+        self.ask()
+        self.watch({"decision": "extended", "minutes": 15, "reason": "landing left"})
+        [d] = [d for d in self.decisions() if d["id"] != "e1"]
+        self.assertEqual((d["from"], d["until"]), (iso(NOW), iso(NOW + 15 * 60)))
+        self.assertEqual(started + self.status_row()["limit"], NOW + 15 * 60)
+
+    def limit_left(self, ago):
+        self.started(ago)
+        self.ask()
+        self.watch()
+        [sent] = json.loads(self.runs()[-1][-1].partition("\n\n")[2])["firings"]
+        return sent["limit_left_minutes"]
+
+    def test_the_site_manager_is_told_how_long_is_left_before_the_limit(self):
+        self.assertEqual(self.limit_left(100), 20)
+
+    def test_the_site_manager_is_told_how_long_past_the_limit_as_a_negative_number(self):
+        self.assertEqual(self.limit_left(140), -20)
+
+
+class ScoreTests(Overrun):
+    """The scores count the extensions of the new rule, and say how many of the old rule they leave out."""
+
+    def test_extensions_without_from_are_counted_apart_and_not_scored(self):
+        records = []
+        for fid, new, outcome in (("o1", False, "kept"), ("o2", False, "overran"), ("n1", True, "kept")):
+            records += [fired(fid, criterion="overrun"),
+                        {"ts": iso(NOW - HOUR), "repo": ROOT, "id": fid, "decision": "extended", "reason": "r", "by": "site-manager",
+                         "minutes": 20, "until": iso(NOW), **({"from": iso(NOW - HOUR)} if new else {})},
+                        {"repo": ROOT, "id": fid, "outcome": outcome}]
+        self.seed("firings", records)
+        s = json.loads(self.cli("firings", "--json")[1])["summary"]
+        self.assertEqual((s["extended"], s["kept"], s["overran"], s["old_rule"]), (1, 1, 0, 2))
+        self.assertIn("extended 1 (kept 1, overran 0, no outcome 0); 2 before the limit counted from the decision, not scored; ",
+                      self.cli("firings")[1])
 
 
 class ModelTests(Overrun):
