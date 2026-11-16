@@ -504,7 +504,7 @@ def _summary(tasks, versions):
     defects = [t["defects"] for t in tasks if t["defects"]]
     return {
         "tasks": len(tasks), "landed": len(landed),
-        "in_flight": sum(1 for t in tasks if not t["landed"] and t["state"] not in ("acknowledged", "dismissed")),
+        "in_flight": sum(1 for t in tasks if not t["landed"] and t["state"] not in ("acknowledged", "dismissed", "closed")),
         "cost": med("cost"), "brief_to_pr_s": med("brief_to_pr_s"), "pr_to_merge_s": med("pr_to_merge_s"),
         "review_rounds": med("review_rounds"),
         "first_pass": {"yes": sum(first_pass), "of": len(first_pass)},

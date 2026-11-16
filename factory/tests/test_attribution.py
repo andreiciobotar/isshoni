@@ -36,8 +36,9 @@ class Attribution(unittest.TestCase):
                 result = seen[0]
             return result
 
-    def builders(self):
-        repo = lambda tmp: SimpleNamespace(root=tmp, default="main", remote="origin")
+    def builders(self, lander_in_worktrees=False):
+        repo = lambda tmp: SimpleNamespace(root=tmp, default="main", remote="origin", worktree_path=lambda name: f"{tmp}/.claude/worktrees/{name}",
+                              git=lambda *a, **k: (0, "", ""))
 
         def ops(settings, tmp):
             (tmp / "notes").write_text("")
@@ -45,7 +46,7 @@ class Attribution(unittest.TestCase):
 
         def lander(settings, tmp):
             land = factory.Landing.__new__(factory.Landing)
-            land.__dict__.update(repo=repo(tmp), path=str(tmp), branch="b", remote="origin", slug="s", lean=settings["lean_start"],
+            land.__dict__.update(repo=repo(tmp), path=repo(tmp).worktree_path("s") if lander_in_worktrees else str(tmp), branch="b", remote="origin", slug="s", lean=settings["lean_start"],
                                  mode="auto", declared=True, old_head="h", base="main", merged=False, target="main")
             land.out = lambda *a: "h" if a[0] == "rev-parse" else "x" if a[0] == "diff" else ""
             land.git = land.log_queue = land.mark_working = lambda *a, **k: None
@@ -70,6 +71,18 @@ class Attribution(unittest.TestCase):
                     argv = self.argv(build, lean)
                     self.assertEqual(argv.count("--settings"), 1)
                     self.assertEqual(json.loads(argv[argv.index("--settings") + 1])["attribution"], factory.ATTRIBUTION_OFF)
+
+    def test_the_worktree_sessions_carry_attribution_off_and_base_ref_in_their_one_settings(self):
+        builders = self.builders(lander_in_worktrees=True)
+        for name in ("build", "tech lead", "lander"):
+            for lean in (True, False):
+                with self.subTest(session=name, lean_start=lean):
+                    argv = self.argv(builders[name], lean)
+                    self.assertEqual(argv.count("--settings"), 1)
+                    settings = json.loads(argv[argv.index("--settings") + 1])
+                    self.assertEqual(settings["attribution"], factory.ATTRIBUTION_OFF)
+                    self.assertEqual(settings["worktree"], factory.BASE_REF["worktree"])
+                    self.assertEqual(argv[argv.index("--worktree") + 1], "s")
 
     def test_a_new_session_start_must_be_added_to_this_test(self):
         # `claude --bg --resume <id>` wakes a session with its saved options, its --settings included; any flag added would start a copy

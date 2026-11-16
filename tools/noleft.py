@@ -3,7 +3,7 @@
     python3 tools/noleft.py <command...>
 
 Prints `left behind: N` and one line per survivor (pid, command), kills them (they are the command's own),
-and exits 1 when N > 0, else with the command's exit code.
+and exits 1 when N > 0, else with the command's exit code, or 128 + n if signal n stopped the wrapper first.
 
 A process is the command's when it descends from it at some poll (every POLL seconds, one `ps` call each; a
 process whose whole parent chain ends within POLL of its start is missed). It is not found by an environment
@@ -24,10 +24,6 @@ GRACE = 1.0  # a process just told to stop gets this long to be gone
 SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
 
-class Stopped(Exception):
-    """The wrapper itself was told to stop."""
-
-
 def table():
     """{(pid, start time): (ppid, command)} of every process."""
     out = subprocess.run(["ps", "-axo", "pid=,ppid=,lstart=,command="], capture_output=True, text=True, timeout=10,
@@ -37,11 +33,11 @@ def table():
 
 
 def scan(mine, rows):
-    """Add to `mine` ({key: command}) every live process whose parent is a live member of it."""
+    """Add to `mine` (a set of keys) every live process whose parent is a live member of it."""
     grew = True
     while grew:
         live = {pid for pid, start in mine if (pid, start) in rows}
-        new = {k: cmd for k, (ppid, cmd) in rows.items() if ppid in live and k not in mine}
+        new = {k for k, (ppid, _) in rows.items() if ppid in live and k not in mine}
         mine.update(new)
         grew = bool(new)
 
@@ -50,44 +46,41 @@ def track(root, mine, stop):
     while not stop.is_set():
         rows = table()
         if not mine:  # the root's key, taken once: a pid reused after the root is gone is not the root
-            mine.update({k: cmd for k, (_, cmd) in rows.items() if k[0] == root})
+            mine.update(k for k in rows if k[0] == root)
         scan(mine, rows)
         stop.wait(POLL)
 
 
-def on_signal(signum, frame):
-    for sig in SIGNALS:  # a second signal must not cut the wait and the sweep short
-        signal.signal(sig, signal.SIG_IGN)
-    raise Stopped(signum)
-
-
 def main(command):
+    signals = []  # the handler only records: it cannot end the run, so no signal skips the report and the sweep
     for sig in SIGNALS:
-        signal.signal(sig, on_signal)
+        signal.signal(sig, lambda signum, frame: signals.append(signum))
     p = subprocess.Popen(command)
-    mine, stop = {}, threading.Event()
+    mine, stop = set(), threading.Event()
     tracker = threading.Thread(target=track, args=(p.pid, mine, stop), daemon=True)
     tracker.start()
-    try:
-        rc = p.wait()
-    except Stopped as s:
-        rc = 128 + s.args[0]
+    while p.returncode is None and not signals:
+        try:
+            p.wait(POLL)
+        except subprocess.TimeoutExpired:
+            pass
+    if p.returncode is None:
         p.terminate()
         try:
             p.wait(10)
         except subprocess.TimeoutExpired:
             p.kill()
             p.wait()
-    finally:
-        for sig in SIGNALS:  # the join and the sweep must not be cut short by a first signal
-            signal.signal(sig, signal.SIG_IGN)
-        stop.set()
+        rc = 128 + signals[0]
+    else:
+        rc = p.returncode
+    stop.set()
     tracker.join()
     deadline = time.monotonic() + GRACE
     while True:
         rows = table()
         scan(mine, rows)
-        left = {k: cmd for k, cmd in mine.items() if k in rows}
+        left = {k: rows[k][1] for k in mine if k in rows}
         if not left or time.monotonic() > deadline:
             break
         time.sleep(POLL)

@@ -344,7 +344,7 @@ class Scores(Harness):
         entries = json.loads(self.cli("firings", "--json")[1])["summary"]["entries"]
         self.assertEqual(sorted(entries), sorted(ENTRIES))
         self.assertEqual(entries["review-loops"], {"fired": 1, "to_lead": 0, "escalated": 0, "acted": 0, "ignored": 0, "no_outcome": 0,
-                                                   "suppressed": 1, "told": 0, "extended": 0, "paused": 0, "missed": 0, "precision": None})
+                                                   "suppressed": 1, "told": 0, "extended": 0, "paused": 0, "closed": 0, "missed": 0, "precision": None})
 
 
 class ReferenceFile(Home):
