@@ -601,11 +601,11 @@ class NoLeadTests(Loop):
 
 
 class ToldTests(Loop):
-    def test_without_a_live_lead_the_dispatcher_hears_it_did_not_reach_its_lead(self):
+    def test_without_a_session_named_for_the_lead_the_dispatcher_hears_its_lead_is_gone(self):
         self.sim.add(1, behind=False, checks=[RED])
         self.go("lander", leads=False)
         [line] = self.sim.lead_lines()
-        self.assertTrue(line.startswith("LANDER: t1 (not delivered to its lead): #1 went back to you: red checks"))
+        self.assertTrue(line.startswith("LANDER: t1 (its lead is gone: no session named t1): #1 went back to you: red checks"))
 
     def test_the_dispatcher_is_found_by_its_registration_and_told_by_its_current_name(self):
         self.sim.add(1, behind=False, checks=[RED])

@@ -82,7 +82,7 @@ PROMPT_FROM = (("<agent-message", "subagent"), ("<cross-session-message", "sessi
 COMMANDS = {}  # name -> (help, options, function), filled by @command where each command is defined
 COMMAND_ORDER = ("new", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "retro", "env",
                  "feedback", "review", "log", "health", "watch", "ops", "digest", "firing", "miss", "firings",
-                 "pauses", "merge", "lander", "tech-lead", "build", "land", "overlap", "rerun", "schedule",
+                 "pauses", "lead", "merge", "lander", "tech-lead", "build", "land", "overlap", "rerun", "schedule",
                  "dispatcher", "settings", "wizard", "uninstall")  # `factory --help` order; a name not here follows, by name
 
 
@@ -891,6 +891,13 @@ def sessions_in(sessions, root, path):
     return mine
 
 
+def lead_session(sessions, repo, slug):
+    """The listing row of the lead of the task `slug`: named `slug`, live in the task's worktree or exited (as `sessions_in`
+    says); a live one first. None when there is none."""
+    mine = [s for s in sessions_in(sessions, repo.root, repo.worktree_path(slug)) if s.get("name") == slug]
+    return next((s for s in mine if "pid" in s), mine[0] if mine else None)
+
+
 UNKNOWN_PR = ("unknown", "", "", "", False)
 NO_PR = ("none", "", "", "", False)
 
@@ -1059,6 +1066,19 @@ def extensions(granted, slug, started):
             for f in granted if f["slug"] == slug and (started is None or (epoch(f["decided"]) or 0) >= started)]
 
 
+def task_start(events, slug, session):
+    """When the task `slug` started, in epoch seconds: the `ts` of its last TaskStarted event, else its session's `startedAt`
+    (a resume resets that); None without a session."""
+    if not session:
+        return None
+    event = since_start(events, slug)[1]
+    started = epoch(event and event.get("ts"))
+    if started is None:
+        started = session.get("startedAt")
+        started = started / 1000 if isinstance(started, (int, float)) and not isinstance(started, bool) else None
+    return started
+
+
 def collect(repo, sessions, limit_hours, prs=None):
     """One row per task worktree; `sessions` is None when they cannot be listed. `prs` is the batch of `pull_requests`,
     asked for here (always from GitHub) when the caller has none."""
@@ -1070,6 +1090,7 @@ def collect(repo, sessions, limit_hours, prs=None):
         prs = (ask_pull_requests(repo, needed)[0] if needed else {}) or {b: UNKNOWN_PR for b in needed}
     prioritized = read_lander(repo)["prioritized"]
     granted = extended(repo)
+    events = repo_log("events", repo.root) or []
     rows = []
     for wt in repo.tasks:
         path, branch = wt["path"], wt["branch"]
@@ -1085,11 +1106,11 @@ def collect(repo, sessions, limit_hours, prs=None):
         recorded = repo.git("config", "--get", f"branch.{branch}.factoryBase")[1].strip() if branch else ""
         row["stacked_on"] = recorded or None
         row["base"] = recorded if recorded and base_counts(repo, recorded, prs) else repo.base
-        started = session.get("startedAt") if session else None
-        row["elapsed"] = int(now - started / 1000) if started else None
+        started = task_start(events, slug, session)
+        row["elapsed"] = int(now - started) if started else None
         running = bool(session) and not finished(session)
         row["size"] = task_size(repo, branch)
-        row["extensions"] = extensions(granted, slug, started and started / 1000)
+        row["extensions"] = extensions(granted, slug, started)
         row["limit"] = task_limit(row["size"], limit_hours, sum(e["minutes"] for e in row["extensions"]))
         row["state"] = declared.get(slug, {}).get("state")
         timed = running and row["elapsed"] is not None
@@ -1115,7 +1136,7 @@ def collect(repo, sessions, limit_hours, prs=None):
         since = epoch(declared.get(slug, {}).get("ts"))
         row["waited"] = None if since is None else max(0, int(now - since))
         row["phase"] = phase(row["pr_state"], mine if placed else None, row["state"])
-        times = [t for t in (row["last_commit"], started and started / 1000) if t]
+        times = [t for t in (row["last_commit"], started) if t]
         row["stale"] = bool(times) and now - max(times) > STALE_SECONDS
         rows.append(row)
     stops(repo, declared, rows)
@@ -1285,8 +1306,10 @@ def transcript_model(path):
 def tags(payload=None):
     """The record tags for a hook payload, or for the calling session when there is none."""
     p = payload or {}
-    repo, slug = os.environ.get("CLAUDE_PROJECT_DIR") or p.get("cwd") or os.getcwd(), None
-    match = WORKTREE_RE.match(repo)
+    sources = [d for d in (os.environ.get("CLAUDE_PROJECT_DIR"), p.get("cwd")) if d] or [os.getcwd()]
+    matches = [m for m in map(WORKTREE_RE.match, sources) if m]
+    match = next((m for m in matches if not m.group(2).startswith("agent-")), None) or WORKTREE_RE.match(sources[0])
+    repo, slug = sources[0], None
     if match:
         repo = match.group(1)
         slug = None if match.group(2).startswith("agent-") else match.group(2)
@@ -3104,11 +3127,12 @@ def transcript_tail(path, count=15):
 
 def task_lead(p, slug):
     """(status row, worktree path, session, lead) of a task; the row is None on an every-tick picture, the lead is
-    the name SendMessage addresses, None without a process (an idle lead has one)."""
+    the name of the lead's session, live or retired, None without one."""
     row = next((r for r in p["rows"] or [] if r["slug"] == slug), None)
     path = row["path"] if row else p["repo"].worktree_path(slug) if slug and p.get("sessions") else None
     session = path and task_session(p, path)
-    return row, path, session, session and "pid" in session and session.get("name") or None
+    lead = session and lead_session(p["sessions"], p["repo"], slug)
+    return row, path, session, lead and lead["name"]
 
 
 def run_rows(p, slug):
@@ -3151,8 +3175,7 @@ def firing_for_run(p, f):
 
 def extension_state(p, slug, session):
     """(the session's start in epoch seconds or None, minutes granted to `slug` since, minutes still allowed)."""
-    started = session and session.get("startedAt")
-    started = started / 1000 if isinstance(started, (int, float)) and not isinstance(started, bool) else None
+    started = task_start(p.get("events") or repo_log("events", p["repo"].root) or [], slug, session)
     used = sum(e["minutes"] for e in extensions(extended(p["repo"]), slug, started))
     return started, used, load_settings()["extension_minutes"] - used
 
@@ -3361,7 +3384,7 @@ def record_call(p, d, rows, run, called):
                else "a call without a firing is escalated, suppressed or closed" if decision not in ("escalated", "suppressed", "closed")
                else "to is neither dispatcher nor lead" if to not in ("dispatcher", "lead")
                else "a second call on the same entry and task" if (entry, slug) in called
-               else "its lead is not live" if decision == "escalated" and to == "lead" and not row.get("lead")
+               else "it has no lead session" if decision == "escalated" and to == "lead" and not row.get("lead")
                else "its lead was told of this entry already" if decision == "escalated" and to == "lead"
                and any(c.get("entry") == entry and c.get("to") == "lead" for c in row.get("calls") or []) else None)
     if refusal:
@@ -3450,6 +3473,8 @@ def record_decisions(p, sent, result, run, look=None):
             tell_closed(p, fid, crit, f["slug"], reason, superseded_by, closed)
         else:
             tell_decision(p, f, decision, reason.strip(), minutes, until)
+        if to == "lead":
+            forward(p["repo"], p["dispatcher"], f["slug"], "SITE MANAGER", reason.strip())
     return logged
 
 
@@ -3913,6 +3938,25 @@ def cmd_watch(args):
         return 0
 
 
+def args_lead(parser):
+    parser.add_argument("slug")
+    parser.add_argument("message")
+
+
+@command("lead", "queue a message for a task's lead: the next tick delivers it, bringing a retired lead back", args_lead)
+def cmd_lead(args):
+    """For the dispatcher, whose SendMessage by name fails on a retired lead. It does not deliver: a model's shell is
+    refused the resume, so the tick, which is not a model's shell, does."""
+    repo = Repo()
+    if args.slug not in {os.path.basename(t["path"]) for t in repo.tasks}:
+        raise Fail(f"{args.slug} is not a task of this repository")
+    if read_tasks(repo.root).get(args.slug, {}).get("state") == "closed":
+        raise Fail(f"{args.slug} is closed")
+    outbox_put(repo, args.slug, args.message)
+    print(f"queued for {args.slug}: the next tick delivers it")
+    return 0
+
+
 def tick_picture(repo, fallback):
     """The picture for the facts of every tick: no pull requests, no git, and the session list only while a task is
     declared working. The dispatcher is found as in `gather` whenever the sessions are listed."""
@@ -3936,6 +3980,10 @@ def with_dispatcher(p, fallback):
 def watch_tick(args, repo):
     """The cheap part every time (comments, draft flags, approvals), the facts of every tick, and every HEALTH_SECONDS the
     rest of them and the digest. What wakes the site manager (see `wake_events`) gathers the full picture and runs it once."""
+    try:
+        drain_outbox(repo, args.dispatcher)
+    except Exception as e:  # the tick goes on without it
+        print(f"outbox: {why(e)}")
     every = load_criteria()
     t = time.time()
     os.utime(repo_state(repo.root, "watch", "lock"), (t, t))  # the tick's age, read by `health` and by `drain`
@@ -5113,31 +5161,127 @@ def write_batch(slug, pr, items):
 
 
 def courier(repo, name, line):
-    """Whether a headless run sent `line` to the session `name`: the only way to put text into a live session."""
+    """None when a headless run sent `line` to the session `name` (the only way to put text into a live session), else why not:
+    the first line of the run's reply or error, up to 200 characters."""
     argv = ["claude", "-p", "--model", load_settings()["models"]["courier"], "--permission-mode", "dontAsk", "--allowedTools", "SendMessage",
             "ToolSearch", *session_flags(False), "--output-format", "json", COURIER.format(name=name, line=line)]
-    rc, out, _ = run(argv, cwd=repo.root, timeout=COMMENT_TIMEOUT, group=True)
+    rc, out, err = run(argv, cwd=repo.root, timeout=COMMENT_TIMEOUT, group=True)
     try:
         reply = json.loads(out).get("result")
     except (ValueError, AttributeError):
         reply = None
-    return rc == 0 and isinstance(reply, str) and reply.strip().lower() == "sent"
+    if rc == 0 and isinstance(reply, str) and reply.strip().lower() == "sent":
+        return None
+    text = reply if rc == 0 and isinstance(reply, str) else err or out
+    return ((text or "").strip().splitlines() or [f"exit {rc}, no output"])[0][:200]
+
+
+CLOSED = "its task is closed"  # `reach_lead`'s final why: the lead of a closed task is never reached or resumed
+
+
+def reach_lead(repo, sessions, slug, lines):
+    """Put `lines` into the session of the lead of `slug`: (True, None), else (False, why). A live lead gets one courier send
+    per line; a retired one is resumed once by id, flag-free so that its saved options stay, with the lines as its next prompt.
+    Only the factory's unattended processes may call this: a model's shell is refused the resume."""
+    if read_tasks(repo.root).get(slug, {}).get("state") == "closed":
+        return False, CLOSED
+    session = lead_session(sessions, repo, slug)
+    if session is None:
+        return False, f"its lead is gone: no session named {slug}"
+    if "pid" in session:
+        for line in lines:
+            if reason := courier(repo, slug, line):
+                return False, f"not delivered to its lead: {reason}"
+        return True, None
+    rc, out, err = run(["claude", "--bg", "--resume", session["sessionId"], "\n".join(lines)], cwd=repo.worktree_path(slug), timeout=COMMENT_TIMEOUT)
+    woke = BACKGROUNDED_RE.search(f"{out}\n{err}")
+    if rc == 0 and woke and woke.group(1) == session["id"]:
+        return True, None
+    if rc == 0 and woke:
+        run(["claude", "stop", woke.group(1)])
+        return False, "its lead is gone: resume failed: started a copy"
+    return False, f"its lead is gone: resume failed: {((err or out).strip().splitlines() or ['no output'])[0]}"
+
+
+OUTBOX_TRIES = 3
+
+
+def outbox(repo, slug=None):
+    """The pending rows (`id`, `slug`, `line`, `tries`) of the outbox of `repo`, oldest first: those of the task `slug`, else
+    all. A row is one record when made and one for each change: a failed try (`tries`), its `end` (`delivered`, `dispatcher`)."""
+    rows = {}
+    for r in repo_log("outbox", repo.root) or []:
+        rows[r["id"]] = {"tries": 0, **rows.get(r["id"], {}), **r}
+    return [r for r in rows.values() if "end" not in r and slug in (None, r["slug"])]
+
+
+def outbox_log(repo, rid, **fields):
+    log("outbox", {"ts": now(), "repo": repo.root, "id": rid, **fields})
+
+
+def outbox_put(repo, slug, line):
+    rid = secrets.token_hex(6)
+    outbox_log(repo, rid, slug=slug, line=line)
+    return rid
+
+
+def deliver(repo, sessions, slug):
+    """Put every pending line of `slug` into its lead's session, oldest first: (True, None) with the rows `delivered`, else
+    (False, why) with a failed try counted on each."""
+    rows = outbox(repo, slug)
+    ok, why = reach_lead(repo, sessions, slug, [r["line"] for r in rows])
+    for r in rows:
+        outbox_log(repo, r["id"], **({"end": "delivered"} if ok else {"tries": r["tries"] + 1}))
+    return ok, why
+
+
+def lead_gone(repo, fallback, slug, why, rows):
+    """Hand the pending `rows` of `slug` to the dispatcher in one line, else the human; the rows end `dispatcher`."""
+    for r in rows:
+        outbox_log(repo, r["id"], end="dispatcher")
+    said = f"{slug} ({why}): {len(rows)} line(s) not delivered, oldest first: " + " | ".join(r["line"] for r in rows)
+    return tell_lead(repo, fallback, slug, "LEAD GONE", said, f"factory: the lead of {slug} is gone", lead=False)
+
+
+def drain_outbox(repo, fallback):
+    """Every tick: the pending lines of each lead are put into its session once more. After OUTBOX_TRIES failed tries
+    (the first is `forward`'s) the dispatcher gets one LEAD GONE line for the slug."""
+    slugs = dict.fromkeys(r["slug"] for r in outbox(repo))
+    sessions = list_sessions() if slugs else []
+    if sessions is None:
+        return print("outbox: sessions cannot be listed")
+    for slug in slugs:
+        ok, why = deliver(repo, sessions, slug)
+        rows = outbox(repo, slug)
+        if not ok and (why == CLOSED or max(r["tries"] for r in rows) >= OUTBOX_TRIES):
+            lead_gone(repo, fallback, slug, why, rows)
 
 
 def forward(repo, fallback, slug, head, said, lead=True):
-    """Put `head: <slug>: said` into the session of the lead of `slug`, else into the dispatcher's (found as `find_dispatcher`
-    does), whose line says it did not reach the lead; the role that got it, or None. Without `lead` only the dispatcher is
-    tried, with `head: said`."""
-    sessions = list_sessions() or []
-    live = lead and [s for s in sessions_in(sessions, repo.root, repo.worktree_path(slug)) if s.get("name") == slug]
-    asked = [("lead", slug, f"{head}: {slug}: {said}")] if live else []
-    dispatcher = find_dispatcher(sessions, repo.root, fallback)[0]
-    if dispatcher:
-        asked.append(("dispatcher", dispatcher["name"], f"{head}: {slug} (not delivered to its lead): {said}" if lead else f"{head}: {said}"))
-    for to, name, line in asked:
-        if courier(repo, name, line):
-            return to
-    return None
+    """Put `head: <slug>: said` into the session of the lead of `slug`, brought back if it was retired, with the lines it missed
+    (see `reach_lead`); "lead" when it got it, "queued" when a retired lead could not be resumed yet (the tick tries again).
+    Else the dispatcher's, found as `find_dispatcher` does, with why it did not reach the lead; the role that got it, or None.
+    Without `lead` only the dispatcher is tried, with `head: said`."""
+    sessions = list_sessions()
+    if lead:
+        rid = outbox_put(repo, slug, f"{head}: {slug}: {said}")
+        if sessions is None:  # not listed: not "gone"; the tick tries again
+            return "queued"
+        ok, why = deliver(repo, sessions, slug)
+        if ok:
+            return "lead"
+        if why == CLOSED:
+            return lead_gone(repo, fallback, slug, why, outbox(repo, slug))
+        session = lead_session(sessions, repo, slug)
+        if session and "pid" not in session:
+            return "queued"
+        older = [r for r in outbox(repo, slug) if r["id"] != rid]
+        if older:
+            lead_gone(repo, fallback, slug, why, older)
+        outbox_log(repo, rid, end="dispatcher")
+        return forward(repo, fallback, slug, head, f"{slug} ({why}): {said}", lead=False)
+    dispatcher = find_dispatcher(sessions or [], repo.root, fallback)[0]
+    return "dispatcher" if dispatcher and not courier(repo, dispatcher["name"], f"{head}: {said}") else None
 
 
 def save_comments(path, since, kept):
@@ -5651,7 +5795,7 @@ HOME_FILE_RE = re.compile(r"settings\.(toml|json)|watch\.log|identity|specs|deli
 # The other names the factory writes there, which uninstall leaves: the cache, the courier's notes, the logs
 # written through `log` that HOME_FILE_RE does not list, and the per-repository files of `repo_state` with their
 # temporary files. `strangers` is what matches neither.
-STORE_WRITTEN_RE = re.compile(r"cache|comments|tech-lead\.log|review\.(log|lock)|(gh|comments|techlead|queue|looks)-\d{4}-\d\d\.jsonl|(hosts|settings)\.json\.tmp"
+STORE_WRITTEN_RE = re.compile(r"cache|comments|tech-lead\.log|review\.(log|lock)|(gh|comments|techlead|queue|looks|outbox)-\d{4}-\d\d\.jsonl|(hosts|settings)\.json\.tmp"
                               r"|[a-z]+-.+-[0-9a-f]{8}\.(json|lock)(\.tmp)?")  # the last is every name repo_state() makes
 
 

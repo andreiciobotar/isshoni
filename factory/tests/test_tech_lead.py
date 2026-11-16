@@ -58,7 +58,7 @@ class Machine(FakeRun):
         if a[:3] == ["claude", "plugin", "list"]:
             return 0, json.dumps([{"id": "zeta@m"}, {"id": "factory@factory"}, {"id": "alpha@m"}]), ""
         if a[:2] == ["claude", "agents"]:
-            live = {"sessionId": "sid-x", "name": SLUG, "cwd": f"{self.root}/.claude/worktrees/{SLUG}", "kind": "interactive"}
+            live = {"sessionId": "sid-x", "name": SLUG, "cwd": f"{self.root}/.claude/worktrees/{SLUG}", "kind": "interactive", "pid": 7}
             return 0, json.dumps([live] if self.lead else []), ""
         if a[:2] == ["claude", "-p"] and "--append-system-prompt" in a:
             self.state.update(self.after() if callable(self.after) else self.after)
