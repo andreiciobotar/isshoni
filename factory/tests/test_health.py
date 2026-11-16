@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from test_factory import DISPATCHER, LEAN_SETTINGS, ROOT, WT, FakeRun, factory, repo_answers, stub_popen, task_entry
+from test_factory import DISPATCHER, LEAN_SETTINGS, ROOT, WT, FakeRun, FakeTime, factory, repo_answers, stub_popen, task_entry
 
 NOW = 1_800_000_000
 HOUR = 3600
@@ -423,8 +423,7 @@ class Harness(Home):
                         mock.patch.object(factory, "ROLE_PATH", self.role),
                 mock.patch.object(factory, "GUIDANCE_PATH", self.guidance),
                         mock.patch.object(factory, "now", lambda: iso(self.clock)),
-                        mock.patch.object(factory.time, "time", lambda: self.clock),
-                        mock.patch.object(factory.time, "sleep", lambda seconds: setattr(self, "clock", self.clock + seconds))):
+                        mock.patch.object(factory, "time", FakeTime(time=lambda: self.clock, sleep=lambda seconds: setattr(self, "clock", self.clock + seconds)))):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -492,7 +491,13 @@ def decided(fid, decision, ts=NOW - HOUR, reason="why"):
     return {"ts": iso(ts), "repo": ROOT, "id": fid, "decision": decision, "reason": reason, "by": "site-manager"}
 
 
+REAL_CLOCK = (time.time, time.sleep)
+
+
 class HealthTests(Harness):
+    def test_the_fake_clock_is_not_on_the_time_module(self):
+        self.assertEqual((time.time, time.sleep), REAL_CLOCK)
+
     def test_table_and_json_write_nothing(self):
         self.seed("tasks", [{"repo": ROOT, "slug": "x", "role": "lead", "state": "working", "ts": iso(NOW - HOUR)}])
         before = {p.name: p.read_bytes() for p in self.store.iterdir()}
@@ -612,7 +617,7 @@ class WatchTests(Harness):
                      "Bash(factory log *)", "Bash(factory firings)", "Bash(factory firings *)", "Bash(factory feedback)",
                      "Bash(factory feedback --json)", "Bash(ps *)", "Bash(pgrep *)", "Bash(gh pr view *)",
                      "Bash(gh pr checks *)", "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(gh run list *)",
-                     "Bash(claude agents --json --all)", "Bash(/m/isshoni sessions *)"}
+                     "Bash(claude agents --json --all)", "Bash(factory clean --dry-run)", "Bash(/m/isshoni sessions *)"}
         for lean in (True, False):
             with self.subTest(lean_start=lean):
                 p = pic(dispatcher="d", lean_start=lean, monitor="/m/isshoni")
@@ -663,7 +668,7 @@ class WatchTests(Harness):
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["to"]["enum"],
                          ["dispatcher", "lead"])
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["decision"]["enum"],
-                         ["escalated", "suppressed", "paused", "extended", "told"])
+                         ["escalated", "suppressed", "paused", "extended", "told", "closed"])
         head, _, body = argv[-1].partition("\n\n")
         self.assertEqual(head, f"Job: watch. Repo: {ROOT}. The dispatcher's session name is dispatcher-repo.")
         picture = json.loads(body)
@@ -1090,7 +1095,7 @@ class ChurningTests(Harness):
         self.assertEqual((f["decision"], f["waits_on"]), ("paused", ["y"]))
         s = json.loads(self.cli("firings", "--json")[1])["summary"]
         self.assertEqual((s["paused"], s["escalated"], s["suppressed"], s["acted"], s["ignored"], s["precision"]), (1, 0, 0, 0, 0, None))
-        self.assertIn("suppressed 0; paused 1; extended 0 (kept 0, overran 0, no outcome 0); missed 0", self.cli("firings")[1])
+        self.assertIn("suppressed 0; paused 1; extended 0 (kept 0, overran 0, no outcome 0); closed 0 (stood 0, reopened 0, no outcome 0); missed 0", self.cli("firings")[1])
         code, _, err = self.cli("firing", "ppp", "acted")
         self.assertEqual(code, 2)
         self.assertIn("was not escalated", err)
@@ -1252,7 +1257,8 @@ class FiringsTests(Harness):
         self.assertEqual(lines[-3], "ended-undeclared: fired 5; escalated 3 (acted 1, ignored 1, no outcome 1); to lead 0; suppressed 1; missed 1; precision 0.50")
         self.assertEqual(lines[-2], "unlisted: fired 0; escalated 0 (acted 0, ignored 0, no outcome 0); to lead 0; suppressed 0; missed 2; precision -")
         self.assertEqual(lines[-1], "escalated 3 (acted 1, ignored 1, no outcome 1); to lead 0; suppressed 1; "
-                                    "paused 0; extended 0 (kept 0, overran 0, no outcome 0); missed 3 (1 suppressed first, 2 never fired); precision 0.50; recall 0.25; "
+                                    "paused 0; extended 0 (kept 0, overran 0, no outcome 0); closed 0 (stood 0, reopened 0, no outcome 0); "
+                                    "missed 3 (1 suppressed first, 2 never fired); precision 0.50; recall 0.25; "
                                     "told 0 (acted 0, noise 0, collided 0, no outcome 0, undelivered 0)")
 
     def test_json(self):
@@ -1263,12 +1269,13 @@ class FiringsTests(Harness):
         self.assertEqual(len(doc["misses"]), 3)
         entries = doc["summary"].pop("entries")
         self.assertEqual(entries["ended-undeclared"], {"fired": 5, "to_lead": 0, "escalated": 3, "acted": 1, "ignored": 1, "no_outcome": 1,
-                                                       "suppressed": 1, "told": 0, "extended": 0, "paused": 0, "missed": 1, "precision": 0.5})
+                                                       "suppressed": 1, "told": 0, "extended": 0, "paused": 0, "closed": 0, "missed": 1, "precision": 0.5})
         self.assertEqual(entries["unlisted"]["missed"], 2)
         self.assertEqual(doc["summary"], {"escalated": 3, "acted": 1, "ignored": 1, "no_outcome": 1, "suppressed": 1,
                                           "paused": 0, "extended": 0, "kept": 0, "overran": 0, "missed": 3, "missed_suppressed": 1, "missed_never_fired": 2,
                                           "precision": 0.5, "recall": 0.25, "told": 0, "told_acted": 0, "told_noise": 0,
-                                          "told_collided": 0, "told_no_outcome": 0, "told_undelivered": 0})
+                                          "told_collided": 0, "told_no_outcome": 0, "told_undelivered": 0,
+                                          "closed": 0, "stood": 0, "reopened": 0})
 
     def test_a_lead_message_shows_in_the_table_and_everything_in_the_json(self):
         self.seed("firings", [fired("l1"), decided("l1", "escalated") | {
@@ -1288,7 +1295,8 @@ class FiringsTests(Harness):
     def test_zero_denominators(self):
         code, out, _ = self.cli("firings")
         self.assertEqual(out, "escalated 0 (acted 0, ignored 0, no outcome 0); to lead 0; suppressed 0; "
-                              "paused 0; extended 0 (kept 0, overran 0, no outcome 0); missed 0 (0 suppressed first, 0 never fired); precision -; recall -; "
+                              "paused 0; extended 0 (kept 0, overran 0, no outcome 0); closed 0 (stood 0, reopened 0, no outcome 0); "
+                              "missed 0 (0 suppressed first, 0 never fired); precision -; recall -; "
                               "told 0 (acted 0, noise 0, collided 0, no outcome 0, undelivered 0)\n")
         _, out, _ = self.cli("firings", "--json")
         self.assertEqual((json.loads(out)["summary"]["precision"], json.loads(out)["summary"]["recall"]), (None, None))

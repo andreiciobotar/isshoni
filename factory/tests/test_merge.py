@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from test_factory import ROOT, WT, FakeRun, factory, invoke, repo_answers, task_entry
+from test_factory import ROOT, FakeTime, WT, FakeRun, factory, invoke, repo_answers, task_entry
 from test_health import DISPATCHER, NOW, Harness, check, iso, pic, row
 
 SHA = "sha-1"
@@ -193,7 +193,7 @@ class MergeCommandTests(World):
                             f"gh pr merge 1 --merge --match-head-commit {SHA}: head moved"),
         }
         for label, (kw, why) in cases.items():
-            with self.subTest(label), mock.patch.object(factory.time, "sleep"):
+            with self.subTest(label), mock.patch.object(factory, "time", FakeTime(sleep=mock.Mock())):
                 self.setUp()
                 number = kw["prs"][0]["number"]
                 code, out, _ = self.merge(str(number), **kw)
@@ -206,7 +206,8 @@ class MergeCommandTests(World):
                     self.assertEqual(self.gh_mutations(), [])
 
     def test_unknown_five_times_waits_between_asks(self):
-        with mock.patch.object(factory.time, "sleep") as sleep:
+        sleep = mock.Mock()
+        with mock.patch.object(factory, "time", FakeTime(sleep=sleep)):
             code, out, _ = self.merge("1", prs=[pr(1)], mergeable="UNKNOWN")
         self.assertEqual(code, 1)
         self.assertEqual(sum(c[:3] == ["gh", "pr", "view"] for c in self.fake.calls), 5)
@@ -214,7 +215,8 @@ class MergeCommandTests(World):
         self.assertIn("#1 stopped: GitHub has not computed", out)
 
     def test_unknown_then_mergeable_merges(self):
-        with mock.patch.object(factory.time, "sleep") as sleep:
+        sleep = mock.Mock()
+        with mock.patch.object(factory, "time", FakeTime(sleep=sleep)):
             code, out, _ = self.merge("1", prs=[pr(1)], mergeable=["UNKNOWN", "MERGEABLE"])
         self.assertEqual(code, 0)
         self.assertEqual(sleep.call_count, 1)

@@ -15,25 +15,27 @@ ARG SUPERCRONIC_SHA1_arm64=9d4c2000493215a1898502b2fc2dada3e8ea8c7a
 ARG UID=1000
 ARG GID=1000
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git less lsof make openssl procps python3 tmux \
+RUN apt-get -o Acquire::Retries=3 update \
+ && apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates curl git less lsof make openssl procps python3 tmux \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=go /usr/local/go /usr/local/go
 
 # Each download is checked against the checksum its publisher lists for that version.
-RUN set -eu; cd /tmp \
+RUN set -eu; \
+ get() { curl -fsSL --retry 3 --retry-all-errors "$@" || { echo "network: download failed after 3 retries: $*; a network failure, not caused by the code" >&2; return 1; }; }; \
+ cd /tmp \
  && claude_arch=$([ "$TARGETARCH" = amd64 ] && echo x64 || echo "$TARGETARCH") \
  && claude=https://downloads.claude.ai/claude-code-releases/$CLAUDE_VERSION \
- && curl -fsSL -o /usr/local/bin/claude "$claude/linux-$claude_arch/claude" \
- && curl -fsSL "$claude/manifest.json" \
+ && get -o /usr/local/bin/claude "$claude/linux-$claude_arch/claude" \
+ && get "$claude/manifest.json" \
     | python3 -c 'import json, sys; print(json.load(sys.stdin)["platforms"][sys.argv[1]]["checksum"], sys.argv[2], sep="  ")' \
       "linux-$claude_arch" /usr/local/bin/claude | sha256sum -c - \
  && gh=https://github.com/cli/cli/releases/download/v$GH_VERSION \
- && curl -fsSLO "$gh/gh_${GH_VERSION}_linux_$TARGETARCH.tar.gz" \
- && curl -fsSL "$gh/gh_${GH_VERSION}_checksums.txt" | grep " gh_${GH_VERSION}_linux_$TARGETARCH.tar.gz\$" | sha256sum -c - \
+ && get -O "$gh/gh_${GH_VERSION}_linux_$TARGETARCH.tar.gz" \
+ && get "$gh/gh_${GH_VERSION}_checksums.txt" | grep " gh_${GH_VERSION}_linux_$TARGETARCH.tar.gz\$" | sha256sum -c - \
  && tar -xzf "gh_${GH_VERSION}_linux_$TARGETARCH.tar.gz" -C /usr/local/bin --strip-components=2 "gh_${GH_VERSION}_linux_$TARGETARCH/bin/gh" \
- && curl -fsSL -o /usr/local/bin/supercronic \
+ && get -o /usr/local/bin/supercronic \
     "https://github.com/aptible/supercronic/releases/download/v$SUPERCRONIC_VERSION/supercronic-linux-$TARGETARCH" \
  && eval "sha1=\$SUPERCRONIC_SHA1_$TARGETARCH" \
  && echo "$sha1  /usr/local/bin/supercronic" | sha1sum -c - \

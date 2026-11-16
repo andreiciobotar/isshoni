@@ -112,6 +112,13 @@ func kaizenStub(t *testing.T) (*model, string, *time.Time) {
 	return m, dir, &now
 }
 
+// settle applies the results of a load in the order they came.
+func settle(m *model, msgs []kaizenMsg) {
+	for _, g := range msgs {
+		m.Update(g)
+	}
+}
+
 // writeKaizen puts the fixture in the stub's dir as file, its repositories' pull request data dated at.
 func writeKaizen(t *testing.T, dir, file string, at time.Time) {
 	t.Helper()
@@ -128,8 +135,8 @@ func writeKaizen(t *testing.T, dir, file string, at time.Time) {
 func TestKaizenLoadsOnEntryNotWithinThirtySeconds(t *testing.T) {
 	m, dir, now := kaizenStub(t)
 	got := only[kaizenMsg](upd(m, press("4")))
-	if len(got) != 1 || calls(t, dir, "kaizen --since") != 1 || !m.kz.busy {
-		t.Fatalf("entering starts one load for the range: %d msgs, %d calls", len(got), calls(t, dir, "kaizen "))
+	if len(got) != 2 || calls(t, dir, "kaizen --since") != 2 || !m.kz.busy {
+		t.Fatalf("entering with no document starts both loads for the range: %d msgs, %d calls", len(got), calls(t, dir, "kaizen "))
 	}
 	if more := only[kaizenMsg](upd(m, press("4"))); len(more) != 0 {
 		t.Fatal("one load in flight at most")
@@ -137,7 +144,7 @@ func TestKaizenLoadsOnEntryNotWithinThirtySeconds(t *testing.T) {
 	if out := plain(m); !strings.Contains(out, "reading the factory's logs") {
 		t.Fatalf("the first load shows a spinner line:\n%s", out)
 	}
-	upd(m, got[0])
+	settle(m, got)
 	if m.kz.busy || m.kz.doc == nil || len(m.kz.doc.Tasks) != 24 || m.kz.doc.Summary.Landed != 20 {
 		t.Fatalf("the result is applied: %+v", m.kz.busy)
 	}
@@ -151,20 +158,20 @@ func TestKaizenLoadsOnEntryNotWithinThirtySeconds(t *testing.T) {
 	if got := only[kaizenMsg](upd(m, press("4"))); len(got) != 1 {
 		t.Fatal("an older one is loaded again")
 	}
-	if n := calls(t, dir, "kaizen "); n != 2 {
+	if n := calls(t, dir, "kaizen "); n != 3 {
 		t.Fatalf("%d calls", n)
 	}
 }
 
 func TestKaizenRangeChangeLoadsAgainWithTheNewSince(t *testing.T) {
 	m, dir, _ := kaizenStub(t)
-	upd(m, only[kaizenMsg](upd(m, press("4")))[0])
+	settle(m, only[kaizenMsg](upd(m, press("4"))))
 	msgs := upd(m, press("r")) // 7d -> 30d
 	if got := only[kaizenMsg](msgs); len(got) != 1 {
 		t.Fatalf("a range change loads: %d", len(got))
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "calls"))
-	if !strings.Contains(string(b), "kaizen --since\n") || calls(t, dir, "kaizen ") != 2 {
+	if !strings.Contains(string(b), "kaizen --since\n") || calls(t, dir, "kaizen ") != 3 {
 		t.Fatalf("calls:\n%s", b)
 	}
 	// the range "all" passes no --since
@@ -187,7 +194,7 @@ func TestKaizenStaleResultIsIgnored(t *testing.T) {
 
 func TestKaizenFailedLoadKeepsTheOldResult(t *testing.T) {
 	m, dir, now := kaizenStub(t)
-	upd(m, only[kaizenMsg](upd(m, press("4")))[0])
+	settle(m, only[kaizenMsg](upd(m, press("4"))))
 	send(m, "1")
 	*now = now.Add(time.Minute)
 	os.WriteFile(filepath.Join(dir, "fail"), nil, 0o644)
@@ -221,23 +228,16 @@ func TestKaizenFirstFrameComesFromTheCacheWhileGitHubHangs(t *testing.T) {
 	m, dir, now := kaizenStub(t)
 	writeKaizen(t, dir, "kaizen.json", now.Add(-time.Hour)) // pull request data an hour old
 	os.WriteFile(filepath.Join(dir, "fetch-hang"), nil, 0o644)
-	first := only[kaizenMsg](upd(m, press("4")))
-	if len(first) != 1 || !first[0].cached {
-		t.Fatalf("entering loads from the cache first: %+v", first)
-	}
-	_, second := m.Update(first[0])
-	if m.kz.doc == nil || !m.kz.busy || second == nil || !strings.Contains(plain(m), "LANDED") {
-		t.Fatalf("the cached document shows while the second load is due: doc=%v busy=%v", m.kz.doc != nil, m.kz.busy)
-	}
-	if n := calls(t, dir, "kaizen"); n != 1 {
-		t.Fatalf("one call so far: %d", n)
-	}
 	start := time.Now()
-	got := only[kaizenMsg](run(second))
-	if len(got) != 1 || got[0].cached || time.Since(start) > 5*time.Second {
-		t.Fatalf("the hung second load ends at its timeout: %+v", got)
+	first := only[kaizenMsg](upd(m, press("4")))
+	if len(first) != 2 || !first[0].cached || first[1].cached || time.Since(start) > 5*time.Second {
+		t.Fatalf("entering loads from the cache and, beside it, from GitHub up to its timeout: %+v", first)
 	}
-	upd(m, got[0])
+	m.Update(first[0])
+	if m.kz.doc == nil || !m.kz.busy || !strings.Contains(plain(m), "LANDED") {
+		t.Fatalf("the cached document shows while the second load is out: doc=%v busy=%v", m.kz.doc != nil, m.kz.busy)
+	}
+	m.Update(first[1])
 	if out := plain(m); m.kz.busy || m.kz.doc == nil || !strings.Contains(out, "timed out") || !strings.Contains(out, "LANDED") {
 		t.Fatalf("a failed second load keeps the document and says why:\n%s", out)
 	}
@@ -245,12 +245,11 @@ func TestKaizenFirstFrameComesFromTheCacheWhileGitHubHangs(t *testing.T) {
 	writeKaizen(t, dir, "kaizen-fetch.json", *now)
 	send(m, "1")
 	*now = now.Add(time.Minute)
-	msgs := upd(m, press("4"))
-	if got := only[kaizenMsg](msgs); len(got) != 1 || !got[0].cached {
-		t.Fatalf("entering again starts from the cache: %d", len(got))
+	got := only[kaizenMsg](upd(m, press("4")))
+	if len(got) != 2 || !got[0].cached {
+		t.Fatalf("entering again starts both loads: %d", len(got))
 	}
-	_, second = m.Update(only[kaizenMsg](msgs)[0])
-	upd(m, only[kaizenMsg](run(second))[0])
+	settle(m, got)
 	if m.kz.err != "" || m.kz.busy || calls(t, dir, "kaizen") != 4 {
 		t.Fatalf("a good second load clears the error: err=%q busy=%v calls=%d", m.kz.err, m.kz.busy, calls(t, dir, "kaizen"))
 	}
@@ -262,9 +261,7 @@ func TestKaizenFailedRefreshKeepsTheCachedDocumentAndRecovers(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "fetch-fail"), nil, 0o644)
 	load := func() {
 		t.Helper()
-		first := only[kaizenMsg](upd(m, press("4")))
-		_, second := m.Update(first[0])
-		upd(m, only[kaizenMsg](run(second))[0])
+		settle(m, only[kaizenMsg](upd(m, press("4"))))
 	}
 	load()
 	out := plain(m)
@@ -282,14 +279,125 @@ func TestKaizenFailedRefreshKeepsTheCachedDocumentAndRecovers(t *testing.T) {
 }
 
 func TestKaizenAFreshCacheStartsNoSecondLoad(t *testing.T) {
-	m, dir, _ := kaizenStub(t)
-	first := only[kaizenMsg](upd(m, press("4")))
-	_, second := m.Update(first[0])
-	if second != nil || m.kz.busy || calls(t, dir, "kaizen") != 1 {
-		t.Fatalf("data under 10 minutes old needs no second load: busy=%v calls=%d", m.kz.busy, calls(t, dir, "kaizen"))
+	m, dir, now := kaizenStub(t)
+	settle(m, only[kaizenMsg](upd(m, press("4"))))
+	send(m, "1")
+	*now = now.Add(time.Minute)
+	before := calls(t, dir, "kaizen")
+	got := only[kaizenMsg](upd(m, press("4")))
+	if len(got) != 1 || !got[0].cached {
+		t.Fatalf("a visit with a document whose pull request data is under 10 minutes old starts the cached load only: %+v", got)
 	}
-	if b, _ := os.ReadFile(filepath.Join(dir, "fetches")); len(b) != 0 {
-		t.Fatalf("no fetch pass: %q", b)
+	if next := m.applyKaizen(got[0]); next != nil || m.kz.busy || calls(t, dir, "kaizen")-before != 1 {
+		t.Fatalf("and needs no second load: busy=%v calls=%d", m.kz.busy, calls(t, dir, "kaizen")-before)
+	}
+	if n := fetches(dir); n != 1 {
+		t.Fatalf("one fetch pass, the first visit's: %d", n)
+	}
+}
+
+// ---- both loads at once -----------------------------------------------------------
+
+// fetches counts the stub's calls without --cached.
+func fetches(dir string) int {
+	b, _ := os.ReadFile(filepath.Join(dir, "fetches"))
+	return strings.Count(string(b), "\n")
+}
+
+// oldPRs is a document whose pull request data is an hour older than at.
+func oldPRs(at time.Time) *data.Kaizen {
+	return &data.Kaizen{Repos: []data.KaizenRepo{{PRsAsOf: at.Add(-time.Hour).UTC().Format(time.RFC3339)}}}
+}
+
+// firstVisit enters the kaizen view of a stub with no document and returns the two
+// results of its two loads, cached first, none applied.
+func firstVisit(t *testing.T) (m *model, dir string, cached, live kaizenMsg) {
+	t.Helper()
+	m, dir, _ = kaizenStub(t)
+	got := only[kaizenMsg](upd(m, press("4")))
+	if len(got) != 2 || !got[0].cached || got[1].cached {
+		t.Fatalf("a first visit starts the cached and the GitHub-asking load: %+v", got)
+	}
+	return m, dir, got[0], got[1]
+}
+
+func TestKaizenFirstVisitStartsBothLoadsAtOnce(t *testing.T) {
+	_, dir, _, _ := firstVisit(t)
+	if n, f := calls(t, dir, "kaizen"), fetches(dir); n != 2 || f != 1 {
+		t.Fatalf("one cached call and one without --cached: %d calls, %d without", n, f)
+	}
+}
+
+func TestKaizenCachedFirstThenLiveSettles(t *testing.T) {
+	m, _, cached, live := firstVisit(t)
+	if next := m.applyKaizen(cached); next != nil || m.kz.doc == nil || !m.kz.busy || !strings.Contains(plain(m), "LANDED") {
+		t.Fatalf("the cached document shows while the live load is out: busy=%v", m.kz.busy)
+	}
+	live.doc = &data.Kaizen{Summary: data.KaizenSummary{Landed: 7}}
+	m.applyKaizen(live)
+	if m.kz.busy || m.kz.err != "" || m.kz.doc != live.doc {
+		t.Fatalf("the live document settles it: busy=%v err=%q", m.kz.busy, m.kz.err)
+	}
+}
+
+func TestKaizenLiveFirstThenCachedIsDropped(t *testing.T) {
+	m, _, cached, live := firstVisit(t)
+	m.applyKaizen(live)
+	if !m.kz.busy {
+		t.Fatal("busy until the cached load returns too")
+	}
+	doc, doneAt := m.kz.doc, m.kz.doneAt
+	later := m.now().Add(time.Second)
+	m.now = func() time.Time { return later }
+	cached.doc = &data.Kaizen{}
+	m.kz.err = "kept"
+	if next := m.applyKaizen(cached); next != nil || m.kz.doc != doc || !m.kz.doneAt.Equal(doneAt) || m.kz.err != "kept" || m.kz.busy {
+		t.Fatalf("a cached result after the live success changes nothing: busy=%v err=%q", m.kz.busy, m.kz.err)
+	}
+}
+
+func TestKaizenLiveFailsThenCachedShowsAndKeepsTheError(t *testing.T) {
+	m, dir, cached, live := firstVisit(t)
+	live.doc, live.err = nil, errors.New("boom\nmore")
+	m.applyKaizen(live)
+	if m.kz.err != "boom" || !m.kz.busy || m.kz.doc != nil {
+		t.Fatalf("the failure shows while the cached load is out: err=%q busy=%v", m.kz.err, m.kz.busy)
+	}
+	cached.doc = oldPRs(m.now())
+	if next := m.applyKaizen(cached); next != nil || m.kz.doc == nil || m.kz.err != "boom" || m.kz.busy || calls(t, dir, "kaizen") != 2 {
+		t.Fatalf("the cached document shows, the error stays, no third load: err=%q busy=%v calls=%d", m.kz.err, m.kz.busy, calls(t, dir, "kaizen"))
+	}
+}
+
+func TestKaizenCachedFailsWhileLiveIsOutThenLiveClearsTheError(t *testing.T) {
+	m, _, cached, live := firstVisit(t)
+	cached.doc, cached.err = nil, errors.New("cache broke")
+	if next := m.applyKaizen(cached); next != nil || m.kz.err != "cache broke" || !m.kz.busy {
+		t.Fatalf("a cached failure leaves the live load to settle: err=%q busy=%v", m.kz.err, m.kz.busy)
+	}
+	m.applyKaizen(live)
+	if m.kz.err != "" || m.kz.busy || m.kz.doc == nil {
+		t.Fatalf("the live success clears it: err=%q busy=%v", m.kz.err, m.kz.busy)
+	}
+}
+
+func TestKaizenOldCachedResultIsFollowedOnceWhenOnlyTheCachedLoadStarted(t *testing.T) {
+	m, dir, now := kaizenStub(t)
+	settle(m, only[kaizenMsg](upd(m, press("4"))))
+	send(m, "1")
+	*now = now.Add(time.Minute)
+	got := only[kaizenMsg](upd(m, press("4")))
+	if len(got) != 1 || !got[0].cached || fetches(dir) != 1 {
+		t.Fatalf("a document with fresh pull request data starts the cached load only: %+v", got)
+	}
+	got[0].doc = oldPRs(*now)
+	next := m.applyKaizen(got[0])
+	if next == nil || !m.kz.busy {
+		t.Fatalf("an old cached result is followed by the live load: busy=%v", m.kz.busy)
+	}
+	live := only[kaizenMsg](run(next))
+	if len(live) != 1 || live[0].cached || m.applyKaizen(live[0]) != nil || m.kz.busy {
+		t.Fatalf("one live load, then settled: %+v", live)
 	}
 }
 
