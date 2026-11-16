@@ -1667,9 +1667,15 @@ def cmd_status(args):
         print("acting on GitHub with your gh login (" + (
             f"this repository is not on GitHub under {stored.get('owner')}, the App's owner" if stored and stored.get("bot_login") else
             "the App is stored but not installed: factory wizard" if stored else "no App identity: factory wizard") + ")")
+    refused = {s["head"]: s["text"] for s in read_lander(repo)["stopped"].values()
+               if s["kind"] == "merge" and s["text"].startswith(REFUSED)}
     for r in rows:
         if r["phase"] == "review":
-            print(f"waiting on {'checks' if r['pr_draft'] else 'the human'}: {r['slug']} {r['deliverable'] or r['pr_url'] or '-'}")
+            where = f"{r['slug']} {r['deliverable'] or r['pr_url'] or '-'}"
+            if r["pr_head"] in refused:
+                print(f"waiting on GitHub: {where}: {refused[r['pr_head']][len(REFUSED):].split('; ')[0]}")
+            else:
+                print(f"waiting on {'checks' if r['pr_draft'] else 'the human'}: {where}")
     return 0
 
 
@@ -4660,6 +4666,7 @@ MERGEABLE_WAIT = 3
 PR_FIELDS = "number,url,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,author"
 ACTIVITY = "repos/{owner}/{repo}/activity"
 FORK = ("fork", "its head is in another repository")
+REFUSED = "GitHub does not allow the merge yet: "
 STALE_REVIEW = ("stale", "its head changed after the approval; a fresh approval is needed")
 
 
@@ -4789,6 +4796,33 @@ def mergeability(p, n):
     return None
 
 
+def refusal(p, n, stop, retarget):
+    """`stop`, the failed `gh pr merge` step of pull request `n`, with what GitHub's records say explains it: a review
+    requirement (kind `merge`), a check that started again (kind `pending`), else that nothing does (kind `refused`).
+    `retarget`: this call changed its base."""
+    def read(*argv):
+        try:
+            return p["gh"](*argv)
+        except NotEvaluated:
+            return None
+    view = read(dict, "pr", "view", n, "--json", "reviewDecision,mergeStateStatus")
+    decision, state = (view or {}).get("reviewDecision"), (view or {}).get("mergeStateStatus")
+    what = {"REVIEW_REQUIRED": "a review is still required", "CHANGES_REQUESTED": "a reviewer requested changes"}.get(decision)
+    if what:
+        return stop[0], f"{REFUSED}{what} (reviewDecision {decision}{f', mergeStateStatus {state}' if state else ''}); {stop[1]}"
+    checks = read(list, "pr", "checks", n, "--json", "name,bucket,startedAt")
+    running = [f"{c.get('name')} (started {c.get('startedAt')})" for c in checks or [] if c.get("bucket") == "pending"]
+    default = p["repo"].default
+    if running:
+        after = f", after its base was changed to {default} in this pass" if retarget else ""
+        return "pending", f"GitHub refused the merge while a check ran again on this head: {', '.join(running)}{after}; {stop[1]}"
+    seen = ("reviewDecision unreadable, mergeStateStatus unreadable" if view is None
+            else f"reviewDecision {decision or 'none'}, mergeStateStatus {state or 'none'}")
+    after = f"; its base was changed to {default} in this pass, which can start a required check again" if retarget else ""
+    return "refused", (f"GitHub refused the merge and nothing it shows explains why ({seen}, "
+                       f"checks {'unreadable' if checks is None else 'passed'}){after}; {stop[1]}")
+
+
 def checks_stop(p, n):
     """(kind, reason) of what the checks of pull request `n` stop, or None when they pass; NotEvaluated when unreadable."""
     checks = p["gh"](list, "pr", "checks", n, "--json", "name,bucket")
@@ -4900,7 +4934,7 @@ def merge_one(p, pr, merged, dry, permission=None):
                  ["pr", "merge", n, "--merge", "--match-head-commit", pr["headRefOid"]]]:
         stop = gh_step(repo, *step)
         if stop:
-            return stop
+            return refusal(p, n, stop, retarget) if step[1] == "merge" else stop
     log_queue(repo, pr["number"], task_slug(repo, pr), pr["headRefOid"], "merged", approved_at=approved_at)
     return None
 
@@ -6497,8 +6531,10 @@ WORD_SECONDS = 3600
 WINDOW_MAX = 720
 POLL = 20
 # kind of a stop -> (patience in seconds before it is reported, whether it keeps the loop polling meanwhile, who is told)
+# `refused`: GitHub refused a merge and nothing it shows says why. `settle` keeps the first one of a head in `waiting` (nothing
+# told: the next pass calls merge again), a second at the same head is told once, no tech lead.
 STOP_POLICY = {"pending": (1800, True, "dispatcher"), "handover": (600, False, "dispatcher"), "conflict": (0, False, "lead"),
-               "not-ours": (0, False, "dispatcher")}
+               "not-ours": (0, False, "dispatcher"), "refused": (1, False, "dispatcher")}
 NOT_OURS_HOURS = 24
 NOT_OURS_RUNS = 5
 HOLD_GRACE_MINUTES = 30
