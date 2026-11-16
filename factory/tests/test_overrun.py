@@ -349,6 +349,7 @@ class GrantTests(Overrun):
         self.assertEqual(self.lines()[0][1], f"SITE MANAGER: x: extended 15 min, limit now {clock(NOW + 19 * 60)}: landing left")
         row = self.status_row(at=NOW + 5 * 60)
         self.assertEqual(started + row["limit"], NOW + 19 * 60)
+        self.assertIsInstance(row["limit"], int)  # the Go reader decodes an int64
         self.assertFalse(row["overtime"])
         self.assertIn("(+15m site-manager)", self.cli("status")[1])
 

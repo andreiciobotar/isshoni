@@ -724,7 +724,7 @@ def extended_limit(size, limit_hours, start, granted):
     limit = task_limit(size, limit_hours)
     for e in granted:
         limit = epoch(e["until"]) - start if e["from"] and start is not None else limit + e["minutes"] * 60
-    return limit
+    return int(limit)
 
 
 def span(secs):
