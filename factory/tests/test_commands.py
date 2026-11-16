@@ -8,9 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from test_factory import factory
-
-import factory_setup
+from test_factory import entry, factory
 
 
 def listed_commands():
@@ -62,7 +60,7 @@ class CommandTest(unittest.TestCase):
     def test_a_modules_commands_are_declared_by_importing_it(self):
         for name in ("wizard", "uninstall"):
             self.assertEqual(factory.COMMANDS[name][2].__module__, "factory_setup")
-        self.assertIs(factory.COMMANDS["wizard"][2], factory_setup.cmd_wizard)
+        self.assertIs(factory.COMMANDS["wizard"][2], entry.factory_setup.cmd_wizard)
 
     def test_the_core_does_not_name_a_module(self):
         self.assertNotIn("factory_setup", Path(factory.__file__).read_text())

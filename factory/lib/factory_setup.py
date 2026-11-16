@@ -1,7 +1,6 @@
 """`factory wizard` and `factory uninstall`: set the factory up on this machine, and take it away."""
 import collections
 import json
-import re
 import shlex
 import shutil
 import sys
