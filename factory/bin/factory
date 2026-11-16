@@ -36,6 +36,7 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 PERMISSION_MODES = ("acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan")
 STALE_SECONDS = 7 * 24 * 3600
+NEARING_PERCENT = 75  # the share of its limit at which the status row and the dashboard mark a working task `nearing`; no one is woken by it
 SLUG_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 BACKGROUNDED_RE = re.compile(r"backgrounded\s*·\s*(\S+)\s*·\s*(.+)")
 DEFAULT_STORE = Path("~/.claude/factory")
@@ -639,19 +640,6 @@ def task_limit(size, limit_hours, extra_minutes=0):
     return int(min(SIZE_LIMIT_MINUTES[size] * 60, ceiling) if size in SIZE_LIMIT_MINUTES else ceiling) + int(extra_minutes * 60)
 
 
-def nearing_percent():
-    """The threshold of the `nearing-limit` criterion, None when criteria.json cannot say."""
-    try:
-        criteria = json.loads(CRITERIA_PATH.read_text())
-        for c in criteria if isinstance(criteria, list) else []:
-            if c.get("name") == "nearing-limit":
-                t = c.get("threshold")
-                return t if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0 else None
-    except (OSError, ValueError, AttributeError):
-        pass
-    return None
-
-
 def span(secs):
     """41m, 1h30m, 2h: minutes resolution."""
     h, m = divmod(int(secs) // 60, 60)
@@ -992,7 +980,6 @@ def collect(repo, sessions, limit_hours, prs=None):
     if prs is None:  # not through the cache: what GitHub says now, 'unknown' when it cannot say
         needed = needed_branches(repo)
         prs = (ask_pull_requests(repo, needed)[0] if needed else {}) or {b: UNKNOWN_PR for b in needed}
-    percent = nearing_percent()
     prioritized = read_lander(repo)["prioritized"]
     granted = extended(repo)
     rows = []
@@ -1019,8 +1006,8 @@ def collect(repo, sessions, limit_hours, prs=None):
         row["state"] = declared.get(slug, {}).get("state")
         timed = running and row["elapsed"] is not None
         row["overtime"] = timed and row["elapsed"] > row["limit"]
-        row["nearing"] = bool(timed and not row["overtime"] and row["state"] == "working" and percent is not None
-                              and row["elapsed"] * 100 > row["limit"] * percent)
+        row["nearing"] = bool(timed and not row["overtime"] and row["state"] == "working"
+                              and row["elapsed"] * 100 > row["limit"] * NEARING_PERCENT)
         rc, out, _ = repo.git("status", "--porcelain", path=path)
         row["dirty"] = bool(out.strip()) if rc == 0 else None
         rc, out, _ = repo.git("rev-list", "--left-right", "--count", f"{row['base']}...HEAD", path=path)
@@ -1748,7 +1735,7 @@ def cmd_overrun(args):
         raise Fail("overrun: the text is empty")
     if any(a["slug"] == slug for a in pending_asks(fold(repo_log("firings", repo.root) or [])[0])):
         raise Fail(f"overrun: an ask for {slug} is pending; the site manager decides within a watch tick", code=1)
-    fire(repo, {"criterion": "overrun", "escalate": "judgment", "slug": slug, "subject": slug, "detail": text})
+    fire(repo, {"criterion": "overrun", "slug": slug, "subject": slug, "detail": text})
     print(f"{slug}: asked; the site manager decides within a tick, the answer arrives as SITE MANAGER: {slug}")
     return 0
 
@@ -2041,26 +2028,26 @@ LEAD_GRACE_MINUTES = 30
 LEAD_TOLD = "lead told at "
 WATCH_INTERVAL = 120
 HEALTH_SECONDS = 1800 - 60
-EVERY_TICK = {"busy-after-handover", "churning", "run-stopped", "collision", "new-spec"}  # criteria the watch evaluates on every tick, not only on the health pass
 WATCH_TIMEOUT = 600
 MONITOR_TIMEOUT = 120
 MIN_LANDED = 5
 DIGEST_HOURS = 24
-ESCALATE = ("always", "judgment")
 JOBS = ("watch", "digest")
 CLASSES = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")
 RUN_SCHEMA = {"type": "object", "required": ["sent", "decisions"], "properties": {
     "sent": {"type": "boolean"},
-    "decisions": {"type": "array", "items": {"type": "object", "required": ["id", "decision", "reason", "looked"], "properties": {
-        "id": {"type": "string"}, "decision": {"type": "string", "enum": ["escalated", "suppressed", "paused", "extended", "told"]},
+    "decisions": {"type": "array", "items": {"type": "object", "required": ["decision", "reason", "looked"], "properties": {
+        "id": {"type": "string", "description": "a firing you were given; or, for a call of your own, `entry`, `slug` and `detail` instead"},
+        "entry": {"type": "string", "description": "an entry of the reference"}, "slug": {"type": "string"},
+        "detail": {"type": "string", "description": "what you saw: the facts, one line"},
+        "decision": {"type": "string", "enum": ["escalated", "suppressed", "paused", "extended", "told"]},
         "minutes": {"type": "integer", "minimum": 1},
         "to": {"type": "string", "enum": ["dispatcher", "lead"]}, "reason": {"type": "string"},
         "waits_on": {"type": "array", "items": {"type": "string"}},
         "tell": {"type": "array", "items": {"type": "string"}},
         "looked": {"type": "array", "items": {"type": "string"}}}}}}}
-FIRED_KEYS = ("criterion", "escalate", "slug", "subject", "detail")
+FIRED_KEYS = ("criterion", "slug", "subject", "detail")
 ASKS = ("overrun", "run-stopped")  # what the site manager is woken for on every tick, and the criteria of its extended and `human` decisions
-OVERRUN_WHAT = "A lead asked for more time, or help, on a task that is past its limit or not converging; `detail` is its ask."
 
 
 class NotEvaluated(Exception):
@@ -2098,10 +2085,10 @@ def gh_json(repo, kind, *args):
     return data
 
 
-def gather(repo, fallback):
-    """The picture every criterion reads, built once. `dispatcher` is the dispatcher's current session name,
-    None with the reason in `dispatcher_why`."""
-    sessions = list_sessions()
+def gather(repo, fallback, sessions=None):
+    """The picture every criterion reads, built once; `sessions` are the ones a tick already listed. `dispatcher` is the
+    dispatcher's current session name, None with the reason in `dispatcher_why`."""
+    sessions = list_sessions() if sessions is None else sessions
     settings = load_settings()
     found, why = (None, "cannot list sessions") if sessions is None else find_dispatcher(sessions, repo.root, fallback)
     return {"now": time.time(), "repo": repo, "dispatcher": found and found["name"], "dispatcher_why": why,
@@ -2130,17 +2117,6 @@ def phased(p):
     return rows
 
 
-def unfinished(rows):
-    """The rows whose pull request is not merged and whose task is not acknowledged or dismissed."""
-    return [r for r in rows if r["pr_state"] != "merged" and r["state"] not in SETTLED]
-
-
-def events(p):
-    if p["events"] is None:
-        raise NotEvaluated("no event log")
-    return p["events"]
-
-
 def task_session(p, path):
     mine = sessions_in(p["sessions"], p["repo"].root, path)
     return next((s for s in mine if s.get("kind") == "background"), mine[0] if mine else None)
@@ -2165,32 +2141,11 @@ def last_activity(p, row, session):
     return max((t for t in times if t), default=None)
 
 
-def declared_before(p, row, seconds):
-    ts = epoch(p["declared"].get(row["slug"], {}).get("ts"))
-    return ts if ts and p["now"] - ts > seconds else None
-
-
 def since_start(evs, slug):
     """(events of the slug after its last TaskStarted, that TaskStarted or None)."""
     mine = [e for e in evs if e.get("slug") == slug]
     last = max((i for i, e in enumerate(mine) if e.get("event") == "TaskStarted"), default=None)
     return (mine, None) if last is None else (mine[last + 1:], mine[last])
-
-
-def on_tasks(r):
-    """Whether the row `r` is blocked on other tasks (slugs), not on the human or the dispatcher."""
-    return r["state"] == "blocked" and r["waits_on"] not in ("human", "dispatcher")
-
-
-def c_past_limit(p, _):
-    return [(r["slug"], r["slug"], f"working for {age(p['now'] - r['elapsed'], p['now'])}")
-            for r in tasks(p) if r["overtime"] and not on_tasks(r)]
-
-
-def c_nearing_limit(p, _):
-    return [(r["slug"], r["slug"], f"working for {age(p['now'] - r['elapsed'], p['now'])}, "
-                                   f"{100 * r['elapsed'] / r['limit']:.0f}% of the {span(r['limit'])} limit")
-            for r in tasks(p) if r["nearing"]]
 
 
 def c_ci_red_default(p, _):
@@ -2210,45 +2165,24 @@ def c_dispatcher_missing(p, _):
     return [] if p["dispatcher"] else [(None, "-", p["dispatcher_why"])]
 
 
-def c_quiet(p, threshold):
-    found = []
-    for r in unfinished(phased(p)):
-        s = task_session(p, r["path"])
-        if r["phase"] == "motion" and s and not finished(s):
-            t = last_activity(p, r, s)
-            if t and p["now"] - t > threshold * 60:
-                found.append((r["slug"], r["slug"], f"no activity for {age(t, p['now'])}"))
-    return found
+def build_running(repo, slug):
+    """Whether a build or tech lead run holds the lock of the task `slug`."""
+    if not repo_state(repo.root, f"tech-lead-{slug}", "lock").exists():  # a read (`health`) leaves no file behind
+        return False
+    with repo_lock(repo, f"tech-lead-{slug}") as free:
+        return not free
 
 
-def c_ended_undeclared(p, threshold):
-    found = []
-    for r in unfinished(phased(p)):
-        mine = sessions_in(p["sessions"], p["repo"].root, r["path"])
-        if r["phase"] == "motion" and not session_block(mine):
-            t = last_activity(p, r, task_session(p, r["path"]))
-            if t and p["now"] - t > threshold * 60:
-                found.append((r["slug"], r["slug"], f"lead stopped undeclared, active {age(t, p['now'])} ago"))
-    return found
-
-
-def c_blocked_unanswered(p, threshold):
-    found = []
-    for r in unfinished(phased(p)):
-        ts = r["phase"] == "blocked" and declared_before(p, r, threshold * 60)
-        if ts:
-            found.append((r["slug"], r["slug"], f"blocked {age(ts, p['now'])} ago"
-                          + (f", waiting for {r['waits_on']}" + (" (paused)" if r["paused"] else "") if on_tasks(r) else "")))
-    return found
-
-
-def c_handover_unacknowledged(p, threshold):
-    found = []
-    for r in phased(p):
-        ts = r["phase"] == "review" and r["state"] == "handed-over" and declared_before(p, r, threshold * 3600)
-        if ts:
-            found.append((r["slug"], r["slug"], f"handed over {age(ts, p['now'])} ago"))
-    return found
+def c_ended_undeclared(p, _):
+    """A task declared `working` whose lead has no live session and that no run holds. Needs only `declared`, `repo.tasks`
+    and `sessions`, so the watch can run it on every tick."""
+    repo = p["repo"]
+    here = {os.path.basename(t["path"]): t["path"] for t in repo.tasks}
+    working = [(slug, here[slug], r) for slug, r in p["declared"].items() if r["state"] == "working" and slug in here]
+    if working and (p["sessions"] is None or unplaced_block(p["sessions"])):
+        raise NotEvaluated("sessions cannot be listed with `claude agents --json --all`, or one has no working directory")
+    return [(slug, slug, f"declared working {age(epoch(r.get('ts')), p['now'])} ago; its lead has no live session and no run holds its lock")
+            for slug, path, r in working if not session_block(sessions_in(p["sessions"], repo.root, path)) and not build_running(repo, slug)]
 
 
 def churning(p):
@@ -2427,66 +2361,10 @@ def etime_seconds(text):
     return secs + 86400 * int(days or 0)
 
 
-def handed_over_before(p, threshold):
-    """(slug, worktree path, declared ts) of the tasks whose worktree is there and whose hand-over, still not
-    acknowledged or dismissed, is older than `threshold` minutes. Reads no process and no session."""
-    here = {os.path.basename(t["path"]): t["path"] for t in p["repo"].tasks}
-    return [(slug, here[slug], ts) for slug, r in p["declared"].items()
-            if slug in here and r["state"] == "handed-over" and (ts := epoch(r.get("ts"))) and p["now"] - ts > threshold * 60]
-
-
-def c_busy_after_handover(p, threshold):
-    """Needs only `declared`, `repo.tasks` and `sessions`, so the watch can run it on every tick."""
-    due, held, table, found = handed_over_before(p, threshold), [], None, []
-    if due and (p["sessions"] is None or unplaced_block(p["sessions"])):
-        raise NotEvaluated("sessions cannot be listed with `claude agents --json --all`, or one has no working directory")
-    for slug, path, ts in due:
-        s = task_session(p, path)
-        if s and not finished(s):
-            held.append((slug, s, ts))
-    for slug, s, ts in held:
-        if table is None:
-            table = run(["ps", "-axo", "pid=,ppid=,etime=,command="])[1]
-        kids = descendants(table, s["pid"]) if isinstance(s.get("pid"), int) else []
-        what = "; ".join(f"{pid} up {etime}: {command[:120]}" for _, pid, etime, command in kids[:5])
-        if len(kids) > 5:
-            what += f"; +{len(kids) - 5} more"
-        what = what or "no child process (a subagent waiting without a process cannot be seen from outside)"
-        found.append((slug, slug, f"handed over {age(ts, p['now'])} ago, lead session {s.get('status')}/{s.get('state')}: {what}"))
-    return found
-
-
-def c_review_loops(p, threshold):
-    found = []
-    for r in unfinished(phased(p)):
-        if r["phase"] in ("motion", "blocked"):
-            n = sum(e.get("event") == "SubagentStart" and e.get("role") == "reviewer"
-                    for e in since_start(events(p), r["slug"])[0])
-            if n >= threshold:
-                found.append((r["slug"], r["slug"], f"{n} reviewer dispatches since it started"))
-    return found
-
-
 def model_matches(expected, actual):
     """The monitor's rule (isshoni/metrics.py): an alias matches by substring, a full id by equality, a [..] suffix ignored."""
     e = re.sub(r"\[[^\]]*\]$", "", expected.strip().lower())
     return e in ("", "inherit") or (e in ALIASES and e in actual.lower()) or e == re.sub(r"\[[^\]]*\]$", "", actual.lower())
-
-
-def c_wrong_model(p, _):
-    if not p["models"]:
-        raise NotEvaluated("no agent files in factory/agents")
-    found = []
-    for r in unfinished(tasks(p)):
-        mine, started = since_start(events(p), r["slug"])
-        want = {**p["models"], **((started or {}).get("models") or {}), "lead": started and started.get("lead_model")}
-        wrong = {}
-        for e in mine:
-            role, model = e.get("role"), e.get("model")
-            if model and want.get(role) and not model_matches(want[role], model):
-                wrong.setdefault(role, model)
-        found += [(r["slug"], f"{r['slug']}/{role}", f"{model}, configured {want[role]}") for role, model in wrong.items()]
-    return found
 
 
 def c_ci_red_handover(p, _):
@@ -2502,19 +2380,6 @@ def c_ci_red_handover(p, _):
             failed = [c.get("name") for c in checks if c.get("bucket") == "fail"]
             if failed:
                 found.append((r["slug"], r["slug"], f"failed: {', '.join(map(str, failed))} {r['pr_url']}"))
-    return found
-
-
-def c_deep_stack(p, threshold):
-    by_branch = {r["branch"]: r for r in tasks(p) if r["branch"]}
-    found = []
-    for r in unfinished(tasks(p)):
-        chain, parent = [r["slug"]], by_branch.get(r["base"])
-        while parent and parent["slug"] not in chain:
-            chain.append(parent["slug"])
-            parent = by_branch.get(parent["base"])
-        if len(chain) > threshold:
-            found.append((r["slug"], r["slug"], f"{len(chain)} deep: {' on '.join(chain)}"))
     return found
 
 
@@ -2572,49 +2437,6 @@ def landed_median(p):
     if len(totals) < MIN_LANDED:
         raise NotEvaluated(f"only {len(totals)} landed tasks have a cost; {MIN_LANDED} are needed for a median")
     return statistics.median(totals), len(totals)
-
-
-def priced(p):
-    """[(row, cost block)] for the working or blocked unfinished rows the monitor has a cost for."""
-    spent = costs(p)
-    return [(r, spent[r["slug"]]) for r in unfinished(phased(p))
-            if r["phase"] in ("motion", "blocked") and r["slug"] in spent]
-
-
-def c_cost_outlier(p, threshold):
-    median, n = landed_median(p)
-    return [(r["slug"], r["slug"], f"cost {c['total']:.2f}, {c['total'] / median:.1f} times the median landed task "
-             f"({median:.2f} over {n})") for r, c in priced(p) if c["total"] > threshold * median]
-
-
-def c_lead_heavy(p, threshold):
-    median, _ = landed_median(p)
-    return [(r["slug"], r["slug"], f"the lead's own session is {c['main_pct']:.1f}% of its cost ({c['total']:.2f})")
-            for r, c in priced(p) if c["total"] >= median and c["main_pct"] > threshold]
-
-
-def c_merged_not_cleaned(p, threshold):
-    found = []
-    for r in phased(p):
-        if r["phase"] == "merged" and r["pr_url"]:
-            merged = epoch(p["gh"](dict, "pr", "view", r["pr_url"], "--json", "mergedAt").get("mergedAt"))
-            ts = merged if merged and p["now"] - merged > threshold * 3600 else None
-        else:
-            ts = r["phase"] == "settled" and declared_before(p, r, threshold * 3600)
-        if ts:
-            found.append((r["slug"], r["slug"], f"{r['phase']} {age(ts, p['now'])} ago"))
-    return found
-
-
-def c_lgtm_blocked(p, _):
-    stopped = read_lander(p["repo"])["stopped"]
-    found = []
-    for pr in open_prs(p) if stopped else []:
-        s = stopped.get(str(pr["number"]))
-        if s and s.get("head") == pr["headRefOid"]:
-            row = task_of(p, pr)
-            found.append((row and row["slug"], f"#{pr['number']}/{s.get('kind')}", f"{s.get('text')} {pr['url']}"))
-    return found
 
 
 def has_merge_of(p, url, path):
@@ -2818,19 +2640,16 @@ def c_lead_authoring(p, threshold):
              f"against {100 * len(before) / len(baseline):.0f}%); {mine} lines of {everyone} written by all roles")]
 
 
-CRITERIA = {  # name -> (function, whether it needs a threshold)
-    "past-limit": (c_past_limit, False), "nearing-limit": (c_nearing_limit, True),
-    "ci-red-default": (c_ci_red_default, False), "dispatcher-missing": (c_dispatcher_missing, False), "quiet": (c_quiet, True),
-    "ended-undeclared": (c_ended_undeclared, True), "blocked-unanswered": (c_blocked_unanswered, True),
-    "handover-unacknowledged": (c_handover_unacknowledged, True), "busy-after-handover": (c_busy_after_handover, True), "review-loops": (c_review_loops, True),
-    "wrong-model": (c_wrong_model, False), "ci-red-handover": (c_ci_red_handover, False),
-    "deep-stack": (c_deep_stack, True), "merged-not-cleaned": (c_merged_not_cleaned, True),
-    "lgtm-blocked": (c_lgtm_blocked, False), "base-merged": (c_base_merged, False), "churning": (c_churning, False),
-    "cost-outlier": (c_cost_outlier, True), "lead-heavy": (c_lead_heavy, True),
+CRITERIA = {  # the digest's: name -> (function, whether it needs a threshold)
     "mix-shift": (c_mix_shift, True), "dearest-task": (c_dearest_task, True),
     "role-growing": (c_role_growing, True), "version-shift": (c_version_shift, True),
-    "lead-authoring": (c_lead_authoring, True), "run-stopped": (c_run_stopped, False),
-    "collision": (c_collision, False), "new-spec": (c_new_spec, False),
+    "lead-authoring": (c_lead_authoring, True),
+}
+FACTS = {  # what happened, which the script sees and fires, the watch's: name -> (function, whether every tick sees it, not only the full pass)
+    "run-stopped": (c_run_stopped, True), "collision": (c_collision, True), "new-spec": (c_new_spec, True),
+    "churning": (c_churning, True), "ended-undeclared": (c_ended_undeclared, True),
+    "dispatcher-missing": (c_dispatcher_missing, False), "ci-red-default": (c_ci_red_default, False),
+    "ci-red-handover": (c_ci_red_handover, False), "base-merged": (c_base_merged, False),
 }
 
 
@@ -2845,8 +2664,6 @@ def load_criteria():
         name = c.get("name") if isinstance(c, dict) else None
         if not isinstance(name, str) or name not in CRITERIA:
             raise Fail(f"criteria: unknown criterion in entry {c!r}")
-        if c.get("escalate") not in ESCALATE:
-            raise Fail(f"criteria: {name}: escalate must be one of {', '.join(ESCALATE)}")
         threshold = c.get("threshold")
         if CRITERIA[name][1] and (isinstance(threshold, bool) or not isinstance(threshold, (int, float))
                                   or not threshold > 0):
@@ -2863,16 +2680,17 @@ def job_criteria(criteria, job):
 
 
 def evaluate(p, criteria):
-    """(firings, not evaluated) for the criteria over the picture."""
+    """(firings, not evaluated) for the criteria over the picture: the digest's entries of criteria.json, or `{"name": fact}` of FACTS.
+    Only a digest firing carries its `what`."""
     firings, skipped = [], []
     for c in criteria:
         try:
-            found = CRITERIA[c["name"]][0](p, c.get("threshold"))
+            found = (CRITERIA.get(c["name"]) or FACTS[c["name"]])[0](p, c.get("threshold"))
         except NotEvaluated as e:
             skipped.append({"criterion": c["name"], "why": str(e)})
             continue
-        firings += [{"criterion": c["name"], "escalate": c["escalate"], "slug": slug, "subject": subject,
-                     "detail": detail, "what": c["what"], **({"files": files[0]} if files else {})}
+        firings += [{"criterion": c["name"], "slug": slug, "subject": subject, "detail": detail,
+                     **({"what": c["what"]} if "what" in c else {}), **({"files": files[0]} if files else {})}
                     for slug, subject, detail, *files in found]
     return firings, skipped
 
@@ -2978,10 +2796,17 @@ def task_lead(p, slug):
     return row, path, session, session and "pid" in session and session.get("name") or None
 
 
+def run_rows(p, slug):
+    """The build runs of the task `slug`, oldest first, as the site manager is shown them."""
+    return [{"ts": r.get("ts"), "outcome": r.get("outcome"), "reason": r.get("reason"), "cost_usd": r.get("cost_usd"),
+             "minutes": None if r.get("seconds") is None else round(r["seconds"] / 60)}
+            for r in build_runs(p["repo"]).get(slug, [])]
+
+
 def firing_for_run(p, f):
     """A firing as the site manager is given it: its fields, and for a task its status row (or, on an every-tick
     picture, its worktree, lead and pid), its transcripts and the tail of the lead's."""
-    out = {k: f[k] for k in ("id", *FIRED_KEYS, "what")} | ({"lead_told": True} if f.get("lead_told") else {})
+    out = {k: f[k] for k in ("id", *FIRED_KEYS)} | ({"what": f["what"]} if f.get("what") else {}) | ({"lead_told": True} if f.get("lead_told") else {})
     row, path, session, lead = task_lead(p, f["slug"])
     pid = session.get("pid") if session else None
     if row:
@@ -2996,9 +2821,7 @@ def firing_for_run(p, f):
         out["task"] = {"worktree": path, "lead": lead, "pid": pid}
     if f["criterion"] in ASKS:
         _, used, left = extension_state(p, f["slug"], session)
-        out["runs"] = [{"ts": r.get("ts"), "outcome": r.get("outcome"), "reason": r.get("reason"), "cost_usd": r.get("cost_usd"),
-                        "minutes": None if r.get("seconds") is None else round(r["seconds"] / 60)}
-                       for r in build_runs(p["repo"]).get(f["slug"], [])]
+        out["runs"] = run_rows(p, f["slug"])
         out["extended_minutes"], out["extension_left_minutes"] = used, left
     if path:
         paths = transcripts(session)
@@ -3019,10 +2842,122 @@ def extension_state(p, slug, session):
     return started, used, load_settings()["extension_minutes"] - used
 
 
-def site_manager_argv(p, firings, job="watch"):
-    """The site manager's launch command, the one place another runner would plug in."""
+def reference_entries():
+    """The entries of the reference file: its `## ` headings."""
+    return [line[3:].strip() for line in GUIDANCE_PATH.read_text().splitlines() if line.startswith("## ")]
+
+
+def known(*items):
+    """The items that are not null or empty, as a dict of (key, value) pairs."""
+    return {k: v for k, v in items if v is not None and v != "" and v != [] and v != {}}
+
+
+def stack_depth(rows, r):
+    """How many tasks the chain of bases of `r` holds, itself included."""
+    by_branch = {x["branch"]: x for x in rows if x["branch"]}
+    chain, parent = [r["slug"]], by_branch.get(r["base"])
+    while parent and parent["slug"] not in chain:
+        chain.append(parent["slug"])
+        parent = by_branch.get(parent["base"])
+    return len(chain)
+
+
+def models_off(p, slug):
+    """The roles whose events since the task started show a model other than the configured one: role, model seen, configured."""
+    mine, started = since_start(p["events"] or [], slug)
+    want = {**p["models"], **((started or {}).get("models") or {}), "lead": started and started.get("lead_model")}
+    seen = {}
+    for e in mine:
+        role, model = e.get("role"), e.get("model")
+        if model and want.get(role) and not model_matches(want[role], model):
+            seen.setdefault(role, model)
+    return [{"role": role, "model": model, "configured": want[role]} for role, model in seen.items()]
+
+
+def merged_ago(p, r):
+    """How long ago the pull request of a merged row merged; None when GitHub does not say."""
+    try:
+        merged = epoch(p["gh"](dict, "pr", "view", r["pr_url"], "--json", "mergedAt").get("mergedAt")) if r["phase"] == "merged" and r["pr_url"] else None
+    except NotEvaluated:
+        return None
+    return merged and age(merged, p["now"])
+
+
+def look_row(p, r, folded, skip):
+    """The facts of one task, for the site manager: omitted when null or empty."""
+    now, slug = p["now"], r["slug"]
+    _, _, session, lead = task_lead(p, slug)
+    mine = since_start(p["events"] or [], slug)[0]
+    kids = []
+    if r["state"] == "handed-over" and session and not finished(session) and isinstance(session.get("pid"), int):
+        table = cached(p, "ps", lambda p: run(["ps", "-axo", "pid=,ppid=,etime=,command="])[1])
+        kids = [f"{pid} up {etime}: {command[:120]}" for _, pid, etime, command in descendants(table, session["pid"])]
+        kids = kids[:5] + ([f"+{len(kids) - 5} more"] if len(kids) > 5 else [])
+    depth, spent, unpriced, declared = stack_depth(p["rows"], r), None, None, epoch(p["declared"].get(slug, {}).get("ts"))
+    try:
+        spent = costs(p).get(slug)
+    except NotEvaluated as e:
+        unpriced = f"unpriced: {e}"
+    calls = [known(("entry", f["criterion"]), ("decision", f["decision"]), ("to", f.get("to")), ("reason", f["reason"]),
+                   ("decided", f["decided"] and age(epoch(f["decided"]), now)), ("outcome", f["outcome"]))
+             for f in reversed(folded) if f["slug"] == slug and f["id"] not in skip and (epoch(f["ts"]) or 0) >= now - 24 * 3600][:10]
+    return known(
+        ("slug", slug), ("phase", r["phase"]), ("state", r["state"]),
+        ("declared", declared and age(declared, now)),
+        ("waits_on", r["waits_on"]), ("paused", r["paused"]), ("session", r["session"]), ("lead", lead), ("pid", session and session.get("pid")),
+        ("worktree", r["path"]), ("branch", r["branch"]), ("base", r["base"]), ("stack", depth if depth > 1 else None), ("size", r["size"]),
+        ("elapsed", r["elapsed"] is not None and age(now - r["elapsed"], now) or None), ("limit", span(r["limit"])),
+        ("extended_minutes", sum(e["minutes"] for e in r["extensions"]) or None),
+        ("last_commit", r["last_commit"] and age(r["last_commit"], now)),
+        ("last_activity", (t := last_activity(p, r, session)) and age(t, now)),
+        ("dirty", r["dirty"]), ("ahead", r["ahead"]), ("behind", r["behind"]),
+        ("pr_url", r["pr_url"]), ("pr_state", r["pr_state"]), ("pr_draft", r["pr_draft"]), ("merged", merged_ago(p, r)),
+        ("reviews", sum(e.get("event") == "SubagentStart" and e.get("role") == "reviewer" for e in mine)),
+        ("runs", run_rows(p, slug)),
+        ("cost", unpriced), ("cost_usd", spent and round(spent["total"], 2)), ("lead_share_pct", spent and round(spent["main_pct"], 1)),
+        ("models_off", models_off(p, slug)), ("children", kids), ("transcripts", [str(t) for t in transcripts(session)]), ("calls", calls))
+
+
+def look_picture(p, since, woken, send):
+    """What the site manager is given besides the firings `send`: since when, what woke it, a row per task, the median landed cost."""
+    folded = fold(repo_log("firings", p["repo"].root) or [])[0]
+    skip = {f["id"] for f in send}
+    try:
+        median = round(landed_median(p)[0], 2)
+    except NotEvaluated as e:
+        median = f"unknown: {e}"
+    return {"since": since, "woken_by": woken, "tasks": [look_row(p, r, folded, skip) for r in p["rows"]] if p["rows"] is not None
+            else "unknown: sessions cannot be listed with `claude agents --json --all`", "landed_median_usd": median}
+
+
+def wake_events(repo, snap, last, since, until):
+    """The events the site manager is woken for, from the records with `since` <= ts < `until` and the tick's pull
+    request snapshot `snap` (None: none taken) against those of the last look `last`; no model."""
+    def mine(name):
+        return [r for r in read_log(name, since, until) if r.get("repo") == repo.root]
+    queue = mine("queue")
+    found = [{"event": "task-started", "slug": r.get("slug"), "ts": r["ts"]} for r in mine("events")
+             if r.get("event") == "TaskStarted" and r.get("role") == "dispatcher"]
+    found += [{"event": "queue", **known(*((k, r.get(k)) for k in ("step", "slug", "pr", "kind"))), "ts": r["ts"]} for r in queue]
+    found += [{"event": "state", **known(("slug", r.get("slug")), ("state", r["state"]), ("waits_on", r.get("waits_on"))), "ts": r["ts"]}
+              for r in mine("tasks") if r.get("role") == "lead" and r.get("state") in ("blocked", "handed-over")]
+    if snap is not None and last and last.get("prs") is not None:
+        merged = {r.get("pr") for r in queue if r.get("step") == "merged"}
+        found += [{"event": "pr-opened", **known(("pr", pr["number"]), ("slug", task_slug(repo, pr)))}
+                  for pr in snap if pr["number"] not in last["prs"]]
+        found += [{"event": "pr-gone", "pr": n} for n in last["prs"] if n not in {pr["number"] for pr in snap} | merged]
+    return found
+
+
+def site_manager_argv(p, firings, job="watch", look=None):
+    """The site manager's launch command, the one place another runner would plug in. `look` is `look_picture`, which a watch
+    asks for here when it is not given."""
     body = [firing_for_run(p, f) for f in firings]
-    if job == "digest":
+    if job == "watch":
+        look = look or look_picture(p, None, [], firings)
+        body = {"since": look["since"], "woken_by": look["woken_by"], "firings": body, "tasks": look["tasks"],
+                "landed_median_usd": look["landed_median_usd"]}
+    else:
         current, baseline, last = window(p)
         body = {"window": {"current": [t["task"] for t in current], "baseline": len(baseline),
                            "since": last and last["ts"]}, "findings": body}
@@ -3075,11 +3010,50 @@ def told_in_flight(p, f, tell):
     return isinstance(tell, list) and bool(tell) and all(isinstance(t, str) and t in named for t in tell)
 
 
-def record_decisions(p, sent, result, run):
-    """Log the run's decisions for the firings sent; `watch`, not the model, enforces the rules of who is told what."""
-    by_id, seen = {f["id"]: f for f in sent}, set()
+def record_call(p, d, rows, run, called):
+    """Log one call of the site manager's own, a decision with an `entry` of the reference and a task of the picture, as a firing
+    decided at birth, and send it when escalated; the line carries the firing's id. True when recorded, else the reason is printed."""
+    repo, to = p["repo"], d.get("to") or "dispatcher"
+    entry, slug, detail, reason, decision = (d.get(k) for k in ("entry", "slug", "detail", "reason", "decision"))
+    row, text = rows.get(slug) if isinstance(slug, str) else None, lambda x: isinstance(x, str) and x.strip()
+    refusal = ("the entry is not one of the reference" if not isinstance(entry, str) or entry not in reference_entries()
+               else "the slug is not a task of the picture" if row is None
+               else "detail is empty" if not text(detail) else "reason is empty" if not text(reason)
+               else "a call without a firing is escalated or suppressed" if decision not in ("escalated", "suppressed")
+               else "to is neither dispatcher nor lead" if to not in ("dispatcher", "lead")
+               else "a second call on the same entry and task" if (entry, slug) in called
+               else "its lead is not live" if decision == "escalated" and to == "lead" and not row.get("lead")
+               else "its lead was told of this entry already" if decision == "escalated" and to == "lead"
+               and any(c.get("entry") == entry and c.get("to") == "lead" for c in row.get("calls") or []) else None)
+    if refusal:
+        print(f"call skipped: {entry} {slug}: {refusal}")
+        return False
+    called.add((entry, slug))
+    f, looked, said = fire(repo, {"criterion": entry, "slug": slug, "subject": slug, "detail": detail.strip()}), d.get("looked"), reason.strip()
+    log_firing(repo, id=f["id"], decision=decision, reason=said, by="site-manager", run=run,
+               looked=[x for x in looked if isinstance(x, str)] if isinstance(looked, list) else [],
+               **({"to": to} if decision == "escalated" else {}))
+    log_firing(repo, id=f["id"], cleared=True)
+    print(f"{f['id']}  {entry}  {slug}  {decision}")
+    if decision == "escalated":
+        if to == "lead":
+            forward(repo, p["dispatcher"], slug, "SITE MANAGER", said)
+        else:
+            forward(repo, p["dispatcher"], slug, "ESCALATION", f"{f['id']} {entry} {slug}: {said}", lead=False)
+    return True
+
+
+def record_decisions(p, sent, result, run, look=None):
+    """Log the run's decisions for the firings sent, and its own calls (rows of `look`); `watch`, not the model, enforces the
+    rules of who is told what. How many were logged."""
+    by_id, seen, called, logged = {f["id"]: f for f in sent}, set(), set(), 0
+    tasks = (look or {}).get("tasks")
+    rows = {t["slug"]: t for t in tasks} if isinstance(tasks, list) else {}
     for d in result["decisions"]:
         d = d if isinstance(d, dict) else {}
+        if "id" not in d:
+            logged += record_call(p, d, rows, run, called)
+            continue
         fid, decision, reason = d.get("id"), d.get("decision"), d.get("reason")
         if not isinstance(fid, str) or fid not in by_id or fid in seen:
             continue
@@ -3112,10 +3086,10 @@ def record_decisions(p, sent, result, run):
             if result.get("sent") is not True or not isinstance(waits, list) or not waits \
                     or not all(isinstance(w, str) and w in others for w in waits):
                 continue
-        if (decision == "suppressed" and f["escalate"] == "always") or \
-                (to == "lead" and (f["escalate"] == "always" or f.get("lead_told") or not task_lead(p, f["slug"])[3])):
+        if to == "lead" and (f.get("lead_told") or not task_lead(p, f["slug"])[3]):
             continue
         seen.add(fid)
+        logged += 1
         looked = d.get("looked")
         if decision == "paused" and ask:
             declare(p["repo"], f["slug"], "site-manager", "blocked", waits_on=waits, paused=True)
@@ -3126,6 +3100,7 @@ def record_decisions(p, sent, result, run):
                    **({"minutes": minutes, "until": until} if decision == "extended" else {}),
                    **({"tell": tell} if decision == "told" else {}))
         tell_decision(p, f, decision, reason.strip(), minutes, until)
+    return logged
 
 
 def settle_extensions(p):
@@ -3188,14 +3163,13 @@ def report(repo, sent):
 
 def cmd_health(args):
     repo = Repo()
-    criteria = job_criteria(load_criteria(), "watch")
     p = gather(repo, args.dispatcher)
-    firings, skipped = evaluate(p, criteria)
+    firings, skipped = evaluate(p, [{"name": name} for name in FACTS])
     if args.json:
-        print(json.dumps({"firings": firings, "not_evaluated": skipped}, indent=2))
+        print(json.dumps({"firings": firings, "not_evaluated": skipped, "tasks": look_picture(p, None, [], [])["tasks"]}, indent=2))
         return 0
     for f in firings:
-        print(f"{f['criterion']}  {f['escalate']}  {f['subject']}  {f['detail']}")
+        print(f"{f['criterion']}  {f['subject']}  {f['detail']}")
     if not firings:
         print("nothing fired")
     for s in skipped:
@@ -3528,13 +3502,13 @@ def cmd_watch(args):
         return 0
 
 
-def tick_picture(repo, fallback, criteria):
-    """The picture for the criteria of EVERY_TICK: no pull requests, no git, and the session list only when a
-    task qualifies, so a tick with nothing handed over for long runs nothing. The dispatcher is found as in
-    `gather` whenever the sessions are listed."""
+def tick_picture(repo, fallback):
+    """The picture for the facts of every tick: no pull requests, no git, and the session list only while a task is
+    declared working. The dispatcher is found as in `gather` whenever the sessions are listed."""
     p = {"now": time.time(), "repo": repo, "dispatcher": None, "dispatcher_why": "sessions not listed",
          "sessions": None, "rows": None, "declared": read_tasks(repo.root)}
-    if any(handed_over_before(p, c["threshold"]) for c in criteria if c["threshold"]):
+    here = {os.path.basename(t["path"]) for t in repo.tasks}
+    if any(r["state"] == "working" and slug in here for slug, r in p["declared"].items()):
         with_dispatcher(p, fallback)
     return p
 
@@ -3549,10 +3523,9 @@ def with_dispatcher(p, fallback):
 
 
 def watch_tick(args, repo):
-    """The cheap part every time (comments, draft flags, approvals), the criteria of EVERY_TICK, and every
-    HEALTH_SECONDS the health run."""
+    """The cheap part every time (comments, draft flags, approvals), the facts of every tick, and every HEALTH_SECONDS the
+    rest of them and the digest. What wakes the site manager (see `wake_events`) gathers the full picture and runs it once."""
     every = load_criteria()
-    criteria = job_criteria(every, "watch")
     print(f"{now()} watch {os.path.basename(repo.root)}")
     snap = cheap_tick(repo, args.dispatcher)
     state = read_lander(repo)
@@ -3561,18 +3534,15 @@ def watch_tick(args, repo):
         write_lander(repo, {**state, "health": time.time()})
         p = gather(repo, args.dispatcher)
     else:
-        criteria = [c for c in criteria if c["name"] in EVERY_TICK]
-        p = tick_picture(repo, args.dispatcher, criteria)
-    p["snap"] = snap  # the tick's one `gh pr list`, for `churning`
-    current, skipped = evaluate(p, criteria)
+        p = tick_picture(repo, args.dispatcher)
+    p["snap"] = snap  # the tick's one `gh pr list`, for `churning` and the pull request events
+    facts = [{"name": name} for name, (_, always) in FACTS.items() if full or always]
+    current, skipped = evaluate(p, facts)
     folded = fold(repo_log("firings", repo.root) or [])[0]
     asks = pending_asks(folded)  # a lead's ask goes to the site manager on the next tick, not the next full pass
-    if (current or asks) and not full and p["sessions"] is None:  # something fired between health passes: who is the dispatcher?
-        with_dispatcher(p, args.dispatcher)
-    orphaned = str(p["dispatcher_why"]).startswith("no dispatcher session")  # not a shared or missing name
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
-    evaluated = {c["name"] for c in (every if full else criteria)} - {s["criterion"] for s in skipped}
+    evaluated = {c["name"] for c in [*facts, *(every if full else [])]} - {s["criterion"] for s in skipped}  # a killed digest leaves its firings open
     opened = {(f["criterion"], f["subject"]): f for f in folded if not f["cleared"]}
     for key, f in opened.items():
         if key[0] in evaluated and not any((c["criterion"], c["subject"]) == key for c in current):
@@ -3594,9 +3564,23 @@ def watch_tick(args, repo):
             send.append(fire(repo, f))
         elif old["decision"] is None and full:  # between health passes only new findings are sent
             send.append({**f, "id": old["id"], "lead_told": LEAD_TOLD in old["detail"]})
-    send += [{**{k: a[k] for k in ("id", *FIRED_KEYS)}, "what": OVERRUN_WHAT} for a in asks]
+    send += [{k: a[k] for k in ("id", *FIRED_KEYS)} for a in asks]
+    last = (repo_log("looks", repo.root) or [None])[-1]
+    since = last["ts"] if last else iso(p["now"] - WATCH_INTERVAL)
+    until = now()  # the look is stamped with it: a record is read by exactly one look
+    woken = wake_events(repo, snap, last, since, until) + [{"event": "firing", "id": f["id"], "criterion": f["criterion"], "slug": f["slug"]} for f in send]
+    here = {os.path.basename(t["path"]) for t in repo.tasks}
+    if full and any(r["state"] in ("working", "blocked") and slug in here for slug, r in p["declared"].items()) \
+            and (not last or p["now"] - epoch(last["ts"]) >= HEALTH_SECONDS):
+        woken.append({"event": "pace"})
+    if woken and not full:  # a look always has the full picture, when there is a dispatcher to ask
+        if p["sessions"] is None:
+            with_dispatcher(p, args.dispatcher)
+        if p["dispatcher"]:
+            p = {**gather(repo, args.dispatcher, p["sessions"]), "snap": snap}
+    orphaned = str(p["dispatcher_why"]).startswith("no dispatcher session")  # not a shared or missing name
     failure, undecided = None, "its decision was missing or not valid"
-    if not send:
+    if not woken:
         print("nothing new")
     elif orphaned or p["dispatcher"] is None or any(f["criterion"] == "dispatcher-missing" for f in current):
         for f in send:
@@ -3604,9 +3588,12 @@ def watch_tick(args, repo):
                 notify(repo, f)
         report(repo, send)
         undecided = f"no dispatcher to ask: {p['dispatcher_why']}"
+        if not send:
+            print(undecided)
     else:
         try:
-            run_site_manager(p, send)
+            look = {**look_picture(p, since, woken, send), "prs": [pr["number"] for pr in snap] if snap is not None else (last or {}).get("prs"), "until": until}
+            run_site_manager(p, send, "watch", look)
         except Fail as e:
             failure = undecided = e
     settle_asks(p, send, undecided)
@@ -3667,9 +3654,15 @@ def cmd_digest(args):
     return 0
 
 
-def run_site_manager(p, send, job="watch"):
+def run_site_manager(p, send, job="watch", look=None):
+    """One site manager run. A watch (`look` is `look_picture` and `prs`) logs a record in `looks`, usable or not."""
     repo = p["repo"]
-    rc, out, err = run(site_manager_argv(p, send, job), cwd=repo.root, timeout=WATCH_TIMEOUT, group=True)
+    look = look or look_picture(p, None, [], send) if job == "watch" else None
+    begun = time.monotonic()
+    path = str(FACTORY.parent) + os.pathsep + os.environ.get("PATH", "")  # so `factory` in his allowed commands is this script
+    rc, out, err = run(site_manager_argv(p, send, job, look), cwd=repo.root, timeout=WATCH_TIMEOUT,
+                       env={**os.environ, "PATH": path}, group=True)
+    seconds = round(time.monotonic() - begun)
     try:
         doc = json.loads(out)
     except ValueError:
@@ -3677,16 +3670,23 @@ def run_site_manager(p, send, job="watch"):
     doc = doc if isinstance(doc, dict) else {}
     result, cost = doc.get("structured_output"), doc.get("total_cost_usd")
     usable = rc == 0 and isinstance(result, dict) and isinstance(result.get("decisions"), list)
-    if usable:
-        record_decisions(p, send, result, doc.get("session_id"))
+    calls = record_decisions(p, send, result, doc.get("session_id"), look) if usable else 0
     report(repo, send)
-    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+    cost = cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
+    if cost is not None:
         print(f"site manager run cost ${cost:.2f}")
+    failed = None
     if not usable:
-        why, subtype = err.strip() or "no usable output", doc.get("subtype")
+        failed, subtype = err.strip() or "no usable output", doc.get("subtype")
         if isinstance(subtype, str) and subtype != "success":
-            why = f"{subtype}: {why}"
-        raise Fail(f"the site manager run failed ({rc}): {why}", code=1)
+            failed = f"{subtype}: {failed}"
+    if job == "watch":  # stamped with the time its events were read to: what arrives while he runs is the next look's
+        log("looks", {"ts": look.get("until") or iso(p["now"]), "repo": repo.root, "woken_by": look["woken_by"], "firings": [f["id"] for f in send],
+                      "tasks": len(look["tasks"]) if isinstance(look["tasks"], list) else None, "calls": calls, "cost_usd": cost,
+                      "seconds": seconds, "run": doc.get("session_id"), "model": load_settings()["models"]["site_manager"],
+                      "prs": look.get("prs"), **({"failed": failed} if failed else {})})
+    if failed:
+        raise Fail(f"the site manager run failed ({rc}): {failed}", code=1)
 
 
 def cmd_firing(args):
@@ -3703,13 +3703,15 @@ def cmd_miss(args):
     repo = Repo()
     if not args.text.strip():
         raise Fail("miss: the text is empty")
-    fid = None
+    fid, entry = None, args.entry
+    if entry is not None and entry not in reference_entries():
+        raise Fail(f"miss: {entry!r} is not an entry of the reference; the entries are {', '.join(reference_entries())}", code=1)
     if args.firing:
         f = find_firing(repo.root, args.firing)
         if f["decision"] == "escalated":
             raise Fail(f"miss: {f['id']} was escalated; record what came of it with `firing {f['id']} acted|ignored`")
-        fid = f["id"]
-    log_firing(repo, miss=args.text.strip(), slug=args.slug, firing=fid)
+        fid, entry = f["id"], entry or f["criterion"]
+    log_firing(repo, miss=args.text.strip(), slug=args.slug, firing=fid, entry=entry)
     return 0
 
 
@@ -3737,9 +3739,23 @@ def summarize(firings, misses):
             "precision": ratio(acted, acted + ignored), "recall": ratio(acted, acted + len(misses))}
 
 
+def entry_scores(firings, misses):
+    """{name: the counts of `summarize` for it, with `fired` and `to_lead`} for each criterion in the log, each entry of the
+    reference and `unlisted`; a miss without an entry counts under `unlisted`."""
+    names = {*(f["criterion"] for f in firings), *(m.get("entry") or "unlisted" for m in misses), *reference_entries()}
+    scores = {}
+    for name in sorted(names):
+        mine = [f for f in firings if f["criterion"] == name]
+        counts = summarize(mine, [m for m in misses if (m.get("entry") or "unlisted") == name])
+        scores[name] = {"fired": len(mine), "to_lead": sum(f["decision"] == "escalated" and f.get("to") == "lead" for f in mine),
+                        **{k: counts[k] for k in ("escalated", "acted", "ignored", "no_outcome", "suppressed", "told", "extended", "paused",
+                                                  "missed", "precision")}}
+    return scores
+
+
 def cmd_firings(args):
     firings, misses = fold(repo_log("firings", Repo().root) or [])
-    s = summarize(firings, misses)
+    s = {**summarize(firings, misses), "entries": entry_scores(firings, misses)}
     if args.json:
         print(json.dumps({"firings": firings, "misses": misses, "summary": s}, indent=2))
         return 0
@@ -3750,6 +3766,12 @@ def cmd_firings(args):
                          f["outcome"] or "-", "cleared" if f["cleared"] else "open", f["reason"] or "-"]))
     for m in misses:
         print("  ".join(["miss", m["ts"], m.get("slug") or "-", m.get("firing") or "-", m["miss"]]))
+    for name, e in s["entries"].items():
+        if e["fired"] or e["missed"]:
+            precision = "-" if e["precision"] is None else f"{e['precision']:.2f}"
+            more = "".join(f"; {k} {e[k]}" for k in ("extended", "told", "paused") if e[k])
+            print(f"{name}: fired {e['fired']}; escalated {e['escalated']} (acted {e['acted']}, ignored {e['ignored']}, no outcome {e['no_outcome']}); "
+                  f"to lead {e['to_lead']}; suppressed {e['suppressed']}{more}; missed {e['missed']}; precision {precision}")
     pct = {k: "-" if s[k] is None else f"{s[k]:.2f}" for k in ("precision", "recall")}
     told = sum(f["decision"] == "escalated" and f.get("to") == "lead" for f in firings)
     print(f"escalated {s['escalated']} (acted {s['acted']}, ignored {s['ignored']}, no outcome {s['no_outcome']}); "
@@ -5147,7 +5169,7 @@ HOME_FILE_RE = re.compile(r"settings\.(toml|json)|watch\.log|identity|specs|deli
 # The other names the factory writes there, which uninstall leaves: the cache, the courier's notes, the logs
 # written through `log` that HOME_FILE_RE does not list, and the per-repository files of `repo_state` with their
 # temporary files. `strangers` is what matches neither.
-STORE_WRITTEN_RE = re.compile(r"cache|comments|tech-lead\.log|review\.(log|lock)|(gh|comments|techlead|queue)-\d{4}-\d\d\.jsonl|(hosts|settings)\.json\.tmp"
+STORE_WRITTEN_RE = re.compile(r"cache|comments|tech-lead\.log|review\.(log|lock)|(gh|comments|techlead|queue|looks)-\d{4}-\d\d\.jsonl|(hosts|settings)\.json\.tmp"
                               r"|[a-z]+-.+-[0-9a-f]{8}\.(json|lock)(\.tmp)?")  # the last is every name repo_state() makes
 Step = collections.namedtuple("Step", "name purpose optional state act recheck", defaults=(False,))
 
@@ -6686,7 +6708,7 @@ def report_stop(repo, fallback, pr, kind, line):
     """Tell of one stop, once: a firing of lgtm-blocked, then the lead (the pull request goes back to it), or the dispatcher, else the
     human, as its kind says."""
     n, slug = pr["number"], task_slug(repo, pr)
-    firing = fire(repo, {"criterion": "lgtm-blocked", "escalate": "always", "slug": slug, "subject": f"#{n}/{kind}",
+    firing = fire(repo, {"criterion": "lgtm-blocked", "slug": slug, "subject": f"#{n}/{kind}",
                          "detail": f"#{n} stopped {kind}: {line}"})
     sent_back = stop_policy(kind, line)[2] == "lead"
     files = {"files": conflicting_files(repo, pr)} if sent_back and kind == "conflict" else {}  # before a tech lead fetches
@@ -6702,6 +6724,7 @@ def report_stop(repo, fallback, pr, kind, line):
         log_firing(repo, id=firing["id"], decision="escalated", by="lander", reason=f"reported by the lander to the {to}")
     else:
         notify(repo, firing)
+    log_firing(repo, id=firing["id"], cleared=True)  # nothing re-evaluates it: the queue's own record is the stop
     print(f"#{n} stopped {kind}: {line} (told {to or 'human'})")
 
 
@@ -7383,7 +7406,7 @@ def parse_args(argv):
     show.add_argument("name", choices=("events", "retros", "reviews"))
     show.add_argument("--since", metavar="TS")
     show.add_argument("--until", metavar="TS")
-    health = sub.add_parser("health", help="evaluate the criteria and print what fires (read-only)")
+    health = sub.add_parser("health", help="print the facts that fire right now (read-only)")
     health.add_argument("--json", action="store_true")
     health.add_argument("--dispatcher", help="the old-style dispatcher session name to look for when no registered session is running (default dispatcher-<repo directory>)")
     watch = sub.add_parser("watch", help="the scheduled tick: evaluate, log, and send what is new to the site manager")
@@ -7408,7 +7431,8 @@ def parse_args(argv):
     miss.add_argument("text")
     miss.add_argument("--slug")
     miss.add_argument("--firing", help="the id of the firing that was suppressed or undecided")
-    firings = sub.add_parser("firings", help="the firing log with precision and recall")
+    miss.add_argument("--entry", help="the entry of the site manager's reference it should have been raised under (default: the firing's)")
+    firings = sub.add_parser("firings", help="the firing log with precision and recall, and the score per entry")
     firings.add_argument("--json", action="store_true")
     sub.add_parser("pauses", help="the churning tasks the queue paused: how long, for whom, and the send-backs around each")
     merge = sub.add_parser("merge", help="merge handed-over pull requests that pass every check (no model takes part)")

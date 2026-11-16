@@ -83,7 +83,7 @@ These are left by Claude Code, not by a script of this repository. The factory o
 - **The lock on a worktree.** A background session locks its worktree (`git worktree list --porcelain`: `locked claude session <name> (pid N ...)`). The lock stays when the process has exited. `factory status` then prints `if nothing uses it, run: git worktree unlock <path>`; `factory clean` keeps a locked worktree.
 - **The session's state directory.** `~/.claude/jobs/<id>` (`state.json`, `timeline.jsonl`, `tmp/`) is removed by `claude rm`. While a process the session started still writes to `tmp/`, the removal fails with `ENOTEMPTY`. `factory clean` calls `claude rm <session>` and prints a failure; it does not retry. `factory health` counts finished job directories older than 24 h. On this machine: 17 directories, 555052 kB (`du -sk ~/.claude/jobs`, live sessions included).
 - **Subagent worktrees.** A subagent started with worktree isolation gets `.claude/worktrees/agent-<id>`; Claude Code removes it only when it is unchanged. The factory does not list these as tasks, rejects task slugs that start with `agent-`, and `factory health` counts those older than 24 h. Removing one is by hand: `git worktree remove <path>`, then `git branch -d <branch>`.
-- **A busy session.** A session with a live background command counts as busy: `factory clean` and the lander's merge refuse it. The watch criterion `busy-after-handover` names the process.
+- **A busy session.** A session with a live background command counts as busy: `factory clean` and the lander's merge refuse it. The site manager's row for the task (`children`) names the process.
 
 ## How it is kept true
 

@@ -1663,7 +1663,6 @@ def git_task_answers(slug, now, *, dirty="", counts="0\t2", commit_age=0, pr=Non
     }
 
 
-NEARING = '[{"name": "nearing-limit", "threshold": 75}]'
 
 
 class LimitTests(unittest.TestCase):
@@ -1998,19 +1997,14 @@ class StatusTests(unittest.TestCase):
         _, out, _, _ = invoke(["status", "--json"], answers, '[limits]\ntask_time_limit_hours = 1\n')
         self.assertTrue(json.loads(out)["rows"][0]["overtime"])
 
-    def rows_for(self, minutes, size=None, criteria=NEARING, state="working", hours=None):
-        """The row of a working task `minutes` into its run, with `criteria` as the criteria file's text."""
+    def rows_for(self, minutes, size=None, state="working", hours=None):
+        """The row of a working task `minutes` into its run."""
         s = {"cwd": f"{WT}/alpha", "kind": "background", "status": "busy", "state": "working",
              "startedAt": int(time.time() * 1000) - minutes * 60 * 1000}
         extra = {("git", "config", "--get", "branch.worktree-alpha.factorySize"): (0, size + "\n", "")} if size else {}
         answers = repo_answers([task_entry("alpha")], [s], git_task_answers("x", time.time()), extra)
-        with tempfile.TemporaryDirectory() as d:
-            path = Path(d, "criteria.json")
-            if criteria is not None:
-                path.write_text(criteria)
-            with mock.patch.object(factory, "CRITERIA_PATH", path):
-                _, out, _, _ = invoke(["status", "--json"], answers, hours and f"[limits]\ntask_time_limit_hours = {hours}\n",
-                                      tasks=[task_rec("alpha", state)] if state else ())
+        _, out, _, _ = invoke(["status", "--json"], answers, hours and f"[limits]\ntask_time_limit_hours = {hours}\n",
+                              tasks=[task_rec("alpha", state)] if state else ())
         return json.loads(out)["rows"][0]
 
     def test_limit_size_and_nearing_by_minutes(self):
@@ -2032,12 +2026,6 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(row["limit"], 5400)
         self.assertIsInstance(row["limit"], int)
         self.assertEqual(factory.span(row["limit"]), "1h30m")
-
-    def test_nothing_is_nearing_without_the_criteria_entry(self):
-        for criteria in (None, "not json", "{}", "[1]", "[]", "5", "null", '[{"name": "nearing-limit"}]',
-                         '[{"name": "nearing-limit", "threshold": true}]', '[{"name": "nearing-limit", "threshold": 0}]'):
-            with self.subTest(criteria=criteria):
-                self.assertFalse(self.rows_for(40, "small", criteria)["nearing"])
 
     def test_only_a_working_task_is_nearing(self):
         for state in ("handed-over", "blocked", None):

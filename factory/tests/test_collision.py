@@ -37,7 +37,6 @@ def lines(text, at, to):
 class Scratch(Harness):
     """A real repository with its remote, task worktrees under `.claude/worktrees`, and a faked `claude` and `gh`."""
 
-    CRITERIA = ["collision", "new-spec"]
 
     def setUp(self):
         super().setUp()
@@ -75,6 +74,8 @@ class Scratch(Harness):
         path = f"{self.root}/.claude/worktrees/{slug}"
         self.git("worktree", "add", "-q", "-b", f"worktree-{slug}", path, "main", cwd=self.root)
         self.seed("tasks", [{"repo": self.root, "slug": slug, "state": state, "ts": iso(NOW - 600)}])
+        if state == "working":  # a live lead, so `ended-undeclared` stays quiet
+            self.leads.append({"sessionId": f"sid-{slug}", "name": slug, "cwd": path, "kind": "background", "state": "working"})
         if spec:
             file = self.store / "specs" / "repo" / f"{slug}.md"
             file.parent.mkdir(parents=True, exist_ok=True)
@@ -132,7 +133,7 @@ class Scratch(Harness):
         def answer():
             call = self.fake.calls[-1]
             if call[-1].startswith("Job:"):
-                sent = json.loads(call[-1].partition("\n\n")[2])
+                sent = json.loads(call[-1].partition("\n\n")[2])["firings"]
                 return reply([{"id": f["id"], "decision": decision, "reason": reason, "looked": ["git diff"],
                                **({"tell": tell or [f["slug"]]} if decision == "told" else {})} for f in sent])
             return 0, json.dumps({"result": "sent"}), ""
@@ -300,7 +301,7 @@ class CollisionTests(Scratch):
         self.leads = [{"sessionId": "sid-a", "name": "alpha", "cwd": path, "kind": "background", "state": "working"}]
         self.commit("alpha", "f.txt", lines(BODY, 5, "from a"))
         self.commit("beta", "f.txt", lines(BODY, 5, "from b"))
-        self.answer = lambda: reply([{"id": json.loads(self.fake.calls[-1][-1].partition("\n\n")[2])[0]["id"], "decision": "escalated",
+        self.answer = lambda: reply([{"id": json.loads(self.fake.calls[-1][-1].partition("\n\n")[2])["firings"][0]["id"], "decision": "escalated",
                                       "to": "lead", "reason": "tell alpha", "looked": []}])
         self.tick()
         self.assertEqual((len(self.site_runs()), [r for r in self.records() if "decision" in r]), (1, []))

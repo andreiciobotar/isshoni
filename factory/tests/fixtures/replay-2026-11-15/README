@@ -1,0 +1,5 @@
+Records of one repository (the main checkout, not its parent directory) from 2026-11-15T09:00:00Z to 15:30:00Z, copied read only from the
+factory store's monthly logs: `events` (TaskStarted and TaskRemoved only), `tasks`, `queue`, `techlead`, `firings` (the digest records
+left out), one JSON record per line, filtered by `repo` and `ts`. Sanitised: every `repo` is `<root>` (the test rewrites it to its scratch
+root); each record keeps only the fields the script or the test reads, so session ids, models, versions, transcripts and commit hashes of
+runs are gone; a task's `deliverable` is `https://example.test/pull/<number>`; the text of a decision a model wrote is `withheld`.

@@ -1,0 +1,79 @@
+{"repo": "<root>", "role": "dispatcher", "slug": "pulse-band-visual", "state": "working", "ts": "2026-11-15T09:04:15Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "pulse-band-visual", "state": "working", "ts": "2026-11-15T09:12:20Z"}
+{"repo": "<root>", "role": "lead", "slug": "ops-explorer", "state": "working", "ts": "2026-11-15T09:16:29Z"}
+{"repo": "<root>", "role": "lead", "slug": "ops-explorer", "state": "blocked", "ts": "2026-11-15T09:17:36Z", "waits_on": "dispatcher"}
+{"repo": "<root>", "role": "dispatcher", "slug": "report-tasks", "state": "working", "ts": "2026-11-15T09:17:58Z"}
+{"repo": "<root>", "role": "lead", "slug": "ops-explorer", "state": "working", "ts": "2026-11-15T09:17:59Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "report-tasks", "state": "working", "ts": "2026-11-15T09:21:46Z"}
+{"repo": "<root>", "role": "lead", "slug": "readme-team-side-by-side", "state": "working", "ts": "2026-11-15T09:22:32Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "pulse-band-visual", "state": "working", "ts": "2026-11-15T09:26:04Z"}
+{"repo": "<root>", "role": "lead", "slug": "ops-explorer", "state": "working", "ts": "2026-11-15T09:26:17Z"}
+{"deliverable": "https://example.test/pull/98", "repo": "<root>", "role": "lead", "slug": "readme-team-side-by-side", "state": "handed-over", "ts": "2026-11-15T09:26:48Z"}
+{"deliverable": "https://example.test/pull/97", "repo": "<root>", "role": "lead", "slug": "ops-explorer", "state": "handed-over", "ts": "2026-11-15T09:30:31Z"}
+{"repo": "<root>", "role": "lead", "slug": "ops-watch", "state": "working", "ts": "2026-11-15T09:31:32Z"}
+{"deliverable": "https://example.test/pull/99", "repo": "<root>", "role": "lead", "slug": "ops-watch", "state": "handed-over", "ts": "2026-11-15T09:37:36Z"}
+{"repo": "<root>", "role": "lead", "slug": "ops-watch-tab", "state": "working", "ts": "2026-11-15T09:39:44Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "pulse-band-visual", "state": "working", "ts": "2026-11-15T09:41:33Z"}
+{"deliverable": "https://example.test/pull/100", "repo": "<root>", "role": "lead", "slug": "ops-watch-tab", "state": "handed-over", "ts": "2026-11-15T09:44:06Z"}
+{"repo": "<root>", "role": "lead", "slug": "report-tasks", "state": "working", "ts": "2026-11-15T09:44:47Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "report-tasks", "state": "working", "ts": "2026-11-15T09:50:15Z"}
+{"repo": "<root>", "role": "dispatcher", "slug": "readme-diagram-rethink", "state": "working", "ts": "2026-11-15T09:53:41Z"}
+{"repo": "<root>", "role": "lead", "slug": "report-tasks", "state": "working", "ts": "2026-11-15T09:58:50Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "readme-diagram-rethink", "state": "working", "ts": "2026-11-15T10:01:43Z"}
+{"repo": "<root>", "role": "lead", "slug": "report-tasks", "state": "blocked", "ts": "2026-11-15T10:03:35Z", "waits_on": "human"}
+{"repo": "<root>", "role": "lead", "slug": "report-tasks", "state": "working", "ts": "2026-11-15T10:04:03Z"}
+{"deliverable": "https://example.test/pull/101", "repo": "<root>", "role": "lead", "slug": "report-tasks", "state": "handed-over", "ts": "2026-11-15T10:04:45Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "pulse-band-visual", "state": "working", "ts": "2026-11-15T10:07:12Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "pulse-band-visual", "state": "working", "ts": "2026-11-15T10:12:52Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "readme-diagram-rethink", "state": "working", "ts": "2026-11-15T10:16:50Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "pulse-band-visual", "state": "working", "ts": "2026-11-15T10:32:29Z"}
+{"repo": "<root>", "role": "lead", "slug": "readme-diagram-rethink", "state": "blocked", "ts": "2026-11-15T10:37:35Z"}
+{"repo": "<root>", "role": "lead", "slug": "readme-diagram-rethink", "state": "working", "ts": "2026-11-15T10:38:08Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "readme-diagram-rethink", "state": "working", "ts": "2026-11-15T10:38:16Z"}
+{"repo": "<root>", "role": "dispatcher", "slug": "lander-agent-file-current", "state": "working", "ts": "2026-11-15T10:38:41Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "lander-agent-file-current", "state": "working", "ts": "2026-11-15T10:47:38Z"}
+{"repo": "<root>", "role": "lead", "slug": "readme-diagram-rethink", "state": "working", "ts": "2026-11-15T10:53:27Z"}
+{"deliverable": "https://example.test/pull/103", "repo": "<root>", "role": "lead", "slug": "readme-diagram-rethink", "state": "handed-over", "ts": "2026-11-15T10:59:21Z"}
+{"repo": "<root>", "role": "dispatcher", "slug": "visual-work-draft-pr", "state": "working", "ts": "2026-11-15T10:59:48Z"}
+{"repo": "<root>", "role": "lead", "slug": "pulse-band-visual", "state": "working", "ts": "2026-11-15T10:59:53Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "visual-work-draft-pr", "state": "working", "ts": "2026-11-15T11:04:43Z"}
+{"deliverable": "https://example.test/pull/102", "repo": "<root>", "role": "lead", "slug": "pulse-band-visual", "state": "handed-over", "ts": "2026-11-15T11:07:35Z"}
+{"repo": "<root>", "role": "lead", "slug": "visual-work-draft-pr", "state": "working", "ts": "2026-11-15T11:15:56Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "lander-agent-file-current", "state": "working", "ts": "2026-11-15T11:16:00Z"}
+{"deliverable": "https://example.test/pull/105", "repo": "<root>", "role": "lead", "slug": "visual-work-draft-pr", "state": "handed-over", "ts": "2026-11-15T11:20:50Z"}
+{"repo": "<root>", "role": "lead", "slug": "lander-agent-file-current", "state": "blocked", "ts": "2026-11-15T11:24:03Z"}
+{"repo": "<root>", "role": "lead", "slug": "lander-agent-file-current", "state": "working", "ts": "2026-11-15T11:24:31Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "lander-agent-file-current", "state": "working", "ts": "2026-11-15T11:24:32Z"}
+{"repo": "<root>", "role": "lead", "slug": "lander-agent-file-current", "state": "working", "ts": "2026-11-15T11:25:56Z"}
+{"repo": "<root>", "role": "lead", "slug": "lander-agent-file-current", "state": "blocked", "ts": "2026-11-15T11:28:53Z"}
+{"repo": "<root>", "role": "lead", "slug": "lander-agent-file-current", "state": "working", "ts": "2026-11-15T11:38:56Z"}
+{"deliverable": "https://example.test/pull/106", "repo": "<root>", "role": "lead", "slug": "lander-agent-file-current", "state": "handed-over", "ts": "2026-11-15T11:39:13Z"}
+{"repo": "<root>", "role": "dispatcher", "slug": "site-manager-decides", "state": "working", "ts": "2026-11-15T12:42:40Z"}
+{"repo": "<root>", "role": "dispatcher", "slug": "build-run-waits-in-foreground", "state": "working", "ts": "2026-11-15T12:51:29Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "site-manager-decides", "state": "working", "ts": "2026-11-15T12:54:14Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "build-run-waits-in-foreground", "state": "working", "ts": "2026-11-15T12:58:01Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "site-manager-decides", "state": "working", "ts": "2026-11-15T13:10:03Z"}
+{"repo": "<root>", "role": "lander", "slug": "lander-agent-file-current", "state": "working", "ts": "2026-11-15T13:11:59Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "lander-agent-file-current", "state": "working", "ts": "2026-11-15T13:12:00Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "build-run-waits-in-foreground", "state": "working", "ts": "2026-11-15T13:13:16Z"}
+{"deliverable": "https://example.test/pull/106", "repo": "<root>", "role": "tech-lead", "slug": "lander-agent-file-current", "state": "handed-over", "ts": "2026-11-15T13:16:29Z"}
+{"repo": "<root>", "role": "dispatcher", "slug": "readme-diagram-ops", "state": "working", "ts": "2026-11-15T13:18:41Z"}
+{"repo": "<root>", "role": "dispatcher", "slug": "kaizen-review-role", "state": "working", "ts": "2026-11-15T13:24:41Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "readme-diagram-ops", "state": "working", "ts": "2026-11-15T13:25:23Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "kaizen-review-role", "state": "working", "ts": "2026-11-15T13:33:49Z"}
+{"repo": "<root>", "role": "lead", "slug": "build-run-waits-in-foreground", "state": "working", "ts": "2026-11-15T13:37:54Z"}
+{"deliverable": "https://example.test/pull/108", "repo": "<root>", "role": "lead", "slug": "build-run-waits-in-foreground", "state": "handed-over", "ts": "2026-11-15T13:43:54Z"}
+{"deliverable": "https://example.test/pull/109", "repo": "<root>", "role": "lead", "slug": "readme-diagram-ops", "state": "handed-over", "ts": "2026-11-15T13:55:57Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "site-manager-decides", "state": "working", "ts": "2026-11-15T13:59:07Z"}
+{"deliverable": "https://example.test/pull/110", "repo": "<root>", "role": "lead", "slug": "site-manager-decides", "state": "handed-over", "ts": "2026-11-15T14:11:17Z"}
+{"repo": "<root>", "role": "dispatcher", "slug": "extensions-on-dashboard", "state": "working", "ts": "2026-11-15T14:11:38Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "extensions-on-dashboard", "state": "working", "ts": "2026-11-15T14:17:04Z"}
+{"repo": "<root>", "role": "lander", "slug": "site-manager-decides", "state": "working", "ts": "2026-11-15T14:28:49Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "site-manager-decides", "state": "working", "ts": "2026-11-15T14:28:51Z"}
+{"deliverable": "https://example.test/pull/110", "repo": "<root>", "role": "tech-lead", "slug": "site-manager-decides", "state": "handed-over", "ts": "2026-11-15T14:33:07Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "extensions-on-dashboard", "state": "working", "ts": "2026-11-15T14:35:59Z"}
+{"deliverable": "https://example.test/pull/111", "repo": "<root>", "role": "lead", "slug": "extensions-on-dashboard", "state": "handed-over", "ts": "2026-11-15T14:54:39Z"}
+{"repo": "<root>", "role": "dispatcher", "slug": "kaizen-review-finish", "state": "working", "ts": "2026-11-15T15:12:20Z"}
+{"repo": "<root>", "role": "tech-lead", "slug": "kaizen-review-finish", "state": "working", "ts": "2026-11-15T15:14:25Z"}
+{"repo": "<root>", "role": "dispatcher", "slug": "firing-outcome-fix", "state": "working", "ts": "2026-11-15T15:27:07Z"}
+{"repo": "<root>", "role": "dispatcher", "slug": "site-manager-sees-collisions", "state": "working", "ts": "2026-11-15T15:27:10Z"}
