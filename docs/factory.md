@@ -407,6 +407,8 @@ S4: not refused at launch; ran isolated; "This session is isolated in the worktr
 PROBE PASSED
 ```
 
+R8 under S4 varied between runs (accepted on the first, refused on a later one); neither probe asserts it.
+
 S4 is stated as measured: launching from inside the worktree was not refused and ran isolated. R9 is measured too: refused under isolation. R8 is not contained.
 
 **What isolation does not stop.**

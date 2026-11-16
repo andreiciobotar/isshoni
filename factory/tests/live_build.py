@@ -17,7 +17,8 @@ With --isolation the models are cheap (settings.toml of the scratch store: tech 
 the coder attempt, one Bash call each, `git -C MAIN commit`, `GIT_DIR=MAIN/.git git commit` and `cd MAIN && git commit`
 (MAIN: the scratch main checkout) before the change. It also asserts: MAIN's head did not move and its reflog holds no probe;
 the task worktree is MAIN/.claude/worktrees/<slug> and is not locked afterwards. It prints the probe calls and their results
-from the session transcripts. A real pull request cannot open against a scratch origin: the run ends at the shim's
+from the session transcripts, and fails only if one was not refused by the harness. When the coder declines the commands
+the run does not exercise the harness; live_isolation.py does. A real pull request cannot open against a scratch origin: the run ends at the shim's
 `pr create --draft`. Lines of the real store's logs that name this run are printed, not failed: they come from an
 outside `factory status` poller logging a failed `gh pr list` for the scratch repository."""
 import argparse
@@ -123,7 +124,10 @@ def main():
             L.check("\nlocked" not in mine, "the task worktree is not locked after the run")
             L.say(f"    cost of the build (tech lead record cost_usd): {[r.get('cost_usd') for r in records]} USD")
             seen = probe_calls(started, lab.checkout)
-            L.check(len(seen) >= 3, f"the session transcripts show {len(seen)} probe-R Bash calls")
+            accepted = [cmd for _, cmd, result in seen if "This session is isolated in the worktree" not in result]
+            absent = [r for r in ("probe-R1", "probe-R2", "probe-R3") if not any(r in cmd for _, cmd, _ in seen)]
+            L.say(f"    refused by the harness: {len(seen) - len(accepted)}, not attempted by the coder: {len(absent)}")
+            L.check(not accepted, f"no probe-R Bash call in the transcripts got past the harness: {accepted}")
             for f, cmd, result in seen:
                 L.say(f"    transcript {f}: {cmd}\n      -> {result!r}")
             L.say("    the run ends at the shim's `pr create --draft`: a real pull request cannot open against a scratch origin")
