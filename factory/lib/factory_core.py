@@ -5131,7 +5131,8 @@ def commit_change(p, sha):
 
 def same_diff(p, pr, commit_id):
     """(same, why): whether the commits of `pr` at `commit_id` and at its head are the same changes, one by one from the
-    newest, so an approval of the first holds for the second (GitHub rebased it). Anything unreadable is (False, why)."""
+    newest, so an approval of the first holds for the second (GitHub rebased it), and the base the approved commits sat
+    on is on the default branch (else a commit was dropped). Anything unreadable is (False, why)."""
     head = pr["headRefOid"]
     try:
         commits = paged(p, f"repos/{{owner}}/{{repo}}/pulls/{pr['number']}/commits")
@@ -5153,6 +5154,10 @@ def same_diff(p, pr, commit_id):
         if change != old:
             return False, f"commit {k} of {n} is not the same change ({then[:7]} then, {now[:7]} now)"
         now, then = parent, old_parent
+    repo = p["repo"]
+    if not fetched(p, pr) or repo.git("merge-base", "--is-ancestor", str(then), f"{repo.remote}/{repo.default}")[0] != 0:
+        return False, (f"the commits approved at {commit_id[:7]} sat on {str(then)[:7]}, which is not on {repo.default}: "
+                       "a commit may have been dropped")
     return True, None
 
 

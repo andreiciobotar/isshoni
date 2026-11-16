@@ -446,9 +446,21 @@ def commits_gh(listed, records, asked=None, raises=None):
 class SameDiffTests(unittest.TestCase):
     """`same_diff` and the lgtm rescue of `stale_approval`, against made-up commits."""
 
+    def setUp(self):
+        self.on_main, self.fetch_rc = {"base-o"}, 0
+        fetch = mock.patch.object(factory, "act_git", lambda *a: (self.fetch_rc, "", ""))
+        fetch.start()
+        self.addCleanup(fetch.stop)
+
+    def repo(self):
+        """A repository whose default branch holds the shas in `on_main` (the base of the approved commits, by default)."""
+        def git(*a):
+            return (0 if a[:2] == ("merge-base", "--is-ancestor") and a[2] in self.on_main else 1), "", ""
+        return SimpleNamespace(root="/r", remote="origin", default="main", git=git)
+
     def same(self, listed, records, commit_id, head=None, **kw):
         self.asked = []
-        p = {"gh": commits_gh(listed, records, self.asked, **kw)}
+        p = {"gh": commits_gh(listed, records, self.asked, **kw), "repo": self.repo()}
         return factory.same_diff(p, pr(1, sha=head or (listed[-1] if listed else "none")), commit_id)
 
     def one_each(self, **patches):
@@ -457,6 +469,7 @@ class SameDiffTests(unittest.TestCase):
         return new, {**old_records, **new_records}, old[0]
 
     def test_one_commit_on_a_new_base_is_the_same_change_in_three_calls(self):
+        # the #157 shape: the approved commit's parent is on the default branch (#158's was not, see below)
         listed, records, old = self.one_each()
         self.assertEqual(self.same(listed, records, old), (True, None))
         self.assertEqual(len(self.asked), 3)
@@ -534,6 +547,24 @@ class SameDiffTests(unittest.TestCase):
                 records[old] = commit_of(old, ["base-o"], *files)
                 self.assertEqual(self.same(listed, records, old)[0], same)
 
+    def test_a_dropped_oldest_commit_is_not_the_same(self):
+        old, old_records = stack("o", 2, "base-o")
+        new, new_records = stack("n", 1, "base-n", {1: patch(2, "n")})
+        self.on_main = {"base-n"}
+        self.assertEqual(self.same(new, {**old_records, **new_records}, old[-1]), (False,
+            f"the commits approved at {old[-1][:7]} sat on {old[0][:7]}, which is not on main: a commit may have been dropped"))
+
+    def test_the_158_shape_where_the_approved_base_is_on_no_branch_is_not_the_same(self):
+        listed, records, old = self.one_each()
+        self.on_main = set()
+        self.assertEqual(self.same(listed, records, old), (False,
+            f"the commits approved at {old[:7]} sat on base-o, which is not on main: a commit may have been dropped"))
+
+    def test_a_failed_fetch_is_not_the_same(self):
+        listed, records, old = self.one_each()
+        self.fetch_rc = 1
+        self.assertFalse(self.same(listed, records, old)[0])
+
     def test_no_commits_and_too_many_are_not_compared(self):
         listed, records, old = self.one_each()
         self.assertFalse(self.same([], records, old)[0])
@@ -546,7 +577,8 @@ class SameDiffTests(unittest.TestCase):
                     self.assertEqual(len(self.asked), 1)
 
     def lgtm(self, approved, activity, listed, records, head):
-        p = {"gh": lambda kind, *args: activity if "-X" in args else commits_gh(listed, records)(kind, *args)}
+        p = {"gh": lambda kind, *args: activity if "-X" in args else commits_gh(listed, records)(kind, *args),
+             "repo": self.repo()}
         return factory.stale_approval(p, pr(1, sha=head), comment(at=approved), [head])
 
     def pushes(self, listed, records, old):
