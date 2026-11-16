@@ -72,10 +72,13 @@ class HostEndToEnd(unittest.TestCase):
         self.state = self.tmp / "state"
         (self.state / "stub").mkdir(parents=True)
         write_exe(self.state / "stub/claude", CLAUDE_STUB)
-        # Nothing is fetched while the test runs: the container's `make install` has GOPROXY=off and finds the modules `make modules` downloaded.
+        # Only the image build reaches the network (base image, apt-get, binary downloads). The container's `make install` has GOPROXY=off and finds the modules `make modules` downloaded.
         modcache = Path(subprocess.run(["go", "env", "GOMODCACHE"], capture_output=True, text=True, check=True, timeout=60).stdout.strip())
         self.assertTrue((modcache / "cache/download").is_dir(), "run `make modules` first: the Go modules are fetched before the tests, never by them")
         shutil.copytree(modcache / "cache/download", self.state / "home/go/pkg/mod/cache/download")
+        # The clone in the container runs unchanged but reads a local bare copy of this checkout: git's own insteadOf, in the container user's ~/.gitconfig (/state/home).
+        subprocess.run(["git", "clone", "-q", "--bare", str(ROOT), str(self.state / "source.git")], check=True, timeout=120)
+        (self.state / "home/.gitconfig").write_text('[url "/state/source.git"]\n\tinsteadOf = https://github.com/%s\n[safe]\n\tdirectory = *\n' % REPO)
         fh, bin_dir, laptop = self.tmp / "fh", self.tmp / "bin", self.tmp / "laptop"
         for d in (fh / "identity", bin_dir, laptop):
             d.mkdir(parents=True)
