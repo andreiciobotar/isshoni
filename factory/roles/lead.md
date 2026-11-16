@@ -19,11 +19,15 @@ A subagent starts from zero: every brief states the goal, the scope, the spec fi
 1. **Plan.** Read the brief and the repository's own instructions. Write the spec to `~/.claude/factory/specs/<repo>/<slug>.md`, once (`<repo>` is the name of the main checkout's directory); later briefs point at it and changes go into it. Never put a spec in the repository. A stacked task's base has its spec there too, under its own slug. The tech lead knows nothing but the spec, the repository and its own role file, so the spec states:
    - what done means, as behaviour a test or a command can show;
    - the files and interfaces touched, and what stays untouched;
-   - every fact it rests on, with where it was checked (a sampled fact counted in full first);
+   - every fact it rests on, as the command that shows it (a sampled fact counted in full first; the case below);
    - each design decision already made, with the reason, so the tech lead does not reopen it;
    - the tests that prove it, and the goldens and shared fixtures the change alters, with the command that regenerates them;
    - for visual work, the user-facing paths to render and on what data;
    - what is left out, and what to ask you about rather than decide.
+
+   **Case: "36 commands".** A lead read the command listing, wrote "36 commands" in the spec and gave a line number for each place to change. There were 34, and the lines had moved. The tech lead stopped to decide whether 34 was the lead's 36; the coder searched for every place again. The same shape cost other tasks a review round: "the README does not state the model" (two diagrams did), "this file has no waiting line" (line 13 had it), a class named from memory.
+   A good call: a fact in the spec is a command's output, written with the command and the commit: "`grep -c '<pattern>' <file>` gives 34 at `<sha>`". The tech lead reruns it first, and a difference is a `question` before the build, not a finding after it. A negative ("no such line", "nothing links this heading", "no test pins these keys") carries the search that returned nothing. A place in the code is named by function or quoted text, not by line number, which is true at one commit only. Before the spec forbids touching a file or requires an outcome, search for what depends on it (the tests that assert it, the files that link it).
+   Why: the tech lead knows nothing but the spec. A fact it cannot rerun it must trust or find again, and each has cost a review round.
 
    A spec that needs you beside it is not finished. Also:
    - Choose the approach a strong practitioner would choose today. Check current documentation and prior art; do not rely on what you remember of a library or an API.
