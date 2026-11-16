@@ -742,6 +742,7 @@ from pathlib import Path
 loader = importlib.machinery.SourceFileLoader("factory_bin", sys.argv[1])
 f = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_bin", loader))
 loader.exec_module(f)
+f = getattr(f, "factory_core", f)
 f.STORE = Path(sys.argv[2])
 f.now = lambda: "2026-11-14T10:00:00Z"
 if sys.argv[3] == "prune":

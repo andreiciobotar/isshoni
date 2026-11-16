@@ -1,5 +1,3 @@
-import importlib.machinery
-import importlib.util
 import io
 import json
 import os
@@ -11,6 +9,8 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
+
+from test_factory import factory
 
 BIN = Path(__file__).resolve().parent.parent / "bin" / "factory"
 
@@ -80,14 +80,7 @@ git push -q origin worktree-t1
 """
 
 
-def load_factory():
-    loader = importlib.machinery.SourceFileLoader("factory_overlap", str(BIN))
-    module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_overlap", loader))
-    loader.exec_module(module)
-    return module
-
-
-FACTORY = load_factory()
+FACTORY = factory
 
 
 def lines(n=30):
@@ -633,11 +626,8 @@ class LandTests(unittest.TestCase):
                          [["pr", "ready", "--undo", "worktree-t1"]])
 
     def test_declaring_working_on_a_branchless_landing_makes_no_gh_call(self):
-        loader = importlib.machinery.SourceFileLoader("factory_land_nobranch", str(BIN))
-        module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_land_nobranch", loader))
-        loader.exec_module(module)
-        with mock.patch.object(module, "declare") as declare, mock.patch.object(module, "run") as run:
-            module.Landing(mock.Mock(), {"path": "/x/t1", "branch": None}, False, "auto").mark_working()
+        with mock.patch.object(factory, "declare") as declare, mock.patch.object(factory, "run") as run:
+            factory.Landing(mock.Mock(), {"path": "/x/t1", "branch": None}, False, "auto").mark_working()
         declare.assert_called_once()
         run.assert_not_called()
 
@@ -651,15 +641,12 @@ class LandTests(unittest.TestCase):
 
     def test_a_lander_that_times_out_is_a_stop(self):
         wt, old = self.conflict()
-        loader = importlib.machinery.SourceFileLoader("factory_land", str(BIN))
-        module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_land", loader))
-        loader.exec_module(module)
         out, cwd = io.StringIO(), os.getcwd()
         self.addCleanup(os.chdir, cwd)
         os.chdir(self.repo)
-        with mock.patch.dict(os.environ, {**self.env, "FAKE_LANDER": "sleep"}), mock.patch.object(module, "LAND_TIMEOUT", 1), \
+        with mock.patch.dict(os.environ, {**self.env, "FAKE_LANDER": "sleep"}), mock.patch.object(factory, "LAND_TIMEOUT", 1), \
                 redirect_stdout(out):
-            code = module.main(["land", "t1"])
+            code = factory.main(["land", "t1"])
         self.assertEqual(code, 1)
         self.assertIn("`STOPPED other`", out.getvalue())
         self.assertIn("the lander run timed out", out.getvalue())
@@ -873,15 +860,12 @@ class LandTests(unittest.TestCase):
 
     def land_as(self, exports, error=None):
         """`factory land t1` in this process, with the App's exports as `factory env` would give them."""
-        loader = importlib.machinery.SourceFileLoader("factory_land_id", str(BIN))
-        module = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_land_id", loader))
-        loader.exec_module(module)
         out, cwd = io.StringIO(), os.getcwd()
         self.addCleanup(os.chdir, cwd)
         os.chdir(self.repo)
-        with mock.patch.dict(os.environ, self.env), mock.patch.object(module, "identity_exports", lambda: (exports, error)), \
+        with mock.patch.dict(os.environ, self.env), mock.patch.object(factory, "identity_exports", lambda: (exports, error)), \
                 redirect_stdout(out):
-            module.main(["land", "t1"])
+            factory.main(["land", "t1"])
         return out.getvalue()
 
     def test_fetch_merge_and_push_act_as_the_app(self):
