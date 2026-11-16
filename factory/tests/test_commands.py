@@ -54,6 +54,10 @@ class CommandTest(unittest.TestCase):
             factory.command("aa-c", "extra")(lambda args: 0)
             self.assertEqual(listed_commands(), ["status", "new", "aa-c", "zz-b"])
 
+    def test_close_is_listed_right_after_ack(self):
+        names = listed_commands()
+        self.assertEqual(names[names.index("ack") + 1], "close")
+
     def test_the_order_line_names_only_declared_commands(self):
         self.assertLessEqual(set(factory.COMMAND_ORDER), set(factory.COMMANDS))
 

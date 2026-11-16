@@ -62,7 +62,7 @@ WORKTREE_RE = re.compile(r"(.*?)/\.claude/worktrees/([^/]+)(?:/|$)")
 MODEL_RE = re.compile(rb'"model"\s*:\s*"([^"]+)"')
 ITEM_RE = re.compile(r"(?:[-*]|\d+\.)\s+")
 LINK_RE = re.compile(r"[a-z][a-z0-9+.-]*://")
-STATES = ("working", "blocked", "handed-over", "acknowledged", "dismissed")
+STATES = ("working", "blocked", "handed-over", "acknowledged", "dismissed", "closed")
 SETTLED = ("acknowledged", "dismissed")
 STOPS = ("QUESTION", "BLOCKED", "OVERTIME")
 KINDS = (*STOPS, "SPLIT", "DONE")
@@ -80,7 +80,7 @@ PROMPT_FROM = (("<agent-message", "subagent"), ("<cross-session-message", "sessi
                ("<task-notification", "notification"))
 
 COMMANDS = {}  # name -> (help, options, function), filled by @command where each command is defined
-COMMAND_ORDER = ("new", "status", "clean", "state", "overrun", "commands", "ack", "hook", "ops-hook", "retro", "env",
+COMMAND_ORDER = ("new", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "retro", "env",
                  "feedback", "review", "log", "health", "watch", "ops", "digest", "firing", "miss", "firings",
                  "pauses", "merge", "lander", "tech-lead", "build", "land", "overlap", "rerun", "schedule",
                  "dispatcher", "settings", "wizard", "uninstall")  # `factory --help` order; a name not here follows, by name
@@ -1336,8 +1336,9 @@ def handed_over(repo):
     return any(r["state"] == "handed-over" and slug in here for slug, r in read_tasks(repo.root).items())
 
 
-def declare(repo, slug, role, state, deliverable=None, waits_on=None, paused=False):
-    extra = {k: v for k, v in (("deliverable", deliverable), ("waits_on", waits_on), ("paused", paused)) if v}
+def declare(repo, slug, role, state, deliverable=None, waits_on=None, paused=False, reason=None, superseded_by=None):
+    extra = {k: v for k, v in (("deliverable", deliverable), ("waits_on", waits_on), ("paused", paused),
+                               ("reason", reason), ("superseded_by", superseded_by)) if v}
     log("tasks", {**record(repo.root, slug, role, None, os.environ.get("CLAUDE_CODE_SESSION_ID")),
                   "state": state, **extra})
 
@@ -1605,8 +1606,8 @@ def cmd_status(args):
     return 0
 
 
-def keep_reason(repo, row, rows):
-    """Why a task must stay, or None when every sign says it is finished."""
+def keep_reason(repo, row, rows, files=None):
+    """Why a task must stay, or None when every sign says it is finished. `files` is the `OpenFiles` a closed task is judged by."""
     if inside(str(PLUGIN_ROOT), row["path"]):
         return "this factory runs from it; leads started by it load their plugin from there"
     if not row["branch"]:
@@ -1625,6 +1626,8 @@ def keep_reason(repo, row, rows):
     reason = merged_reason(repo, row)
     if reason and row["state"] in SETTLED:
         reason = settled_reason(repo, row)
+    elif reason and row["state"] == "closed":
+        reason = closed_reason(repo, row, rows, files or OpenFiles())
     if reason is None and row["locked"] is not None and not row["session_id"]:
         why = f" ({row['locked']})" if row["locked"] else ""
         return (f"its worktree is locked{why} and no session is left to remove it through; "
@@ -1648,6 +1651,36 @@ def settled_reason(repo, row):
     return None
 
 
+def closed_reason(repo, row, rows, files):
+    """Why rule 3 (declared closed, nothing lost) does not hold, or None: its pull request is not open, no process uses the
+    worktree, and every commit of its head is in the default base, a task branch that is not itself closed, or a branch
+    the remote has now (asked of the remote: remote-tracking refs go stale when a remote branch is deleted)."""
+    if row["pr_state"] in ("open", "unknown"):
+        return f"closed, but its pull request is {row['pr_state']}"
+    users, error = files.users(row["path"])
+    if error:
+        return f"closed, but cannot list open files: {error}"
+    if users:
+        return f"closed, but pid {users[0][0]} ({users[0][1]}) uses it"
+    rc, out, err = act_git(repo.root, "ls-remote", "--heads", repo.remote, timeout=GH_TIMEOUT)
+    if rc != 0:
+        return f"closed, but cannot ask {repo.remote} which commits it holds: {err.strip() or f'exit {rc}'}"
+    advertised = "".join(f"{line.split()[0]}\n" for line in out.splitlines() if line.strip())
+    rc, out, err = run(["git", "cat-file", "--batch-check"], cwd=repo.root, input=advertised)
+    if rc != 0:
+        return f"closed, but cannot tell which commits {repo.remote} holds here: {err.strip() or f'exit {rc}'}"
+    remote = [line.split()[0] for line in out.splitlines() if line.split()[1:2] == ["commit"]]
+    live = [f"refs/heads/{r['branch']}" for r in rows if r is not row and r["branch"] and r["state"] != "closed"]
+    rc, out, err = repo.git("log", "--format=%H %s", row["head"], "--not", repo.base, *live, *remote)
+    if rc != 0:
+        return f"closed, but cannot tell which commits it holds: {err.strip() or f'exit {rc}'}"
+    lost = out.splitlines()
+    named = "; ".join(f"{line[:7]} {line.partition(' ')[2]}" for line in lost[:5])
+    more = f"; and {len(lost) - 5} more" if len(lost) > 5 else ""
+    return (f"closed, but {len(lost)} commit(s) are in neither {repo.base}, a live task branch nor {repo.remote}: {named}{more}"
+            if lost else None)
+
+
 def merged_reason(repo, row):
     """Why rule 1 (merged into the default branch at the local head) does not hold, or None."""
     if row["pr_state"] == "unknown":
@@ -1661,6 +1694,39 @@ def merged_reason(repo, row):
     if row["head"] != row["pr_head"]:
         return "commits newer than its merged pull request"
     return None
+
+
+def clean_row(repo, row, rows, files, dry_run):
+    """Remove one task when nothing keeps it, and print what came of it. Returns ("removed" | "would remove" | "kept" |
+    "failed", why it was kept). A closed task's branch goes by `update-ref -d` at the head judged: its commits may live in
+    another task's branch, which `branch -d` refuses, and a branch that moved since stays."""
+    slug = row["slug"]
+    reason = keep_reason(repo, row, rows, files)
+    if not reason and not dry_run:
+        sessions = list_sessions()
+        if sessions is None:
+            raise Fail(f"cannot list sessions again before removing {slug}; nothing further removed")
+        reason = unplaced_block(sessions) or session_block(sessions_in(sessions, repo.root, row["path"]))
+    if reason:
+        print(f"kept {slug}: {reason}")
+        return "kept", reason
+    if dry_run:
+        print(f"would remove {slug}")
+        return "would remove", None
+    if row["session_id"]:
+        steps = [["claude", "rm", row["session_id"]]]
+    else:
+        branch = (["update-ref", "-d", f"refs/heads/{row['branch']}", row["head"]] if row["state"] == "closed"
+                  else ["branch", "-d", row["branch"]])
+        steps = [["git", "worktree", "remove", row["path"]], ["git", *branch]]
+    for argv in steps:
+        rc, _, err = run(argv, cwd=repo.root)
+        if rc != 0:
+            print(f"failed {slug} (branch {row['branch']}): {' '.join(argv)}: {err.strip()}", file=sys.stderr)
+            return "failed", None
+    print(f"removed {slug}")
+    task_event("TaskRemoved", repo, slug)
+    return "removed", None
 
 
 def args_clean(parser):
@@ -1677,36 +1743,9 @@ def cmd_clean(args):
         raise Fail(f"{unplaced_block(sessions)}; cannot tell which task it uses, nothing removed")
     failed = False
     rows = collect(repo, sessions, load_settings()["task_time_limit_hours"])
-    for row in rows:
-        reason = keep_reason(repo, row, rows)
-        if reason:
-            print(f"kept {row['slug']}: {reason}")
-        elif args.dry_run:
-            print(f"would remove {row['slug']}")
-        else:
-            sessions = list_sessions()
-            if sessions is None:
-                raise Fail(f"cannot list sessions again before removing {row['slug']}; nothing further removed")
-            reason = unplaced_block(sessions) or session_block(sessions_in(sessions, repo.root, row["path"]))
-            if reason:
-                print(f"kept {row['slug']}: {reason}")
-                continue
-            if row["session_id"]:
-                steps = [["claude", "rm", row["session_id"]]]
-            else:
-                steps = [["git", "worktree", "remove", row["path"]],
-                         ["git", "branch", "-d", row["branch"]]]
-            for argv in steps:
-                rc, _, err = run(argv, cwd=repo.root)
-                if rc != 0:
-                    print(f"failed {row['slug']} (branch {row['branch']}): {' '.join(argv)}: {err.strip()}",
-                          file=sys.stderr)
-                    failed = True
-                    break
-            else:
-                print(f"removed {row['slug']}")
-                task_event("TaskRemoved", repo, row["slug"])
     files = OpenFiles()
+    for row in rows:
+        failed |= clean_row(repo, row, rows, files, args.dry_run)[0] == "failed"
     for agent in repo.agents:
         clean_agent(repo, agent, sessions, files, args.dry_run)
     for job in finished_jobs():
@@ -1923,6 +1962,66 @@ def cmd_ack(args):
     declare(repo, args.slug, "dispatcher", args.state, last.get("deliverable"))
     print(f"{args.slug}: {args.state}")
     return 0
+
+
+def live_reason(repo, slug, sessions, files):
+    """Why the task `slug` is live and must not be closed, or None: its sessions cannot be told, one is interactive,
+    unfinished or has a process (an idle lead keeps its pid), a run holds its lock, or a process uses the worktree."""
+    if sessions is None:
+        return "cannot list sessions with `claude agents --json --all`"
+    mine = sessions_in(sessions, repo.root, repo.worktree_path(slug))
+    if reason := unplaced_block(sessions) or session_block(mine):
+        return reason
+    if live := next((s for s in mine if "pid" in s), None):
+        return f"session {live.get('id')} has a process (pid {live['pid']}), so its lead is live"
+    if build_running(repo, slug):
+        return "a build or tech lead run holds its lock"
+    users, error = files.users(repo.worktree_path(slug))
+    if error:
+        return f"cannot list open files: {error}"
+    return f"pid {users[0][0]} ({users[0][1]}) uses it" if users else None
+
+
+def close_task(repo, slug, role, reason, superseded_by, sessions, files):
+    """Declare the task `slug` closed by `role` (a task that will never finish and has no lead to hand over), then clean it as
+    `clean` would: returns what `clean_row` returns, or "kept" with the failure when `clean_row` raises after the declare. A
+    refusal is a `Fail` (exit 1) and writes nothing: not a task worktree, finished already (`ack` is its path), no reason,
+    replaced by itself, or live."""
+    refuse = lambda why: Fail(f"close: {slug}: {why}", code=1)  # noqa: E731
+    state = read_tasks(repo.root).get(slug, {}).get("state")
+    if not any(os.path.basename(t["path"]) == slug for t in repo.tasks):
+        raise refuse("not a task worktree")
+    if state in ("handed-over", *SETTLED):
+        raise refuse(f"declared {state}, it finished; `factory ack` is its path")
+    if not (reason or "").strip():
+        raise refuse("a reason is required")
+    if superseded_by == slug:
+        raise refuse("it cannot be superseded by itself")
+    if why := live_reason(repo, slug, sessions, files):
+        raise refuse(f"live: {why}")
+    reason = reason.strip()
+    if state != "closed":
+        declare(repo, slug, role, "closed", reason=reason, superseded_by=superseded_by)
+        task_event("TaskClosed", repo, slug, by=role, reason=reason, **({"superseded_by": superseded_by} if superseded_by else {}))
+    print(f"closed {slug}: {reason}")
+    rows = collect(repo, sessions, load_settings()["task_time_limit_hours"])
+    try:
+        return clean_row(repo, next(r for r in rows if r["slug"] == slug), rows, files, False)
+    except Fail as e:  # declared already: a failure now is a kept task, not a refusal
+        print(f"kept {slug}: {e}")
+        return "kept", str(e)
+
+
+def args_close(parser):
+    parser.add_argument("slug")
+    parser.add_argument("--reason", required=True, help="why it will never finish")
+    parser.add_argument("--superseded-by", metavar="SLUG", help="the task that took its work over (it may have merged and been cleaned)")
+
+
+@command("close", "close a task that will never finish and clean it up when nothing is lost (the dispatcher runs it)", args_close)
+def cmd_close(args):
+    repo = Repo()
+    return 1 if close_task(repo, args.slug, "dispatcher", args.reason, args.superseded_by, list_sessions(), OpenFiles())[0] == "failed" else 0
 
 
 @command("hook", "record one hook payload read from stdin (run by the plugin's hooks)")
@@ -2168,7 +2267,7 @@ SITE_MANAGER_TOOLS = (
     "Bash(factory feedback)", "Bash(factory feedback --json)",
     "Bash(ps *)", "Bash(pgrep *)",
     "Bash(gh pr view *)", "Bash(gh pr checks *)", "Bash(gh pr list *)", "Bash(gh run view *)", "Bash(gh run list *)",
-    "Bash(claude agents --json --all)")
+    "Bash(claude agents --json --all)", "Bash(factory clean --dry-run)")
 SITE_MANAGER_TURNS = 30
 OPS_ROLE = PLUGIN_ROOT / "roles" / "ops-watch.md"
 OPS_TICK_TURNS = 15
@@ -2210,8 +2309,9 @@ RUN_SCHEMA = {"type": "object", "required": ["sent", "decisions"], "properties":
         "id": {"type": "string", "description": "a firing you were given; or, for a call of your own, `entry`, `slug` and `detail` instead"},
         "entry": {"type": "string", "description": "an entry of the reference"}, "slug": {"type": "string"},
         "detail": {"type": "string", "description": "what you saw: the facts, one line"},
-        "decision": {"type": "string", "enum": ["escalated", "suppressed", "paused", "extended", "told"]},
+        "decision": {"type": "string", "enum": ["escalated", "suppressed", "paused", "extended", "told", "closed"]},
         "minutes": {"type": "integer", "minimum": 1},
+        "superseded_by": {"type": "string", "description": "with closed: the task that took its work over"},
         "to": {"type": "string", "enum": ["dispatcher", "lead"]}, "reason": {"type": "string"},
         "waits_on": {"type": "array", "items": {"type": "string"}},
         "tell": {"type": "array", "items": {"type": "string"}},
@@ -3172,6 +3272,30 @@ def tell_decision(p, f, decision, reason, minutes=None, until=None):
         forward(repo, p["dispatcher"], slug, *heard, lead=False)
 
 
+def close_decided(p, slug, reason, superseded_by):
+    """Apply a decision `closed` of the site manager: what `close_task` returns, or None (the refusal is printed) when
+    `superseded_by` is not a string or the task cannot be closed."""
+    if superseded_by is not None and not isinstance(superseded_by, str):
+        return None
+    try:
+        return close_task(p["repo"], slug, "site-manager", reason, superseded_by or None, list_sessions(), OpenFiles())
+    except Fail as e:
+        print(f"close skipped: {e}")
+        return None
+
+
+def tell_closed(p, fid, label, slug, reason, superseded_by, closed):
+    """Tell the dispatcher once, in a line of the script's own, that the site manager closed `slug`: removed and nothing to
+    answer, or kept and why (an escalation for the human). `label` is the criterion or entry. Logs on the firing who was told."""
+    what = f"closed ({reason.strip()}{f'; superseded by {superseded_by}' if superseded_by else ''})"
+    if closed[0] == "removed":
+        to = forward(p["repo"], p["dispatcher"], slug, "SITE MANAGER", f"{slug}: {what} and removed, no answer needed", lead=False)
+    else:
+        kept = closed[1] or "its removal failed, see the watch log"
+        to = forward(p["repo"], p["dispatcher"], slug, "ESCALATION", f"{fid} {label} {slug}: {what}; kept: {kept}", lead=False)
+    log_firing(p["repo"], id=fid, told=to or "nobody")
+
+
 def told_in_flight(p, f, tell):
     """Whether `tell` is a non-empty list of tasks in flight the firing `f` names: the two of a collision, every other of a new spec."""
     named = set(in_flight(p["repo"]))
@@ -3189,7 +3313,7 @@ def record_call(p, d, rows, run, called):
     refusal = ("the entry is not one of the reference" if not isinstance(entry, str) or entry not in reference_entries()
                else "the slug is not a task of the picture" if row is None
                else "detail is empty" if not text(detail) else "reason is empty" if not text(reason)
-               else "a call without a firing is escalated or suppressed" if decision not in ("escalated", "suppressed")
+               else "a call without a firing is escalated, suppressed or closed" if decision not in ("escalated", "suppressed", "closed")
                else "to is neither dispatcher nor lead" if to not in ("dispatcher", "lead")
                else "a second call on the same entry and task" if (entry, slug) in called
                else "its lead is not live" if decision == "escalated" and to == "lead" and not row.get("lead")
@@ -3198,13 +3322,18 @@ def record_call(p, d, rows, run, called):
     if refusal:
         print(f"call skipped: {entry} {slug}: {refusal}")
         return False
+    superseded_by, closed = d.get("superseded_by") or None, None
+    if decision == "closed" and not (closed := close_decided(p, slug, reason, superseded_by)):
+        return False
     called.add((entry, slug))
     f, looked, said = fire(repo, {"criterion": entry, "slug": slug, "subject": slug, "detail": detail.strip()}), d.get("looked"), reason.strip()
     log_firing(repo, id=f["id"], decision=decision, reason=said, by="site-manager", run=run,
                looked=[x for x in looked if isinstance(x, str)] if isinstance(looked, list) else [],
-               **({"to": to} if decision == "escalated" else {}))
+               **({"to": to} if decision == "escalated" else {}), **({"superseded_by": superseded_by} if decision == "closed" and superseded_by else {}))
     log_firing(repo, id=f["id"], cleared=True)
     print(f"{f['id']}  {entry}  {slug}  {decision}")
+    if closed:
+        tell_closed(p, f["id"], entry, slug, said, superseded_by, closed)
     if decision == "escalated":
         if to == "lead":
             forward(repo, p["dispatcher"], slug, "SITE MANAGER", said)
@@ -3227,7 +3356,7 @@ def record_decisions(p, sent, result, run, look=None):
         fid, decision, reason = d.get("id"), d.get("decision"), d.get("reason")
         if not isinstance(fid, str) or fid not in by_id or fid in seen:
             continue
-        if decision not in ("escalated", "suppressed", "paused", "extended", "told") or not isinstance(reason, str) or not reason.strip():
+        if decision not in ("escalated", "suppressed", "paused", "extended", "told", "closed") or not isinstance(reason, str) or not reason.strip():
             continue
         f, to = by_id[fid], (d.get("to") or "dispatcher") if decision == "escalated" else None
         crit, tell = f.get("criterion"), d.get("tell")
@@ -3240,6 +3369,9 @@ def record_decisions(p, sent, result, run, look=None):
             until = crit == "overrun" and grant(p, f["slug"], minutes)
             if not until:
                 continue
+        superseded_by, closed = d.get("superseded_by") or None, None
+        if decision == "closed" and (crit != "ended-undeclared" or not (closed := close_decided(p, f["slug"], reason, superseded_by))):
+            continue
         if decision == "escalated" and (to not in ("dispatcher", "lead") or result.get("sent") is not True
                                         or (crit == "overrun" and to != "dispatcher")):
             continue
@@ -3268,8 +3400,11 @@ def record_decisions(p, sent, result, run, look=None):
                    looked=[x for x in looked if isinstance(x, str)] if isinstance(looked, list) else [],
                    **({"to": to} if to else {}), **({"waits_on": waits} if decision == "paused" else {}),
                    **({"minutes": minutes, "until": until} if decision == "extended" else {}),
-                   **({"tell": tell} if decision == "told" else {}))
-        tell_decision(p, f, decision, reason.strip(), minutes, until)
+                   **({"tell": tell} if decision == "told" else {}), **({"superseded_by": superseded_by} if decision == "closed" and superseded_by else {}))
+        if closed:
+            tell_closed(p, fid, crit, f["slug"], reason, superseded_by, closed)
+        else:
+            tell_decision(p, f, decision, reason.strip(), minutes, until)
     return logged
 
 
@@ -3282,6 +3417,19 @@ def settle_extensions(p):
     for f in (f for f in extended(repo) if not f["outcome"]):
         first = next((t for t in handed.get(f["slug"], []) if t >= f["decided"]), None)
         outcome = "kept" if first and first <= f["until"] else "overran" if first or p["now"] > epoch(f["until"]) else None
+        if outcome:
+            log_firing(repo, id=f["id"], outcome=outcome)
+
+
+def settle_closed(p):
+    """On the full pass: a `closed` decision without an outcome is `reopened` when a later `tasks` record of the task has a
+    state other than closed (the call was wrong), else `stood` once its worktree is gone."""
+    repo = p["repo"]
+    declared = [r for r in read_log("tasks") if r.get("repo") == repo.root and r.get("state") != "closed"]
+    here = {os.path.basename(t["path"]) for t in repo.tasks}
+    for f in (f for f in fold(repo_log("firings", repo.root) or [])[0] if f["decision"] == "closed" and not f["outcome"]):
+        outcome = "reopened" if any(r.get("slug") == f["slug"] and stamp(r) > f["decided"] for r in declared) \
+            else "stood" if f["slug"] not in here else None
         if outcome:
             log_firing(repo, id=f["id"], outcome=outcome)
 
@@ -3751,6 +3899,10 @@ def watch_tick(args, repo):
                 and p["now"] - (epoch(old["decided"]) or 0) > LEAD_GRACE_MINUTES * 60:
             log_firing(repo, id=old["id"], cleared=True)
             f, old = {**f, "detail": f"{f['detail']}; {LEAD_TOLD}{old['decided']}: {old['reason']}", "lead_told": True}, None
+        elif old and old["decision"] == "escalated" and old.get("to") == "dispatcher" and old["outcome"] == "acted" \
+                and p["now"] - (epoch(old["decided"]) or 0) > RESURFACE_MINUTES * 60:
+            log_firing(repo, id=old["id"], cleared=True)
+            f, old = {**f, "detail": f"{f['detail']}; escalated at {old['decided']}, acted on, still true: {old['reason']}"}, None
         elif old and old["decision"] and set(f.get("files") or []) - set(old.get("files") or []):  # a decided pair that conflicts in a new file
             log_firing(repo, id=old["id"], cleared=True)
             old = None
@@ -3796,6 +3948,7 @@ def watch_tick(args, repo):
     if not full:
         return 0
     settle_extensions(p)
+    settle_closed(p)
     settle_collisions(p)
     if orphaned and "dispatcher-missing" not in {s["criterion"] for s in skipped} and not handed_over(repo) and not ops_active(repo):
         print(f"no dispatcher session for {repo.root}: removing the schedule", flush=True)  # launchd kills this process in remove
@@ -3937,6 +4090,7 @@ def summarize(firings, misses):
     first = sum(bool(m.get("firing")) for m in misses)
     given = [f for f in firings if f["decision"] == "extended"]
     told = [f for f in firings if f["decision"] == "told"]
+    closed = [f for f in firings if f["decision"] == "closed"]
     by_outcome = {o: sum(f["outcome"] == o for f in told) for o in ("acted", "noise", "collided")}
 
     def ratio(n, d):
@@ -3946,6 +4100,7 @@ def summarize(firings, misses):
             "suppressed": sum(f["decision"] == "suppressed" for f in firings),
             "paused": sum(f["decision"] == "paused" for f in firings),
             "extended": len(given), "kept": sum(f["outcome"] == "kept" for f in given), "overran": sum(f["outcome"] == "overran" for f in given),
+            "closed": len(closed), "stood": sum(f["outcome"] == "stood" for f in closed), "reopened": sum(f["outcome"] == "reopened" for f in closed),
             "told": len(told), **{f"told_{o}": n for o, n in by_outcome.items()}, "told_no_outcome": len(told) - sum(by_outcome.values()),
             "told_undelivered": sum(not set(f["tell"]) & set(f["delivered"]) for f in told),
             "missed": len(misses),
@@ -3963,7 +4118,7 @@ def entry_scores(firings, misses):
         counts = summarize(mine, [m for m in misses if (m.get("entry") or "unlisted") == name])
         scores[name] = {"fired": len(mine), "to_lead": sum(f["decision"] == "escalated" and f.get("to") == "lead" for f in mine),
                         **{k: counts[k] for k in ("escalated", "acted", "ignored", "no_outcome", "suppressed", "told", "extended", "paused",
-                                                  "missed", "precision")}}
+                                                  "closed", "missed", "precision")}}
     return scores
 
 
@@ -3988,14 +4143,15 @@ def cmd_firings(args):
     for name, e in s["entries"].items():
         if e["fired"] or e["missed"]:
             precision = "-" if e["precision"] is None else f"{e['precision']:.2f}"
-            more = "".join(f"; {k} {e[k]}" for k in ("extended", "told", "paused") if e[k])
+            more = "".join(f"; {k} {e[k]}" for k in ("extended", "told", "paused", "closed") if e[k])
             print(f"{name}: fired {e['fired']}; escalated {e['escalated']} (acted {e['acted']}, ignored {e['ignored']}, no outcome {e['no_outcome']}); "
                   f"to lead {e['to_lead']}; suppressed {e['suppressed']}{more}; missed {e['missed']}; precision {precision}")
     pct = {k: "-" if s[k] is None else f"{s[k]:.2f}" for k in ("precision", "recall")}
     told = sum(f["decision"] == "escalated" and f.get("to") == "lead" for f in firings)
     print(f"escalated {s['escalated']} (acted {s['acted']}, ignored {s['ignored']}, no outcome {s['no_outcome']}); "
           f"to lead {told}; suppressed {s['suppressed']}; paused {s['paused']}; "
-          f"extended {s['extended']} (kept {s['kept']}, overran {s['overran']}, no outcome {s['extended'] - s['kept'] - s['overran']}); missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
+          f"extended {s['extended']} (kept {s['kept']}, overran {s['overran']}, no outcome {s['extended'] - s['kept'] - s['overran']}); "
+          f"closed {s['closed']} (stood {s['stood']}, reopened {s['reopened']}, no outcome {s['closed'] - s['stood'] - s['reopened']}); missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
           f"{s['missed_never_fired']} never fired); precision {pct['precision']}; recall {pct['recall']}; "
           f"told {s['told']} (acted {s['told_acted']}, noise {s['told_noise']}, collided {s['told_collided']}, "
           f"no outcome {s['told_no_outcome']}, undelivered {s['told_undelivered']})")
