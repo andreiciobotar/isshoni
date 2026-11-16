@@ -32,6 +32,7 @@ class Machine:
         self.gh_login, self.claude_login = True, True
         self.plugins, self.markets, self.fail, self.crontab = [], [], set(), ""
         self.other_plugins, self.disabled = [], set()
+        self.stack, self.gh_version = True, "2.104.0"  # the stack extension is installed unless a test says otherwise
         self.calls = []
 
     def which(self, tool):
@@ -44,6 +45,15 @@ class Machine:
             return (0 if self.gh_login else 1), "", ""
         if a[:3] == ["gh", "api", "user"]:
             return 0, "octocat\n", ""
+        if a == ["gh", "--version"]:
+            return 0, f"gh version {self.gh_version} (2026-11-12)\nhttps://github.com/cli/cli/releases/tag/v{self.gh_version}\n", ""
+        if a == ["gh", "extension", "list"]:
+            return 0, "gh stack\tgithub/gh-stack\tv0.3.0\n" if self.stack else "gh stack\tsomeone/gh-stack\tv1\ngh stacks\tgithub/gh-stacks\tv1\n", ""
+        if a == ["gh", "extension", "install", "github/gh-stack"]:
+            if "extension" in self.fail:
+                return 1, "", "download\nHTTP 404"
+            self.stack = True
+            return 0, "", ""
         if a[:3] == ["claude", "auth", "status"]:
             if isinstance(self.claude_login, tuple):
                 return self.claude_login
@@ -388,6 +398,79 @@ class WizardFlow(Setup):
             self.assertTrue(factory.ask("ok?", True))
 
 
+class StackStep(Setup):
+    """The optional step that offers GitHub's stack extension. Offers come in this order: dashboard, cost criteria, this one, the App."""
+    INSTALL = ["gh", "extension", "install", "github/gh-stack"]
+
+    def setUp(self):
+        super().setUp()
+        self.machine.stack = False
+
+    def test_present_runs_nothing_more(self):
+        self.machine.stack = True
+        self.assertEqual(self.command("wizard", stdin="n\nn\nn\n"), 0, self.out + self.err)
+        self.assertIn(["gh", "extension", "list"], self.machine.calls)
+        self.assertNotIn(self.INSTALL, self.machine.calls)
+        self.assertNotIn(["gh", "--version"], self.machine.calls)
+        self.assertIn("gh stack: ", self.out)
+        self.assertIn("done: github/gh-stack", self.out)
+
+    def test_the_gh_calls_run_outside_any_repository_and_the_install_has_a_timeout(self):
+        seen = []
+
+        def spy(argv, **kw):
+            seen.append((argv[:3], kw.get("cwd"), kw.get("timeout")))
+            return self.machine(argv, **kw)
+
+        with mock.patch.object(factory, "run", spy):
+            self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
+        for argv in (["gh", "extension", "list"], ["gh", "--version"], self.INSTALL[:3]):
+            self.assertIn("/", [cwd for a, cwd, _ in seen if a == argv[:3]], argv)
+        self.assertIn(factory.RUN_TIMEOUT, [t for a, _, t in seen if a == self.INSTALL[:3]])
+
+    def test_an_offer_answered_yes_installs_once_and_the_next_run_finds_it(self):
+        for argv, stdin in (("wizard", "n\nn\ny\nn\n"), ("wizard --yes", "")):
+            self.machine.stack = False
+            self.machine.calls.clear()
+            self.assertEqual(self.command(*argv.split(), stdin=stdin), 0, self.out + self.err)
+            self.assertEqual(self.machine.calls.count(self.INSTALL), 1)
+            self.assertIn("did: installed GitHub's stack extension (gh extension install github/gh-stack)", self.out)
+        self.machine.calls.clear()
+        self.assertEqual(self.command("wizard", stdin="n\nn\nn\n"), 0, self.out + self.err)
+        self.assertNotIn(self.INSTALL, self.machine.calls)
+        self.assertIn("done: github/gh-stack", self.out)
+
+    def test_a_declined_offer_installs_nothing_and_is_asked_again(self):
+        for stdin in ("n\nn\nn\nn\n", ""):
+            self.machine.calls.clear()
+            self.assertEqual(self.command("wizard", stdin=stdin), 0, self.out + self.err)
+            self.assertNotIn(self.INSTALL, self.machine.calls)
+            self.assertIn("  skipped: declined", self.out)
+            self.assertIn("Install GitHub's stack extension (gh extension install github/gh-stack)? Optional", self.out)
+        self.assertFalse(self.machine.stack)
+
+    def test_a_gh_older_than_2_0_is_not_asked_and_not_installed(self):
+        self.machine.gh_version = "1.14.0"
+        self.assertEqual(self.command("wizard", stdin="n\nn\nn\n"), 0, self.out + self.err)
+        self.assertNotIn("Install GitHub's stack extension", self.out)
+        self.assertNotIn(self.INSTALL, self.machine.calls)
+        self.assertIn("gh 1.14.0 is older than 2.0", self.out)
+        self.assertIn("upgrade gh", self.out)
+
+    def test_a_failed_install_is_one_line_and_the_run_goes_on_but_exits_1(self):
+        self.machine.fail.add("extension")
+        self.assertEqual(self.command("wizard", "--yes"), 1)
+        self.assertIn("needs you: gh extension install github/gh-stack failed: HTTP 404", self.out)
+        self.assertIn("Summary:", self.out)
+
+    def test_list_shows_it_missing_and_installs_nothing(self):
+        self.assertEqual(self.command("wizard", "--list"), 1)
+        self.assertIn("  gh stack: not done (not installed; optional, the factory works without it)", self.out)
+        self.assertIn(["gh", "extension", "list"], self.machine.calls)
+        self.assertNotIn(self.INSTALL, self.machine.calls)
+        self.assertNotIn(["gh", "--version"], self.machine.calls)
+
+
 class Clone(Setup):
     def test_a_clone_holds_bin_isshoni_and_go_mod_two_levels_above_the_script(self):
         with mock.patch.object(factory_setup, "clone", self.__class__.real_clone):
@@ -425,6 +508,12 @@ class UninstallFlow(Setup):
         self.assertEqual(self.github.calls, [])
         self.assertEqual(self.opened, [])
         self.assertEqual(self.snapshot(), before)
+
+    def test_the_stack_extension_is_left_behind_and_never_removed(self):
+        self.set_up()
+        self.assertEqual(self.command("uninstall", "--yes"), 0, self.out + self.err)
+        self.assertIn("  git, gh and its stack extension (gh extension remove stack), Go, Claude Code", self.out)
+        self.assertFalse([c for c in self.machine.calls if c[:3] == ["gh", "extension", "remove"]])
 
     def test_list_removes_and_calls_nothing_and_opens_no_page(self):
         self.set_up()
