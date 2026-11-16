@@ -85,7 +85,8 @@ class Attribution(unittest.TestCase):
                     self.assertEqual(argv[argv.index("--worktree") + 1], "s")
 
     def test_a_new_session_start_must_be_added_to_this_test(self):
-        starts = re.findall(r'"claude", "(?:-p|--bg)"', Path(factory.__file__).read_text())
+        # `claude --bg --resume <id>` wakes a session with its saved options, its --settings included; any flag added would start a copy
+        starts = re.findall(r'"claude", "(?:-p|--bg)"(?!, "--resume")', Path(factory.__file__).read_text())
         self.assertEqual(len(starts), len(self.builders()), "a session start was added: give it the settings, then list it here")
 
 

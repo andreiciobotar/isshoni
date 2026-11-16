@@ -75,7 +75,7 @@ class Scratch(Harness):
         self.git("worktree", "add", "-q", "-b", f"worktree-{slug}", path, "main", cwd=self.root)
         self.seed("tasks", [{"repo": self.root, "slug": slug, "state": state, "ts": iso(NOW - 600)}])
         if state == "working":  # a live lead, so `ended-undeclared` stays quiet
-            self.leads.append({"sessionId": f"sid-{slug}", "name": slug, "cwd": path, "kind": "background", "state": "working"})
+            self.leads.append({"sessionId": f"sid-{slug}", "name": slug, "cwd": path, "kind": "background", "pid": 7, "state": "working"})
         if spec:
             file = self.store / "specs" / "repo" / f"{slug}.md"
             file.parent.mkdir(parents=True, exist_ok=True)
@@ -299,7 +299,7 @@ class CollisionTests(Scratch):
     def test_an_escalation_to_a_lead_on_a_collision_is_not_a_decision(self):
         path = self.task("alpha")
         self.task("beta")
-        self.leads = [{"sessionId": "sid-a", "name": "alpha", "cwd": path, "kind": "background", "state": "working"}]
+        self.leads = [{"sessionId": "sid-a", "name": "alpha", "cwd": path, "kind": "background", "pid": 7, "state": "working"}]
         self.commit("alpha", "f.txt", lines(BODY, 5, "from a"))
         self.commit("beta", "f.txt", lines(BODY, 5, "from b"))
         self.answer = lambda: reply([{"id": json.loads(self.fake.calls[-1][-1].partition("\n\n")[2])["firings"][0]["id"], "decision": "escalated",
