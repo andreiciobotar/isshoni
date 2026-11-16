@@ -44,7 +44,7 @@ func TestFactoryStatusDecodesNulls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Cap != 7 || st.Reserve != 1 || st.InMotion != 3 || st.Blocked != 2 || st.InReview != 1 || st.Settled != 1 || len(st.Rows) != 5 {
+	if st.Cap != 7 || st.Reserve != 1 || st.InMotion != 4 || st.Blocked != 2 || st.InReview != 1 || st.Merged != 1 || st.Settled != 1 || len(st.Rows) != 7 {
 		t.Fatalf("status %+v", st)
 	}
 	if a := st.Rows[0]; a.Elapsed != nil || a.Waited != nil || a.StopKind != "" || a.StopSummary != "" || a.Slug != "cost-in-money" || a.PRState != "unknown" {
@@ -521,5 +521,43 @@ func TestFactoryStatusFetchPassFailsAndHangsAlone(t *testing.T) {
 	}
 	if _, err := r.FactoryStatus(context.Background(), t.TempDir(), true); err == nil {
 		t.Fatal("the fetch pass fails")
+	}
+}
+
+func TestFactoryStatusDecodesKeptAndHeld(t *testing.T) {
+	r, dir := factoryStub(t)
+	b, err := os.ReadFile("testdata/factory-status.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "status.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.FactoryStatus(context.Background(), t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, held, plain := st.Rows[5], st.Rows[6], st.Rows[0]
+	h := held.Held
+	if kept.Slug != "old-plumbing" || kept.Kept != "uncommitted changes" || kept.Held != nil ||
+		held.Slug != "lost-its-lead" || held.Kept != "" || h == nil || h.Criterion != "ended-undeclared" || h.Decision != "suppressed" ||
+		!h.Since.Equal(time.Date(2099, 12, 31, 16, 55, 0, 0, time.UTC)) || !strings.HasPrefix(h.Reason, "its replacement redo-plumbing") ||
+		plain.Kept != "" || plain.Held != nil {
+		t.Fatalf("kept %+v held %+v", kept, held)
+	}
+}
+
+func TestFactoryStatusHeldWithABadSinceKeepsTheRow(t *testing.T) {
+	r, dir := factoryStub(t)
+	doc := `{"rows": [{"slug": "a", "phase": "motion", "kept": null, "held": {"criterion": "c", "decision": "escalated", "since": "yesterday", "reason": "why"}}]}`
+	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.FactoryStatus(context.Background(), t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := st.Rows[0].Held; h == nil || !h.Since.IsZero() || h.Decision != "escalated" || h.Reason != "why" || st.Rows[0].Kept != "" {
+		t.Fatalf("the hold stays, without an age: %+v", st.Rows[0])
 	}
 }

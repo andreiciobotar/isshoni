@@ -140,7 +140,9 @@ func alpha() factoryRepo {
 	ask.Waited, ask.StopKind, ask.StopSummary = ptr(int64(2700)), "QUESTION", "Should the export keep the legacy column order?"
 	docs.PRState, docs.PRURL, docs.Stale = "closed", "https://github.com/o/alpha/pull/40", true
 	old.PRState, old.PRURL, old.Elapsed = "merged", "https://github.com/o/alpha/pull/31", ptr(int64(61))
-	st := fstatus(5, stacked, old, docs, quiet, nearing, limits, login, ask, notes)
+	plumbing, lost := ftask("old-plumbing", "merged"), heldBy("suppressed", "its replacement redo-plumbing is in review: this one is closed when that lands", 9*time.Hour)
+	plumbing.PRState, plumbing.PRURL, plumbing.Elapsed, plumbing.Kept = "merged", "https://github.com/o/alpha/pull/9", ptr(int64(7200)), "uncommitted changes"
+	st := fstatus(5, stacked, old, docs, quiet, nearing, limits, login, ask, notes, plumbing, lost)
 	st.Reserve = 1
 	return factoryRepo{name: "alpha", path: "/r/alpha", st: st}
 }
@@ -361,7 +363,7 @@ func TestFactoryTableColumnsAndPhaseLabels(t *testing.T) {
 		t.Errorf("the origin/ prefix of a base is dropped:\n%s", out)
 	}
 	short := plain(factoryModel(true, 80, 24, alpha()))
-	if strings.Contains(short, "waiting for review") || !strings.Contains(short, "◆ review ") || !strings.Contains(short, "⠋ motion") || !strings.Contains(short, "Factory  6 motion (1 blocked) · 1 review · 1 merged · 1 settled") || !strings.Contains(short, "▲ blocked ") || strings.Contains(short, "blocked, needs you") {
+	if strings.Contains(short, "waiting for review") || !strings.Contains(short, "◆ review ") || !strings.Contains(short, "⠋ motion") || !strings.Contains(short, "Factory  7 motion (1 blocked) · 1 review · 2 merged · 1 settled") || !strings.Contains(short, "▲ blocked ") || strings.Contains(short, "blocked, needs you") {
 		t.Errorf("below 100 columns the labels are short:\n%s", short)
 	}
 	narrow := plain(factoryModel(true, 60, 20, alpha()))
@@ -985,7 +987,7 @@ func TestFactoryEmptyAndFirstResult(t *testing.T) {
 func TestFactorySubheaderAndSettingsLine(t *testing.T) {
 	m := factoryModel(true, 140, 40, fakeFactoryRepos()...)
 	out := plain(m)
-	for _, want := range []string{"Factory  9 in motion (1 blocked) · 1 waiting for review · 1 merged, not cleaned · 1 settled  · as of 11:00:00", "worktree cap  5  per repo", "⚠ not inside a git repository", "in motion ●●● 3/2"} {
+	for _, want := range []string{"Factory  10 in motion (1 blocked) · 1 waiting for review · 2 merged, not cleaned · 1 settled  · as of 11:00:00", "worktree cap  5  per repo", "⚠ not inside a git repository", "in motion ●●● 3/2"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("lacks %q:\n%s", want, out)
 		}
@@ -1615,9 +1617,83 @@ func TestSnapshotFactory(t *testing.T) {
 	if n := fetchCount(t, dir); n != 1 {
 		t.Fatalf("the snapshot runs the fetch pass once, after the cached one: %d", n)
 	}
-	for _, want := range []string{"proj", "stacked", "cost-in-money", "in motion ▲▲●○○○◌ 3/6+1", "paused 12m: waits nee", "Needs the login task to land first.", "write-up.md", "needs-an-answer", "worktree cap  7", "[3 Factory ▲2]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"} {
+	for _, want := range []string{"proj", "stacked", "cost-in-money", "in motion ▲▲●●○○◌ 4/6+1", "held 7h5m · ended-undeclared · its replacement", "kept: uncommitted changes", "paused 12m: waits nee", "Needs the login task to land first.", "write-up.md", "needs-an-answer", "worktree cap  7", "[3 Factory ▲2]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("snapshot lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// ---- kept and held ------------------------------------------------------------------
+
+// heldBy is a task in motion the site manager decided on age ago.
+func heldBy(decision, reason string, age time.Duration) data.FactoryTask {
+	x := ftask("lost-its-lead", "motion")
+	x.Session, x.Elapsed, x.Limit = "working", ptr(int64(32400)), ptr(int64(2700))
+	x.Held = &data.FactoryHeld{Criterion: "ended-undeclared", Decision: decision, Reason: reason}
+	if age > 0 {
+		x.Held.Since = fakeNow.Add(-age)
+	}
+	return x
+}
+
+func TestFactoryKeptAndHeldRowsAreNeverOvertime(t *testing.T) {
+	over, kept, held := ftask("a", "motion"), ftask("b", "motion"), heldBy("suppressed", "", time.Hour)
+	over.Elapsed, over.Limit, over.Overtime = ptr(int64(8100)), ptr(int64(5400)), true
+	kept.Elapsed, kept.Limit, kept.Overtime, kept.Kept = ptr(int64(8100)), ptr(int64(5400)), true, "uncommitted changes"
+	held.Overtime, held.Nearing = true, true
+	m := factoryModel(false, 140, 40, factoryRepo{name: "m", st: fstatus(5, over, kept, held)})
+	p, th, rows := m.th.on(m.th.Bg), m.th, m.fac.repos[0].st.Rows
+	cols := m.factoryCols(p, 140, rows)
+	for i, want := range []struct {
+		col  color.Color
+		pill bool
+	}{{th.Red, true}, {th.Muted, false}, {th.Muted, false}} {
+		line := m.taskRow(p, cols, rows[i], 140)[0]
+		if got := strings.Contains(line, p.t(cell(elapsedText(rows[i], cols.span), cols.elapsed, true), want.col)); !got {
+			t.Errorf("row %d: the elapsed cell is not %v:\n%s", i, want.col, line)
+		}
+		if got := strings.Contains(ansi.Strip(line), "overtime"); got != want.pill {
+			t.Errorf("row %d: overtime pill is %v, want %v:\n%s", i, got, want.pill, line)
+		}
+	}
+}
+
+func TestFactoryKeptAndHeldPills(t *testing.T) {
+	kept, supp, esc, both := ftask("a", "merged"), heldBy("suppressed", "", 0), heldBy("escalated", "", 0), heldBy("suppressed", "", 0)
+	kept.Kept, both.Kept, both.Stale = "uncommitted changes", "x", true
+	m := factoryModel(true, 140, 40, factoryRepo{name: "m", st: fstatus(5, kept, supp, esc, both)})
+	p := m.th.on(m.th.Bg)
+	for i, want := range []string{"[kept]", "[held]", "[escalated]", "[stale] [held] [kept]"} {
+		if got := flagPills(p, m.fac.repos[0].st.Rows[i]); got != want {
+			t.Errorf("row %d: pills %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestFactoryKeptAndHeldDetailLine(t *testing.T) {
+	keptOnly, both := ftask("a", "merged"), heldBy("suppressed", "its  replacement\nis in review", 9*time.Hour)
+	keptOnly.Kept, both.Kept = "uncommitted changes", "uncommitted changes"
+	extended := heldBy("suppressed", "r", time.Hour)
+	extended.Extensions = []data.FactoryExtension{{Minutes: 30, By: "site-manager", Reason: "more"}}
+	for _, c := range []struct {
+		name string
+		t    data.FactoryTask
+		want string
+	}{
+		{"kept", keptOnly, "kept: uncommitted changes"},
+		{"suppressed", heldBy("suppressed", "closed when that lands", 9*time.Hour), "held 9h · ended-undeclared · closed when that lands"},
+		{"escalated", heldBy("escalated", "closed when that lands", 25*time.Minute), "escalated 25m · ended-undeclared · closed when that lands"},
+		{"both", both, "kept: uncommitted changes · held 9h · ended-undeclared · its replacement is in review"},
+		{"zero since", heldBy("suppressed", "why", 0), "held · ended-undeclared · why"},
+		{"empty reason", heldBy("suppressed", " ", time.Hour), "held 1h · ended-undeclared"},
+		{"replaces the extension line", extended, "held 1h · ended-undeclared · r"},
+	} {
+		m := factoryModel(true, 140, 40, factoryRepo{name: "m", st: fstatus(5, c.t)})
+		p, rows := m.th.on(m.th.Bg), m.fac.repos[0].st.Rows
+		row := m.taskRow(p, m.factoryCols(p, 140, rows), rows[0], 140)
+		if len(row) != 2 || strings.TrimSpace(row[1]) != c.want {
+			t.Errorf("%s: detail line %q, want one line %q", c.name, row[1:], c.want)
 		}
 	}
 }
