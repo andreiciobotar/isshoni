@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from test_factory import DISPATCHER, LEAN_SETTINGS, ROOT, WT, FakeRun, factory, repo_answers, stub_popen, task_entry
+from test_factory import DISPATCHER, LEAN_SETTINGS, ROOT, WT, FakeRun, FakeTime, factory, repo_answers, stub_popen, task_entry
 
 NOW = 1_800_000_000
 HOUR = 3600
@@ -422,8 +422,7 @@ class Harness(Home):
                         mock.patch.object(factory, "ROLE_PATH", self.role),
                 mock.patch.object(factory, "GUIDANCE_PATH", self.guidance),
                         mock.patch.object(factory, "now", lambda: iso(self.clock)),
-                        mock.patch.object(factory.time, "time", lambda: self.clock),
-                        mock.patch.object(factory.time, "sleep", lambda seconds: setattr(self, "clock", self.clock + seconds))):
+                        mock.patch.object(factory, "time", FakeTime(time=lambda: self.clock, sleep=lambda seconds: setattr(self, "clock", self.clock + seconds)))):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -491,7 +490,13 @@ def decided(fid, decision, ts=NOW - HOUR, reason="why"):
     return {"ts": iso(ts), "repo": ROOT, "id": fid, "decision": decision, "reason": reason, "by": "site-manager"}
 
 
+REAL_CLOCK = (time.time, time.sleep)
+
+
 class HealthTests(Harness):
+    def test_the_fake_clock_is_not_on_the_time_module(self):
+        self.assertEqual((time.time, time.sleep), REAL_CLOCK)
+
     def test_table_and_json_write_nothing(self):
         self.seed("tasks", [{"repo": ROOT, "slug": "x", "role": "lead", "state": "working", "ts": iso(NOW - HOUR)}])
         before = {p.name: p.read_bytes() for p in self.store.iterdir()}
