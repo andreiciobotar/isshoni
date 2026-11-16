@@ -274,6 +274,70 @@ A handed-over pull request that the lander's loop cannot ship (it conflicts with
 - **Observing.** `~/.claude/factory/tech-lead.log` holds the output of every detached run; the `techlead` log (see Logs) has one record per come-back; the pull request carries the note; `events` give the session's role `tech-lead`, not `lead`, through `FACTORY_ROLE`.
 - **Turning it off.** There is no switch. Remove the three lines of `send_back` that start it, or leave a task without its spec file: it then always goes to its lead.
 
+## Worktree isolation and a worker's Bash call
+A Bash call refused with `This session is isolated in the worktree <path>` is refused by Claude Code's worktree isolation, not by a factory hook (the only `PreToolUse` hook matches `mcp__.*`). Its command-shape check cannot be turned off or narrowed by a setting, and it covers every subagent of an isolated session. The owner can report the `$CLAUDE_JOB_DIR` case (rows A20 to A22) through `/feedback`; anything else means not isolating sessions, which the factory relies on.
+
+The lead and its explorers are isolated; a build run (a headless session started in the worktree's directory) and its coder, reviewer, explorer and lander are not. The table's two columns are those two conditions. In the second nothing but the role line keeps git inside the worktree. That line, which begins `- Keep git in this worktree`, is the same in `factory/agents/{coder,explorer,reviewer,lander}.md`, `factory/roles/lead.md` and `.claude/agents/{coder,explorer,reviewer}.md`, and `tests/test_repo.py` holds the eight together.
+
+What the short line leaves out: `$CLAUDE_JOB_DIR` counts as a `$` (print it once, type the path). `$(...)` counts. Another branch is read with `git show <branch>:<path>`. Pipes, `&&`, heredocs and redirects are accepted.
+
+Measured 2026-11-16, each command as one Bash call, once. `S` is the job's scratch directory as a literal path, `MAIN` the main checkout, `WT` the task's worktree; `$CLAUDE_JOB_DIR` was typed where shown.
+
+| # | Command | lead's explorer | build worker |
+|---|---|---|---|
+| A1 | `python3 -c "print('digit')"` | accepted | accepted |
+| A2 | heredoc `python3 - <<'EOF'`, body `print('hello')` | accepted | accepted |
+| A3 | the same with body `print('git')` | accepted | accepted |
+| A4 | `mkdir -p "$CLAUDE_JOB_DIR/tmp/p5" && ls "$CLAUDE_JOB_DIR/tmp/p5"` | accepted | accepted |
+| A5 | `echo digest && echo done` | accepted | accepted |
+| A6 | `ls README.md; git status --short` | accepted | accepted |
+| A7 | `cat .gitignore; ls README.md` | accepted | accepted |
+| A8 | `find . -maxdepth 2 -name '*.md' -not -path '*/.git/*'` | accepted | accepted |
+| A9 | `grep -rn --exclude-dir=.git -m1 "coding-taste" factory/skills` | accepted | accepted |
+| A10 | `for f in README.md CLAUDE.md; do git show HEAD:$f \| head -1; done` | refused, complex | accepted |
+| A11 | `for d in factory docs; do grep -rl --exclude-dir=.git -m1 "lander" $d \| head -1; done` | refused, complex | accepted |
+| A12 | `for f in README.md CLAUDE.md; do wc -l $f; done` | accepted | accepted |
+| A13 | `gh pr view 124 --json title --repo "$(git remote get-url origin)"` | refused, complex | accepted |
+| A14 | `gh pr view 124 --json title` | accepted | accepted |
+| A15 | `git grep -n -m1 "plain command" -- factory/agents/*.md` | accepted | accepted |
+| A16 | `HOME="$CLAUDE_JOB_DIR/tmp/home" ls README.md` | accepted | accepted |
+| A17 | `env HOME="$CLAUDE_JOB_DIR/tmp/home" ls README.md` | accepted | accepted |
+| A18 | `git -C MAIN log -1 --oneline` | refused, via `-C` | accepted |
+| A19 | `git -C WT log -1 --oneline` | accepted | accepted |
+| A20 | `git show HEAD:README.md > "$CLAUDE_JOB_DIR/tmp/readme.txt"` | refused, complex | accepted |
+| A21 | `mkdir -p "$CLAUDE_JOB_DIR/tmp/p24" && git archive HEAD README.md \| tar -x -C "$CLAUDE_JOB_DIR/tmp/p24"` | refused, complex | accepted |
+| A22 | `git archive -o "$CLAUDE_JOB_DIR/tmp/p25.tar" HEAD README.md` | refused, complex | accepted |
+| A23 | heredoc `cat > "$CLAUDE_JOB_DIR/tmp/p26.txt" <<'EOF'`, body `hello` | accepted | accepted |
+| A24 | multi-line `python3 -c "..."` reading `factory/agents/*.md` with pathlib, printing a word count | accepted | accepted |
+| A25 | `python3 factory/bin/factory --help; git diff --stat` | accepted | accepted |
+| A26 | `sed -i '' 's/a/a/' "$CLAUDE_JOB_DIR/tmp/p26.txt"` | accepted | accepted |
+| A27 | `git log -1 --oneline \| cat` | accepted | accepted |
+| B1 | `git show HEAD:README.md > S/a.txt` | accepted | accepted |
+| B2 | `git archive -o S/b.tar HEAD README.md` | accepted | accepted |
+| B3 | `git show HEAD:README.md \| tee S/c.txt \| head -1` | accepted | accepted |
+| B4 | `mkdir -p S/l && git archive HEAD README.md \| tar -x -C S/l` | accepted | accepted |
+| B5 | `git show main:README.md \| head -1` | accepted | accepted |
+| B6 | `git --no-pager diff --stat HEAD~1 HEAD > S/o.txt` | accepted | accepted |
+| B7 | `git ls-files 'factory/agents/*.md' \| xargs wc -l` | accepted | accepted |
+| B8 | `python3 -c "import subprocess; print(subprocess.run(['git','log','-1','--oneline'],capture_output=True,text=True).stdout)"` | accepted | accepted |
+| B9 | `grep -rl --exclude-dir=.git -m1 "lander" "$PWD/docs"` | accepted | accepted |
+| B10 | `echo "$USER"; git status --short` | refused, complex | accepted |
+| B11 | `git log -1 --format=%h -- "$PWD/README.md"` | refused, word | accepted |
+| B12 | `for f in README.md CLAUDE.md; do echo $f; done; git status --short` | refused, complex | accepted |
+| B13 | `git log -1 --oneline $(echo HEAD)` | refused, complex | accepted |
+| B14 | ``git log -1 --oneline `echo HEAD` `` | refused, complex | accepted |
+| B15 | `git ls-files factory/agents \| while read f; do wc -l "$f"; done` | refused, complex | accepted |
+| B16 | `HOME=S/home git status --short` | refused, sets `HOME` | accepted |
+| B17 | `GIT_DIR=MAIN/.git git log -1 --oneline` | refused, sets `GIT_DIR` | accepted |
+| B18 | `git --git-dir=MAIN/.git log -1 --oneline` | refused, via `--git-dir` | accepted |
+| B19 | `cd MAIN && git log -1 --oneline` | refused, changes directory to MAIN | accepted |
+
+Refusal cells abbreviate the message, each of which begins `This session is isolated in the worktree <WT>, but this command`: *complex* is "names git in a form too complex to verify that it stays inside the worktree"; *word* is "has a word that can't be verified before it runs"; *via `-C`* is "redirects git to the shared checkout via -C" (the same with `--git-dir`); *sets `HOME`* is "sets HOME, injecting git configuration whose effect on where git writes can't be verified"; *sets `GIT_DIR`* is "sets GIT_DIR to the shared checkout"; *changes directory to MAIN* is "changes directory to the shared checkout before running git".
+
+A18 and B16 to B19 are what the check exists to stop; B10 to B15, A10, A11, A13 and A20 to A22 are what it stops because it cannot verify them. The build worker column ran every row with the check not active.
+
+**The number.** The review counts distinct `slug` of outbox feedback entries whose text matches, case-insensitive, `worktree[- ](guard|isolation|rule|sandbox)|isolation guard|Bash guard|letters .?.?git|too complex|complex command|one plain command`, over distinct `slug` of all feedback entries in the window: 16 of 37 (43%) in the 24 hours to 2026-11-15T20:24Z. The target is at most 2 of the 20 tasks whose `TaskStarted` follows this change's merge, counted the same way when the 20th has handed over. Of the matching entries in tasks that had a build run, those filed after the task's first run are 4 (lead 2, coder 1, reviewer 1, the last two naming the rule sentence, not a refusal), so the entries now come from leads and their explorers.
+
 ## Team mode
 Since 2026-11-15 every task runs as a lead and a tech lead sharing the work ("team mode" is the only mode; there is no switch). The task's `TaskStarted` event always carries `mode`, always `team`: a record for `isshoni kaizen --modes`, which compares these tasks with those started before.
 
