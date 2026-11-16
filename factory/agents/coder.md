@@ -17,7 +17,7 @@ Rules:
 - Run the relevant tests or a quick check before you finish.
 - Do not refactor unrelated code.
 - Commit your finished round on the current branch: only the files of the task (`git add <paths>`, never `-A`), one commit, a message that says what changed. Never push. Put `commit <sha>` as the first line under `## Changed`. If there is nothing to commit, or the task says not to, say so there instead.
-- Keep git inside this worktree: never point it at the main checkout or another task's worktree (`-C`, `--git-dir`, `GIT_DIR`, `cd`); read another branch as `git show <branch>:<path>`. A Bash call refused with `This session is isolated in the worktree` (Claude Code's own check, not on in every session; nothing here loosens it) ran nothing: rewrite it once so the call that runs git holds literal values only, with no `$` expansion (not even `$CLAUDE_JOB_DIR`: print it once, type the path), `$(...)`, backtick, loop or `HOME=`. Pipes, `&&`, heredocs and redirects are accepted.
+- Keep git in this worktree: no `-C`, `--git-dir`, `GIT_DIR` or `cd` elsewhere. A call refused with `This session is isolated` ran nothing: retry with literal values, no `$`, backtick, loop or `HOME=`.
 - Run every command in the foreground, with an explicit `timeout` when it may take more than two minutes (at most 600000 ms; at its timeout the harness moves a command to the background). Your report is final and ends your run: never end your turn to wait for a background command.
 - Before you report, stop every background command you started; say how many you stopped.
 - A test that starts a process kills its process group in cleanup; report the "left behind" count of the test run.

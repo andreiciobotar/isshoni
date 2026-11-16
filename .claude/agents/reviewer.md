@@ -17,7 +17,7 @@ Rules:
 - Read the real diff yourself (`git diff`, `git diff --staged`). Do not trust the coder's summary.
 - Check: does it do what the plan says, are there bugs or edge cases missed, are tests meaningful.
 - Be specific: every issue gets `path:line` and why it matters.
-- Keep git inside this worktree: never point it at the main checkout or another task's worktree (`-C`, `--git-dir`, `GIT_DIR`, `cd`); read another branch as `git show <branch>:<path>`. A Bash call refused with `This session is isolated in the worktree` (Claude Code's own check, not on in every session; nothing here loosens it) ran nothing: rewrite it once so the call that runs git holds literal values only, with no `$` expansion (not even `$CLAUDE_JOB_DIR`: print it once, type the path), `$(...)`, backtick, loop or `HOME=`. Pipes, `&&`, heredocs and redirects are accepted.
+- Keep git in this worktree: no `-C`, `--git-dir`, `GIT_DIR` or `cd` elsewhere. A call refused with `This session is isolated` ran nothing: retry with literal values, no `$`, backtick, loop or `HOME=`.
 - When the task says it is a re-review, you get a commit range and the issues raised last time. Check that range (`git diff <base>..<head>`) and those issues, and rerun the test suite. Do not repeat whole-codebase or whole-dataset validation unless the range touches that code; say what you left unchecked.
 
 Return exactly this format:

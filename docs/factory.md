@@ -275,9 +275,11 @@ A handed-over pull request that the lander's loop cannot ship (it conflicts with
 ## Worktree isolation and a worker's Bash call
 A Bash call refused with `This session is isolated in the worktree <path>` is refused by Claude Code's worktree isolation, not by a factory hook (the only `PreToolUse` hook matches `mcp__.*`). Its command-shape check cannot be turned off or narrowed by a setting, and it covers every subagent of an isolated session. The owner can report the `$CLAUDE_JOB_DIR` case (rows A20, A22) through `/feedback`; anything else means not isolating sessions, which the factory relies on.
 
-The lead and its explorers are isolated; a build run (a headless session started in the worktree's directory) and its coder, reviewer, explorer and lander are not. The table's two columns are those two conditions. In the second nothing but the role line "Keep git inside this worktree" (the same in eight files, held by `tests/test_repo.py`) keeps git inside the worktree.
+The lead and its explorers are isolated; a build run (a headless session started in the worktree's directory) and its coder, reviewer, explorer and lander are not. The table's two columns are those two conditions. In the second nothing but the role line keeps git inside the worktree. That line, which begins `- Keep git in this worktree`, is the same in `factory/agents/{coder,explorer,reviewer,lander}.md`, `factory/roles/lead.md` and `.claude/agents/{coder,explorer,reviewer}.md`, and `tests/test_repo.py` holds the eight together.
 
-Measured 2026-11-16, each command as one Bash call, once. `S` is the job's scratch directory as a literal path, `MAIN` the main checkout, `WT` the task's worktree; `$CLAUDE_JOB_DIR` was typed where shown. Refusal clauses: *complex* is "names git in a form too complex to verify", *word* is "has a word that can't be verified before it runs".
+What the short line leaves out: `$CLAUDE_JOB_DIR` counts as a `$` (print it once, type the path). `$(...)` counts. Another branch is read with `git show <branch>:<path>`. Pipes, `&&`, heredocs and redirects are accepted.
+
+Measured 2026-11-16, each command as one Bash call, once. `S` is the job's scratch directory as a literal path, `MAIN` the main checkout, `WT` the task's worktree; `$CLAUDE_JOB_DIR` was typed where shown.
 
 | # | Command | lead's explorer | build worker |
 |---|---|---|---|
@@ -327,6 +329,8 @@ Measured 2026-11-16, each command as one Bash call, once. `S` is the job's scrat
 | B17 | `GIT_DIR=MAIN/.git git log -1 --oneline` | refused, sets `GIT_DIR` | accepted |
 | B18 | `git --git-dir=MAIN/.git log -1 --oneline` | refused, via `--git-dir` | accepted |
 | B19 | `cd MAIN && git log -1 --oneline` | refused, changes directory to MAIN | accepted |
+
+Refusal cells abbreviate the message, each of which begins `This session is isolated in the worktree <WT>, but this command`: *complex* is "names git in a form too complex to verify that it stays inside the worktree"; *word* is "has a word that can't be verified before it runs"; *via `-C`* is "redirects git to the shared checkout via -C" (the same with `--git-dir`); *sets `HOME`* is "sets HOME, injecting git configuration whose effect on where git writes can't be verified"; *sets `GIT_DIR`* is "sets GIT_DIR to the shared checkout"; *changes directory to MAIN* is "changes directory to the shared checkout before running git".
 
 A18 and B16 to B19 are what the check exists to stop; B10 to B15, A10, A11, A13 and A20 to A22 are what it stops because it cannot verify them. The build worker column ran every row with the check not active.
 

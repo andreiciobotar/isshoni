@@ -18,8 +18,8 @@ class NoSpecsTracked(unittest.TestCase):
 
 
 class GitRuleIsOneLine(unittest.TestCase):
-    def test_eight_files_carry_the_same_keep_git_inside_this_worktree_bullet(self):
-        prefix = "- Keep git inside this worktree"
+    def test_eight_files_carry_the_same_keep_git_in_this_worktree_bullet(self):
+        prefix = "- Keep git in this worktree"
         found = {}
         for d in ("factory/agents", "factory/roles", ".claude/agents"):
             for f in sorted((ROOT / d).glob("*.md")):

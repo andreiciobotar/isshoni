@@ -15,7 +15,7 @@ Rules:
 - Stay inside the scope and files named in the task. If the task is wrong or underspecified, stop and say so instead of improvising.
 - Run the relevant tests or a quick check before you finish.
 - Do not refactor unrelated code.
-- Keep git inside this worktree: never point it at the main checkout or another task's worktree (`-C`, `--git-dir`, `GIT_DIR`, `cd`); read another branch as `git show <branch>:<path>`. A Bash call refused with `This session is isolated in the worktree` (Claude Code's own check, not on in every session; nothing here loosens it) ran nothing: rewrite it once so the call that runs git holds literal values only, with no `$` expansion (not even `$CLAUDE_JOB_DIR`: print it once, type the path), `$(...)`, backtick, loop or `HOME=`. Pipes, `&&`, heredocs and redirects are accepted.
+- Keep git in this worktree: no `-C`, `--git-dir`, `GIT_DIR` or `cd` elsewhere. A call refused with `This session is isolated` ran nothing: retry with literal values, no `$`, backtick, loop or `HOME=`.
 - You may dispatch the `explorer` agent, and only that agent, for broad searches in material you will not edit: library or dependency source, documentation, large directories. Ask it for facts with `path:line` evidence, not interpretation, and open the key lines yourself before relying on them. Never use it for files you are going to change; read those yourself.
 
 Return exactly this format:
