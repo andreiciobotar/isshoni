@@ -571,3 +571,38 @@ func TestFailedSessionRefreshIsRetriedAtTheSlowCadence(t *testing.T) {
 		t.Fatal("nothing left to retry")
 	}
 }
+
+// A poll sees an append to a session written in the last 10 minutes, and a new session
+// file, on the next tick; the first poll is the scanner's sweep, the later ones are not.
+func TestPollSeesHotAppendsAndNewSessionsAtOnce(t *testing.T) {
+	m, _ := stubModel(t)
+	root := t.TempDir()
+	m.runner.ProjectsDir = root
+	hot := filepath.Join(root, "proj", "hot.jsonl")
+	os.MkdirAll(filepath.Dir(hot), 0o755)
+	os.WriteFile(hot, []byte("{}\n"), 0o644)
+	t1 := fakeNow.Add(-time.Minute)
+	os.Chtimes(hot, t1, t1)
+	m.loaded = true
+	poll := func() map[string]time.Time {
+		t.Helper()
+		m.polledAt, m.scanning = time.Time{}, false
+		got := only[scanMsg](upd(m, tickMsg{gen: m.tickGen}))
+		if len(got) != 1 || got[0].err != nil {
+			t.Fatalf("one scan expected: %+v", got)
+		}
+		return got[0].seen
+	}
+	if seen := poll(); !seen["hot"].Equal(t1) {
+		t.Fatalf("first poll: %v", seen)
+	}
+	t2 := fakeNow.Add(-time.Second)
+	os.Chtimes(hot, t2, t2)
+	if seen := poll(); !seen["hot"].Equal(t2) {
+		t.Fatalf("a hot append reaches the next poll: %v", seen)
+	}
+	os.WriteFile(filepath.Join(root, "proj", "new.jsonl"), []byte("{}\n"), 0o644)
+	if seen := poll(); seen["new"].IsZero() || len(seen) != 2 {
+		t.Fatalf("a new session reaches the next poll: %v", seen)
+	}
+}

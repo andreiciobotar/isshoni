@@ -365,3 +365,182 @@ func TestMonitorCancelKillsTheChildren(t *testing.T) {
 	<-done
 	requireChildGone(t, child)
 }
+
+// scannerRoot is a root with a hot session (hot, in proj), a cold one (cold, in proj) and a
+// cold one in a second project, with now the scanner's clock.
+func scannerRoot(t *testing.T, now time.Time) (root string, s *Scanner) {
+	t.Helper()
+	root = t.TempDir()
+	writeTranscript(t, filepath.Join(root, "proj", "hot.jsonl"), now.Add(-time.Minute))
+	writeTranscript(t, filepath.Join(root, "proj", "cold.jsonl"), now.Add(-time.Hour))
+	writeTranscript(t, filepath.Join(root, "other", "old.jsonl"), now.Add(-time.Hour))
+	s = &Scanner{}
+	got, err := s.Scan(root, now)
+	if err != nil || len(got) != 3 {
+		t.Fatalf("first scan = %v, %v", got, err)
+	}
+	return root, s
+}
+
+func sameAsScan(t *testing.T, root string, got map[string]time.Time) {
+	t.Helper()
+	want, _ := Scan(root)
+	if len(got) != len(want) {
+		t.Fatalf("scanner = %v, Scan = %v", got, want)
+	}
+	for id, w := range want {
+		if !got[id].Equal(w) {
+			t.Fatalf("scanner = %v, Scan = %v", got, want)
+		}
+	}
+}
+
+func TestScannerHotAppendIsSeenAtOnce(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	root, s := scannerRoot(t, now)
+	later := now.Add(time.Second)
+	if err := os.Chtimes(filepath.Join(root, "proj", "hot.jsonl"), later, later); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Scan(root, now.Add(time.Second))
+	if !got["hot"].Equal(later) {
+		t.Fatalf("hot = %v, want %v", got["hot"], later)
+	}
+	sameAsScan(t, root, got)
+}
+
+func TestScannerHotSubagentIsSeenAtOnce(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	root, s := scannerRoot(t, now)
+	sub := filepath.Join(root, "proj", "hot", "subagents", "x.jsonl")
+	t1 := now.Add(time.Second)
+	writeTranscript(t, sub, t1) // a first subagent file: the session directory is new
+	got, _ := s.Scan(root, now.Add(time.Second))
+	if !got["hot"].Equal(t1) {
+		t.Fatalf("new subagent file: hot = %v, want %v", got["hot"], t1)
+	}
+	sameAsScan(t, root, got)
+	t2 := now.Add(2 * time.Second) // an append to it moves no directory mtime
+	if err := os.Chtimes(sub, t2, t2); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.Scan(root, now.Add(2*time.Second))
+	if !got["hot"].Equal(t2) {
+		t.Fatalf("advanced subagent file: hot = %v, want %v", got["hot"], t2)
+	}
+	sameAsScan(t, root, got)
+}
+
+func TestScannerColdAppendWaitsForTheSweep(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	root, s := scannerRoot(t, now)
+	cold := filepath.Join(root, "proj", "cold.jsonl")
+	t1 := now.Add(time.Second)
+	if err := os.Chtimes(cold, t1, t1); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.Scan(root, now.Add(sweepEvery-time.Second))
+	if !before["cold"].Equal(now.Add(-time.Hour)) {
+		t.Fatalf("a cold append before the sweep must not be statted: cold = %v", before["cold"])
+	}
+	at, _ := s.Scan(root, now.Add(sweepEvery))
+	if !at["cold"].Equal(t1) {
+		t.Fatalf("the sweep sees it: cold = %v, want %v", at["cold"], t1)
+	}
+	sameAsScan(t, root, at)
+	t2 := now.Add(sweepEvery + time.Second) // now hot: seen by the next scan, not the next sweep
+	if err := os.Chtimes(cold, t2, t2); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := s.Scan(root, now.Add(sweepEvery+time.Second))
+	if !next["cold"].Equal(t2) {
+		t.Fatalf("a resumed session is hot: cold = %v, want %v", next["cold"], t2)
+	}
+	sameAsScan(t, root, next)
+}
+
+func TestScannerSeesNewSessionsAndProjects(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	root, s := scannerRoot(t, now)
+	writeTranscript(t, filepath.Join(root, "proj", "new.jsonl"), now.Add(-2*time.Hour))
+	got, _ := s.Scan(root, now.Add(time.Second))
+	if len(got) != 4 || got["new"].IsZero() {
+		t.Fatalf("new session in a known project: %v", got)
+	}
+	sameAsScan(t, root, got)
+	writeTranscript(t, filepath.Join(root, "fresh", "f.jsonl"), now.Add(-2*time.Hour))
+	got, _ = s.Scan(root, now.Add(2*time.Second))
+	if len(got) != 5 || got["f"].IsZero() {
+		t.Fatalf("new project: %v", got)
+	}
+	sameAsScan(t, root, got)
+}
+
+func TestScannerDropsDeletedSessionsAndProjects(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	root, s := scannerRoot(t, now)
+	if err := os.Remove(filepath.Join(root, "proj", "cold.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Scan(root, now.Add(time.Second))
+	if _, ok := got["cold"]; ok || len(got) != 2 {
+		t.Fatalf("a deleted cold session is gone: %v", got)
+	}
+	sameAsScan(t, root, got)
+	if err := os.RemoveAll(filepath.Join(root, "other")); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.Scan(root, now.Add(2*time.Second))
+	if _, ok := got["old"]; ok || len(got) != 1 {
+		t.Fatalf("a deleted project is gone: %v", got)
+	}
+	sameAsScan(t, root, got)
+}
+
+func TestScannerDropsADeletedHotSessionWithoutMovingItsDirectory(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	root, s := scannerRoot(t, now)
+	// restat is what runs when the project directory did not move
+	p := s.project["proj"]
+	if err := os.Remove(filepath.Join(root, "proj", "hot.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	p.restat(filepath.Join(root, "proj"), now)
+	if _, ok := p.times["hot"]; ok || len(p.times) != 1 {
+		t.Fatalf("a hot session whose transcript is gone is dropped: %v", p.times)
+	}
+}
+
+func TestScannerRootUnreadableThenReadable(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	root, s := scannerRoot(t, now)
+	if err := os.Chmod(root, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(root, 0o755) })
+	if _, err := os.ReadDir(root); err == nil {
+		t.Skip("directory permissions are not enforced (running as root?)")
+	}
+	got, err := s.Scan(root, now.Add(time.Second))
+	if err == nil || got != nil {
+		t.Fatalf("an unreadable root is an error with a nil result: %v, %v", got, err)
+	}
+	os.Chmod(root, 0o755)
+	got, err = s.Scan(root, now.Add(2*time.Second))
+	if err != nil || len(got) != 3 {
+		t.Fatalf("readable again: %v, %v", got, err)
+	}
+	sameAsScan(t, root, got)
+}
+
+func TestScannerReturnsAFreshMap(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	root, s := scannerRoot(t, now)
+	a, _ := s.Scan(root, now.Add(time.Second))
+	a["hot"] = time.Time{}
+	delete(a, "cold")
+	b, _ := s.Scan(root, now.Add(2*time.Second))
+	if b["hot"].IsZero() || len(b) != 3 {
+		t.Fatalf("the caller's changes leaked into the scanner: %v", b)
+	}
+}

@@ -421,7 +421,7 @@ into one task; the version is the first one logged, not the one running.
 ## Dashboard (`isshoni-tui`)
 
 `make up` builds and runs it. It shows what `isshoni --json` reports, re-reading a
-session when its transcript changes (checked every second). The only file it writes
+session when its transcript changes (checked every second for new or deleted sessions and for sessions written in the last 10 minutes; older ones every 10 seconds). The only file it writes
 under `~/.claude` is the factory's settings, when you save the cap. It finds the
 Python package from `ISSHONI_ROOT`, else from the binary's own location. It needs a
 terminal of at least 60x16.
