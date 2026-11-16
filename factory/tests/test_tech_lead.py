@@ -253,7 +253,11 @@ class RunTests(Case):
     def test_launch_command(self):
         code, *_, m = self.go()
         [argv] = m.tech_lead_calls()
-        role = (BIN.parent.parent / "roles" / "tech-lead.md").read_text()
+        role_text = (BIN.parent.parent / "roles" / "tech-lead.md").read_text()
+        skill = (BIN.parent.parent / "skills" / "coding-taste" / "SKILL.md").read_text().partition("\n---\n")[2]
+        role = f"{role_text}\n\n{skill}"
+        self.assertIn("\n## Review words\n", role)
+        self.assertNotIn("\n\n---", role.removeprefix(role_text))
         self.assertEqual(argv[:-1], [
             "claude", "-p", "--model", "opus", "--permission-mode", "auto",
             "--agents", json.dumps(factory.agent_definitions(factory.SETTINGS_DEFAULTS, self.root)), "--plugin-dir", str(BIN.parent.parent),
