@@ -4798,8 +4798,7 @@ def mergeability(p, n):
 
 def refusal(p, n, stop):
     """`stop`, the failed `gh pr merge` step of pull request `n`, with what GitHub's records say explains it: a review
-    requirement (kind `merge`), a check that started again (kind `pending`), else that nothing does (kind `refused`).
-    """
+    requirement (kind `merge`), a check that started again (kind `pending`), else that nothing does (kind `refused`)."""
     def read(*argv):
         try:
             return p["gh"](*argv)

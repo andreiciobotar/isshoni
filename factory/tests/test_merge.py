@@ -152,6 +152,14 @@ class MergeCommandTests(World):
         self.assertEqual([c[:2] for c in self.pr_calls()], [["pr", "checks"], ["pr", "view"], ["pr", "merge"]])
         self.assertIn("#2 merged", out)
 
+    def test_a_dry_run_on_a_merged_base_says_so_and_changes_nothing(self):
+        merged = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
+        code, out, _ = self.merge("2", "--dry-run", prs=[pr(2, base="worktree-t1")],
+                                  extra={("gh", "pr", "list", "--head", "worktree-t1"): merged})
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "#2 would merge (its base is changed to main first; it merges on the pass after that)\n")
+        self.assertEqual(self.gh_mutations(), [])
+
     def test_a_base_that_is_open_and_not_selected_is_a_stop(self):
         code, out, _ = self.merge("2", prs=[pr(1), pr(2, base="worktree-t1")])
         self.assertEqual(code, 1)

@@ -375,13 +375,13 @@ class MergeInOrderTests(Loop):
         self.go("lander", at=NOW + 240)
         self.assertEqual((self.sim.merged, self.sim.lead_lines()), ([2, 1], [line]))
 
-    def stacked_and_refused(self):
+    def refused_on_main(self):
         """#2 is on main; GitHub refuses its merge and its records show everything satisfied."""
         self.sim.add(2, behind=False)
         self.sim.refused, self.sim.explained = {2}, False
 
     def test_an_unexplained_refusal_waits_one_pass_and_the_loop_merges_it(self):
-        self.stacked_and_refused()
+        self.refused_on_main()
         self.go("lander")
         self.assertEqual((self.sim.merged, self.sim.lead_lines()), ([], []))
         self.assertEqual(self.lander_json()["waiting"]["2"]["kind"], "refused")
@@ -391,7 +391,7 @@ class MergeInOrderTests(Loop):
         self.assertEqual((self.sim.merged, self.sim.lead_lines()), ([2], []))
 
     def test_an_unexplained_refusal_told_once_at_the_second_pass(self):
-        self.stacked_and_refused()
+        self.refused_on_main()
         self.go("lander")
         self.go("lander", at=NOW + 120)
         [line] = self.sim.lead_lines()
@@ -491,7 +491,6 @@ class MergeInOrderTests(Loop):
         self.go("lander")
         self.assertEqual(self.sim.merged, [1, 2])
         self.assertEqual(self.sim.events("push", "merge", "edit"), [("push", 1), ("merge", 1), ("push", 2), ("edit", 2), ("merge", 2)])
-
 
     def test_a_base_change_is_a_silent_wait_and_the_loop_merges_after_one_poll(self):
         self.sim.add(1)
