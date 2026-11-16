@@ -6204,22 +6204,20 @@ def send_back(repo, fallback, pr, slug, evidence):
     "lead", "dispatcher" or "human". One comment on the pull request says why and who was told."""
     declare(repo, slug, "lander", "working")
     to_draft(repo, pr["headRefName"])
-    to = "tech lead" if tech_lead_start(repo, fallback, pr, slug, evidence) else tell_lead_of(repo, fallback, pr, slug, evidence)
+    if tech_lead_start(repo, fallback, pr, slug, evidence):
+        to = "tech lead"
+    else:
+        held = paused_for(repo, slug)
+        said = (f"#{pr['number']} is paused: it conflicts in {', '.join(conflicting_files(repo, pr))} while {', '.join(held)} are landing "
+                f"on the same files. Declare factory state blocked {','.join(held)} --paused, dispatch nothing, and wait: you are told "
+                "when the way is clear." if held else
+                f"#{pr['number']} went back to you: {evidence}. Fix it on your branch (merge {repo.remote}/{repo.default} in), "
+                "re-review what you change, and hand over again: it is then merged by itself.")
+        to = tell_lead(repo, fallback, slug, "LANDER", said, f"factory: #{pr['number']} went back to {slug}")
     told = "Started: a tech lead run." if to == "tech lead" else f"Told: the {to}."
     if failed := gh_step(repo, "pr", "comment", str(pr["number"]), "--body", f"Merge queue: back to draft: {evidence}. {told}"):
         print(f"#{pr['number']} comment not posted: {failed[1]}")
     return to
-
-
-def tell_lead_of(repo, fallback, pr, slug, evidence):
-    """What `send_back` tells when no tech lead run started: "lead", "dispatcher" or "human"."""
-    held = paused_for(repo, slug)
-    said = (f"#{pr['number']} is paused: it conflicts in {', '.join(conflicting_files(repo, pr))} while {', '.join(held)} are landing "
-            f"on the same files. Declare factory state blocked {','.join(held)} --paused, dispatch nothing, and wait: you are told "
-            "when the way is clear." if held else
-            f"#{pr['number']} went back to you: {evidence}. Fix it on your branch (merge {repo.remote}/{repo.default} in), "
-            "re-review what you change, and hand over again: it is then merged by itself.")
-    return tell_lead(repo, fallback, slug, "LANDER", said, f"factory: #{pr['number']} went back to {slug}")
 
 
 def tell_lead(repo, fallback, slug, head, said, title, lead=True):
@@ -6363,8 +6361,9 @@ def nothing_to_change(repo, worktree, n, head):
     works, `<remote>/<default>` is in `head`, the pull request is open at `head` and the queue's own test of its checks
     passes. Whatever cannot be read is a failure."""
     ref = f"{repo.remote}/{repo.default}"
-    if act_git(worktree, "fetch", repo.remote, timeout=GH_TIMEOUT)[0] != 0:
-        return f"git fetch {repo.remote} failed"
+    rc, out, err = act_git(worktree, "fetch", repo.remote, timeout=GH_TIMEOUT)
+    if rc != 0:
+        return f"git fetch {repo.remote} failed: {' '.join((err or out).split())}"
     if repo.git("merge-base", "--is-ancestor", ref, "HEAD", path=worktree)[0] != 0:
         return f"{ref} is not merged in"
     try:
