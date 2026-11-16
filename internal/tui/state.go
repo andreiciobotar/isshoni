@@ -98,6 +98,7 @@ type model struct {
 	opts   Options
 	th     *Theme
 	runner *data.Runner
+	scan   *data.Scanner // the poll's; a pointer so copies of the model share it
 	now    func() time.Time
 	w, h   int
 
@@ -192,7 +193,7 @@ func New(o Options) *model {
 		}
 	}
 	m := &model{
-		opts: o, th: NewTheme(o.NoColor), runner: o.Runner, now: o.Now, ctx: o.Ctx,
+		opts: o, th: NewTheme(o.NoColor), runner: o.Runner, scan: &data.Scanner{}, now: o.Now, ctx: o.Ctx,
 		w: 100, h: 30, rangeIdx: idx, follow: o.Follow, loading: true,
 		sessions: map[string]*data.Session{}, details: map[string]*data.Session{},
 		dirty: map[string]bool{}, inflight: map[string]bool{}, retry: map[string]time.Time{}, counter: map[string]*Counter{},
@@ -306,9 +307,9 @@ func (m *model) fetchSession(id string) tea.Cmd {
 
 func (m *model) scanCmd() tea.Cmd {
 	m.scanning = true
-	root := m.runner.Projects()
+	root, sc, now := m.runner.Projects(), m.scan, m.now()
 	return func() tea.Msg {
-		seen, err := data.Scan(root)
+		seen, err := sc.Scan(root, now)
 		return scanMsg{seen: seen, err: err}
 	}
 }

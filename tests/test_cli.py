@@ -1,4 +1,6 @@
+import argparse
 import contextlib
+import gc
 import io
 import json
 import os
@@ -7,9 +9,10 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from tests.support import AGENTS, PRICES_PATH, PROJECTS, ROOT
-from isshoni import cli
+from isshoni import cli, metrics, prices as price_file
 
 BASE = ["--projects-dir", PROJECTS, "--agents-dir", AGENTS, "--prices", PRICES_PATH]
 
@@ -175,6 +178,43 @@ class CliTests(unittest.TestCase):
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(p.returncode, 0, p.stderr)
         json.loads(p.stdout)
+
+
+class LoadAllGcTests(unittest.TestCase):
+    def setUp(self):
+        self.addCleanup(gc.enable if gc.isenabled() else gc.disable)
+        self.args = argparse.Namespace(projects_dir=PROJECTS, agents_dir=AGENTS, repeat_threshold=0.5)
+        self.prices = price_file.load(PRICES_PATH)
+
+    def test_collector_off_during_load(self):
+        seen = []
+        real = metrics.analyze
+
+        def analyze(*a):
+            seen.append(gc.isenabled())
+            return real(*a)
+
+        gc.enable()
+        with mock.patch.object(metrics, "analyze", analyze):
+            self.assertEqual(len(cli.load_all(self.args, self.prices)), 1)
+        self.assertEqual(seen, [False])
+
+    def test_collector_back_on_after_return(self):
+        gc.enable()
+        cli.load_all(self.args, self.prices)
+        self.assertTrue(gc.isenabled())
+
+    def test_collector_back_on_after_exception(self):
+        gc.enable()
+        with mock.patch.object(metrics, "analyze", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                cli.load_all(self.args, self.prices)
+        self.assertTrue(gc.isenabled())
+
+    def test_collector_stays_off_when_it_was_off(self):
+        gc.disable()
+        cli.load_all(self.args, self.prices)
+        self.assertFalse(gc.isenabled())
 
 
 if __name__ == "__main__":

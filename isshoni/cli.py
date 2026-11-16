@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import re
@@ -118,28 +119,34 @@ FROM_SINCE = object()  # load_all's default cutoff: whatever `--since` says
 
 def load_all(args, prices, cutoff=FROM_SINCE):
     """The sessions of the projects directory; `cutoff` drops those that ended before it (None: none dropped)."""
-    paths = transcript.discover_sessions(args.projects_dir)
-    cache = sessioncache.SessionCache(args.projects_dir, prices)
-    cache.prune(paths)
-    if cutoff is FROM_SINCE:
-        cutoff = parse_since(args.since) if getattr(args, "since", None) else None
-    sessions = []
-    for p in paths:
-        if cutoff is not None:
-            try:
-                if os.path.getmtime(p) < cutoff.timestamp():
+    was_enabled = gc.isenabled()
+    gc.disable()  # unpickling thousands of sessions otherwise runs the cyclic collector every few allocations
+    try:
+        paths = transcript.discover_sessions(args.projects_dir)
+        cache = sessioncache.SessionCache(args.projects_dir, prices)
+        cache.prune(paths)
+        if cutoff is FROM_SINCE:
+            cutoff = parse_since(args.since) if getattr(args, "since", None) else None
+        sessions = []
+        for p in paths:
+            if cutoff is not None:
+                try:
+                    if os.path.getmtime(p) < cutoff.timestamp():
+                        continue
+                except OSError:
                     continue
-            except OSError:
+            s = cache.load(p)
+            if cutoff is not None and s.last_ts is not None and s.last_ts < cutoff:
                 continue
-        s = cache.load(p)
-        if cutoff is not None and s.last_ts is not None and s.last_ts < cutoff:
-            continue
-        if getattr(args, "repo", None) not in (None, s.repo) or getattr(args, "task", None) not in (None, s.task):
-            continue
-        metrics.analyze(s, args.agents_dir, args.repeat_threshold)
-        sessions.append(s)
-    sessions.sort(key=lambda s: s.first_ts or transcript.EPOCH)
-    return sessions
+            if getattr(args, "repo", None) not in (None, s.repo) or getattr(args, "task", None) not in (None, s.task):
+                continue
+            metrics.analyze(s, args.agents_dir, args.repeat_threshold)
+            sessions.append(s)
+        sessions.sort(key=lambda s: s.first_ts or transcript.EPOCH)
+        return sessions
+    finally:
+        if was_enabled:
+            gc.enable()
 
 
 # ---- commands -----------------------------------------------------------------

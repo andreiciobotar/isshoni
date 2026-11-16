@@ -23,6 +23,14 @@ def pr(n, base="main", draft=False, fork=False, sha=SHA, author=AUTHOR):
             "headRefOid": sha, "baseRefName": base, "isCrossRepository": fork, "author": author}
 
 
+RECORDED = {("git", "config", "--get-regexp"): (0, "branch.worktree-t1.factorypr 1\n", "")}  # task t1 recorded #1
+
+
+def namesake(**kw):
+    """Another pull request (#2), by the same author, on the head branch of task t1, whose recorded pull request is #1."""
+    return dict(pr(2, **kw), headRefName="worktree-t1")
+
+
 def stacked_base(n=1):
     """What GitHub says about the base pull request #n: open when the tasks are read, merged after that."""
     def state(word):
@@ -540,6 +548,23 @@ class ApprovedTests(World):
         self.assertIn("#1 merged", out)
         self.assertEqual([c[:2] for c in self.gh_mutations()], [["pr", "ready"], ["pr", "merge"]])
 
+    def test_a_pull_request_that_only_shares_the_branch_of_the_recorded_one_is_refused_and_the_recorded_one_merges(self):
+        both = [pr(1), namesake(draft=True)]
+        code, out, _ = self.approved(both, {2: [comment(n=2)]}, "2", extra=RECORDED, tasks=["t1"])
+        self.assertEqual(code, 1)
+        self.assertIn("#2 stopped: task t1 recorded #1 as its pull request, not this one (opened by andrei)\n", out)
+        self.assertEqual(self.gh_mutations(), [])
+        self.setUp()
+        code, out, _ = self.approved(both, {1: [comment()]}, "1", extra=RECORDED, tasks=["t1"])
+        self.assertEqual((code, self.merges()), (0, ["1"]))
+
+    def test_the_recorded_pull_request_still_merges_after_a_hand_push_and_a_fresh_approval(self):
+        new = "sha-2"
+        code, _, _ = self.approved([pr(1, sha=new), namesake()], {1: [comment()]}, "1", extra=RECORDED, tasks=["t1"],
+                                   local=new, activity={1: [{"after": new, "timestamp": iso(NOW - 3600)}]})
+        self.assertEqual((code, self.merges()), (0, ["1"]))
+        self.assertEqual(self.gh_mutations()[-1], ["pr", "merge", "1", "--merge", "--match-head-commit", new])
+
     def test_an_approved_draft_whose_task_is_working_is_refused_for_the_handover(self):
         code, out, _ = self.approved([pr(1, draft=True)], {1: [comment()]}, state="working")
         self.assertEqual(code, 1)
@@ -847,6 +872,14 @@ class SyncDraftTests(World):
                 _, out, _ = self.cli("status", answers=answers, sessions=sessions, entries=slugs)
                 self.assertEqual([l for l in out.splitlines() if l.startswith("waiting on")],
                                  [] if line is None else [f"{line}t1 https://x/pull/1"])
+
+    def test_the_draft_flag_of_a_pull_request_that_is_not_the_recorded_one_is_left_alone(self):
+        for label, kw in {"a draft that would be marked ready": dict(prs=[pr(1), namesake(draft=True)]),
+                          "a ready one that would go back to draft": dict(prs=[pr(1, draft=True), namesake()], state="working")}.items():
+            with self.subTest(label):
+                self.setUp()
+                self.tick(tasks=["t1"], extra=RECORDED, **kw)
+                self.assertEqual(self.flips(), [])
 
     def test_each_actor_leaves_the_pull_request_of_another_machines_task_alone(self):
         """Head `worktree-other` has no worktree here, though the store holds a handed-over record for `other`."""

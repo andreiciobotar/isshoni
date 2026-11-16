@@ -736,6 +736,14 @@ class Repo:
         live = [e for e in entries[1:] if not e["prunable"]]
         under = [e for e in live if os.path.dirname(e["path"]) == base]
         self.tasks = [e for e in under if not os.path.basename(e["path"]).startswith("agent-")]
+        rc, out, _ = run(["git", "config", "--get-regexp", r"^branch\..*\.factorypr$"], cwd=self.root)
+        recorded = {}
+        for line in out.splitlines() if rc == 0 else []:
+            key, _, number = line.partition(" ")
+            recorded[key.removeprefix("branch.").removesuffix(".factorypr")] = number.strip()
+        for t in self.tasks:
+            if t["branch"] in recorded:
+                t["pr"] = recorded[t["branch"]]
         self.agents = [e for e in under if os.path.basename(e["path"]).startswith("agent-")]
         self.leftover = len(self.agents)
         self.outside = len(live) - len(under)
@@ -1043,7 +1051,7 @@ def collect(repo, sessions, limit_hours, prs=None):
     for wt in repo.tasks:
         path, branch = wt["path"], wt["branch"]
         slug = os.path.basename(path)
-        row = {"slug": slug, "branch": branch, "path": path, "locked": wt["locked"]}
+        row = {"slug": slug, "branch": branch, "path": path, "locked": wt["locked"], **({"pr": wt["pr"]} if "pr" in wt else {})}
         mine = sessions_in(sessions, repo.root, path) if sessions is not None else []
         session = next((s for s in mine if s.get("name") == slug),
                        next((s for s in mine if s.get("kind") == "background"), mine[0] if mine else None))
@@ -1869,6 +1877,20 @@ def args_state(parser):
                              "human (default), dispatcher or the slug of another open task")
 
 
+def record_pull_request(repo, task, url):
+    """Record the number of the open pull request `url` on the task's branch when it is at the worktree's head: this is
+    how a replaced pull request is adopted. A link that is not that pull request is left alone, silently."""
+    branch = task["branch"]
+    if not url.rsplit("/", 1)[1].isdigit():
+        return
+    prs, error = gh_list(repo, "--head", branch, "--state", "open")
+    found = next((pr for pr in prs or [] if pr["url"] == url), None)
+    if error or found and found["headRefOid"] != repo.git("rev-parse", "HEAD", path=task["path"])[1].strip():
+        print(f"{url}: its number was not recorded: {error or 'its head is not the worktree head'}", file=sys.stderr)
+    elif found:
+        repo.git("config", f"branch.{branch}.factoryPr", found["url"].rsplit("/", 1)[1])
+
+
 @command("state", "declare the state of the task whose worktree this is (a lead runs it)", args_state)
 def cmd_state(args):
     repo = Repo()
@@ -1897,6 +1919,8 @@ def cmd_state(args):
     declare(repo, slug, "lead", args.state, deliverable, waits_on, args.paused)
     if args.paused:
         task_event("TaskPaused", repo, slug, waits_on=waits_on)
+    if args.state == "handed-over" and task["branch"] and LINK_RE.match(deliverable):
+        record_pull_request(repo, task, deliverable)
     stated = args.state == "handed-over" and task["branch"] and config_value(repo, f"branch.{task['branch']}.factoryTest")
     if stated and stated != "none":
         repo.git("config", "factory.lastTest", stated)
@@ -4381,14 +4405,24 @@ def bottom_up(prs):
     return ordered
 
 
+def is_task_of(entry, pr):
+    """Whether the task `entry` (of repo.tasks or a row) owns `pr`: its branch is the head, and the pull request is the
+    recorded one when a number is recorded. The one place the test is written."""
+    return entry["branch"] == pr["headRefName"] and (entry.get("pr") is None or entry["pr"] == str(pr["number"]))
+
+
 def task_of(p, pr):
-    return next((r for r in p["rows"] or [] if r["branch"] == pr["headRefName"]), None)
+    return next((r for r in p["rows"] or [] if is_task_of(r, pr)), None)
 
 
 def handover_reason(p, pr):
     """Why the task of `pr` has not handed it over, or None."""
     row = task_of(p, pr)
     if row is None:
+        other = next((r for r in p["rows"] or [] if r["branch"] == pr["headRefName"]), None)
+        if other:
+            return (f"task {other['slug']} recorded #{other['pr']} as its pull request, not this one "
+                    f"(opened by {(pr.get('author') or {}).get('login') or 'unknown'})")
         return "no task worktree has its head branch"
     if row["phase"] != "review":
         return f"task {row['slug']} is in phase {row['phase']} (declared {row['state'] or 'none'})"
@@ -4527,7 +4561,8 @@ def sync_drafts(p, prs):
 def to_draft(repo, branch):
     """Back to draft at once; the result is ignored (a task often has no pull request yet), the tick reports failures."""
     if branch:
-        run(["gh", "pr", "ready", "--undo", branch], cwd=repo.root)
+        task = next((t for t in repo.tasks if t["branch"] == branch), {})
+        run(["gh", "pr", "ready", "--undo", task.get("pr", branch)], cwd=repo.root)
 
 
 def log_queue(repo, pr_number, slug, head, step, **fields):
@@ -4818,8 +4853,8 @@ def snapshot(repo):
 
 
 def task_slug(repo, pr):
-    """The slug of the task worktree whose branch is the head of `pr`, or None."""
-    return next((os.path.basename(t["path"]) for t in repo.tasks if t["branch"] == pr["headRefName"]), None)
+    """The slug of the task worktree that owns `pr` (is_task_of), or None."""
+    return next((os.path.basename(t["path"]) for t in repo.tasks if is_task_of(t, pr)), None)
 
 
 def owned(repo, pr):
@@ -5760,7 +5795,7 @@ class Landing:
 
     def __init__(self, repo, task, lean, mode):
         self.repo, self.path, self.branch, self.remote = repo, task["path"], task["branch"], repo.remote
-        self.slug = os.path.basename(self.path)
+        self.slug, self.recorded = os.path.basename(self.path), task.get("pr")
         self.lean, self.mode = lean, mode
         self.declared = False
 
@@ -5800,6 +5835,9 @@ class Landing:
         pushed = self.out("rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/{branch}")
         if state != "open":
             return self.stop("other", f"its pull request is {state}")
+        if self.recorded and self.url.rsplit("/", 1)[1] != self.recorded:
+            return self.stop("other", f"{self.url} is not the pull request recorded for {self.slug} (#{self.recorded}); "
+                                      f"`factory state handed-over {self.url}` adopts it")
         if self.old_head != pushed:
             return self.stop("other", f"HEAD {self.old_head} is not {remote}/{branch} ({pushed or 'not pushed'})")
         if self.old_head != pr_head:
@@ -6510,6 +6548,9 @@ def tech_lead_run(repo, settings, args, learned):
     hand-over (or the line to the lead): the last step is the one that can leave the task `working`."""
     slug, n, evidence = args.slug, args.pr, args.evidence
     pr = gh_json(repo, dict, "pr", "view", str(n), "--json", "number,url,headRefName,headRefOid")
+    if task_slug(repo, pr) != slug:
+        recorded = next((t.get("pr") for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
+        raise Fail(f"#{n} is not the pull request of task {slug} (it recorded {'#' + recorded if recorded else 'none'})")
     worktree, spec, branch = *tech_lead_paths(repo, slug), pr["headRefName"]
     declare(repo, slug, "tech-lead", "working")
     to_draft(repo, branch)
@@ -6692,9 +6733,12 @@ def reported_findings(out):
 def delivery_gap(repo, slug, branch, git):
     """Why a `built` run has delivered nothing, or None: an open pull request, or a report task's end: no pull request, the
     report on disk and no commit the base lacks (the worktree is removed after acceptance, so a commit would be lost)."""
-    state = pull_request(repo, branch)[0]
+    state, url, head = pull_request(repo, branch)[:3]
     report = STORE.expanduser() / "deliverables" / slug / "report.md"
     if state == "open":
+        number = url.rsplit("/", 1)[1]
+        if number.isdigit() and not config_value(repo, f"branch.{branch}.factoryPr") and head == git("rev-parse", "HEAD"):
+            repo.git("config", f"branch.{branch}.factoryPr", number)
         return None
     if state == "unknown":
         return f"cannot check for a pull request on {branch}"
