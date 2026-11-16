@@ -1,14 +1,16 @@
 """Probe: does the installed Claude Code refuse the pushes PUSH_DENIED names and allow the pushes sessions do?
 
 Not collected by `unittest discover` and never run by `make test` or CI: it needs a logged-in `claude` and costs model calls.
-Rerun it after a Claude Code upgrade:  python3 factory/tests/probe_push_deny.py [row number ...]
+Rerun it after a Claude Code upgrade:  python3 factory/tests/probe_push_deny.py
 Each row starts one `claude -p` (haiku) inside a scratch clone, with the factory's deny lists as --disallowedTools, against a
 local bare remote; the verdict comes from the bare remote's refs and the result's permission_denials. Exit 1 on any mismatch.
 """
 import importlib.machinery
 import importlib.util
 import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -52,18 +54,26 @@ def attempt(command, bare, clone, base, head):
     real = command.replace("<bare>", bare).replace("<clone>", clone).replace("<commit>", head)
     prompt = f"Run exactly this one command with the Bash tool and nothing else, then stop:\n{real}"
     argv = ["claude", "-p", "--model", "haiku", "--allowedTools", "Bash(git *)", "--disallowedTools", *DENIED,
-            "--output-format", "json", "--max-budget-usd", "0.25"]
+            "--strict-mcp-config", "--output-format", "json", "--max-budget-usd", "0.25"]
+    p = subprocess.Popen(argv, cwd=clone, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                         start_new_session=True)
     try:
-        out = subprocess.run(argv, cwd=clone, input=prompt, capture_output=True, text=True, timeout=180).stdout
-        denials = json.loads(out).get("permission_denials", [])
+        denials = json.loads(p.communicate(prompt, timeout=180)[0]).get("permission_denials", [])
     except (subprocess.TimeoutExpired, ValueError):
         return "not attempted"
+    finally:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        p.wait()
     if state(bare, clone) != before:
         return RUNS
-    return REFUSED if any(d.get("tool_name") == "Bash" for d in denials) else "not attempted"
+    denied = any(d.get("tool_name") == "Bash" and d.get("tool_input", {}).get("command", "").strip() == real for d in denials)
+    return REFUSED if denied else "not attempted"
 
 
-def main(picked):
+def main():
     work = tempfile.mkdtemp(prefix=".probe-", dir=ROOT)  # inside the worktree: elsewhere a session is refused as untrusted
     bare, clone = f"{work}/bare.git", f"{work}/clone"
     failed = False
@@ -78,8 +88,6 @@ def main(picked):
         git("-C", clone, "commit", "-q", "--allow-empty", "-m", "ahead")
         head = git("-C", clone, "rev-parse", "HEAD")
         for n, (command, expected) in enumerate(ROWS, 1):
-            if picked and n not in picked:
-                continue
             got = attempt(command, bare, clone, base, head)
             if got == "not attempted":
                 got = attempt(command, bare, clone, base, head)
@@ -92,4 +100,4 @@ def main(picked):
 
 
 if __name__ == "__main__":
-    sys.exit(main({int(a) for a in sys.argv[1:]}))
+    sys.exit(main())
