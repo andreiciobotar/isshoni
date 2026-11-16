@@ -6201,18 +6201,23 @@ def send_back(repo, fallback, pr, slug, evidence):
     """Return pull request `pr` of task `slug` for its one-line `evidence`: the task goes back to `working` and the pull
     request to draft (it leaves the queue until handed over again). A tech lead run starts for it ("tech lead"), else one
     line goes to the lead's session, else the dispatcher's, else the human on this machine. Who was told: "tech lead",
-    "lead", "dispatcher" or "human"."""
+    "lead", "dispatcher" or "human". One comment on the pull request says why and who was told."""
     declare(repo, slug, "lander", "working")
     to_draft(repo, pr["headRefName"])
     if tech_lead_start(repo, fallback, pr, slug, evidence):
-        return "tech lead"
-    held = paused_for(repo, slug)
-    said = (f"#{pr['number']} is paused: it conflicts in {', '.join(conflicting_files(repo, pr))} while {', '.join(held)} are landing "
-            f"on the same files. Declare factory state blocked {','.join(held)} --paused, dispatch nothing, and wait: you are told "
-            "when the way is clear." if held else
-            f"#{pr['number']} went back to you: {evidence}. Fix it on your branch (merge {repo.remote}/{repo.default} in), "
-            "re-review what you change, and hand over again: it is then merged by itself.")
-    return tell_lead(repo, fallback, slug, "LANDER", said, f"factory: #{pr['number']} went back to {slug}")
+        to = "tech lead"
+    else:
+        held = paused_for(repo, slug)
+        said = (f"#{pr['number']} is paused: it conflicts in {', '.join(conflicting_files(repo, pr))} while {', '.join(held)} are landing "
+                f"on the same files. Declare factory state blocked {','.join(held)} --paused, dispatch nothing, and wait: you are told "
+                "when the way is clear." if held else
+                f"#{pr['number']} went back to you: {evidence}. Fix it on your branch (merge {repo.remote}/{repo.default} in), "
+                "re-review what you change, and hand over again: it is then merged by itself.")
+        to = tell_lead(repo, fallback, slug, "LANDER", said, f"factory: #{pr['number']} went back to {slug}")
+    told = "Started: a tech lead run." if to == "tech lead" else f"Told: the {to}."
+    if failed := gh_step(repo, "pr", "comment", str(pr["number"]), "--body", f"Merge queue: back to draft: {evidence}. {told}"):
+        print(f"#{pr['number']} comment not posted: {failed[1]}")
+    return to
 
 
 def tell_lead(repo, fallback, slug, head, said, title, lead=True):
@@ -6235,7 +6240,7 @@ TECH_LEAD_ROLE = PLUGIN_ROOT / "roles" / "tech-lead.md"
 TECH_LEAD_KIT = "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch"
 TECH_LEAD_TOOLS = ("Read", "Edit", "Write", "Grep", "Glob", "Agent", "Skill", "ToolSearch", "Bash(git *)", "Bash(make *)",
                    "Bash(gh pr view *)", "Bash(gh pr diff *)", "Bash(gh pr checks *)", "Bash(gh run view *)")
-TECH_LEAD_DENIED = (*ROLE_DENIED, "Bash(git push*)")
+TECH_LEAD_DENIED = (*ROLE_DENIED, "Bash(git push*)", "Bash(gh run rerun*)")
 TECH_LEAD_SCHEMA = {"type": "object", "properties": {"outcome": {"enum": ["resolved", "escalate"]},
                                                       "note": {"type": "string"}}, "required": ["outcome", "note"]}
 
@@ -6336,7 +6341,8 @@ def model_answer(rc, out, outcomes, key, timeout, budget):
 
 
 def tech_lead_state(repo, worktree, pr, old_head, old_default, spec, before):
-    """The worktree after the run: (head, clean, the first script check that fails, or None). `old_default` is
+    """The worktree after the run: (head, clean, the first script check that fails, or None). Whether the head moved is
+    not a check: `nothing_to_change` judges a run that left it where it was. `old_default` is
     `<remote>/<default>` as of the start of the run, the ref the lander judged the conflict against: the ref itself
     moves under the run when anything fetches. `before` is the spec's hash when the run began."""
     git, remote, branch = (lambda *a: repo.git(*a, path=worktree)), repo.remote, pr["headRefName"]
@@ -6346,9 +6352,28 @@ def tech_lead_state(repo, worktree, pr, old_head, old_default, spec, before):
               (git("merge-base", "--is-ancestor", old_head, "HEAD")[0] == 0, "the head it came back at is not an ancestor of HEAD"),
               (git("merge-base", "--is-ancestor", old_default, "HEAD")[0] == 0,
                f"{remote}/{repo.default} as of the start of the run is not merged in"),
-              (head != old_head, "the head did not move: a resolution commits something"),
               (spec_hash(spec) == before, "the spec changed")]
     return head, clean, next((why for ok, why in checks if not ok), None)
+
+
+def nothing_to_change(repo, worktree, n, head):
+    """None when a run that moved nothing can return pull request `n` to the queue as it is, else why not: the fetch
+    works, `<remote>/<default>` is in `head`, the pull request is open at `head` and the queue's own test of its checks
+    passes. Whatever cannot be read is a failure."""
+    ref = f"{repo.remote}/{repo.default}"
+    rc, out, err = act_git(worktree, "fetch", repo.remote, timeout=GH_TIMEOUT)
+    if rc != 0:
+        return f"git fetch {repo.remote} failed: {' '.join((err or out).split())}"
+    if repo.git("merge-base", "--is-ancestor", ref, "HEAD", path=worktree)[0] != 0:
+        return f"{ref} is not merged in"
+    try:
+        view = gh_json(repo, dict, "pr", "view", str(n), "--json", "state,headRefOid")
+        if view.get("state") != "OPEN" or view.get("headRefOid") != head:
+            return "the pull request's head is not the worktree's"
+        stop = checks_stop({"gh": lambda *args: gh_json(repo, *args)}, str(n))
+    except NotEvaluated as e:
+        return str(e)
+    return stop and stop[1]
 
 
 def tell_tech_lead(repo, args, slug, n, evidence, said, where):
@@ -6410,7 +6435,8 @@ def tech_lead_pause(repo, settings, args, waited):
 def tech_lead_run(repo, settings, args, learned):
     """One run, under its lock: the exit code. `learned` gets the session, cost, seconds and old head as soon as the
     model has run, for the record of a later failure. Order after the answer: checks, push, comment, record, then the
-    hand-over (or the line to the lead): the last step is the one that can leave the task `working`."""
+    hand-over (or the line to the lead): the last step is the one that can leave the task `working`. A `resolved`
+    answer that left the head where it was pushes nothing and is `resolved` only if `nothing_to_change`."""
     slug, n, evidence = args.slug, args.pr, args.evidence
     pr = gh_json(repo, dict, "pr", "view", str(n), "--json", "number,url,headRefName,headRefOid")
     if task_slug(repo, pr) != slug:
@@ -6427,12 +6453,22 @@ def tech_lead_run(repo, settings, args, learned):
     learned.update(session=session, head_before=old_head, seconds=round(time.monotonic() - started), cost_usd=cost)
     head, clean, flaw = tech_lead_state(repo, worktree, pr, old_head, old_default, spec, before)
     reason = reason or (flaw if verdict == "resolved" else None)
-    if verdict == "resolved" and not reason:
+    nothing = head == old_head
+    if verdict == "resolved" and not reason and nothing:
+        reason = nothing_to_change(repo, worktree, n, head)
+    elif verdict == "resolved" and not reason:
         rc, out, err = act_git(worktree, "push", repo.remote, f"HEAD:refs/heads/{branch}", timeout=GH_TIMEOUT)
         reason = None if rc == 0 else f"git push failed: {' '.join((err or out).split())}"
     outcome = "stopped" if reason else "resolved" if verdict == "resolved" else "escalated"
     said = ". ".join(filter(None, (reason, note))) if outcome == "stopped" else note
-    body = f"Tech lead: {note}" if outcome == "resolved" else f"Tech lead: stopped, the lead decides. {said}"
+    if outcome != "resolved":
+        body = f"Tech lead: stopped, the lead decides. {said}"
+    elif nothing:
+        tip = repo.git("rev-parse", f"{repo.remote}/{repo.default}", path=worktree)[1].strip()
+        body = (f"Tech lead: nothing to change, back in the merge queue: every check is green on {head[:7]}, "
+                f"which contains {repo.default} at {tip[:7]}. {note}")
+    else:
+        body = f"Tech lead: {note}\n\nBack in the merge queue."
     noted = gh_step(repo, "pr", "comment", str(n), "--body", body) is None
     log_tech_lead(repo, settings, slug, n, evidence, outcome, reason=reason, note=note, noted=noted, head_after=head, **learned)
     if outcome == "resolved":
