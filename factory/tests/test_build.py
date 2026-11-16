@@ -105,23 +105,29 @@ class LaunchTests(BuildCase):
             git("worktree", "add", "-q", "-b", "w", wt)
             if lock_before:
                 git("worktree", "lock", "--reason", "claude session w (pid 1)", wt)
-            seen = []
+            git_calls = []
 
             def session(argv, **kw):
-                seen.append(argv)
                 if not lock_before:
                     git("worktree", "lock", wt)
                 return 0, "", ""
             real_run = factory.run
-            with mock.patch.object(factory, "run", side_effect=lambda argv, **kw: session(argv, **kw) if argv[0] == "claude" else real_run(argv, **kw)):
+
+            def run(argv, **kw):
+                git_calls.append(argv)
+                return session(argv, **kw) if argv[0] == "claude" else real_run(argv, **kw)
+            with mock.patch.object(factory, "run", side_effect=run):
                 factory.run_in_worktree(factory.Repo(tmp), wt, ["claude", "-p"])
-            return [l for l in git("worktree", "list", "--porcelain").splitlines() if l.startswith("locked")]
+            locks = [l for l in git("worktree", "list", "--porcelain").splitlines() if l.startswith("locked")]
+            return locks, [c for c in git_calls if c[:3] == ["git", "worktree", "unlock"]]
 
     def test_a_lock_that_was_there_before_the_run_is_left_alone_with_its_reason(self):
-        self.assertEqual(self.lock_after_run(True), ["locked claude session w (pid 1)"])
+        locks, unlocks = self.lock_after_run(True)
+        self.assertEqual(locks, ["locked claude session w (pid 1)"])
+        self.assertEqual(unlocks, [])
 
     def test_the_lock_the_run_left_is_released(self):
-        self.assertEqual(self.lock_after_run(False), [])
+        self.assertEqual(self.lock_after_run(False)[0], [])
 
     def test_a_failed_unlock_that_is_not_a_missing_lock_is_said(self):
         err = io.StringIO()
