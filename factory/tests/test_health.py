@@ -1048,7 +1048,7 @@ class ChurningTests(Harness):
         self.assertEqual((f["decision"], f["waits_on"]), ("paused", ["y"]))
         s = json.loads(self.cli("firings", "--json")[1])["summary"]
         self.assertEqual((s["paused"], s["escalated"], s["suppressed"], s["acted"], s["ignored"], s["precision"]), (1, 0, 0, 0, 0, None))
-        self.assertIn("suppressed 0; paused 1; extended 0 (kept 0, overran 0, no outcome 0); missed 0", self.cli("firings")[1])
+        self.assertIn("suppressed 0; paused 1; extended 0 (kept 0, overran 0, no outcome 0); closed 0 (stood 0, reopened 0, no outcome 0); missed 0", self.cli("firings")[1])
         code, _, err = self.cli("firing", "ppp", "acted")
         self.assertEqual(code, 2)
         self.assertIn("was not escalated", err)
@@ -1210,8 +1210,9 @@ class FiringsTests(Harness):
         self.assertEqual(lines[-3], "ended-undeclared: fired 5; escalated 3 (acted 1, ignored 1, no outcome 1); to lead 0; suppressed 1; missed 1; precision 0.50")
         self.assertEqual(lines[-2], "unlisted: fired 0; escalated 0 (acted 0, ignored 0, no outcome 0); to lead 0; suppressed 0; missed 2; precision -")
         self.assertEqual(lines[-1], "escalated 3 (acted 1, ignored 1, no outcome 1); to lead 0; suppressed 1; "
-                                    "paused 0; extended 0 (kept 0, overran 0, no outcome 0); missed 3 (1 suppressed first, 2 never fired); precision 0.50; recall 0.25; "
-                                    "told 0 (acted 0, noise 0, collided 0, no outcome 0, undelivered 0); closed 0 (stood 0, reopened 0, no outcome 0)")
+                                    "paused 0; extended 0 (kept 0, overran 0, no outcome 0); closed 0 (stood 0, reopened 0, no outcome 0); "
+                                    "missed 3 (1 suppressed first, 2 never fired); precision 0.50; recall 0.25; "
+                                    "told 0 (acted 0, noise 0, collided 0, no outcome 0, undelivered 0)")
 
     def test_json(self):
         self.seed_log()
@@ -1247,8 +1248,9 @@ class FiringsTests(Harness):
     def test_zero_denominators(self):
         code, out, _ = self.cli("firings")
         self.assertEqual(out, "escalated 0 (acted 0, ignored 0, no outcome 0); to lead 0; suppressed 0; "
-                              "paused 0; extended 0 (kept 0, overran 0, no outcome 0); missed 0 (0 suppressed first, 0 never fired); precision -; recall -; "
-                              "told 0 (acted 0, noise 0, collided 0, no outcome 0, undelivered 0); closed 0 (stood 0, reopened 0, no outcome 0)\n")
+                              "paused 0; extended 0 (kept 0, overran 0, no outcome 0); closed 0 (stood 0, reopened 0, no outcome 0); "
+                              "missed 0 (0 suppressed first, 0 never fired); precision -; recall -; "
+                              "told 0 (acted 0, noise 0, collided 0, no outcome 0, undelivered 0)\n")
         _, out, _ = self.cli("firings", "--json")
         self.assertEqual((json.loads(out)["summary"]["precision"], json.loads(out)["summary"]["recall"]), (None, None))
         self.seed("firings", [{"ts": iso(NOW), "repo": ROOT, "miss": "m", "slug": None, "firing": None}])

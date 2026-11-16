@@ -4077,11 +4077,11 @@ def cmd_firings(args):
     told = sum(f["decision"] == "escalated" and f.get("to") == "lead" for f in firings)
     print(f"escalated {s['escalated']} (acted {s['acted']}, ignored {s['ignored']}, no outcome {s['no_outcome']}); "
           f"to lead {told}; suppressed {s['suppressed']}; paused {s['paused']}; "
-          f"extended {s['extended']} (kept {s['kept']}, overran {s['overran']}, no outcome {s['extended'] - s['kept'] - s['overran']}); missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
+          f"extended {s['extended']} (kept {s['kept']}, overran {s['overran']}, no outcome {s['extended'] - s['kept'] - s['overran']}); "
+          f"closed {s['closed']} (stood {s['stood']}, reopened {s['reopened']}, no outcome {s['closed'] - s['stood'] - s['reopened']}); missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
           f"{s['missed_never_fired']} never fired); precision {pct['precision']}; recall {pct['recall']}; "
           f"told {s['told']} (acted {s['told_acted']}, noise {s['told_noise']}, collided {s['told_collided']}, "
-          f"no outcome {s['told_no_outcome']}, undelivered {s['told_undelivered']}); "
-          f"closed {s['closed']} (stood {s['stood']}, reopened {s['reopened']}, no outcome {s['closed'] - s['stood'] - s['reopened']})")
+          f"no outcome {s['told_no_outcome']}, undelivered {s['told_undelivered']})")
     return 0
 
 
