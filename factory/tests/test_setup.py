@@ -13,6 +13,8 @@ from unittest import mock
 from test_factory import factory
 from test_wizard import APP, INSTALLATION, FakeGitHub, routes
 
+import factory_setup
+
 PLUGIN = "factory@factory"
 SOURCE = "andreiciobotar/isshoni"
 IDENTITY = {"app_id": 123456, "slug": "factory-octocat", "client_id": "Iv23abc", "html_url": APP["html_url"],
@@ -106,7 +108,7 @@ class Setup(unittest.TestCase):
                         mock.patch.object(factory, "IDENTITY", self.store / "identity"),
                         mock.patch.object(factory, "run", self.machine),
                         mock.patch.object(factory.shutil, "which", self.machine.which),
-                        mock.patch.object(factory, "clone", lambda: self.root if self.has_clone else None),
+                        mock.patch.object(factory_setup, "clone", lambda: self.root if self.has_clone else None),
                         mock.patch.object(factory, "github_api", lambda *a, **kw: self.github(*a, **kw)),
                         mock.patch.object(factory, "app_jwt", lambda identity: "JWT"),
                         mock.patch.object(factory, "create_app", self.create_app),
@@ -388,14 +390,14 @@ class WizardFlow(Setup):
 
 class Clone(Setup):
     def test_a_clone_holds_bin_isshoni_and_go_mod_two_levels_above_the_script(self):
-        with mock.patch.object(factory, "clone", self.__class__.real_clone):
+        with mock.patch.object(factory_setup, "clone", self.__class__.real_clone):
             for root, want in ((self.root, self.root), (self.tmp / "plugin-cache", None)):
                 script = root / "factory" / "bin" / "factory"
                 script.parent.mkdir(parents=True, exist_ok=True)
                 with mock.patch.object(factory, "FACTORY", script):
-                    self.assertEqual(factory.clone(), want)
+                    self.assertEqual(factory_setup.clone(), want)
 
-    real_clone = factory.clone
+    real_clone = factory_setup.clone
 
 
 class UninstallFlow(Setup):
@@ -609,7 +611,7 @@ class Schedules(Setup):
 
     def uninstall(self, backend):
         with mock.patch.object(factory, "scheduler", lambda: backend), redirect_stdout(io.StringIO()):
-            factory.uninstall_schedules(Namespace(yes=True, list=False), [])
+            factory_setup.uninstall_schedules(Namespace(yes=True, list=False), [])
 
     def check(self, backend, others, list_present):
         """Install jobs of this home and of another, plus the strangers, remove, and compare what is left."""
@@ -676,7 +678,7 @@ class Schedules(Setup):
         out = io.StringIO()
         with mock.patch.object(factory, "scheduler", mock.Mock(side_effect=factory.Fail("schedule: no scheduler here"))), \
                 redirect_stdout(out):
-            factory.uninstall_schedules(Namespace(yes=True, list=False), [])
+            factory_setup.uninstall_schedules(Namespace(yes=True, list=False), [])
         self.assertEqual(out.getvalue(), "  schedule: no scheduler here: nothing to remove\n")
 
     def test_the_step_lists_without_removing(self):
@@ -684,7 +686,7 @@ class Schedules(Setup):
         self.install(backend, self.labels()["mine"])
         out = io.StringIO()
         with mock.patch.object(factory, "scheduler", lambda: backend), redirect_stdout(out):
-            factory.uninstall_schedules(Namespace(yes=True, list=True), [])
+            factory_setup.uninstall_schedules(Namespace(yes=True, list=True), [])
         self.assertIn("found: 1 watch job(s) of this home: com.claude.factory.watch.repo-aaaaaaaa", out.getvalue())
         self.assertTrue(backend.plist(self.labels()["mine"]).exists())
 

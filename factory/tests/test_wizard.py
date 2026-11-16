@@ -20,6 +20,8 @@ from unittest import mock
 
 from test_factory import ROOT, FakeRun, factory, repo_answers
 
+import factory_setup
+
 real_run = factory.run
 TOKEN = "ghs_THROWAWAY_TOKEN"
 INSTALL_URL = "https://github.com/settings/installations/7654321"
@@ -129,7 +131,7 @@ class Wizard(unittest.TestCase):
                 mock.patch.object(factory, "WIZARD_WAIT", wait), mock.patch.object(factory, "INSTALL_POLL", 0), \
                 redirect_stdout(out), redirect_stderr(err):
             try:
-                factory.setup_app(factory.parse_args(["wizard", "--yes", *args]), None)
+                factory_setup.setup_app(factory.parse_args(["wizard", "--yes", *args]), None)
                 rc = 0
             except factory.Fail as e:
                 print(f"factory: {e}", file=sys.stderr)

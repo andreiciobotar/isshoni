@@ -1,9 +1,16 @@
 """@command: a command declared beside its function is parsed, listed in order and run by main."""
 import argparse
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from test_factory import factory
+
+import factory_setup
 
 
 def listed_commands():
@@ -51,6 +58,23 @@ class CommandTest(unittest.TestCase):
 
     def test_the_order_line_names_only_declared_commands(self):
         self.assertLessEqual(set(factory.COMMAND_ORDER), set(factory.COMMANDS))
+
+    def test_a_modules_commands_are_declared_by_importing_it(self):
+        for name in ("wizard", "uninstall"):
+            self.assertEqual(factory.COMMANDS[name][2].__module__, "factory_setup")
+        self.assertIs(factory.COMMANDS["wizard"][2], factory_setup.cmd_wizard)
+
+    def test_the_core_does_not_name_a_module(self):
+        self.assertNotIn("factory_setup", Path(factory.__file__).read_text())
+
+    def test_the_entry_point_finds_its_modules_through_a_symlink_from_another_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            link = Path(tmp) / "factory"
+            link.symlink_to(factory.FACTORY)
+            run = subprocess.run([sys.executable, str(link), "--help"], cwd=tmp, capture_output=True, text=True,
+                                 env={**os.environ, "FACTORY_HOME": tmp})
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("wizard", run.stdout)
 
 
 if __name__ == "__main__":
