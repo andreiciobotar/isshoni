@@ -65,7 +65,7 @@ golden:
 test-factory:
 	$(NOLEFT) python3 -m unittest discover -s factory/tests
 
-# Set everything up (dependencies, dashboard, plugin, settings, cost alerts, GitHub App) and rerun to repair, e.g. make wizard ARGS="--yes --owner my-org"
+# Set everything up (dependencies, dashboard, plugin, settings, cost alerts, gh stack, GitHub App) and rerun to repair, e.g. make wizard ARGS="--yes --owner my-org"
 wizard:
 	factory/bin/factory wizard $(ARGS)
 
