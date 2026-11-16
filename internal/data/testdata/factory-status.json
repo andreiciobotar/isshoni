@@ -49,8 +49,28 @@
       "elapsed": 90, "overtime": false, "dirty": false, "behind": 0, "ahead": 0,
       "head": "ccc", "last_commit": 1794645000, "pr_state": "none", "pr_url": "", "pr_head": "", "pr_base": "",
       "phase": "blocked", "stale": false, "extensions": [], "paused": {"since": "2099-12-31T23:48:00Z", "waits_on": ["needs-an-answer"]}
+    },
+    {
+      "slug": "old-plumbing", "branch": "worktree-old-plumbing", "path": "/r/.claude/worktrees/old-plumbing",
+      "session_id": "d4e5f607", "session": "done", "blocked": null, "stacked_on": null, "base": "origin/main",
+      "state": "handed-over", "deliverable": "https://github.com/o/r/pull/9",
+      "waited": null, "stop_kind": null, "stop_summary": null,
+      "elapsed": 7200, "overtime": false, "dirty": true, "behind": 0, "ahead": 0,
+      "head": "ddd", "last_commit": 1794644000, "pr_state": "merged", "pr_url": "https://github.com/o/r/pull/9", "pr_head": "h", "pr_base": "b", "pr_draft": false,
+      "phase": "merged", "stale": false, "extensions": [], "kept": "uncommitted changes", "held": null
+    },
+    {
+      "slug": "lost-its-lead", "branch": "worktree-lost-its-lead", "path": "/r/.claude/worktrees/lost-its-lead",
+      "session_id": "e5f60718", "session": "done", "blocked": null, "stacked_on": null, "base": "origin/main",
+      "state": "working", "deliverable": null,
+      "waited": null, "stop_kind": null, "stop_summary": null,
+      "elapsed": 32400, "overtime": false, "dirty": false, "behind": 0, "ahead": 1,
+      "head": "eee", "last_commit": 1794643000, "pr_state": "none", "pr_url": "", "pr_head": "", "pr_base": "",
+      "limit": 2700,
+      "phase": "motion", "stale": false, "extensions": [], "kept": null,
+      "held": {"criterion": "ended-undeclared", "decision": "suppressed", "since": "2099-12-31T16:55:00Z", "reason": "its replacement redo-plumbing is in review: this one is closed when that lands"}
     }
   ],
-  "cap": 7, "reserve": 1, "open": 5, "in_motion": 3, "blocked": 2, "in_review": 1, "merged": 0, "settled": 1,
+  "cap": 7, "reserve": 1, "open": 7, "in_motion": 4, "blocked": 2, "in_review": 1, "merged": 1, "settled": 1,
   "leftover_agent_worktrees": 0, "outside_worktrees": 0
 }
