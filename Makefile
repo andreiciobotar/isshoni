@@ -1,4 +1,4 @@
-.PHONY: install up build test fmt-check fmt golden test-factory test-python test-go wizard wizard-remote uninstall uninstall-remote snapshot screenshot strip pictures clean FORCE
+.PHONY: install up build test modules fmt-check fmt golden test-factory test-python test-go wizard wizard-remote uninstall uninstall-remote snapshot screenshot strip pictures clean FORCE
 
 BIN := bin/isshoni-tui
 VIEW ?= dashboard
@@ -25,7 +25,7 @@ install:
 	@command -v go >/dev/null || { echo "isshoni: Go is missing. Install Go 1.27 or newer (https://go.dev/dl/ or your package manager), then run make install again." >&2; exit 1; }
 	@command -v python3 >/dev/null || { echo "isshoni: python3 is missing. Install Python 3.11 or newer (https://www.python.org/downloads/ or your package manager), then run make install again." >&2; exit 1; }
 	@python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "isshoni: Python 3.11 or newer is required. Install a newer one (https://www.python.org/downloads/ or your package manager)." >&2; exit 1; }
-	go mod download
+	$(MAKE) modules
 	$(MAKE) build
 	@if [ -n "$(CHROME)" ]; then echo "Chrome found: make screenshot is available."; else echo "Chrome or Chromium not found (optional): make screenshot needs one; install it or set CHROME=/path/to/chrome."; fi
 	@echo "Ready: run make up, or $(BIN)."
@@ -44,10 +44,14 @@ NOLEFT := python3 tools/noleft.py
 GOTESTFLAGS ?=
 test: fmt-check test-factory test-python test-go
 
-test-python:
+# Go modules, fetched once, up to 3 attempts, before any test that needs them. With GOPROXY=off nothing is fetched: one try, a local error.
+modules:
+	@if [ "$$(go env GOPROXY)" = off ]; then exec go mod download; fi; for i in 1 2 3; do go mod download && exit 0; [ $$i = 3 ] || sleep 2; done; echo "network: go mod download failed 3 times; a network failure, not caused by the code" >&2; exit 1
+
+test-python: modules
 	$(NOLEFT) python3 -m unittest discover -s tests
 
-test-go:
+test-go: modules
 	go vet ./...
 	$(NOLEFT) go test $(GOTESTFLAGS) ./...
 

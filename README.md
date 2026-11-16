@@ -112,6 +112,7 @@ Every view, the Agents one too, and its keys: [docs/isshoni.md](docs/isshoni.md#
 - [docs/factory.md](docs/factory.md): commands, states, settings, logs, the site manager
 - [docs/isshoni.md](docs/isshoni.md): the monitor's options, the dashboard's keys and serving it over SSH
 - [docs/shutdown.md](docs/shutdown.md): what ends each process and what each leaves behind
+- [docs/flaky-tests.md](docs/flaky-tests.md): the rules that keep tests from failing at random, and every flaky job seen so far
 - `make test` runs everything
 
 ## Status
