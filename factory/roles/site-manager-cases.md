@@ -179,7 +179,7 @@ How to use a look: you are given facts and what changed since the last look. Mos
 **Why it matters:** A held pull request is approved and ready but cannot merge until the fix lands; with no fix naming it, nobody is working on its release.
 **What it has looked like:** It never fired.
 **A good call:** Look at `waiting` (`tests`, `named_by`) and the open pull requests for a fix. A fix exists and the pull request names it: suppress. No fix: escalate to the dispatcher with the tests and the wait, so a fix task is opened with the line. A fix merged without the line: `factory unblock <pr> --by <#fix>`.
-**Score (to 2026-11-16):** fired 0; escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 0; missed 0.
+**Score (to 2026-11-15):** fired 0; escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 0; missed 0.
 
 ### Cases
 1. `closes-dead-tasks-finish` (2026-11-16). #138, approved, went red on check `test` at `a08df2a0`: two `CollisionTests` in `factory/tests/test_collision.py`, a file it does not change; the same test had failed in attempt 1 on two other branches that morning (runs 43870829205, 43875627358). It was put back to draft and `working`; a tech lead run of 26 minutes found nothing of its own; the task was paused on the human; the fix was another task's (#148). Decided (in hindsight): hold it ready and approved, tell the human once, unblock when the fix merges. Lesson: a failure that also happens without the branch is the fix task's, and the waiting pull request needs a name on the fix, not a lead.
