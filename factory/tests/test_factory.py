@@ -115,9 +115,11 @@ class FakeRun:
         self.inputs = []
         self.envs = []
         self.timeouts = []
+        self.dirs = []
 
     def __call__(self, argv, cwd=None, input=None, timeout=None, env=None, **_):
         self.calls.append(list(argv))
+        self.dirs.append(cwd)
         self.inputs.append(input)
         self.envs.append(env)
         self.timeouts.append(timeout)
@@ -1149,6 +1151,85 @@ class ReserveTests(unittest.TestCase):
         self.assertEqual(factory.reserve(5, 100), 4)
 
 
+class NewSetupRealPathTests(unittest.TestCase):
+    """`factory new` with real git and real `sh`; the fake `claude` records the argv it is launched with."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        tmp = Path(self.tmp.name).resolve()
+        self.repo, self.home, bindir, self.origin = tmp / "repo", tmp / "home", tmp / "bin", tmp / "origin.git"
+        for d in (self.repo, self.home, bindir):
+            d.mkdir()
+        for name, text in (("claude", EndToEndTests.FAKE_CLAUDE), ("gh", EndToEndTests.FAKE_GH)):
+            tool = bindir / name
+            tool.write_text(text)
+            tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
+        self.argv_file = tmp / "argv.json"
+        dispatcher = {"sessionId": "sid-d", "name": "dispatcher-repo", "kind": "interactive", "cwd": str(self.repo)}
+        self.env = {**os.environ, "HOME": str(self.home), "FACTORY_HOME": str(self.home / ".claude" / "factory"),
+                    "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "FAKE_ARGV": str(self.argv_file),
+                    "FAKE_AGENTS": json.dumps([dispatcher]), "FAKE_PR": "[]", "CLAUDE_CODE_SESSION_ID": "sid-d",
+                    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(self.origin)], check=True)
+        self.git("init", "-q", "-b", "main")
+        (self.repo / "Makefile").write_text("test:\n\t@test -f deps/ready\n")
+        (self.repo / ".gitignore").write_text("deps/\n")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "init")
+        self.git("remote", "add", "origin", str(self.origin))
+        self.git("push", "-q", "-u", "origin", "main")
+        self.git("remote", "set-head", "origin", "main")
+        other = tmp / "other"  # the remote moves on; the local main stays behind
+        self.git("clone", "-q", str(self.origin), str(other), cwd=tmp)
+        self.git("commit", "-q", "--allow-empty", "-m", "ahead", cwd=other)
+        self.git("push", "-q", "origin", "main", cwd=other)
+        self.worktree = self.repo / ".claude" / "worktrees" / "demo-task"
+        self.log = self.home / ".claude" / "factory" / "specs" / "repo" / "demo-task.setup.log"
+
+    def git(self, *args, cwd=None, check=True):
+        return subprocess.run(["git", *args], cwd=cwd or self.repo, env=self.env, check=check, capture_output=True, text=True)
+
+    def new(self):
+        p = subprocess.run([sys.executable, str(BIN), "new", "demo-task", "--brief", "build it"], cwd=self.repo,
+                           env=self.env, capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return p.stdout, json.loads(self.argv_file.read_text())[-1]
+
+    def sentence(self, prompt):
+        """What stands between the time limit and the brief in the lead's first message."""
+        return re.fullmatch(r".*Your time limit is \d+ minutes\. ?(.*?) ?Your brief follows\.\n\nbuild it", prompt, re.S).group(1)
+
+    def test_without_the_key_the_factory_makes_no_worktree_and_says_nothing_of_setup(self):
+        out, prompt = self.new()
+        self.assertFalse(self.worktree.exists())
+        self.assertEqual(self.git("worktree", "list", "--porcelain").stdout.count("worktree "), 1)
+        self.assertEqual(self.sentence(prompt), "")
+        self.assertNotIn("setup", out)
+        self.assertFalse(self.log.exists())
+
+    def test_the_declared_setup_makes_the_worktree_ready_at_the_remote_tip_and_tells_the_lead(self):
+        self.git("config", "factory.setup", "mkdir -p deps && touch deps/ready")
+        out, prompt = self.new()
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD", cwd=self.worktree).stdout.strip(), "worktree-demo-task")
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.worktree).stdout, self.git("rev-parse", "origin/main").stdout)
+        self.assertNotEqual(self.git("rev-parse", "main").stdout, self.git("rev-parse", "origin/main").stdout)
+        self.assertEqual(self.git("config", "--get-regexp", r"^branch\.worktree-demo-task\.", check=False).stdout, "")
+        self.assertEqual(subprocess.run(["make", "test"], cwd=self.worktree, capture_output=True).returncode, 0)
+        self.assertEqual(self.sentence(prompt), "The setup command `mkdir -p deps && touch deps/ready` ran in your worktree "
+                                                f"and succeeded (output: {self.log}).")
+        self.assertEqual((out.splitlines()[0], stat.S_IMODE(self.log.stat().st_mode)), ("setup: succeeded", 0o600))
+
+    def test_a_failing_setup_still_launches_the_lead_and_names_the_log(self):
+        self.git("config", "factory.setup", "echo boom >&2; exit 3")
+        out, prompt = self.new()
+        self.assertEqual(self.sentence(prompt), "The setup command `echo boom >&2; exit 3` ran in your worktree and failed "
+                                                f"(exit 3): read {self.log}, and make the worktree ready before you trust a test result.")
+        self.assertEqual(out.splitlines()[0], f"setup: failed (exit 3), see {self.log}")
+        self.assertEqual(self.log.read_text(), "boom\n")
+        self.assertTrue(self.worktree.exists())
+
+
 class NewTests(unittest.TestCase):
     ARGS = ["new", "demo-task", "--brief", "do it", "--dispatcher", "d1"]
     OK = {("claude", "--bg"): (0, "backgrounded · 96dc4869 · demo-task\n", ""), ("git", "ls-remote"): (2, "", "")}
@@ -1446,6 +1527,102 @@ class NewTests(unittest.TestCase):
         code, _, _, fake = invoke(self.ARGS, self.answers([], (), {("claude", "--bg"): (1, "", "boom")}))
         self.assertEqual(code, 1)
         self.assertFalse(fake.ran("git", "worktree", "remove"))
+
+    SETUP = {("git", "config", "--get", "factory.setup"): (0, "make deps\n", "")}
+    MADE = {("git", "worktree", "add"): (0, "", ""), ("git", "fetch"): (0, "", ""), ("git", "config"): (0, "", ""),
+            ("git", "worktree", "remove"): (0, "", ""), ("git", "branch"): (0, "", "")}
+    ADD = ["git", "worktree", "add", "--no-track", "-b", "worktree-demo-task", f"{WT}/demo-task", "origin/main"]
+
+    def with_setup(self, sh, launch=None, base=False, key=SETUP):
+        """`factory new` with `factory.setup` declared and `sh -c` answering `sh`; the log is read before its store goes."""
+        with tempfile.TemporaryDirectory() as store, mock.patch.object(factory, "STORE", Path(store)):
+            entries = [task_entry("alpha")] if base else []
+            answers = self.answers(entries, (), self.OK, self.MADE, key, {("gh",): (0, "[]", ""), ("sh", "-c"): sh, **(launch or {})})
+            code, out, err, fake = invoke(self.ARGS + (["--base", "alpha"] if base else []), answers)
+            log = Path(store, "specs", "repo", "demo-task.setup.log")
+            return code, out, err, fake, log, (log.read_text(), stat.S_IMODE(log.stat().st_mode)) if log.exists() else None
+
+    def test_without_a_declared_setup_the_factory_makes_no_worktree_and_runs_no_command(self):
+        for key in ({}, {("git", "config", "--get", "factory.setup"): (0, "\n", "")},
+                    {("git", "config", "--get", "factory.setup"): (1, "", "")}):
+            code, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK, key))
+            self.assertEqual(code, 0, err)
+            self.assertFalse(fake.ran("git", "worktree", "add") or fake.ran("git", "fetch") or fake.ran("sh"))
+            self.assertNotIn("setup command", fake.calls[-1][-1])
+
+    def test_a_declared_setup_makes_the_worktree_runs_in_it_and_then_launches(self):
+        code, out, err, fake, log, written = self.with_setup((0, "installed\n", "warn\n"))
+        self.assertEqual((code, err), (0, ""))
+        fetch = ["git", "fetch", "origin", "main"]
+        sh = ["sh", "-c", "make deps"]
+        self.assertLess(fake.calls.index(fetch), fake.calls.index(self.ADD))
+        self.assertLess(fake.calls.index(self.ADD), fake.calls.index(sh))
+        self.assertLess(fake.calls.index(sh), len(fake.calls) - 1)
+        self.assertEqual(fake.calls[-1][:2], ["claude", "--bg"])
+        at = fake.calls.index(sh)
+        self.assertEqual((fake.dirs[at], fake.timeouts[at], fake.envs[at]), (f"{WT}/demo-task", 90, None))
+        self.assertFalse(fake.ran("git", "config", "branch.worktree-demo-task.factoryBase"))
+        self.assertIn("Your time limit is 120 minutes. The setup command `make deps` ran in your worktree and succeeded "
+                      f"(output: {log}). Your brief follows.\n\ndo it", fake.calls[-1][-1])
+        self.assertEqual(out.splitlines()[0], "setup: succeeded")
+        self.assertEqual(written, ("installed\nwarn\n", 0o600))
+
+    def test_a_failing_or_timing_out_setup_still_launches_and_tells_the_lead(self):
+        tail = ": read {}, and make the worktree ready before you trust a test result. Your brief follows."
+        for name, sh, what, line in (("exit 3", (3, "", "boom\n"), "failed (exit 3)", "failed (exit 3)"),
+                                     ("timeout", (124, "", "timed out"), "timed out after 90 s", "timed out after 90 s"),
+                                     ("not started", (127, "", "no such file"), "failed (exit 127)", "failed (exit 127)")):
+            with self.subTest(name):
+                code, out, err, fake, log, written = self.with_setup(sh)
+                self.assertEqual((code, err), (0, ""))
+                self.assertIn(f"The setup command `make deps` ran in your worktree and {what}" + tail.format(log), fake.calls[-1][-1])
+                self.assertIn(f"setup: {line}, see {log}\n", out)
+                self.assertEqual(written, (sh[1] + sh[2], 0o600))
+                self.assertFalse(fake.ran("git", "worktree", "remove"))
+
+    def test_setup_runs_after_the_stacked_worktree_with_base(self):
+        code, _, err, fake, log, _ = self.with_setup((0, "", ""), base=True)
+        self.assertEqual(code, 0, err)
+        add = ["git", "worktree", "add", "-b", "worktree-demo-task", f"{WT}/demo-task", "worktree-alpha"]
+        self.assertLess(fake.calls.index(add), fake.calls.index(["sh", "-c", "make deps"]))
+        self.assertFalse(fake.ran("git", "fetch"))
+        self.assertIn("ran in your worktree and succeeded", fake.calls[-1][-1])
+        self.assertIn("Your base branch is worktree-alpha (remote origin).", fake.calls[-1][-1])
+
+    def test_a_failed_launch_removes_the_worktree_the_setup_made_with_and_without_base(self):
+        for base in (False, True):
+            with self.subTest(base=base):
+                code, _, err, fake, *_ = self.with_setup((0, "", ""), {("claude", "--bg"): (1, "", "boom")}, base=base)
+                self.assertEqual(code, 1)
+                self.assertIn(["git", "worktree", "remove", "--force", f"{WT}/demo-task"], fake.calls)
+                self.assertIn(["git", "branch", "-D", "worktree-demo-task"], fake.calls)
+
+    def test_a_failed_worktree_add_with_a_setup_stops_before_the_command_and_the_launch(self):
+        code, _, err, fake, *_ = self.with_setup((0, "", ""), {("git", "worktree", "add"): (128, "", "bad ref")})
+        self.assertEqual((code, "bad ref" in err), (1, True))
+        self.assertFalse(fake.ran("sh") or fake.ran("claude", "--bg"))
+
+    def test_a_failed_fetch_warns_and_the_worktree_is_still_made(self):
+        code, _, err, fake, *_ = self.with_setup((0, "", ""), {("git", "fetch"): (1, "", "offline")})
+        self.assertEqual(code, 0)
+        self.assertIn("warning: cannot fetch main from origin: offline", err)
+        self.assertIn(self.ADD, fake.calls)
+
+    def test_the_setup_sentence_reaches_the_build_prompt_and_the_commands_line_and_only_with_the_key(self):
+        sentence = ("A fresh worktree or scratch copy of this repository is made ready with `make deps`: run it there first, "
+                    "and put it in the brief of a coder that works in an isolated worktree or a reviewer that makes a scratch copy.")
+        for key, extra in ((self.SETUP, f" {sentence}"), ({}, "")):
+            with self.subTest(declared=bool(key)):
+                with mock.patch.object(factory, "run", FakeRun(self.answers([], (), {("git", "config"): (1, "", "")}, key))), \
+                        mock.patch.object(os, "getcwd", return_value=ROOT), tempfile.TemporaryDirectory() as empty:
+                    repo = factory.Repo()
+                    self.assertEqual(factory.setup_line(repo), extra.strip())
+                    self.assertEqual(factory.commands_line(repo, empty, "worktree-x"),
+                                     "The test command is not stated: find how this repository runs its tests and run that. "
+                                     f"The golden command is none.{extra}")
+                    self.assertEqual(factory.build_prompt(repo, "x", "/s.md", Path("/nope"), ""),
+                                     "Task slug: x. The spec is /s.md. The base branch is main, on remote origin. "
+                                     f"The hand-over file is /nope: this is the first run.{extra}")
 
     def test_new_declares_working(self):
         code, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK))
