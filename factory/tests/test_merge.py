@@ -63,6 +63,7 @@ class World(Harness):
             ("git", "log"): (0, f"{NOW} {local}\n", ""),
             ("gh", "pr", "list", "--state", "open"): (0, json.dumps(prs), ""),
             ("gh", "pr", "edit"): (0, "", ""), ("gh", "pr", "ready"): (0, "", ""), ("gh", "pr", "merge"): (0, "", ""),
+            ("gh", "api", "-H", factory.STACKS_VERSION): (0, "[]", ""),
         }
         for s in slugs:
             n = int(s[1:])
@@ -625,7 +626,7 @@ class ApprovedTests(World):
 
     def test_plain_merge_reads_no_approval(self):
         self.merge("1", prs=[pr(1)])
-        self.assertFalse(any(c[:2] == ["gh", "api"] for c in self.fake.calls))
+        self.assertFalse(any(c[:2] == ["gh", "api"] and factory.STACKS_VERSION not in c for c in self.fake.calls))
         self.assertEqual(self.merges(), ["1"])
 
 
