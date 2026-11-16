@@ -393,6 +393,191 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(self.stale(NOW, [{"after": SHA}])[0], "head-time")
 
 
+COMMITS = "repos/{owner}/{repo}/pulls/%d/commits"
+COMMIT = "repos/{owner}/{repo}/commits/"
+
+
+def patch(i, tag):
+    """The patch of change `i`: its hunk header (numbers and heading) depends on the base, here on `tag`."""
+    return f"@@ -{i + len(tag)},2 +{i + len(tag)},3 @@ def {tag}():\n context {i}\n+added {i}\n"
+
+
+def file(text, name="a.py"):
+    return {"filename": name, "status": "modified", "previous_filename": None, "patch": text}
+
+
+def commit_of(sha, parents, *files):
+    return {"sha": sha, "parents": [{"sha": x} for x in parents], "files": list(files)}
+
+
+def stack(tag, n, base, patches=None):
+    """(shas, records) of `n` commits on `base`, oldest first: commit i changes the same lines whatever the tag."""
+    shas = [f"{tag}{i}000000" for i in range(1, n + 1)]
+    records, parent = {}, base
+    for i, sha in enumerate(shas, 1):
+        records[sha] = commit_of(sha, [parent], file((patches or {}).get(i, patch(i, tag))))
+        parent = sha
+    return shas, records
+
+
+def served(listed, records, n=1):
+    """The `gh` answers for the commits of pull request `n` (those listed, oldest first) and for each commit in `records`."""
+    answers = {("gh", "api", "--paginate", "--slurp", COMMITS % n): raw([[{"sha": s} for s in listed]])}
+    answers.update({("gh", "api", COMMIT + sha): raw(rec) for sha, rec in records.items()})
+    return answers
+
+
+def commits_gh(listed, records, asked=None, raises=None):
+    """A `p["gh"]` that serves what `served` does; GitHub's error body for a commit it does not know."""
+    def gh(kind, *args):
+        if asked is not None:
+            asked.append(args)
+        if raises:
+            raise raises
+        if "--slurp" in args:
+            return [[{"sha": s} for s in listed]]
+        if "-X" in args:
+            return []
+        sha = args[1].removeprefix(COMMIT)
+        return records.get(sha) or {"message": f"No commit found for SHA: {sha}", "status": "422"}
+    return gh
+
+
+class SameDiffTests(unittest.TestCase):
+    """`same_diff` and the lgtm rescue of `stale_approval`, against made-up commits."""
+
+    def same(self, listed, records, commit_id, head=None, **kw):
+        self.asked = []
+        p = {"gh": commits_gh(listed, records, self.asked, **kw)}
+        return factory.same_diff(p, pr(1, sha=head or (listed[-1] if listed else "none")), commit_id)
+
+    def one_each(self, **patches):
+        old, old_records = stack("o", 1, "base-o", patches.get("old"))
+        new, new_records = stack("n", 1, "base-n", patches.get("new"))
+        return new, {**old_records, **new_records}, old[0]
+
+    def test_one_commit_on_a_new_base_is_the_same_change_in_three_calls(self):
+        listed, records, old = self.one_each()
+        self.assertEqual(self.same(listed, records, old), (True, None))
+        self.assertEqual(len(self.asked), 3)
+
+    def test_two_commits_are_compared_one_by_one(self):
+        old, old_records = stack("o", 2, "base-o")
+        new, new_records = stack("n", 2, "base-n")
+        self.assertEqual(self.same(new, {**old_records, **new_records}, old[-1]), (True, None))
+        self.assertEqual(len(self.asked), 5)
+
+    def test_a_third_commit_on_top_is_not_the_same(self):
+        old, old_records = stack("o", 2, "base-o")
+        new, new_records = stack("n", 3, "base-n")
+        same, why = self.same(new, {**old_records, **new_records}, old[-1])
+        self.assertFalse(same)
+        self.assertEqual(why, f"commit 1 of 3 is not the same change ({old[-1][:7]} then, {new[-1][:7]} now)")
+
+    def test_a_changed_patch_is_not_the_same_and_names_the_commit(self):
+        old, old_records = stack("o", 2, "base-o")
+        new, new_records = stack("n", 2, "base-n", {2: "@@ -1 +1 @@\n+other\n"})
+        same, why = self.same(new, {**old_records, **new_records}, old[-1])
+        self.assertEqual((same, why), (False, f"commit 1 of 2 is not the same change ({old[-1][:7]} then, {new[-1][:7]} now)"))
+        new, new_records = stack("n", 2, "base-n", {1: "@@ -1 +1 @@\n+other\n"})
+        same, why = self.same(new, {**old_records, **new_records}, old[-1])
+        self.assertEqual((same, why), (False, f"commit 2 of 2 is not the same change ({old[0][:7]} then, {new[0][:7]} now)"))
+
+    def test_a_reordered_pair_is_not_the_same(self):
+        old, old_records = stack("o", 2, "base-o")
+        new, new_records = stack("n", 2, "base-n", {1: patch(2, "n"), 2: patch(1, "n")})
+        self.assertFalse(self.same(new, {**old_records, **new_records}, old[-1])[0])
+
+    def test_a_merge_commit_among_the_walked_ones_is_not_the_same(self):
+        listed, records, old = self.one_each()
+        records[listed[0]] = commit_of(listed[0], ["base-n", "other"], file(patch(1, "n")))
+        self.assertEqual(self.same(listed, records, old), (False, f"commit {listed[0][:7]} has no single parent"))
+
+    def test_hunk_headers_are_not_part_of_the_change(self):
+        a, b = "@@ -10,2 +10,3 @@ def a():\n ctx\n+new\n", "@@ -40,2 +41,3 @@ def b():\n ctx\n+new\n"
+        listed, records, old = self.one_each(old={1: a}, new={1: b})
+        self.assertEqual(self.same(listed, records, old), (True, None))
+
+    def test_a_commits_call_that_cannot_answer_is_not_the_same(self):
+        listed, records, old = self.one_each()
+        for label, kw in (("no json", {"raises": factory.NoJson("gh api failed")}),
+                          ("not evaluated", {"raises": factory.NotEvaluated("shape")})):
+            with self.subTest(label):
+                self.assertEqual(self.same(listed, records, old, **kw), (False, "GitHub could not list its commits"))
+        p = {"gh": lambda kind, *args: {"message": "Not Found", "status": "404"}}
+        self.assertEqual(factory.same_diff(p, pr(1), old), (False, "GitHub could not list its commits"))
+
+    def test_what_is_unreadable_or_not_shown_in_full_is_not_the_same(self):
+        listed, records, old = self.one_each()
+        head = listed[0]
+        cases = {
+            "a file without a patch": ({**records, head: commit_of(head, ["b"], {"filename": "a.png", "status": "added"})}, old),
+            "a commit id of None": (records, None),
+            "a commit with no parent": ({**records, head: commit_of(head, [], file(patch(1, "n")))}, old),
+            "an answer for another sha": ({**records, old: dict(records[old], sha="else")}, old),
+            "a commit GitHub does not know": ({k: v for k, v in records.items() if k != old}, old),
+        }
+        for label, (recs, commit_id) in cases.items():
+            with self.subTest(label):
+                self.assertFalse(self.same(listed, recs, commit_id)[0])
+
+    def test_a_head_that_moved_while_it_was_read_is_named(self):
+        listed, records, old = self.one_each()
+        self.assertEqual(self.same(listed, records, old, head="moved00"), (False, "its head moved while it was read"))
+
+    def test_299_files_are_compared_and_300_are_not(self):
+        for count, same in ((299, True), (300, False)):
+            with self.subTest(count):
+                files = [file(patch(i, "n"), f"f{i}") for i in range(count)]
+                listed, records, old = self.one_each()
+                records[listed[0]] = commit_of(listed[0], ["base-n"], *files)
+                records[old] = commit_of(old, ["base-o"], *files)
+                self.assertEqual(self.same(listed, records, old)[0], same)
+
+    def test_no_commits_and_too_many_are_not_compared(self):
+        listed, records, old = self.one_each()
+        self.assertFalse(self.same([], records, old)[0])
+        for n, same in ((20, True), (21, False)):
+            with self.subTest(n):
+                old, old_records = stack("o", n, "base-o")
+                new, new_records = stack("n", n, "base-n")
+                self.assertEqual(self.same(new, {**old_records, **new_records}, old[-1])[0], same)
+                if not same:
+                    self.assertEqual(len(self.asked), 1)
+
+    def lgtm(self, approved, activity, listed, records, head):
+        p = {"gh": lambda kind, *args: activity if "-X" in args else commits_gh(listed, records)(kind, *args)}
+        return factory.stale_approval(p, pr(1, sha=head), comment(at=approved), [head])
+
+    def pushes(self, listed, records, old):
+        """The observed log: pushed to `old` (the lgtm sees it), then to another head, then to the head."""
+        mid, mid_records = stack("m", 1, "base-m")
+        return [{"after": listed[0], "timestamp": iso(NOW - 600)}, {"after": mid[0], "timestamp": iso(NOW - 900)},
+                {"after": old, "timestamp": iso(NOW - 3600)}], {**records, **mid_records}
+
+    def test_an_lgtm_given_before_two_rebasing_pushes_still_holds(self):
+        listed, records, old = self.one_each()
+        activity, records = self.pushes(listed, records, old)
+        self.assertIsNone(self.lgtm(NOW - 1800, activity, listed, records, listed[0]))
+
+    def test_an_lgtm_given_before_a_push_that_changed_a_patch_is_stale_and_says_what_was_found(self):
+        listed, records, old = self.one_each(new={1: "@@ -1 +1 @@\n+other\n"})
+        activity, records = self.pushes(listed, records, old)
+        kind, why = self.lgtm(NOW - 1800, activity, listed, records, listed[0])
+        self.assertEqual(kind, "stale")
+        self.assertEqual(why, f"{factory.STALE_LGTM} (the lgtm was given on {old[:7]}, the head is now {listed[0][:7]}: "
+                              f"commit 1 of 1 is not the same change ({old[:7]} then, {listed[0][:7]} now))")
+
+    def test_an_lgtm_with_no_earlier_push_is_stale_and_a_same_second_push_is_not_earlier(self):
+        listed, records, old = self.one_each()
+        for approved in (NOW - 7200, NOW - 3600):
+            with self.subTest(approved):
+                activity = [{"after": listed[0], "timestamp": iso(NOW - 3600)}]
+                kind, why = self.lgtm(approved, activity, listed, records, listed[0])
+                self.assertEqual(kind, "stale")
+                self.assertIn(f"(GitHub's log has no push older than the lgtm; the head is now {listed[0][:7]})", why)
+
+
 class ApprovedTests(World):
     """`factory merge --approved`: GitHub's own records must hold a valid approval, read at that moment."""
 
@@ -729,6 +914,40 @@ class ApprovedTests(World):
                                         {"after": "before", "timestamp": iso(NOW - 3600)},
                                         {"after": "other", "timestamp": iso(NOW - 7200)}]})
         self.assertEqual(self.merges(), ["1"])
+
+    def rebased(self, n_old=1, n_new=1, **patches):
+        """(head, old, extra): a pull request of `n_new` commits whose review sits on the head of `n_old` others."""
+        old, old_records = stack("o", n_old, "base-o")
+        new, new_records = stack("n", n_new, "base-n", patches.get("new"))
+        return new[-1], old[-1], served(new, {**old_records, **new_records})
+
+    def test_a_review_on_a_head_github_rebased_without_changing_its_diff_merges(self):
+        head, old, extra = self.rebased()
+        code, out, _ = self.approved([pr(1, sha=head)], reviews={1: [review(sha=old)]}, extra=extra, local=head)
+        self.assertEqual((code, self.merges()), (0, ["1"]))
+        self.assertEqual(self.queued(), [dict(self.merged_record(iso(NOW - 60)), head=head)])
+
+    def test_a_review_on_a_head_with_another_commit_on_top_is_stale_and_the_line_says_what_was_found(self):
+        head, old, extra = self.rebased(n_old=1, n_new=2)
+        code, out, _ = self.approved([pr(1, sha=head)], reviews={1: [review(sha=old)]}, extra=extra, local=head)
+        self.assertEqual((code, self.merges()), (1, []))
+        self.assertIn(f"#1 stopped: {factory.STALE_REVIEW} (approved at {old[:7]}, the head is now {head[:7]}: "
+                      f"commit 1 of 2 is not the same change ({old[:7]} then, {head[:7]} now))\n", out)
+
+    def test_an_lgtm_given_before_two_rebasing_pushes_merges(self):
+        head, old, extra = self.rebased()
+        mid, mid_records = stack("m", 1, "base-m")
+        activity = [{"after": head, "timestamp": iso(NOW - 600)}, {"after": mid[0], "timestamp": iso(NOW - 900)},
+                    {"after": old, "timestamp": iso(NOW - 3600)}]
+        code, out, _ = self.approved([pr(1, sha=head)], {1: [comment(at=NOW - 1800)]}, activity={1: activity},
+                                     extra={**extra, **served([head], mid_records)}, local=head)
+        self.assertEqual((code, self.merges()), (0, ["1"]))
+
+    def test_a_review_on_the_head_and_an_lgtm_newer_than_the_push_read_no_commit(self):
+        self.approved([pr(1)], reviews={1: [review()]})
+        self.setUp()
+        self.approved([pr(1)], {1: [comment()]})
+        self.assertFalse(any("commits" in part for c in self.fake.calls for part in c))
 
     def test_plain_merge_reads_no_approval(self):
         self.merge("1", prs=[pr(1)])
