@@ -1110,7 +1110,7 @@ class HeldUpdateTests(ScratchRepoBase):
 
     def setUp(self):
         super().setUp()
-        self.enterContext(mock.patch.dict(os.environ, {"HOME": str(self.root.parent), "CLAUDE_CODE_SESSION_ID": "sid"}))
+        self.enterContext(mock.patch.dict(os.environ, {**self.env, "CLAUDE_CODE_SESSION_ID": "sid"}))
         self.repo = SimpleNamespace(root=str(self.root), remote="origin", default="main", tasks=[{"path": str(self.wt), "branch": "worktree-t1"}],
                                     git=lambda *a, path=None: self.run_git(path or self.root, *a))
         self.reported = []
