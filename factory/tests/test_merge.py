@@ -577,6 +577,15 @@ class SameDiffTests(unittest.TestCase):
                 self.assertEqual(kind, "stale")
                 self.assertIn(f"(GitHub's log has no push older than the lgtm; the head is now {listed[0][:7]})", why)
 
+    def test_a_push_with_an_unreadable_time_before_the_one_the_lgtm_saw_is_stale(self):
+        listed, records, old = self.one_each()
+        x, x_records = stack("x", 1, "base-x", {1: "@@ -1 +1 @@\n+other\n"})
+        activity = [{"after": listed[0], "timestamp": iso(NOW - 600)}, {"after": x[0], "timestamp": "garbled"},
+                    {"after": old, "timestamp": iso(NOW - 3600)}]
+        kind, why = self.lgtm(NOW - 1800, activity, listed, {**records, **x_records}, listed[0])
+        self.assertEqual(kind, "stale")
+        self.assertIn("(a push in GitHub's log has no readable time;", why)
+
 
 class ApprovedTests(World):
     """`factory merge --approved`: GitHub's own records must hold a valid approval, read at that moment."""

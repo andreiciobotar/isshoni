@@ -5105,25 +5105,19 @@ def newest_approval(p, pr, permission):
     return max(approvals, key=lambda c: c.get("created_at") or "", default=None)
 
 
-def read_commit(p, sha):
-    """GitHub's record of commit `sha` (a dict with its parents and files), or None when it cannot be read as one."""
-    if not isinstance(sha, str) or not sha:
-        return None
-    try:
-        c = p["gh"](dict, "api", f"repos/{{owner}}/{{repo}}/commits/{sha}")
-    except NotEvaluated:
-        return None
-    ok = (isinstance(c, dict) and c.get("sha") == sha and isinstance(c.get("parents"), list)
-          and all(isinstance(x, dict) for x in c["parents"])
-          and isinstance(c.get("files"), list) and all(isinstance(x, dict) for x in c["files"]))
-    return c if ok else None
-
-
 def commit_change(p, sha):
     """(change, parent, why) of commit `sha`: its change as the files with their patches, hunk header lines cut down to
     `@@` since their numbers and headings depend on the base, and its one parent; why is None when both can be had."""
-    c, name = read_commit(p, sha), f"commit {str(sha)[:7]}"
-    if c is None:
+    name = f"commit {str(sha)[:7]}"
+    c = None
+    if isinstance(sha, str) and sha:
+        try:
+            c = p["gh"](dict, "api", f"repos/{{owner}}/{{repo}}/commits/{sha}")
+        except NotEvaluated:
+            pass
+    if not (isinstance(c, dict) and c.get("sha") == sha and isinstance(c.get("parents"), list)
+            and all(isinstance(x, dict) for x in c["parents"])
+            and isinstance(c.get("files"), list) and all(isinstance(x, dict) for x in c["files"])):
         return None, None, f"{name} could not be read"
     if len(c["parents"]) != 1:
         return None, None, f"{name} has no single parent"
@@ -5173,8 +5167,15 @@ def stale_approval(p, pr, approval, heads):
     if not activity or activity[0].get("after") != pr["headRefOid"] or approved is None or changed is None:
         return "head-time", "cannot tell when its head last changed"
     if approved <= changed:
-        seen = next((a for a in activity if (epoch(a.get("timestamp")) or approved) < approved), None)
         now = f"the head is now {pr['headRefOid'][:7]}"
+        seen = None
+        for a in activity:
+            when = epoch(a.get("timestamp"))
+            if when is None:
+                return "stale", f"{STALE_LGTM} (a push in GitHub's log has no readable time; {now})"
+            if when < approved:
+                seen = a
+                break
         if seen is None:
             return "stale", f"{STALE_LGTM} (GitHub's log has no push older than the lgtm; {now})"
         same, why = same_diff(p, pr, seen.get("after"))
