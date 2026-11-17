@@ -1361,7 +1361,7 @@ class FiringsTests(Harness):
                                                        "suppressed": 1, "told": 0, "extended": 0, "paused": 0, "closed": 0, "missed": 1, "precision": 0.5})
         self.assertEqual(entries["unlisted"]["missed"], 2)
         self.assertEqual(doc["summary"], {"escalated": 3, "acted": 1, "ignored": 1, "no_outcome": 1, "suppressed": 1,
-                                          "paused": 0, "extended": 0, "kept": 0, "overran": 0, "missed": 3, "missed_suppressed": 1, "missed_never_fired": 2,
+                                          "paused": 0, "extended": 0, "old_rule": 0, "kept": 0, "overran": 0, "missed": 3, "missed_suppressed": 1, "missed_never_fired": 2,
                                           "precision": 0.5, "recall": 0.25, "told": 0, "told_acted": 0, "told_noise": 0,
                                           "told_collided": 0, "told_no_outcome": 0, "told_undelivered": 0,
                                           "closed": 0, "stood": 0, "reopened": 0})

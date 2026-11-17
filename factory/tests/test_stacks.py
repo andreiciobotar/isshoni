@@ -154,7 +154,7 @@ class DissolveTests(World):
     def test_a_merged_base_is_unstacked_before_the_retarget(self):
         extra = self.stacked({("gh", "pr", "list", "--head", "worktree-t1"): MERGED})
         code, _, _ = self.merge("2", prs=[pr(2, base="worktree-t1")], extra=extra)
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertEqual(len(self.unstacks()), 1)
         self.assertLess(self.index("gh", "api", "-H", V, "-i"), self.index("gh", "pr", "edit"))
 

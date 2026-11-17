@@ -139,13 +139,26 @@ class MergeCommandTests(World):
             ["pr", "merge", "1", "--merge", "--match-head-commit", SHA]])
         self.assertLess(out.index("#1 merged"), out.index(self.behind(2)))
 
-    def test_a_base_merged_earlier_is_retargeted(self):
+    def test_a_base_merged_earlier_is_retargeted_in_one_pass_and_merged_in_the_next(self):
         merged = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
-        code, _, _ = self.merge("2", prs=[pr(2, base="worktree-t1")],
-                                extra={("gh", "pr", "list", "--head", "worktree-t1"): merged})
+        code, out, _ = self.merge("2", prs=[pr(2, base="worktree-t1")],
+                                  extra={("gh", "pr", "list", "--head", "worktree-t1"): merged})
+        self.assertEqual(code, 1)
+        self.assertIn("#2 stopped: its base was changed to main in this pass: it merges on the next one\n", out)
+        self.assertEqual([c[:2] for c in self.pr_calls()], [["pr", "checks"], ["pr", "edit"]])
+        self.setUp()
+        code, out, _ = self.merge("2", prs=[pr(2)])
         self.assertEqual(code, 0)
-        self.assertEqual([c[:2] for c in self.pr_calls()], [["pr", "checks"], ["pr", "edit"], ["pr", "view"],
-                                                            ["pr", "merge"]])
+        self.assertEqual([c[:2] for c in self.pr_calls()], [["pr", "checks"], ["pr", "view"], ["pr", "merge"]])
+        self.assertIn("#2 merged", out)
+
+    def test_a_dry_run_on_a_merged_base_says_so_and_changes_nothing(self):
+        merged = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
+        code, out, _ = self.merge("2", "--dry-run", prs=[pr(2, base="worktree-t1")],
+                                  extra={("gh", "pr", "list", "--head", "worktree-t1"): merged})
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "#2 would merge (its base is changed to main first; it merges on the pass after that)\n")
+        self.assertEqual(self.gh_mutations(), [])
 
     def test_a_base_that_is_open_and_not_selected_is_a_stop(self):
         code, out, _ = self.merge("2", prs=[pr(1), pr(2, base="worktree-t1")])
@@ -680,34 +693,16 @@ class ApprovedTests(World):
                               "gh pr merge 1 --merge --match-head-commit sha-1: base branch policy prohibits the merge\n", out)
                 self.assertNotIn(factory.REFUSED, out)
 
-    def test_an_unexplained_refusal_after_a_retarget_says_the_base_was_changed(self):
-        merged = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
-        _, out, _ = self.approved([pr(2, base="worktree-t1")], {2: [comment(n=2)]}, extra={
-            ("gh", "pr", "list", "--head", "worktree-t1"): merged,
-            ("gh", "pr", "merge"): (1, "", "base branch policy prohibits the merge"),
-            ("gh", "pr", "view", "2", "--json", "reviewDecision,mergeStateStatus"): raw(
-                {"reviewDecision": "APPROVED", "mergeStateStatus": "CLEAN"})})
-        self.assertIn("#2 stopped: GitHub refused the merge and nothing it shows explains why (reviewDecision APPROVED, "
-                      "mergeStateStatus CLEAN, checks passed); its base was changed to main in this pass, which can start a "
-                      "required check again; gh pr merge 2 --merge", out)
-
     def test_a_refusal_while_a_check_runs_again_is_kind_pending_with_its_start(self):
         again = [{"name": "test", "bucket": "pass"}, {"name": "lint", "bucket": "pending", "startedAt": "2026-01-02T03:04:05Z"}]
-        for retarget, after in ((False, ""), (True, ", after its base was changed to main in this pass")):
-            with self.subTest(retarget=retarget):
-                self.setUp()
-                merged = (0, json.dumps([{"state": "MERGED", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), "")
-                n = 2 if retarget else 1
-                extra = {("gh", "pr", "merge"): (1, "", "base branch policy prohibits the merge"),
-                         ("gh", "pr", "checks", str(n)): [raw(GREEN), raw(again)],
-                         ("gh", "pr", "view", str(n), "--json", "reviewDecision,mergeStateStatus"): raw(
-                             {"reviewDecision": "APPROVED", "mergeStateStatus": "CLEAN"})}
-                if retarget:
-                    extra[("gh", "pr", "list", "--head", "worktree-t1")] = merged
-                code, out, _ = self.approved([pr(n, base="worktree-t1" if retarget else "main")], {n: [comment(n=n)]}, extra=extra)
-                self.assertEqual(code, 1)
-                self.assertIn(f"#{n} stopped: GitHub refused the merge while a check ran again on this head: "
-                              f"lint (started 2026-01-02T03:04:05Z){after}; gh pr merge {n} --merge", out)
+        code, out, _ = self.approved([pr(1)], {1: [comment(n=1)]}, extra={
+            ("gh", "pr", "merge"): (1, "", "base branch policy prohibits the merge"),
+            ("gh", "pr", "checks", "1"): [raw(GREEN), raw(again)],
+            ("gh", "pr", "view", "1", "--json", "reviewDecision,mergeStateStatus"): raw(
+                {"reviewDecision": "APPROVED", "mergeStateStatus": "CLEAN"})})
+        self.assertEqual(code, 1)
+        self.assertIn("#1 stopped: GitHub refused the merge while a check ran again on this head: "
+                      "lint (started 2026-01-02T03:04:05Z); gh pr merge 1 --merge", out)
 
     def test_a_human_authors_own_lgtm_is_refused_for_a_review_and_nothing_is_read_before_a_merge_that_succeeds(self):
         code, out, _ = self.refused("REVIEW_REQUIRED")

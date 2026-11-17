@@ -93,7 +93,7 @@ How to use a look: you are given facts and what changed since the last look. Mos
 **Score (to 2026-11-15):** fired 4; escalated 3 (acted 0, ignored 3, no outcome 0); suppressed 1; missed 0.
 
 ## overrun
-**What:** A lead over its limit, or not converging, asks for time with `factory overrun`. The firing's `detail` is its ask; `runs`, `extended_minutes` and `extension_left_minutes` are the evidence.
+**What:** A lead over its limit, or not converging, asks for time with `factory overrun`. The firing's `detail` is its ask; `runs`, `extended_minutes`, `extension_left_minutes` and `limit_left_minutes` (negative when the limit is past) are the evidence.
 **Why it matters:** An ask held back stops a lead that is nearly done; time given for nothing costs a build run.
 **What it has looked like:** The script fires it on every tick, with no threshold. It fired 2 times in two days, both extended. `pulse-band-visual` is case 4 below.
 **A good call:** Decide by the principles and cases below: `extended` with `minutes`, `paused` with `waits_on` `["human"]`, or `escalated` to the dispatcher. The script tells the lead and the dispatcher about `extended` and `paused`; you message nobody for them.
@@ -107,6 +107,7 @@ How to use a look: you are given facts and what changed since the last look. Mos
 - `extension_left_minutes` is the human's ceiling. What does not fit under it is the human's decision: escalate.
 
 **Score (to 2026-11-15):** fired 2; extended 2 (kept 1, overran 1, no outcome 0); escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 0; missed 0.
+Extensions decided before the limit counted from the decision (records without `from`) were scored against a limit counted from the old limit: 15 of them up to 2026-11-16T19:44Z, of which 2 `overran` would be `kept`; they are not counted in the score.
 
 ### Cases
 1. `report-tasks` (2026-11-15). Built and reviewed, half a minute past the limit, assessment and hand-over left. Asking the dispatcher took four minutes for ten minutes of work. Decided: extended 17 min. Outcome: handed over within it. Lesson: only hand-over left is the clearest extension there is.

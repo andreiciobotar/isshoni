@@ -712,11 +712,19 @@ def brief_size(brief):
     return None
 
 
-def task_limit(size, limit_hours, extra_minutes=0):
-    """The one place a task's time limit, in seconds, is computed: the size's, never above the setting, plus the
-    minutes the site manager granted."""
+def task_limit(size, limit_hours):
+    """A task's time limit before any extension, in seconds: the size's, never above the setting."""
     ceiling = limit_hours * 3600
-    return int(min(SIZE_LIMIT_MINUTES[size] * 60, ceiling) if size in SIZE_LIMIT_MINUTES else ceiling) + int(extra_minutes * 60)
+    return int(min(SIZE_LIMIT_MINUTES[size] * 60, ceiling) if size in SIZE_LIMIT_MINUTES else ceiling)
+
+
+def extended_limit(size, limit_hours, start, granted):
+    """A task's time limit in seconds from its `start`, the one deadline: the size's, then each of its `granted` extensions
+    oldest first, an old-rule one (no `from`) adding its minutes, one with `from` setting the limit to its `until`."""
+    limit = task_limit(size, limit_hours)
+    for e in granted:
+        limit = epoch(e["until"]) - start if e["from"] and start is not None else limit + e["minutes"] * 60
+    return int(limit)
 
 
 def span(secs):
@@ -1070,18 +1078,16 @@ def extended(repo):
 
 def extensions(granted, slug, started):
     """What `extended` granted to `slug` at or after `started` (epoch seconds; None: any time), oldest first."""
-    return [{"minutes": f["minutes"], "by": f["by"], "reason": f["reason"], "decided": f["decided"]}
+    return [{"minutes": f["minutes"], "by": f["by"], "reason": f["reason"], "decided": f["decided"], "from": f["from"], "until": f["until"]}
             for f in granted if f["slug"] == slug and (started is None or (epoch(f["decided"]) or 0) >= started)]
 
 
 def task_start(events, slug, session):
-    """When the task `slug` started, in epoch seconds: the `ts` of its last TaskStarted event, else its session's `startedAt`
-    (a resume resets that); None without a session."""
-    if not session:
-        return None
+    """When the task `slug` started, in epoch seconds: the `ts` of its last TaskStarted event, whether or not a session is
+    listed; without one its session's `startedAt` (a resume resets that), None without a session."""
     event = since_start(events, slug)[1]
     started = epoch(event and event.get("ts"))
-    if started is None:
+    if started is None and session:
         started = session.get("startedAt")
         started = started / 1000 if isinstance(started, (int, float)) and not isinstance(started, bool) else None
     return started
@@ -1119,7 +1125,7 @@ def collect(repo, sessions, limit_hours, prs=None, deep=False):
         row["elapsed"] = int(now - started) if started else None
         row["size"] = task_size(repo, branch)
         row["extensions"] = extensions(granted, slug, started)
-        row["limit"] = task_limit(row["size"], limit_hours, sum(e["minutes"] for e in row["extensions"]))
+        row["limit"] = extended_limit(row["size"], limit_hours, started, row["extensions"])
         row["state"] = declared.get(slug, {}).get("state")
         rc, out, _ = repo.git("status", "--porcelain", path=path)
         row["dirty"] = bool(out.strip()) if rc == 0 else None
@@ -3160,7 +3166,7 @@ def fold(records):
         elif f and "decision" in r and f["decision"] is None:
             f.update(decision=r["decision"], reason=r.get("reason"), by=r.get("by"), decided=r.get("ts"),
                      to=r.get("to"), looked=r.get("looked"), run=r.get("run"), waits_on=r.get("waits_on"),
-                     minutes=r.get("minutes"), until=r.get("until"), tell=r.get("tell"))
+                     minutes=r.get("minutes"), until=r.get("until"), **{"from": r.get("from")}, tell=r.get("tell"))
         elif f and "outcome" in r:
             f["outcome"] = r["outcome"]
         elif f and "delivered" in r:
@@ -3270,9 +3276,10 @@ def firing_for_run(p, f):
     elif path:
         out["task"] = {"worktree": path, "lead": lead, "pid": pid}
     if f["criterion"] in ASKS:
-        _, used, left = extension_state(p, f["slug"], session)
+        started, used, left = extension_state(p, f["slug"], session)
         out["runs"] = run_rows(p, f["slug"])
         out["extended_minutes"], out["extension_left_minutes"] = used, left
+        out["limit_left_minutes"] = None if not row or started is None else int((started + row["limit"] - p["now"]) // 60)
     if path:
         paths = transcripts(session)
         out["transcripts"] = [str(t) for t in paths]
@@ -3285,7 +3292,7 @@ def firing_for_run(p, f):
 
 
 def extension_state(p, slug, session):
-    """(the session's start in epoch seconds or None, minutes granted to `slug` since, minutes still allowed)."""
+    """(the task's start in epoch seconds or None, minutes granted to `slug` since, minutes still allowed)."""
     started = task_start(p.get("events") or repo_log("events", p["repo"].root) or [], slug, session)
     used = sum(e["minutes"] for e in extensions(extended(p["repo"]), slug, started))
     return started, used, load_settings()["extension_minutes"] - used
@@ -3423,14 +3430,18 @@ def site_manager_argv(p, firings, job="watch", look=None):
 
 
 def grant(p, slug, minutes):
-    """The ISO time an extension of `minutes` would move the limit of `slug` to; None when it is not allowed: not a
-    positive integer, over what `limits.extension_minutes` leaves, or no session start to count from."""
+    """The ISO times (from, until) an extension of `minutes` given now would run: from the later of now and the task's
+    deadline, for `minutes`; None when it is not allowed: not a positive integer, over what `limits.extension_minutes`
+    leaves, or no task start to count from."""
     repo = p["repo"]
-    started, used, left = extension_state(p, slug, task_lead(p, slug)[2])
+    started, _, left = extension_state(p, slug, task_lead(p, slug)[2])
     if isinstance(minutes, bool) or not isinstance(minutes, int) or not 0 < minutes <= left or started is None:
         return None
     branch = next((t["branch"] for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
-    return iso(started + task_limit(task_size(repo, branch), load_settings()["task_time_limit_hours"], used + minutes))
+    deadline = started + extended_limit(task_size(repo, branch), load_settings()["task_time_limit_hours"], started,
+                                        extensions(extended(repo), slug, started))
+    begins = max(int(time.time()), deadline)
+    return iso(begins), iso(begins + minutes * 60)
 
 
 def tell_decision(p, f, decision, reason, minutes=None, until=None):
@@ -3543,11 +3554,11 @@ def record_decisions(p, sent, result, run, look=None):
             continue
         if crit in ("collision", "new-spec") and to == "lead":
             continue
-        ask, waits, minutes, until = crit in ASKS, d.get("waits_on"), d.get("minutes"), None
+        ask, waits, minutes, begins, until = crit in ASKS, d.get("waits_on"), d.get("minutes"), None, None
         if decision == "extended":
-            until = crit == "overrun" and grant(p, f["slug"], minutes)
-            if not until:
+            if not (crit == "overrun" and (given := grant(p, f["slug"], minutes))):
                 continue
+            begins, until = given
         superseded_by, closed = d.get("superseded_by") or None, None
         if decision == "closed" and (crit != "ended-undeclared" or not (closed := close_decided(p, f["slug"], reason, superseded_by))):
             continue
@@ -3578,7 +3589,7 @@ def record_decisions(p, sent, result, run, look=None):
         log_firing(p["repo"], id=fid, decision=decision, reason=reason.strip(), by="site-manager", run=run,
                    looked=[x for x in looked if isinstance(x, str)] if isinstance(looked, list) else [],
                    **({"to": to} if to else {}), **({"waits_on": waits} if decision == "paused" else {}),
-                   **({"minutes": minutes, "until": until} if decision == "extended" else {}),
+                   **({"minutes": minutes, "from": begins, "until": until} if decision == "extended" else {}),
                    **({"tell": tell} if decision == "told" else {}), **({"superseded_by": superseded_by} if decision == "closed" and superseded_by else {}))
         if closed:
             tell_closed(p, fid, crit, f["slug"], reason, superseded_by, closed)
@@ -4319,7 +4330,8 @@ def summarize(firings, misses):
     acted = sum(f["outcome"] == "acted" for f in escalated)
     ignored = sum(f["outcome"] == "ignored" for f in escalated)
     first = sum(bool(m.get("firing")) for m in misses)
-    given = [f for f in firings if f["decision"] == "extended"]
+    extensions_decided = [f for f in firings if f["decision"] == "extended"]
+    given = [f for f in extensions_decided if f["from"]]
     told = [f for f in firings if f["decision"] == "told"]
     closed = [f for f in firings if f["decision"] == "closed"]
     by_outcome = {o: sum(f["outcome"] == o for f in told) for o in ("acted", "noise", "collided")}
@@ -4330,7 +4342,7 @@ def summarize(firings, misses):
             "no_outcome": len(escalated) - acted - ignored,
             "suppressed": sum(f["decision"] == "suppressed" for f in firings),
             "paused": sum(f["decision"] == "paused" for f in firings),
-            "extended": len(given), "kept": sum(f["outcome"] == "kept" for f in given), "overran": sum(f["outcome"] == "overran" for f in given),
+            "extended": len(given), "old_rule": len(extensions_decided) - len(given), "kept": sum(f["outcome"] == "kept" for f in given), "overran": sum(f["outcome"] == "overran" for f in given),
             "closed": len(closed), "stood": sum(f["outcome"] == "stood" for f in closed), "reopened": sum(f["outcome"] == "reopened" for f in closed),
             "told": len(told), **{f"told_{o}": n for o, n in by_outcome.items()}, "told_no_outcome": len(told) - sum(by_outcome.values()),
             "told_undelivered": sum(not set(f["tell"]) & set(f["delivered"]) for f in told),
@@ -4381,7 +4393,7 @@ def cmd_firings(args):
     told = sum(f["decision"] == "escalated" and f.get("to") == "lead" for f in firings)
     print(f"escalated {s['escalated']} (acted {s['acted']}, ignored {s['ignored']}, no outcome {s['no_outcome']}); "
           f"to lead {told}; suppressed {s['suppressed']}; paused {s['paused']}; "
-          f"extended {s['extended']} (kept {s['kept']}, overran {s['overran']}, no outcome {s['extended'] - s['kept'] - s['overran']}); "
+          f"extended {s['extended']} (kept {s['kept']}, overran {s['overran']}, no outcome {s['extended'] - s['kept'] - s['overran']}){'; %d before the limit counted from the decision, not scored' % s['old_rule'] if s['old_rule'] else ''}; "
           f"closed {s['closed']} (stood {s['stood']}, reopened {s['reopened']}, no outcome {s['closed'] - s['stood'] - s['reopened']}); missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
           f"{s['missed_never_fired']} never fired); precision {pct['precision']}; recall {pct['recall']}; "
           f"told {s['told']} (acted {s['told_acted']}, noise {s['told_noise']}, collided {s['told_collided']}, "
@@ -4861,10 +4873,9 @@ def mergeability(p, n):
     return None
 
 
-def refusal(p, n, stop, retarget):
+def refusal(p, n, stop):
     """`stop`, the failed `gh pr merge` step of pull request `n`, with what GitHub's records say explains it: a review
-    requirement (kind `merge`), a check that started again (kind `pending`), else that nothing does (kind `refused`).
-    `retarget`: this call changed its base."""
+    requirement (kind `merge`), a check that started again (kind `pending`), else that nothing does (kind `refused`)."""
     def read(*argv):
         try:
             return p["gh"](*argv)
@@ -4877,15 +4888,12 @@ def refusal(p, n, stop, retarget):
         return stop[0], f"{REFUSED}{what} (reviewDecision {decision}{f', mergeStateStatus {state}' if state else ''}); {stop[1]}"
     checks = read(list, "pr", "checks", n, "--json", "name,bucket,startedAt")
     running = [f"{c.get('name')} (started {c.get('startedAt')})" for c in checks or [] if c.get("bucket") == "pending"]
-    default = p["repo"].default
     if running:
-        after = f", after its base was changed to {default} in this pass" if retarget else ""
-        return "pending", f"GitHub refused the merge while a check ran again on this head: {', '.join(running)}{after}; {stop[1]}"
+        return "pending", f"GitHub refused the merge while a check ran again on this head: {', '.join(running)}; {stop[1]}"
     seen = ("reviewDecision unreadable, mergeStateStatus unreadable" if view is None
             else f"reviewDecision {decision or 'none'}, mergeStateStatus {state or 'none'}")
-    after = f"; its base was changed to {default} in this pass, which can start a required check again" if retarget else ""
     return "refused", (f"GitHub refused the merge and nothing it shows explains why ({seen}, "
-                       f"checks {'unreadable' if checks is None else 'passed'}){after}; {stop[1]}")
+                       f"checks {'unreadable' if checks is None else 'passed'}); {stop[1]}")
 
 
 def checks_stop(p, n):
@@ -4981,25 +4989,24 @@ def merge_one(p, pr, merged, dry, permission=None):
         return "ci", str(e)
     if stop:
         return stop
-    retarget = base != repo.default
-    if retarget and not dry:
-        stop = dissolve(repo, n) or gh_step(repo, "pr", "edit", n, "--base", repo.default)
-        if stop:
-            return stop
-    if not (retarget and dry):
-        stop = mergeability(p, n)
-        if stop:
-            return stop
+    if base != repo.default:
+        if dry:
+            return None
+        return dissolve(repo, n) or gh_step(repo, "pr", "edit", n, "--base", repo.default) or \
+            ("pending", f"its base was changed to {repo.default} in this pass: it merges on the next one")
+    stop = mergeability(p, n)
+    if stop:
+        return stop
     if dry:
         return None
-    stop = None if retarget else dissolve(repo, n)
+    stop = dissolve(repo, n)
     if stop:
         return stop
     for step in [*([["pr", "ready", n]] if pr["isDraft"] else []),
                  ["pr", "merge", n, "--merge", "--match-head-commit", pr["headRefOid"]]]:
         stop = gh_step(repo, *step)
         if stop:
-            return refusal(p, n, stop, retarget) if step[1] == "merge" else stop
+            return refusal(p, n, stop) if step[1] == "merge" else stop
     log_queue(repo, pr["number"], task_slug(repo, pr), pr["headRefOid"], "merged", approved_at=approved_at)
     return None
 
@@ -5077,7 +5084,7 @@ def cmd_merge(args):
             print(f"#{pr['number']} merged {pr['url']}")
         else:
             print(f"#{pr['number']} would merge"
-                  + (f" (retarget onto {repo.default} first; mergeability is checked after that)"
+                  + (f" (its base is changed to {repo.default} first; it merges on the pass after that)"
                      if pr["baseRefName"] != repo.default else "")
                   + (" (draft: would be marked ready)" if pr["isDraft"] else ""))
     if merged and not args.dry_run:
