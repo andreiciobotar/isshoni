@@ -375,25 +375,23 @@ class MergeInOrderTests(Loop):
         self.go("lander", at=NOW + 240)
         self.assertEqual((self.sim.merged, self.sim.lead_lines()), ([2, 1], [line]))
 
-    def stacked_and_refused(self):
-        """#2 is stacked on #1, which merged; GitHub refuses #2's merge and its records show everything satisfied."""
-        self.sim.add(1)
-        self.sim.merged = [1]
-        self.sim.add(2, base="worktree-t1", behind=False)
+    def refused_on_main(self):
+        """#2 is on main; GitHub refuses its merge and its records show everything satisfied."""
+        self.sim.add(2, behind=False)
         self.sim.refused, self.sim.explained = {2}, False
 
-    def test_an_unexplained_refusal_after_a_retarget_waits_one_pass_and_the_loop_merges_it(self):
-        self.stacked_and_refused()
+    def test_an_unexplained_refusal_waits_one_pass_and_the_loop_merges_it(self):
+        self.refused_on_main()
         self.go("lander")
-        self.assertEqual((self.sim.events("edit"), self.sim.merged, self.sim.lead_lines()), ([("edit", 2)], [1], []))
+        self.assertEqual((self.sim.merged, self.sim.lead_lines()), ([], []))
         self.assertEqual(self.lander_json()["waiting"]["2"]["kind"], "refused")
         self.assertEqual(self.lander_json()["stopped"], {})
         self.sim.refused = set()
         self.go("lander", at=NOW + 120)
-        self.assertEqual((self.sim.merged, self.sim.lead_lines()), ([1, 2], []))
+        self.assertEqual((self.sim.merged, self.sim.lead_lines()), ([2], []))
 
     def test_an_unexplained_refusal_told_once_at_the_second_pass(self):
-        self.stacked_and_refused()
+        self.refused_on_main()
         self.go("lander")
         self.go("lander", at=NOW + 120)
         [line] = self.sim.lead_lines()
@@ -493,6 +491,21 @@ class MergeInOrderTests(Loop):
         self.go("lander")
         self.assertEqual(self.sim.merged, [1, 2])
         self.assertEqual(self.sim.events("push", "merge", "edit"), [("push", 1), ("merge", 1), ("push", 2), ("edit", 2), ("merge", 2)])
+
+    def test_a_base_change_is_a_silent_wait_and_the_loop_merges_after_one_poll(self):
+        self.sim.add(1)
+        self.sim.merged = [1]
+        self.sim.add(2, base="worktree-t1", behind=False)
+        asleep, seen = factory.time.sleep, []
+
+        def sleep(seconds):
+            seen.append((seconds, self.sim.events("edit", "merge"), self.lander_json()["waiting"]["2"]["kind"]))
+            asleep(seconds)
+        with mock.patch.object(factory.time, "sleep", sleep):
+            code, out, _ = self.go("lander")
+        self.assertEqual((code, seen), (0, [(factory.POLL, [("edit", 2)], "pending")]))
+        self.assertEqual(self.sim.events("edit", "merge"), [("edit", 2), ("merge", 2)])
+        self.assertEqual((self.sim.lines, self.lander_json()["stopped"], self.lander_json()["waiting"]), ([], {}, {}))
 
 
 class HoldTests(Loop):
