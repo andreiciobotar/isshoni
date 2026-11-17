@@ -22,6 +22,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -82,7 +83,7 @@ PROMPT_FROM = (("<agent-message", "subagent"), ("<cross-session-message", "sessi
 COMMANDS = {}  # name -> (help, options, function), filled by @command where each command is defined
 COMMAND_ORDER = ("new", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "retro", "env",
                  "feedback", "review", "log", "health", "watch", "ops", "digest", "firing", "miss", "firings",
-                 "pauses", "lead", "merge", "lander", "tech-lead", "build", "land", "overlap", "rerun", "schedule",
+                 "pauses", "lead", "merge", "lander", "tech-lead", "build", "land", "overlap", "scratch", "rerun", "schedule",
                  "dispatcher", "settings", "wizard", "uninstall")  # `factory --help` order; a name not here follows, by name
 
 
@@ -6254,6 +6255,32 @@ def args_overlap(parser):
 @command("overlap", "what a base and a task both changed, and whether anyone must look (run in the task worktree)", args_overlap)
 def cmd_overlap(args):
     print(Overlap(checked_out(lambda *a: run(["git", *a])), args.old_base, args.old_head, args.target).text())
+    return 0
+
+
+def args_scratch(parser):
+    parser.add_argument("commit", help="any commit-ish git resolves here: a SHA, HEAD~1, a branch")
+
+
+@command("scratch", "a new directory with a commit's files (no .git), its path on stdout (run in a worktree)", args_scratch)
+def cmd_scratch(args):
+    job = os.environ.get("CLAUDE_JOB_DIR")
+    base = Path(job) / "tmp" if job else Path(tempfile.gettempdir())
+    base.mkdir(parents=True, exist_ok=True)
+    target = Path(tempfile.mkdtemp(prefix="scratch-", dir=base)).resolve()
+    tarball = target.with_name(target.name + ".tar")
+    try:
+        rc, _, err = run(["git", "archive", "--format=tar", "-o", str(tarball), args.commit])
+        if rc != 0:
+            raise Fail(err.strip(), 1)
+        with tarfile.open(tarball) as tar:
+            tar.extractall(target, filter="data")
+    except BaseException:
+        shutil.rmtree(target)
+        raise
+    finally:
+        tarball.unlink(missing_ok=True)
+    print(target)
     return 0
 
 

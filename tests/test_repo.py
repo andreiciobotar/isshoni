@@ -33,6 +33,15 @@ class GitRuleIsOneLine(unittest.TestCase):
             "factory/agents/reviewer.md", "factory/roles/lead.md"])
         self.assertEqual(len({tuple(v) for v in found.values()}), 1, "one bullet per file, the same in all")
         self.assertEqual({len(v) for v in found.values()}, {1})
+        (bullet,) = found["factory/agents/lander.md"]
+        self.assertIn("`$?`", bullet)
+        self.assertIn("<<'EOF'", bullet)
+
+    def test_the_reviewer_copies_with_factory_scratch_and_the_lander_reads_the_exit_code_from_the_result(self):
+        reviewer = (ROOT / "factory/agents/reviewer.md").read_text()
+        self.assertIn("factory scratch", reviewer)
+        self.assertNotIn("git archive -o", reviewer)
+        self.assertIn("Exit code N", (ROOT / "factory/agents/lander.md").read_text())
 
 
 class ReviewWordsAreInOnePlace(unittest.TestCase):

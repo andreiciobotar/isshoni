@@ -15,7 +15,7 @@ Rules:
 - Stay inside the scope and files named in the task. If the task is wrong or underspecified, stop and say so instead of improvising.
 - Run the relevant tests or a quick check before you finish.
 - Do not refactor unrelated code.
-- Keep git in this worktree: no `-C`, `--git-dir`, `GIT_DIR` or `cd` elsewhere. A call refused with `This session is isolated` ran nothing: retry with literal values, no `$`, backtick, loop or `HOME=`.
+- Keep git in this worktree: no `-C`, `--git-dir`, `GIT_DIR`, `HOME=` or `cd` to another checkout. A call refused with `This session is isolated` ran nothing. The check reads the whole text of the call, and `git` inside another word counts (`.gitignore`, `github.com`). Refused: a call that names git and holds a value filled in as it runs (`$?`, `$CLAUDE_JOB_DIR` or any `$NAME`, `$(...)`, a backtick, a loop variable); a heredoc with an unquoted delimiter whose body names git; a heredoc chained to another command with `&&` or `;`, with git or without. Accepted: plain commands with literal values, also chained or piped; a heredoc that is the whole call, its delimiter quoted (`<<'EOF'`). So print a variable once and type its value, and put anything longer in a script file and run the file as one command.
 - You may dispatch the `explorer` agent, and only that agent, for broad searches in material you will not edit: library or dependency source, documentation, large directories. Ask it for facts with `path:line` evidence, not interpretation, and open the key lines yourself before relying on them. Never use it for files you are going to change; read those yourself.
 
 Return exactly this format:

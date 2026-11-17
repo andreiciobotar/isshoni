@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -958,6 +959,70 @@ class OverlapRuleTests(unittest.TestCase):
         out = FACTORY.checked_out(lambda *a: (128, "", "fatal: bad revision\n"))
         with self.assertRaisesRegex(FACTORY.Fail, "fatal: bad revision"):
             FACTORY.Overlap(out, "nosuchref", "h", "t")
+
+
+class ScratchTests(unittest.TestCase):
+    """`factory scratch`: every repository, job folder and output directory is its own mkdtemp, the command runs with cwd= it."""
+
+    def mk(self):
+        d = Path(tempfile.mkdtemp(prefix="scratch-test-")).resolve()
+        self.addCleanup(shutil.rmtree, d)
+        return d
+
+    def setUp(self):
+        self.repo, self.job = self.mk(), self.mk()
+        self.env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                    "GIT_COMMITTER_EMAIL": "t@t", "CLAUDE_JOB_DIR": str(self.job)}
+        self.git("init", "-q", "-b", "main")
+        for text in ("one", "two"):
+            (self.repo / "f.txt").write_text(text + "\n")
+            self.git("add", "f.txt")
+            self.git("commit", "-q", "-m", text)
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.repo, env=self.env, capture_output=True, text=True, check=True).stdout
+
+    def scratch(self, commit, cwd=None, env=None):
+        return subprocess.run([sys.executable, str(BIN), "scratch", commit], cwd=cwd or self.repo, env=env or self.env,
+                              capture_output=True, text=True)
+
+    def test_a_new_directory_with_the_commits_files_and_no_git(self):
+        before = (self.git("status", "--porcelain"), self.git("worktree", "list"))
+        a, b = self.scratch("HEAD~1"), self.scratch("HEAD~1")
+        self.assertEqual((a.returncode, b.returncode, a.stderr), (0, 0, ""))
+        paths = [Path(a.stdout.rstrip("\n")), Path(b.stdout.rstrip("\n"))]
+        self.assertEqual(a.stdout.count("\n"), 1)
+        self.assertNotEqual(*paths)
+        for path in paths:
+            self.assertTrue(path.is_dir())
+            self.assertEqual(path.parent, self.job / "tmp")
+            self.assertTrue(path.name.startswith("scratch-"))
+            self.assertEqual((path / "f.txt").read_text(), "one\n")
+            self.assertFalse((path / ".git").exists())
+            self.assertEqual(os.listdir(path), ["f.txt"])
+        self.assertEqual(sorted(os.listdir(self.job / "tmp")), sorted(p.name for p in paths))
+        self.assertEqual((self.git("status", "--porcelain"), self.git("worktree", "list")), before)
+
+    def test_without_a_job_dir_it_is_under_the_system_temporary_directory(self):
+        env = {k: v for k, v in self.env.items() if k != "CLAUDE_JOB_DIR"}
+        p = self.scratch("HEAD", env=env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        path = Path(p.stdout.rstrip("\n"))
+        self.addCleanup(shutil.rmtree, path)
+        self.assertEqual(path.parent, Path(tempfile.gettempdir()).resolve())
+        self.assertEqual((path / "f.txt").read_text(), "two\n")
+
+    def test_an_unknown_commit_fails_and_leaves_nothing(self):
+        p = self.scratch("no-such-commit")
+        self.assertEqual((p.returncode, p.stdout), (1, ""))
+        self.assertIn("no-such-commit", p.stderr)
+        self.assertEqual(os.listdir(self.job / "tmp"), [])
+
+    def test_outside_a_repository_it_fails(self):
+        p = self.scratch("HEAD", cwd=self.mk())
+        self.assertEqual((p.returncode, p.stdout), (1, ""))
+        self.assertIn("not a git repository", p.stderr)
+        self.assertEqual(os.listdir(self.job / "tmp"), [])
 
 
 if __name__ == "__main__":

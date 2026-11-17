@@ -60,6 +60,7 @@ factory env                                                              # expor
 factory land (<slug> | --all)
 factory tech-lead <slug> <number> <evidence> [--dispatcher <session-name>]   # started by the lander's loop; usable by hand
 factory overlap <old base> <old head> <target>                           # what both sides changed, and whether anyone must look
+factory scratch <commit>                                                   # a new directory with that commit's files (no .git); prints its path (run in a worktree)
 factory rerun <number>                                                   # re-run a red check once when the failure looks like a flake (a held pull request: on the human's word)
 factory unblock <number> [--by <text>]                                   # release a pull request the queue holds as not-ours
 ```
@@ -77,6 +78,7 @@ factory unblock <number> [--by <text>]                                   # relea
 - **`retro`** takes the task from the working directory and reads the JSON from `<file>` when one is given (exit 2 if it cannot be read), else from stdin. On success it prints `retro: stored for <slug>`; a failure prints nothing on stdout.
 - **`land`** lands a handed-over task whose base moved or merged, or whose pull request conflicts, without waking its lead (see Landing without the lead). It is for use by hand: merging no longer goes through it, and a waiting branch is updated only by the lander in its turn.
 - **`tech-lead`** runs a tech lead on a pull request that came back from the merge queue, in the foreground (see Tech lead). The lander's loop starts it detached.
+- **`scratch <commit>`** is run in a worktree (or any repository) by an agent that needs another commit's files, such as a reviewer running tests on a base SHA. It makes a new directory with `tempfile.mkdtemp` (prefix `scratch-`) under `$CLAUDE_JOB_DIR/tmp` when that variable is set (`tmp` is created if missing), else under the system temporary directory, fills it with the tree of `<commit>` as `git archive` gives it (any commit-ish git resolves here), and prints its absolute path alone on stdout. The copy has no `.git`: it is not a repository or a worktree, and the command never runs `git worktree` or touches the index, the working tree or a ref. It needs no store, task or GitHub. An unresolvable commit, or a directory outside a repository, exits 1 with git's message on stderr, nothing on stdout, and no directory left behind. It deletes nothing else: the job's scratch folder is removed with the job.
 - **`merge`** and **`lander`** take a pull request from approved to the default branch (see Merging).
 
 ## Declared state, phases and the cap
@@ -302,7 +304,7 @@ A Bash call refused with `This session is isolated in the worktree <path>` is re
 
 The lead and its explorers are isolated. A build run (as first started: a headless session in the worktree's directory) and its coder, reviewer, explorer and lander were not, until they were started with `--worktree` (see Isolation to the worktree). The table's two columns are those two conditions. In the second, the one that held for them before, nothing but the role line keeps git inside the worktree. That line, which begins `- Keep git in this worktree`, is the same in `factory/agents/{coder,explorer,reviewer,lander}.md`, `factory/roles/lead.md` and `.claude/agents/{coder,explorer,reviewer}.md`, and `tests/test_repo.py` holds the eight together.
 
-What the short line leaves out: `$CLAUDE_JOB_DIR` counts as a `$` (print it once, type the path). `$(...)` counts. Another branch is read with `git show <branch>:<path>`. Pipes, `&&`, heredocs and redirects are accepted.
+What the short line says (the 2026-11-17 table below measured it). The check reads the whole text of the call, and `git` inside another word counts (`.gitignore`, `github.com`: P22, P25). Refused: a call that names git and holds a value filled in as it runs (`$?`, `$CLAUDE_JOB_DIR` or any `$NAME`, `$(...)`, a backtick, a loop variable: P3, P10, P22, P28, P38); a heredoc with an unquoted delimiter whose body names git (Q1, Q3); a heredoc chained to another command with `&&` or `;`, with git or without (P29). Accepted: plain commands with literal values, also chained or piped (P4 to P7, P12, P24, P33); a heredoc that is the whole call, its delimiter quoted, whatever its body (P13 to P15, P18, P19, Q2). So a variable is printed once and its value typed, and anything longer goes in a script file run as one command (P16, P17). `HOME=`, `GIT_DIR`, `-C` and a `cd` to another checkout are refused by design (P39). Another branch is read with `git show <branch>:<path>`. A command's exit code is read from the Bash result, which carries `Exit code N` for a failure and no such line for 0 (P1, P2); `; echo $?` beside git is refused (P3). Another commit's files are copied with `factory scratch <commit>`.
 
 Measured 2026-11-16, each command as one Bash call, once. `S` is the job's scratch directory as a literal path, `MAIN` the main checkout, `WT` the task's worktree; `$CLAUDE_JOB_DIR` was typed where shown.
 
@@ -358,6 +360,57 @@ Measured 2026-11-16, each command as one Bash call, once. `S` is the job's scrat
 Refusal cells abbreviate the message, each of which begins `This session is isolated in the worktree <WT>, but this command`: *complex* is "names git in a form too complex to verify that it stays inside the worktree"; *word* is "has a word that can't be verified before it runs"; *via `-C`* is "redirects git to the shared checkout via -C" (the same with `--git-dir`); *sets `HOME`* is "sets HOME, injecting git configuration whose effect on where git writes can't be verified"; *sets `GIT_DIR`* is "sets GIT_DIR to the shared checkout"; *changes directory to MAIN* is "changes directory to the shared checkout before running git".
 
 A18 and B16 to B19 are what the check exists to stop; B10 to B15, A10, A11, A13 and A20 to A22 are what it stops because it cannot verify them. The build worker column ran every row with the check not active.
+
+Measured again 2026-11-17 on Claude Code 2.1.326, once, by a lead's explorer and the lead, in an isolated session, each command one Bash call; `S` is the job's scratch folder as a literal path. The refusal texts are in the installed binary: `strings -n 8 "$(readlink "$(which claude)" || which claude)" | grep -n "too complex to verify"` (the lines around them hold the other reasons: `sets HOME`, `redirects git to the shared checkout via`, `changes directory to the shared checkout`, `names git more than once in a single command`, `hands text naming git to a shell`). The binary is minified: the grammar above was measured, not read. *complex* and *names git* are the two texts that contain `too complex to verify`; `names git more than once` was not reproduced (P4 passed).
+
+| # | Command | Result |
+|---|---|---|
+| P1 | `git merge-base --is-ancestor HEAD~1 HEAD` | accepted; blank, no exit-code line |
+| P2 | `git merge-base --is-ancestor HEAD HEAD~1` | accepted; result carries `Exit code 1` |
+| P3 | `git merge-base --is-ancestor HEAD HEAD~1; echo $?` | refused, names git |
+| P4 | `git status --short; git log -1 --oneline` | accepted |
+| P5 | `git status --short && ls README.md` | accepted |
+| P6 | `ls README.md; git status --short` | accepted |
+| P7 | `git log -1 --oneline \| head -1` | accepted |
+| P8 | `ls README.md; echo $?` | accepted |
+| P9 | `ls "$CLAUDE_JOB_DIR/tmp"` | accepted |
+| P10 | `git archive -o "$CLAUDE_JOB_DIR/tmp/p/a.tar" HEAD README.md` | refused, names git |
+| P11 | `git archive -o S/a.tar HEAD README.md` | accepted |
+| P12 | `mkdir -p S/c && git archive HEAD README.md \| tar -x -C S/c` | accepted |
+| P13 | heredoc as the whole call, `cat > S/h1.txt <<'EOF'`, body `hello` | accepted |
+| P14 | the same, body `git status --short` | accepted |
+| P15 | the same, body `see github.com` | accepted |
+| P16 | `printf '%s\n' 'git status --short' > S/h4.sh` | accepted |
+| P17 | `bash S/h4.sh` | accepted |
+| P18 | heredoc `python3 - <<'EOF'`, body `print('hello')` | accepted |
+| P19 | the same, body `print('github')` | accepted |
+| P20 | `cd S && ls` | accepted; the next call ran in the worktree again |
+| P21 | `for f in README.md CLAUDE.md; do wc -l $f; done` | accepted |
+| P22 | `for f in README.md .gitignore; do wc -l $f; done` | refused, names git |
+| P23 | `wc -l .gitignore \| head -1` | accepted |
+| P24 | `wc -l .gitignore; ls README.md` | accepted |
+| P25 | `wc -l .gitignore && ls "$CLAUDE_JOB_DIR"` | refused, names git |
+| P26 | `gh pr list --limit 1; ls README.md` | accepted |
+| P27 | `python3 -c "import pathlib; pathlib.Path('S/h5.sh').write_text('git status --short\n')"` | accepted |
+| P28 | `git log -1 --oneline $(echo HEAD)` | refused, names git |
+| P29 | `mkdir -p S/d && cat > S/d/x.txt <<'EOF'`, body `hello` | refused, complex |
+| P30 | heredoc `cat > S/h6.txt <<'EOF'`, body `hello`, then `ls README.md` on the next line | accepted |
+| P31 | the same, body `see github.com` | accepted |
+| P32 | `git diff --stat HEAD~1 HEAD > S/o.txt` | accepted |
+| P33 | two lines: `ls README.md`, `git status --short` | accepted |
+| P34 | `git status --short; echo done` | accepted |
+| P35 | `T=S; ls $T` | accepted |
+| P36 | `T=S; git archive -o $T/b.tar HEAD README.md` | accepted |
+| P37 | `cd S && bash h4.sh` | accepted (ran; git failed there, `Exit code 128`) |
+| P38 | ``echo `git rev-parse --short HEAD` `` | refused, names git |
+| P39 | `HOME=S git status --short` | refused, sets `HOME` |
+| P40 | `rm -rf S/c` | accepted |
+| Q1 | heredoc as the whole call, `cat > S/q1.sh <<EOF` (unquoted), body `git status --short` | refused, names git |
+| Q2 | `cat > S/q2.sh <<'EOF'`, body a `for` loop running `git log` on `"$f"`, then `echo $?` | accepted |
+| Q3 | `cat > S/q3.sh <<EOF` (unquoted), body `git log -1 --oneline -- "\$1"` | refused, names git |
+| Q4 | `cd S && git init -q r` | accepted |
+
+32 of P1 to P40 accepted, 8 refused; Q1 to Q4: 2 and 2. P36 (a variable assigned a literal in the same call) passes and is left out of the shared line on purpose.
 
 **The number.** The review counts distinct `slug` of outbox feedback entries whose text matches, case-insensitive, `worktree[- ](guard|isolation|rule|sandbox)|isolation guard|Bash guard|letters .?.?git|too complex|complex command|one plain command`, over distinct `slug` of all feedback entries in the window: 16 of 37 (43%) in the 24 hours to 2026-11-15T20:24Z. The target is at most 2 of the 20 tasks whose `TaskStarted` follows this change's merge, counted the same way when the 20th has handed over. Of the matching entries in tasks that had a build run, those filed after the task's first run are 4 (lead 2, coder 1, reviewer 1, the last two naming the rule sentence, not a refusal), so the entries now come from leads and their explorers.
 
