@@ -263,8 +263,26 @@ class PhaseTests(unittest.TestCase):
         for state in (None, *factory.STATES):
             for pr in ("none", "open", "merged"):
                 for mine in (BUSY, [{"kind": "interactive"}], None):
+                    if factory.over_merged(pr, state):
+                        continue  # over: merged whatever its sessions are
                     with self.subTest(state=state, pr=pr, mine=mine):
                         self.assertEqual(factory.phase(pr, mine, state), "motion")
+
+    def test_a_merged_handed_over_or_settled_task_is_merged_whatever_its_sessions_are(self):
+        for state in ("handed-over", *factory.SETTLED):
+            for mine in (BUSY, [{"kind": "interactive"}], [EXITED | {"state": "blocked"}], None):
+                with self.subTest(state=state, mine=mine):
+                    self.assertEqual(factory.phase("merged", mine, state), "merged")
+        for state in (None, "working", "blocked"):
+            self.assertNotEqual(factory.phase("merged", BUSY, state), "merged")
+
+    def test_an_exited_session_lets_an_over_task_go_whatever_its_state_says(self):
+        for state in ("blocked", "working", "failed"):
+            exited = [EXITED | {"state": state}]
+            self.assertIn("not finished", factory.session_block(exited))
+            self.assertIsNone(factory.session_block(exited, over=True))
+        for mine in (BUSY, [EXITED | {"pid": 7}], [EXITED | {"status": "busy"}], [{"kind": "interactive"}]):
+            self.assertTrue(factory.session_block(mine, over=True))
 
     def test_a_finished_session_lets_go(self):
         done = [{"kind": "background", "status": "idle", "state": "done"}]
@@ -476,8 +494,8 @@ class RecordedPullRequestTests(unittest.TestCase):
 
 
 class AckTests(unittest.TestCase):
-    def ack(self, slug, state, tasks=()):
-        return invoke(["ack", slug, state], repo_answers([task_entry("x")]), tasks=tasks)
+    def ack(self, slug, state, tasks=(), pr=()):
+        return invoke(["ack", slug, state], repo_answers([task_entry("x")], (), {("gh",): (0, json.dumps(list(pr)), "")}), tasks=tasks)
 
     def test_refused_unless_handed_over(self):
         cases = {"unknown slug": ("ghost", [task_rec("ghost", "handed-over")]), "undeclared": ("x", []),
@@ -497,6 +515,23 @@ class AckTests(unittest.TestCase):
                 (rec,) = fake.tasks
                 self.assertEqual((rec["state"], rec["deliverable"], rec["role"], rec["slug"], rec["repo"]),
                                  (state, "https://x/y", "dispatcher", "x", ROOT))
+
+    def test_refused_unless_the_pull_request_is_closed_or_none(self):
+        handed = [task_rec("x", "handed-over", "https://x/y")]
+        cases = {"open": ("OPEN", "has an open pull request: its approval and merge end it"),
+                 "merged": ("MERGED", "has a merged pull request: clean ends it")}
+        for name, (state, said) in cases.items():
+            with self.subTest(name):
+                code, out, err, fake = self.ack("x", "acknowledged", handed, pr=[{"state": state, "url": "u"}])
+                self.assertEqual((code, out, fake.tasks), (2, "", []))
+                self.assertIn(said, err)
+        code, out, err, fake = self.ack("x", "acknowledged", handed, pr=[{"state": 3}])
+        self.assertEqual((code, out, fake.tasks), (2, "", []))
+        self.assertIn("pull request whose state cannot be read", err)
+        for name, pr in (("closed", [{"state": "CLOSED", "url": "u"}]), ("none", [])):
+            with self.subTest(name):
+                code, out, _, fake = self.ack("x", "dismissed", handed, pr=pr)
+                self.assertEqual((code, out, [r["state"] for r in fake.tasks]), (0, "x: dismissed\n", ["dismissed"]))
 
     def test_a_settled_task_can_be_settled_again_and_working_voids_it(self):
         code, _, _, fake = self.ack("x", "dismissed", [task_rec("x", "acknowledged", "/f")])
