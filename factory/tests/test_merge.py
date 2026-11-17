@@ -1454,11 +1454,12 @@ def clone_answers(names=("worktree-t1", "worktree-t2", "worktree-t3")):
         ("gh", "stack", "view", "--json"): raw({"trunk": "main", "currentBranch": names[-1], "branches": [
             {"name": n, "head": SHA, "base": "b-0", "pr": {"number": i + 1, "state": "OPEN"}} for i, n in enumerate(names)]}),
         ("git", "merge-base", "origin/main"): (0, "base-0\n", ""), ("git", "merge-base", SHA): (0, "base-1\n", ""),
+        ("git", "merge-base", "sha-2"): (0, "base-2\n", ""),
         ("git", "log", "-p"): (0, "diff\n", ""), ("git", "patch-id"): (0, "p1 c1\n", ""),
-        ("git", "ls-remote"): (0, f"{SHA}\trefs/heads/x\n", ""),
     }
     for i, n in enumerate(names):
-        answers[("git", "rev-parse", f"refs/remotes/origin/{n}")] = (0, SHA + "\n", "")
+        answers[("git", "ls-remote", "origin", f"refs/heads/{n}")] = (0, f"sha-{i + 1}\trefs/heads/{n}\n", "")
+        answers[("git", "rev-parse", f"refs/remotes/origin/{n}")] = (0, f"sha-{i + 1}\n", "")
         answers[("git", "rev-parse", f"refs/heads/{n}")] = (0, f"new-{i + 1}\n", "")
     return answers
 
@@ -1467,9 +1468,10 @@ class StackMergeTests(World):
     """The bottom of an open GitHub stack: one `merge-async` call on the top, or nothing; a rebase when GitHub refuses it as behind."""
 
     def stacked(self, *argv, prs=None, reviews=None, timeline=None, extra=None, **kw):
-        prs = prs or [pr(1), pr(2, base="worktree-t1"), pr(3, base="worktree-t2")]
+        prs = prs or [pr(1), pr(2, base="worktree-t1", sha="sha-2"), pr(3, base="worktree-t2", sha="sha-3")]
         answers, sessions, slugs = self.world(prs, **{k: kw.pop(k) for k in list(kw) if k in (
             "checks", "mergeable", "state", "tasks", "local")})
+        answers[("git", "log")] = lambda: (0, f"{NOW} sha-{Path(self.fake.dirs[-1]).name[1:]}\n", "")  # task tN's head is sha-N
         answers[("gh", "api", "-H", V, f"{factory.STACKS}?pull_request=1")] = raw([
             {"id": 7, "number": 7, "open": True, "pull_requests": [{"number": p["number"], "state": "open"} for p in prs]}])
         answers[PUT] = ACCEPTED
@@ -1481,7 +1483,7 @@ class StackMergeTests(World):
             n = p["number"]
             answers[("gh", "pr", "view", str(n), "--json", factory.PR_FIELDS)] = raw(p)
             answers[("gh", "pr", "view", str(n), "--json", "headRefOid,state")] = raw({"headRefOid": p["headRefOid"], "state": "OPEN"})
-            answers[("gh", "api", "--paginate", "--slurp", REVIEWS % n)] = raw([(reviews or {}).get(n, [review(n=n)])])
+            answers[("gh", "api", "--paginate", "--slurp", REVIEWS % n)] = raw([(reviews or {}).get(n, [review(n=n, sha=f"sha-{n}")])])
             answers[("gh", "api", "--paginate", "--slurp", COMMENTS % n)] = raw([[]])
             answers[("gh", "api", "--paginate", "--slurp", TIMELINE % n)] = raw([(timeline or {}).get(n, [])])
         answers.update(clone_answers())
@@ -1507,7 +1509,7 @@ class StackMergeTests(World):
         code, out, _ = self.stacked("1", timeline={2: [{"event": "base_ref_changed", "created_at": iso(NOW - 600)}]})
         self.assertEqual(code, 0)
         put = next(c for c in self.fake.calls if c[:len(PUT)] == list(PUT))
-        self.assertEqual(put[len(PUT):], ["-f", f"sha={SHA}", "-f", "merge_method=merge", "-f", "merge_action=direct_merge"])
+        self.assertEqual(put[len(PUT):], ["-f", "sha=sha-3", "-f", "merge_method=merge", "-f", "merge_action=direct_merge"])
         self.assertEqual((self.count(*PUT), self.count(*POLL)), (1, 3))
         self.assertEqual((self.count("gh", "pr", "merge"), self.count("gh", "api", "-H", V, "-i", "-X", "POST")), (0, 0))
         self.assertEqual([out.count(f"#{n} merged https://x/pull/{n}\n") for n in (1, 2, 3)], [1, 1, 1])
@@ -1555,7 +1557,7 @@ class StackMergeTests(World):
             "red": (dict(checks={1: GREEN, 2: GREEN, 3: red}), "ci", "stack member #3: failed or cancelled checks: test"),
             "not handed over": (dict(state={"t1": "handed-over", "t2": "handed-over", "t3": "working"}), "handover",
                                 "stack member #3: task t3 is in phase"),
-            "base chain": (dict(prs=[pr(1), pr(2, base="worktree-t1"), pr(3, base="main")]), "stack",
+            "base chain": (dict(prs=[pr(1), pr(2, base="worktree-t1", sha="sha-2"), pr(3, base="main", sha="sha-3")]), "stack",
                            "stack member #3: its base main is not worktree-t2"),
         }
         for label, (kw, kind, text) in cases.items():
@@ -1597,18 +1599,18 @@ class StackMergeTests(World):
         self.assertEqual(self.kinds, [("pending", "its stack was rebased onto main in this pass (behind): "
                                                   "it merges on a later pass, on green heads")])
         self.assertEqual([(r["pr"], r["head"], r["new"]) for r in self.queued() if r["step"] == "rebased"],
-                         [(1, SHA, "new-1"), (2, SHA, "new-2"), (3, SHA, "new-3")])
+                         [(1, "sha-1", "new-1"), (2, "sha-2", "new-2"), (3, "sha-3", "new-3")])
         self.assertEqual([r for r in self.queued() if r["step"] == "merged"], [])
 
     def test_a_stack_that_is_not_linear_is_rebased_without_a_call(self):
-        code, out, _ = self.stacked("1", extra={("git", "merge-base", "--is-ancestor", SHA, SHA): (1, "", "")})
+        code, out, _ = self.stacked("1", extra={("git", "merge-base", "--is-ancestor", "sha-1", "sha-2"): (1, "", "")})
         self.assertEqual(self.count(*PUT), 0)
         self.assertEqual(self.count("gh", "stack", "push"), 1)
         self.assertEqual(self.kinds[0][0], "pending")
         self.assertIn("(#2 is not on top of #1)", self.kinds[0][1])
 
     def test_a_remote_head_that_changed_stops_before_the_push(self):
-        self.rebased(extra={("git", "ls-remote"): (0, "9999999999\trefs/heads/x\n", "")})
+        self.rebased(extra={("git", "ls-remote", "origin", "refs/heads/worktree-t1"): (0, "9999999999\trefs/heads/x\n", "")})
         self.assertEqual(self.kinds[0][0], "stack")
         self.assertIn("stack member #1: its remote head changed since its approval was checked (sha-1 -> 9999999); nothing pushed",
                       self.kinds[0][1])
@@ -1619,6 +1621,42 @@ class StackMergeTests(World):
         code, out, _ = self.rebased(extra={("git", "patch-id"): [same, same, same, other, same]})
         self.assertEqual(self.kinds, [("stack", "stack member #2: its diff changed in the rebase; nothing pushed")])
         self.assertEqual((self.count("git", "ls-remote"), self.count("gh", "stack", "push")), (0, 0))
+
+    def test_a_clone_whose_member_head_differs_from_the_checked_one_stops_before_the_rebase(self):
+        self.rebased(extra={("git", "rev-parse", "refs/remotes/origin/worktree-t2"): (0, "other-2\n", "")})
+        self.assertEqual(self.kinds, [("stack", "stack member #2: its head in the clone is not the one checked (sha-2 -> other-2)")])
+        self.assertEqual(self.count("gh", "stack", "rebase"), 0)
+
+    def test_a_member_that_moved_or_closed_during_the_pass_stops_pending_before_the_call(self):
+        for label, seen in {"moved": {"headRefOid": "other-2", "state": "OPEN"}, "closed": {"headRefOid": "sha-2", "state": "MERGED"}}.items():
+            with self.subTest(label):
+                self.setUp()
+                self.stacked("1", extra={("gh", "pr", "view", "2", "--json", "headRefOid,state"): raw(seen)})
+                self.assertEqual(self.kinds, [("pending", "stack member #2: its head changed during the pass")])
+                self.nothing_started()
+
+    def test_a_draft_member_is_made_ready_before_the_call(self):
+        self.stacked("1", prs=[pr(1), pr(2, base="worktree-t1", sha="sha-2", draft=True), pr(3, base="worktree-t2", sha="sha-3")])
+        self.assertEqual(self.gh_mutations(), [["pr", "ready", "2"]])
+        ready, put = (next(i for i, c in enumerate(self.fake.calls) if c[:len(p)] == list(p)) for p in (("gh", "pr", "ready"), PUT))
+        self.assertLess(ready, put)
+
+    def test_a_bottom_whose_base_is_not_the_default_branch_stops_stack(self):
+        self.stacked("1", prs=[pr(1, base="develop"), pr(2, base="worktree-t1", sha="sha-2"), pr(3, base="worktree-t2", sha="sha-3")])
+        self.assertEqual(self.kinds, [("stack", "its base develop is not main")])
+        self.nothing_started()
+
+    def test_a_member_that_is_not_open_in_the_stack_read_is_not_gated_or_called(self):
+        read = ("gh", "api", "-H", V, f"{factory.STACKS}?pull_request=1")
+        read_of = raw([{"id": 7, "number": 7, "open": True, "pull_requests": [
+            {"number": 1, "state": "open"}, {"number": 2, "state": "open"}, {"number": 3, "state": "merged"}]}])
+        two = MERGE_ASYNC.replace("pulls/3", "pulls/2")
+        code, out, _ = self.stacked("1", extra={read: read_of, (*PUT[:-1], two): ACCEPTED,
+                                                (*POLL[:-1], f"{two}/u-1"): async_status("merged")})
+        put = next(c for c in self.fake.calls if c[:len(PUT)] == [*PUT[:-1], two])
+        self.assertEqual(code, 0)
+        self.assertIn("sha=sha-2", put)
+        self.assertEqual([c for c in self.fake.calls if c[:3] in (["gh", "pr", "view"], ["gh", "pr", "checks"]) and c[3] == "3"], [])
 
     def test_a_stack_view_with_other_branches_stops_before_the_rebase(self):
         view = raw({"trunk": "main", "branches": [{"name": "worktree-t1", "head": SHA, "base": "b"}]})
@@ -1647,7 +1685,7 @@ class StackMergeTests(World):
         self.assertIn("#2 would merge with its stack\n", out)
         self.nothing_started()
         self.setUp()
-        code, out, _ = self.stacked("1", "--dry-run", extra={("git", "merge-base", "--is-ancestor", SHA, SHA): (1, "", "")})
+        code, out, _ = self.stacked("1", "--dry-run", extra={("git", "merge-base", "--is-ancestor", "sha-1", "sha-2"): (1, "", "")})
         self.assertEqual(code, 1)
         self.assertIn("#1 would stop: its stack would be rebased first: #2 is not on top of #1", out)
         self.nothing_started()
@@ -1659,6 +1697,54 @@ class StackMergeTests(World):
         self.assertEqual(self.kinds[0][0], "handover")
         self.assertIn("worktree head is not the pull request's head", self.kinds[0][1])
         self.nothing_started()
+
+
+class PatchIdTests(unittest.TestCase):
+    """`diff_changed` against real git: a rebase onto a main edited next to a member's hunk is no change of its diff."""
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", self.dir, "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    def write(self, name, **changed):
+        (Path(self.dir) / name).write_text("".join(f"{changed.get(f'l{i}', f'l{i}')}\n" for i in range(1, 9)))
+
+    def rebased(self):
+        """(old, new) heads of a bottom that changes line 2, before and after a rebase onto a main that changes line 4
+        and merges a side branch."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.git("init", "-q", "-b", "main")
+        self.write("a.txt")
+        self.git("add", "a.txt")
+        self.git("commit", "-qm", "base")
+        self.git("checkout", "-qb", "bottom")
+        self.write("a.txt", l2="two")
+        self.git("commit", "-qam", "bottom")
+        old = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-qb", "side", "main")
+        self.write("b.txt")
+        self.git("add", "b.txt")
+        self.git("commit", "-qm", "side")
+        self.git("checkout", "-q", "main")
+        self.write("a.txt", l4="four")
+        self.git("commit", "-qam", "main")
+        self.git("merge", "-q", "--no-ff", "-m", "merge", "side")
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        self.git("checkout", "-q", "bottom")
+        self.git("rebase", "-q", "main")
+        return old
+
+    def test_an_edit_of_the_base_next_to_a_hunk_is_no_change_of_the_diff(self):
+        old = self.rebased()
+        self.assertFalse(factory.diff_changed(self.dir, "main", [old], [self.git("rev-parse", "HEAD")], 0))
+
+    def test_a_different_change_of_the_member_is_a_change_of_the_diff(self):
+        old = self.rebased()
+        self.write("a.txt", l2="other", l4="four")
+        self.git("commit", "-qa", "--amend", "--no-edit")
+        self.assertTrue(factory.diff_changed(self.dir, "main", [old], [self.git("rev-parse", "HEAD")], 0))
 
 
 class StackLanderTests(unittest.TestCase):

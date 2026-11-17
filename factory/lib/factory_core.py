@@ -5157,8 +5157,9 @@ def stack_call(p, prs, times, behind):
 
 
 def patch_ids(clone, lo, hi):
-    """The patch ids of the commits of `lo..hi` in `clone`, oldest first; None when git cannot say."""
-    rc, log_out, _ = run(["git", "log", "-p", "--reverse", f"{lo}..{hi}"], cwd=clone)
+    """The patch ids of the commits of `lo..hi` in `clone`, oldest first (no context lines, so that an edit of the base
+    next to a hunk does not change them); None when git cannot say."""
+    rc, log_out, _ = run(["git", "log", "-p", "-U0", "--reverse", f"{lo}..{hi}"], cwd=clone)
     if rc != 0:
         return None
     rc, ids, _ = run(["git", "patch-id", "--stable"], cwd=clone, input=log_out)
