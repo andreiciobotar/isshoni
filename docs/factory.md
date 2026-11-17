@@ -60,7 +60,7 @@ factory env                                                              # expor
 factory land (<slug> | --all)
 factory tech-lead <slug> <number> <evidence> [--dispatcher <session-name>]   # started by the lander's loop; usable by hand
 factory overlap <old base> <old head> <target>                           # what both sides changed, and whether anyone must look
-factory scratch <commit>                                                   # a new directory with that commit's files (no .git); prints its path (run in a worktree)
+factory scratch <commit>                                                 # a new directory with that commit's files (no .git); prints its path (run in a worktree; needs Python 3.11.4 or later)
 factory rerun <number>                                                   # re-run a red check once when the failure looks like a flake (a held pull request: on the human's word)
 factory unblock <number> [--by <text>]                                   # release a pull request the queue holds as not-ours
 ```

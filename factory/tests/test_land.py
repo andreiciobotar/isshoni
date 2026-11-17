@@ -1004,12 +1004,12 @@ class ScratchTests(unittest.TestCase):
         self.assertEqual((self.git("status", "--porcelain"), self.git("worktree", "list")), before)
 
     def test_without_a_job_dir_it_is_under_the_system_temporary_directory(self):
-        env = {k: v for k, v in self.env.items() if k != "CLAUDE_JOB_DIR"}
+        tmp = self.mk()
+        env = {**{k: v for k, v in self.env.items() if k != "CLAUDE_JOB_DIR"}, "TMPDIR": str(tmp)}
         p = self.scratch("HEAD", env=env)
         self.assertEqual(p.returncode, 0, p.stderr)
         path = Path(p.stdout.rstrip("\n"))
-        self.addCleanup(shutil.rmtree, path)
-        self.assertEqual(path.parent, Path(tempfile.gettempdir()).resolve())
+        self.assertEqual(path.parent, tmp)
         self.assertEqual((path / "f.txt").read_text(), "two\n")
 
     def test_an_unknown_commit_fails_and_leaves_nothing(self):
