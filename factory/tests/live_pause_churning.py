@@ -123,8 +123,8 @@ class Hub:
             self.unknown.append(["claude", *a])
             return 1, "", "claude shim: unknown call"
         prompt = a[-1]
-        if prompt.startswith("Send one message"):
-            self.lines.append(re.search(r"nothing else: (.*)\. Then reply", prompt, re.S)[1])
+        if prompt.startswith("You are a courier"):
+            self.lines.append(re.search(r"\n---8<---\n(.*)\n---8<---$", prompt, re.S)[1])
             return 0, json.dumps({"result": "sent"}), ""
         if prompt.startswith("Job: watch"):
             self.models.append("site-manager")
