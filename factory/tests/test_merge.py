@@ -1746,6 +1746,57 @@ class PatchIdTests(unittest.TestCase):
         self.git("commit", "-qa", "--amend", "--no-edit")
         self.assertTrue(factory.diff_changed(self.dir, "main", [old], [self.git("rev-parse", "HEAD")], 0))
 
+    def stack(self):
+        """(old, new) heads of [bottom, upper] when the factory's merges are inside the members: the bottom merged main,
+        the upper merged the bottom's later head; both rebased (which drops merge commits) onto a main that moved
+        again, the upper `--onto` the new bottom, as `gh stack rebase` does."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.git("init", "-q", "-b", "main")
+        self.write("a.txt")
+        self.git("add", "a.txt")
+        self.git("commit", "-qm", "base")
+        self.git("checkout", "-qb", "bottom")
+        self.write("a.txt", l2="two")
+        self.git("commit", "-qam", "b1")
+        self.git("checkout", "-q", "main")
+        self.write("a.txt", l6="six")
+        self.git("commit", "-qam", "m1")
+        self.git("checkout", "-q", "bottom")
+        self.git("merge", "-q", "--no-ff", "-m", "bottom takes main", "main")
+        self.git("checkout", "-qb", "upper")
+        (Path(self.dir) / "c.txt").write_text("c\n")
+        self.git("add", "c.txt")
+        self.git("commit", "-qm", "u1")
+        self.git("checkout", "-q", "bottom")
+        self.write("a.txt", l2="two", l3="three", l6="six")
+        self.git("commit", "-qam", "b2")
+        old_bottom = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "upper")
+        self.git("merge", "-q", "--no-ff", "-m", "upper takes bottom", "bottom")
+        old_upper = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "main")
+        self.write("a.txt", l6="six", l8="eight")
+        self.git("commit", "-qam", "m2")
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        self.git("rebase", "-q", "main", "bottom")
+        new_bottom = self.git("rev-parse", "HEAD")
+        self.git("rebase", "-q", "--onto", "bottom", old_bottom, "upper")
+        return [old_bottom, old_upper], [new_bottom, self.git("rev-parse", "HEAD")]
+
+    def test_members_with_merge_commits_rebased_cleanly_compare_unchanged(self):
+        old, new = self.stack()
+        self.assertEqual([factory.diff_changed(self.dir, "main", old, new, i) for i in (0, 1)], [False, False])
+
+    def test_a_commit_slipped_into_the_upper_member_compares_changed(self):
+        old, new = self.stack()
+        (Path(self.dir) / "d.txt").write_text("d\n")
+        self.git("add", "d.txt")
+        self.git("commit", "-qm", "slipped")
+        new[1] = self.git("rev-parse", "HEAD")
+        self.assertEqual([factory.diff_changed(self.dir, "main", old, new, i) for i in (0, 1)], [False, True])
+
 
 class StackLanderTests(unittest.TestCase):
     def test_a_pass_that_merged_a_stack_ends_and_releases_every_member_and_cleans_once(self):
