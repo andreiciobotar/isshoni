@@ -510,12 +510,20 @@ class SiteManagerTests(Store):
     def test_extended_firings_count_with_their_outcome_and_an_unknown_decision_is_not_an_error(self):
         self.log("firings-2026-11.jsonl", [
             *(fired("f%d" % i, "2026-11-10T10:%02d:00Z" % i) for i in range(1, 6)),
-            then("f1", "11:01", decision="extended", minutes=20), then("f1", "11:02", outcome="kept"),
-            then("f2", "11:03", decision="extended", minutes=20), then("f2", "11:04", outcome="overran"),
-            then("f3", "11:05", decision="extended", minutes=20),
+            then("f1", "11:01", decision="extended", minutes=20, **{"from": "x"}), then("f1", "11:02", outcome="kept"),
+            then("f2", "11:03", decision="extended", minutes=20, **{"from": "x"}), then("f2", "11:04", outcome="overran"),
+            then("f3", "11:05", decision="extended", minutes=20, **{"from": "x"}),
             then("f4", "11:06", decision="postponed"),
             then("f5", "11:07", decision="escalated", by="watch"), then("f5", "11:08", outcome="kept")])
         self.assertEqual(self.record(), {**self.EMPTY, "escalated": 1, "no_outcome": 1, "extended": 3, "kept": 1, "overran": 1})
+
+    def test_extensions_without_from_are_left_out(self):
+        self.log("firings-2026-11.jsonl", [
+            *(fired("f%d" % i, "2026-11-10T10:%02d:00Z" % i) for i in range(1, 4)),
+            then("f1", "11:01", decision="extended", minutes=20), then("f1", "11:02", outcome="kept"),
+            then("f2", "11:03", decision="extended", minutes=20), then("f2", "11:04", outcome="overran"),
+            then("f3", "11:05", decision="extended", minutes=20, **{"from": "x"}), then("f3", "11:06", outcome="overran")])
+        self.assertEqual(self.record(), {**self.EMPTY, "extended": 1, "overran": 1})
 
     def test_since_keeps_firings_and_misses_by_their_own_time(self):
         self.log("firings-2026-11.jsonl", [
@@ -556,7 +564,7 @@ class SiteManagerTests(Store):
         self.assertEqual(p.returncode, 0, p.stderr)
         theirs = json.loads(p.stdout)["summary"]
         self.assertEqual((theirs["escalated"], theirs["missed"]), (4, 2))
-        theirs = {k: v for k, v in theirs.items() if not k.startswith("told") and k not in ("entries", "closed", "stood", "reopened")}  # the dashboard counts neither `told`, `closed` nor the score per entry
+        theirs = {k: v for k, v in theirs.items() if not k.startswith("told") and k not in ("entries", "closed", "stood", "reopened", "old_rule")}  # the dashboard counts neither `told`, `closed`, the old-rule extensions nor the score per entry
         theirs.update({k: round(theirs[k], 6) for k in ("precision", "recall")})
         self.assertEqual(self.record(), theirs)
 

@@ -653,22 +653,23 @@ def _site_manager(records, cutoff):
                 misses += 1
                 suppressed_first += bool(r.get("firing"))
             else:
-                firings[fid] = {"decision": None, "to": None, "outcome": None}
+                firings[fid] = {"decision": None, "to": None, "from": None, "outcome": None}
         elif f and "decision" in r and f["decision"] is None:
-            f["decision"], f["to"] = r["decision"], r.get("to")
+            f["decision"], f["to"], f["from"] = r["decision"], r.get("to"), r.get("from")
         elif f and "outcome" in r:
             f["outcome"] = r["outcome"]
     escalated = [f for f in firings.values() if f["decision"] == "escalated" and f["to"] != "lead"]  # a lead's message is not the dispatcher's
     acted = sum(f["outcome"] == "acted" for f in escalated)
     ignored = sum(f["outcome"] == "ignored" for f in escalated)
     ratio = lambda n, d: round(n / d, 6) if d else None  # noqa: E731
+    scored = [f for f in firings.values() if f["decision"] == "extended" and f["from"]]  # not an extension of the old rule
     return {"escalated": len(escalated), "acted": acted, "ignored": ignored,
             "no_outcome": len(escalated) - acted - ignored,
             "suppressed": sum(f["decision"] == "suppressed" for f in firings.values()),
             "paused": sum(f["decision"] == "paused" for f in firings.values()),
-            "extended": sum(f["decision"] == "extended" for f in firings.values()),
-            "kept": sum(f["decision"] == "extended" and f["outcome"] == "kept" for f in firings.values()),
-            "overran": sum(f["decision"] == "extended" and f["outcome"] == "overran" for f in firings.values()),
+            "extended": len(scored),
+            "kept": sum(f["outcome"] == "kept" for f in scored),
+            "overran": sum(f["outcome"] == "overran" for f in scored),
             "missed": misses,
             "missed_suppressed": suppressed_first, "missed_never_fired": misses - suppressed_first,
             "precision": ratio(acted, acted + ignored), "recall": ratio(acted, acted + misses)}
