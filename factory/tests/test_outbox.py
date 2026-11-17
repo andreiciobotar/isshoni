@@ -139,10 +139,12 @@ class TickTests(Outbox):
     def test_after_the_third_failure_the_dispatcher_gets_one_lead_gone_line_and_a_fourth_tick_sends_nothing(self):
         for line in ("L1", "L2"):
             factory.outbox_put(self.repo, "x", line)
-        for _ in range(2):
-            self.drain([DISPATCHER_SESSION, GONE], resume=(1, "", "boom"))
+        why = "its lead is gone: resume failed: boom"
+        for n in (1, 2):
+            self.assertEqual(self.drain_printed([DISPATCHER_SESSION, GONE], resume=(1, "", "boom")), f"outbox: x: try {n} failed: {why}\n")
             self.assertEqual(self.couriers(), [])
-        self.drain([DISPATCHER_SESSION, GONE], resume=(1, "", "boom"))
+        self.assertEqual(self.drain_printed([DISPATCHER_SESSION, GONE], resume=(1, "", "boom")), f"outbox: x: try 3 failed: {why}\n")
+        self.assertEqual({r["why"] for r in self.records() if "why" in r}, {why})
         self.assertEqual(self.couriers(), [("dispatcher-repo",
                                             "LEAD GONE: x (its lead is gone: resume failed: boom): 2 line(s) not delivered, oldest first: L1 | L2")])
         self.assertEqual(factory.outbox(self.repo), [])
@@ -170,14 +172,6 @@ class TickTests(Outbox):
         self.assertEqual([r["end"] for r in self.records() if "end" in r], ["dispatcher"])
         self.drain([DISPATCHER_SESSION, LIVE], courier=courier)
         self.assertEqual(self.fake.calls, [])
-
-    def test_a_retired_lead_that_cannot_be_resumed_is_logged_and_handed_back_as_lead_gone(self):
-        factory.outbox_put(self.repo, "x", "L1")
-        for n in (1, 2, 3):
-            printed = self.drain_printed([DISPATCHER_SESSION, GONE], resume=(1, "", "boom"))
-        self.assertEqual(printed, "outbox: x: try 3 failed: its lead is gone: resume failed: boom\n")
-        self.assertEqual([r["why"] for r in self.records() if "why" in r], ["its lead is gone: resume failed: boom"] * 3)
-        self.assertTrue(self.couriers()[-1][1].startswith("LEAD GONE: x (its lead is gone: resume failed: boom)"))
 
     def test_a_notice_the_dispatcher_cannot_take_is_printed_with_its_name_and_falls_to_the_desktop(self):
         out = io.StringIO()
