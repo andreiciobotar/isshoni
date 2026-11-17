@@ -205,7 +205,7 @@ class CriteriaTests(Home):
         firings, skipped = factory.evaluate(pic(sessions=None, rows=None, events=None, models={}, declared=handed, repo=repo), facts)
         self.assertEqual(firings, [])
         names = {s["criterion"] for s in skipped}
-        self.assertEqual(names, {"dispatcher-missing", "ended-undeclared", "ci-red-handover", "base-merged"})
+        self.assertEqual(names, {"dispatcher-missing", "ended-undeclared", "ci-red-handover", "base-merged", "merged-not-cleaned"})
         self.assertIn("sessions cannot be listed", {s["criterion"]: s["why"] for s in skipped}["dispatcher-missing"])
 
     def test_gh_failing_is_not_evaluated(self):
@@ -1175,9 +1175,9 @@ class ChurningTests(Harness):
         [fired_row] = [r for r in self.records() if r.get("criterion") == "churning"]
         self.assertEqual((fired_row["slug"], fired_row["subject"]), ("x", "#7"))
 
-    def status_row(self, state, **declared):
+    def status_row(self, state, minutes=100, **declared):
         self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": state, "ts": iso(NOW - 10 * 60), **declared}])
-        started = int((NOW - 100 * 60) * 1000)
+        started = int((NOW - minutes * 60) * 1000)
         _, out, _ = self.cli("status", "--json", sessions=[DISPATCHER | {"name": "dispatcher-repo"}, lead("x", startedAt=started)],
                              entries=["x"])
         return json.loads(out)["rows"][0]
@@ -1199,6 +1199,23 @@ class ChurningTests(Harness):
         _, out, _ = self.cli("status", sessions=[DISPATCHER | {"name": "dispatcher-repo"}], entries=["x"])
         self.assertIn("paused 10m: waits y, z", out)
         self.assertIn("prioritized 3m", out)
+
+    def test_a_working_task_has_no_kept_or_held(self):
+        row = self.status_row("working")
+        self.assertEqual((row["kept"], row["held"]), (None, None))
+
+    def test_a_working_task_with_a_suppressed_ended_undeclared_firing_is_held_and_not_overtime_until_it_clears(self):
+        self.seed("firings", [fired("aaa", ts=NOW - 5 * HOUR), decided("aaa", "suppressed", ts=NOW - 2 * HOUR, reason="its replacement is coming")])
+        row = self.status_row("working", minutes=150)
+        self.assertEqual(row["held"], {"criterion": "ended-undeclared", "decision": "suppressed", "since": iso(NOW - 2 * HOUR),
+                                       "reason": "its replacement is coming"})
+        self.assertEqual((row["elapsed"] > row["limit"], row["overtime"], row["nearing"]), (True, False, False))
+        _, out, _ = self.cli("status", sessions=[DISPATCHER | {"name": "dispatcher-repo"}, lead("x", startedAt=int((NOW - 150 * 60) * 1000))],
+                             entries=["x"])
+        self.assertIn("held 2h: ended-undeclared suppressed", out)
+        self.seed("firings", [{"ts": iso(NOW - HOUR), "repo": ROOT, "id": "aaa", "cleared": True}])
+        row = self.status_row("working", minutes=150)
+        self.assertEqual((row["held"], row["overtime"]), (None, True))
 
     def test_pauses_lists_each_pause_with_its_send_backs_and_totals(self):
         sent = lambda ts: {"repo": ROOT, "slug": "x", "role": "lander", "state": "working", "ts": iso(ts)}
