@@ -1,3 +1,4 @@
+<!-- scratch: stack rebase experiment lease-b2 -->
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/isshoni-dark.png">
