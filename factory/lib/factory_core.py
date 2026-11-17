@@ -4741,7 +4741,10 @@ PR_FIELDS = "number,url,isDraft,headRefName,headRefOid,baseRefName,isCrossReposi
 ACTIVITY = "repos/{owner}/{repo}/activity"
 FORK = ("fork", "its head is in another repository")
 REFUSED = "GitHub does not allow the merge yet: "
-STALE_REVIEW = ("stale", "its head changed after the approval; a fresh approval is needed")
+STALE_REVIEW = "its head changed after the approval; a fresh approval is needed"
+STALE_LGTM = "its head changed after the lgtm; a fresh lgtm is needed"
+SAME_DIFF_COMMITS = 20
+COMMIT_FILES = 300  # GitHub lists at most this many files of one commit
 
 
 def open_prs(p):
@@ -5171,9 +5174,66 @@ def newest_approval(p, pr, permission):
     return max(approvals, key=lambda c: c.get("created_at") or "", default=None)
 
 
+def commit_change(p, sha):
+    """(change, parent, why) of commit `sha`: its change as the files with their patches, hunk header lines cut down to
+    `@@` since their numbers and headings depend on the base, and its one parent; why is None when both can be had."""
+    name = f"commit {str(sha)[:7]}"
+    c = None
+    if isinstance(sha, str) and sha:
+        try:
+            c = p["gh"](dict, "api", f"repos/{{owner}}/{{repo}}/commits/{sha}")
+        except NotEvaluated:
+            pass
+    if not (isinstance(c, dict) and c.get("sha") == sha and isinstance(c.get("parents"), list)
+            and all(isinstance(x, dict) for x in c["parents"])
+            and isinstance(c.get("files"), list) and all(isinstance(x, dict) for x in c["files"])):
+        return None, None, f"{name} could not be read"
+    if len(c["parents"]) != 1:
+        return None, None, f"{name} has no single parent"
+    files = c["files"]
+    if len(files) >= COMMIT_FILES or not all(isinstance(f.get("patch"), str) for f in files):
+        return None, None, f"{name} has a change GitHub does not show in full"
+    change = [(f.get("filename"), f.get("status"), f.get("previous_filename"),
+               "\n".join("@@" if line.startswith("@@ ") else line for line in f["patch"].split("\n"))) for f in files]
+    return change, c["parents"][0].get("sha"), None
+
+
+def same_diff(p, pr, commit_id):
+    """(same, why): whether the commits of `pr` at `commit_id` and at its head are the same changes, one by one from the
+    newest, so an approval of the first holds for the second (GitHub rebased it), and the base the approved commits sat
+    on is on the default branch (else a commit was dropped). Anything unreadable is (False, why)."""
+    head = pr["headRefOid"]
+    try:
+        commits = paged(p, f"repos/{{owner}}/{{repo}}/pulls/{pr['number']}/commits")
+    except NotEvaluated:
+        return False, "GitHub could not list its commits"
+    n = len(commits)
+    if n == 0:
+        return False, "GitHub lists no commits for it"
+    if n > SAME_DIFF_COMMITS:
+        return False, f"it has {n} commits, more than {SAME_DIFF_COMMITS} are not compared"
+    if commits[-1].get("sha") != head:
+        return False, "its head moved while it was read"
+    now, then = head, commit_id
+    for k in range(1, n + 1):
+        change, parent, why = commit_change(p, now)
+        old, old_parent, old_why = commit_change(p, then)
+        if why or old_why:
+            return False, why or old_why
+        if change != old:
+            return False, f"commit {k} of {n} is not the same change ({then[:7]} then, {now[:7]} now)"
+        now, then = parent, old_parent
+    repo = p["repo"]
+    if not fetched(p, pr) or repo.git("merge-base", "--is-ancestor", str(then), f"{repo.remote}/{repo.default}")[0] != 0:
+        return False, (f"the commits approved at {commit_id[:7]} sat on {str(then)[:7]}, which is not on {repo.default}: "
+                       "a commit may have been dropped")
+    return True, None
+
+
 def stale_approval(p, pr, approval, heads):
     """(kind, reason) when the head of `pr` cannot be shown to be unchanged since `approval`, or None: the
-    approval must be newer than the oldest of the newest pushes that left the branch on a head in `heads`."""
+    approval must be newer than the oldest of the newest pushes that left the branch on a head in `heads`, or the
+    head the newest push before the approval left (what the human saw) must carry the same changes (same_diff)."""
     activity = p["gh"](list, "api", "-X", "GET", ACTIVITY, "-f", f"ref=refs/heads/{pr['headRefName']}", "-F", "per_page=30")
     pushes = list(itertools.takewhile(lambda a: a.get("after") in heads, activity))
     approved = epoch(approval.get("created_at"))
@@ -5181,7 +5241,20 @@ def stale_approval(p, pr, approval, heads):
     if not activity or activity[0].get("after") != pr["headRefOid"] or approved is None or changed is None:
         return "head-time", "cannot tell when its head last changed"
     if approved <= changed:
-        return "stale", "its head changed after the lgtm; a fresh lgtm is needed"
+        now = f"the head is now {pr['headRefOid'][:7]}"
+        seen = None
+        for a in activity:
+            when = epoch(a.get("timestamp"))
+            if when is None:
+                return "stale", f"{STALE_LGTM} (a push in GitHub's log has no readable time; {now})"
+            if when < approved:
+                seen = a
+                break
+        if seen is None:
+            return "stale", f"{STALE_LGTM} (GitHub's log has no push older than the lgtm; {now})"
+        same, why = same_diff(p, pr, seen.get("after"))
+        if not same:
+            return "stale", f"{STALE_LGTM} (the lgtm was given on {str(seen.get('after'))[:7]}, {now}: {why})"
     return None
 
 
@@ -5194,11 +5267,20 @@ def approval(p, pr, permission):
         if review and review.get("commit_id") in heads:
             return None, review.get("submitted_at")
         lgtm = newest_approval(p, pr, permission)
-        if lgtm:
-            return stale_approval(p, pr, lgtm, heads), lgtm.get("created_at")
+        stop = lgtm and stale_approval(p, pr, lgtm, heads)
+        if lgtm and not stop:
+            return None, lgtm.get("created_at")
+        same, why = same_diff(p, pr, review.get("commit_id")) if review else (False, None)
+        if same:
+            return None, review.get("submitted_at")
     except NotEvaluated as e:
         return ("pending", str(e)), None
-    return (STALE_REVIEW if review else ("unapproved", "not approved on GitHub: no review approves it and no lgtm")), None
+    if lgtm:
+        return stop, None
+    if review:
+        return ("stale", f"{STALE_REVIEW} (approved at {str(review.get('commit_id'))[:7]}, "
+                         f"the head is now {pr['headRefOid'][:7]}: {why})"), None
+    return ("unapproved", "not approved on GitHub: no review approves it and no lgtm"), None
 
 
 # ---- pull request comments --------------------------------------------------
