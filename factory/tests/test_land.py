@@ -1018,11 +1018,23 @@ class ScratchTests(unittest.TestCase):
         self.assertIn("no-such-commit", p.stderr)
         self.assertEqual(os.listdir(self.job / "tmp"), [])
 
+    def test_from_a_subdirectory_it_copies_the_whole_tree(self):
+        sub = self.repo / "sub"
+        sub.mkdir()
+        (sub / "g.txt").write_text("g\n")
+        self.git("add", "sub/g.txt")
+        self.git("commit", "-q", "-m", "sub")
+        p = self.scratch("HEAD", cwd=sub)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        path = Path(p.stdout.rstrip("\n"))
+        self.assertEqual((path / "f.txt").read_text(), "two\n")
+        self.assertEqual((path / "sub" / "g.txt").read_text(), "g\n")
+
     def test_outside_a_repository_it_fails(self):
         p = self.scratch("HEAD", cwd=self.mk())
         self.assertEqual((p.returncode, p.stdout), (1, ""))
         self.assertIn("not a git repository", p.stderr)
-        self.assertEqual(os.listdir(self.job / "tmp"), [])
+        self.assertFalse((self.job / "tmp").exists())
 
 
 if __name__ == "__main__":

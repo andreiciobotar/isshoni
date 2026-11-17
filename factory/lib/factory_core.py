@@ -6264,13 +6264,16 @@ def args_scratch(parser):
 
 @command("scratch", "a new directory with a commit's files (no .git), its path on stdout (run in a worktree)", args_scratch)
 def cmd_scratch(args):
+    rc, top, err = run(["git", "rev-parse", "--show-toplevel"])
+    if rc != 0:
+        raise Fail(err.strip(), 1)
     job = os.environ.get("CLAUDE_JOB_DIR")
     base = Path(job) / "tmp" if job else Path(tempfile.gettempdir())
     base.mkdir(parents=True, exist_ok=True)
     target = Path(tempfile.mkdtemp(prefix="scratch-", dir=base)).resolve()
     tarball = target.with_name(target.name + ".tar")
     try:
-        rc, _, err = run(["git", "archive", "--format=tar", "-o", str(tarball), args.commit])
+        rc, _, err = run(["git", "archive", "--format=tar", "-o", str(tarball), args.commit], cwd=top.strip())
         if rc != 0:
             raise Fail(err.strip(), 1)
         with tarfile.open(tarball) as tar:
