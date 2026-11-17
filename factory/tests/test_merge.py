@@ -1,7 +1,9 @@
+import io
 import json
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -1426,6 +1428,256 @@ class SharedCodeTests(unittest.TestCase):
                     ("git", "config"): (0, recorded, "")})
                 code, out, _, _ = invoke(["status", "--json"], answers)
                 self.assertEqual(json.loads(out)["rows"][0]["stacked_on"], want)
+
+
+V = factory.STACKS_VERSION
+MERGE_ASYNC = "repos/{owner}/{repo}/pulls/3/merge-async"
+TIMELINE = "repos/{owner}/{repo}/issues/%d/timeline"
+PUT = ("gh", "api", "-H", V, "-i", "-X", "PUT", MERGE_ASYNC)
+POLL = ("gh", "api", "-H", V, f"{MERGE_ASYNC}/u-1")
+OK = (0, "", "")
+ACCEPTED = (0, 'HTTP/2.0 202 Accepted\n\n{"status":"pending","details":{"message":"Merge request enqueued.","uuid":"u-1"}}', "")
+BEHIND_TEXT = "4 of 4 required status checks are expected."
+CLONE_STEPS = (("git", "clone"), ("gh", "stack", "checkout"), ("gh", "stack", "view"), ("gh", "stack", "rebase"),
+               ("gh", "stack", "push"))
+
+
+def async_status(status, message=None, **details):
+    return 0, json.dumps({"status": status, "details": {"message": message, **details}}), ""
+
+
+def clone_answers(names=("worktree-t1", "worktree-t2", "worktree-t3")):
+    """What the script's clone and `gh stack` say when the stack rebases cleanly (real shapes, made-up shas)."""
+    answers = {
+        ("git", "remote", "get-url"): (0, "https://x/r.git\n", ""), ("git", "clone"): OK,
+        ("gh", "stack", "checkout"): OK, ("gh", "stack", "rebase"): OK, ("gh", "stack", "push"): OK,
+        ("gh", "stack", "view", "--json"): raw({"trunk": "main", "currentBranch": names[-1], "branches": [
+            {"name": n, "head": SHA, "base": "b-0", "pr": {"number": i + 1, "state": "OPEN"}} for i, n in enumerate(names)]}),
+        ("git", "merge-base", "origin/main"): (0, "base-0\n", ""), ("git", "merge-base", SHA): (0, "base-1\n", ""),
+        ("git", "log", "-p"): (0, "diff\n", ""), ("git", "patch-id"): (0, "p1 c1\n", ""),
+        ("git", "ls-remote"): (0, f"{SHA}\trefs/heads/x\n", ""),
+    }
+    for i, n in enumerate(names):
+        answers[("git", "rev-parse", f"refs/remotes/origin/{n}")] = (0, SHA + "\n", "")
+        answers[("git", "rev-parse", f"refs/heads/{n}")] = (0, f"new-{i + 1}\n", "")
+    return answers
+
+
+class StackMergeTests(World):
+    """The bottom of an open GitHub stack: one `merge-async` call on the top, or nothing; a rebase when GitHub refuses it as behind."""
+
+    def stacked(self, *argv, prs=None, reviews=None, timeline=None, extra=None, **kw):
+        prs = prs or [pr(1), pr(2, base="worktree-t1"), pr(3, base="worktree-t2")]
+        answers, sessions, slugs = self.world(prs, **{k: kw.pop(k) for k in list(kw) if k in (
+            "checks", "mergeable", "state", "tasks", "local")})
+        answers[("gh", "api", "-H", V, f"{factory.STACKS}?pull_request=1")] = raw([
+            {"id": 7, "number": 7, "open": True, "pull_requests": [{"number": p["number"], "state": "open"} for p in prs]}])
+        answers[PUT] = ACCEPTED
+        answers[POLL] = [async_status("pending"), async_status("pending"), async_status("merged", sha="m-1")]
+        answers[("git", "remote", "get-url")] = (0, "https://x/r.git\n", "")
+        for login, permission in {"andrei": "admin", "dev": "write"}.items():
+            answers[("gh", "api", f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission")] = raw({"permission": permission})
+        for p in prs:
+            n = p["number"]
+            answers[("gh", "pr", "view", str(n), "--json", factory.PR_FIELDS)] = raw(p)
+            answers[("gh", "pr", "view", str(n), "--json", "headRefOid,state")] = raw({"headRefOid": p["headRefOid"], "state": "OPEN"})
+            answers[("gh", "api", "--paginate", "--slurp", REVIEWS % n)] = raw([(reviews or {}).get(n, [review(n=n)])])
+            answers[("gh", "api", "--paginate", "--slurp", COMMENTS % n)] = raw([[]])
+            answers[("gh", "api", "--paginate", "--slurp", TIMELINE % n)] = raw([(timeline or {}).get(n, [])])
+        answers.update(clone_answers())
+        answers.update(extra or {})
+        self.kinds = []
+        real = factory.merge_one
+
+        def spy(*a, **k):
+            self.kinds.append(real(*a, **k))
+            return self.kinds[-1]
+        with mock.patch.object(factory, "merge_one", spy):
+            return self.cli("merge", *argv, answers=answers, sessions=sessions, entries=slugs)
+
+    def count(self, *prefix):
+        return sum(c[:len(prefix)] == list(prefix) for c in self.fake.calls)
+
+    def nothing_started(self):
+        """No PUT, no clone, no `gh stack` command, no `gh pr` mutation."""
+        self.assertEqual([self.count(*p) for p in (PUT, ("git", "clone"), ("gh", "stack"))], [0, 0, 0])
+        self.assertEqual(self.gh_mutations(), [])
+
+    def test_the_call_polls_until_merged_and_the_whole_stack_counts_as_merged(self):
+        code, out, _ = self.stacked("1", timeline={2: [{"event": "base_ref_changed", "created_at": iso(NOW - 600)}]})
+        self.assertEqual(code, 0)
+        put = next(c for c in self.fake.calls if c[:len(PUT)] == list(PUT))
+        self.assertEqual(put[len(PUT):], ["-f", f"sha={SHA}", "-f", "merge_method=merge", "-f", "merge_action=direct_merge"])
+        self.assertEqual((self.count(*PUT), self.count(*POLL)), (1, 3))
+        self.assertEqual((self.count("gh", "pr", "merge"), self.count("gh", "api", "-H", V, "-i", "-X", "POST")), (0, 0))
+        self.assertEqual([out.count(f"#{n} merged https://x/pull/{n}\n") for n in (1, 2, 3)], [1, 1, 1])
+        self.assertEqual([r["pr"] for r in self.queued() if r["step"] == "merged"], [1, 2, 3])
+        self.assertEqual(self.count("git", "clone"), 0)
+
+    def queued(self):
+        return [{k: v for k, v in r.items() if k != "ts"} for r in self.records("queue")]
+
+    def test_every_member_named_is_merged_once(self):
+        code, out, _ = self.stacked("1", "2", "3")
+        self.assertEqual((code, self.count(*PUT)), (0, 1))
+        self.assertEqual([out.count(f"#{n} merged") for n in (1, 2, 3)], [1, 1, 1])
+
+    def test_a_failed_call_that_is_not_behind_stops_with_its_text_and_rebases_nothing(self):
+        for text in (BEHIND_TEXT, "At least 1 approving review is required by reviewers with write access.",
+                     "Stack needs to be rebased: PR #166's branch is not a linear descendant of PR #165's branch."):
+            with self.subTest(text):
+                self.setUp()
+                code, out, _ = self.stacked("1", extra={POLL: async_status("failed", text)})
+                self.assertEqual(code, 1)
+                self.assertIn(f"#1 stopped: merge-async on #3 failed: {text}\n", out)
+                self.assertEqual(self.kinds, [("merge", f"merge-async on #3 failed: {text}")])
+                self.assertEqual([self.count("git", "clone"), self.count("gh", "stack")], [0, 0])
+
+    def test_a_refused_sha_stops_without_a_poll(self):
+        body = '{"status":"failed","details":{"message":"Pull request head branch was modified."}}'
+        code, out, _ = self.stacked("1", extra={PUT: (1, f"HTTP/2.0 400 Bad Request\n\n{body}", "gh: HTTP 400")})
+        self.assertEqual(code, 1)
+        self.assertEqual(self.kinds, [("merge", "merge-async on #3: Pull request head branch was modified.")])
+        self.assertEqual(self.count(*POLL), 0)
+
+    def test_a_call_still_pending_at_the_bound_stops_pending_with_its_uuid(self):
+        with mock.patch.object(factory, "STACK_WAIT", 6):
+            code, out, _ = self.stacked("1", extra={POLL: async_status("pending")})
+        self.assertEqual(code, 1)
+        self.assertEqual(self.kinds, [("pending", "merge-async on #3 was accepted and has not finished (u-1)")])
+        self.assertEqual(self.count(*POLL), 3)
+        self.assertEqual([r for r in self.queued() if r["step"] == "merged"], [])
+
+    def test_a_member_that_fails_the_gate_stops_the_whole_stack_before_any_call(self):
+        red = [{"name": "test", "bucket": "fail"}]
+        cases = {
+            "unapproved": (dict(reviews={3: []}), "unapproved", "stack member #3: not approved on GitHub"),
+            "red": (dict(checks={1: GREEN, 2: GREEN, 3: red}), "ci", "stack member #3: failed or cancelled checks: test"),
+            "not handed over": (dict(state={"t1": "handed-over", "t2": "handed-over", "t3": "working"}), "handover",
+                                "stack member #3: task t3 is in phase"),
+            "base chain": (dict(prs=[pr(1), pr(2, base="worktree-t1"), pr(3, base="main")]), "stack",
+                           "stack member #3: its base main is not worktree-t2"),
+        }
+        for label, (kw, kind, text) in cases.items():
+            with self.subTest(label):
+                self.setUp()
+                code, out, _ = self.stacked("1", **kw)
+                self.assertEqual(code, 1)
+                self.assertEqual((self.kinds[0][0], self.kinds[0][1][:len(text)]), (kind, text))
+                self.nothing_started()
+
+    def test_a_member_the_word_names_with_an_unnamed_unapproved_member_above_stops_unapproved(self):
+        code, out, _ = self.stacked("1", reviews={2: []})
+        self.assertEqual(self.kinds[0][0], "unapproved")
+        self.assertIn("#1 stopped: stack member #2: not approved on GitHub", out)
+        self.nothing_started()
+
+    def test_a_base_changed_after_the_approval_of_an_upper_member_stops_stale(self):
+        changed = {"event": "base_ref_changed", "created_at": iso(NOW - 30)}
+        code, out, _ = self.stacked("1", timeline={2: [{"event": "labeled", "created_at": iso(NOW)}, changed]})
+        self.assertEqual(self.kinds, [("stale", "stack member #2: its base changed after its approval")])
+        self.nothing_started()
+
+    def test_an_unreadable_timeline_stops_pending(self):
+        self.stacked("1", extra={("gh", "api", "--paginate", "--slurp", TIMELINE % 3): (1, "", "boom")})
+        self.assertEqual(self.kinds[0][0], "pending")
+        self.nothing_started()
+
+    def rebased(self, **kw):
+        """A pass of a stack that GitHub refuses as behind: one clone, `checkout`, `rebase`, `push`."""
+        extra = {("git", "merge-base", "--is-ancestor", "origin/main"): (1, "", ""),
+                 POLL: async_status("failed", BEHIND_TEXT), **kw.pop("extra", {})}
+        return self.stacked("1", extra=extra, **kw)
+
+    def test_a_refusal_while_behind_rebases_pushes_once_and_never_says_behind_or_conflict(self):
+        code, out, _ = self.rebased()
+        self.assertEqual(code, 1)
+        self.assertEqual([self.count(*s) for s in CLONE_STEPS], [1, 1, 1, 1, 1])
+        self.assertEqual((self.count(*PUT), self.count("git", "merge")), (1, 0))
+        self.assertEqual(self.kinds, [("pending", "its stack was rebased onto main in this pass (behind): "
+                                                  "it merges on a later pass, on green heads")])
+        self.assertEqual([(r["pr"], r["head"], r["new"]) for r in self.queued() if r["step"] == "rebased"],
+                         [(1, SHA, "new-1"), (2, SHA, "new-2"), (3, SHA, "new-3")])
+        self.assertEqual([r for r in self.queued() if r["step"] == "merged"], [])
+
+    def test_a_stack_that_is_not_linear_is_rebased_without_a_call(self):
+        code, out, _ = self.stacked("1", extra={("git", "merge-base", "--is-ancestor", SHA, SHA): (1, "", "")})
+        self.assertEqual(self.count(*PUT), 0)
+        self.assertEqual(self.count("gh", "stack", "push"), 1)
+        self.assertEqual(self.kinds[0][0], "pending")
+        self.assertIn("(#2 is not on top of #1)", self.kinds[0][1])
+
+    def test_a_remote_head_that_changed_stops_before_the_push(self):
+        self.rebased(extra={("git", "ls-remote"): (0, "9999999999\trefs/heads/x\n", "")})
+        self.assertEqual(self.kinds[0][0], "stack")
+        self.assertIn("stack member #1: its remote head changed since its approval was checked (sha-1 -> 9999999); nothing pushed",
+                      self.kinds[0][1])
+        self.assertEqual((self.count("gh", "stack", "rebase"), self.count("gh", "stack", "push")), (1, 0))
+
+    def test_a_diff_that_changed_in_the_rebase_stops_before_the_push(self):
+        same, other = (0, "p1 c1\n", ""), (0, "p2 c2\n", "")
+        code, out, _ = self.rebased(extra={("git", "patch-id"): [same, same, same, other, same]})
+        self.assertEqual(self.kinds, [("stack", "stack member #2: its diff changed in the rebase; nothing pushed")])
+        self.assertEqual((self.count("git", "ls-remote"), self.count("gh", "stack", "push")), (0, 0))
+
+    def test_a_stack_view_with_other_branches_stops_before_the_rebase(self):
+        view = raw({"trunk": "main", "branches": [{"name": "worktree-t1", "head": SHA, "base": "b"}]})
+        self.rebased(extra={("gh", "stack", "view", "--json"): view})
+        self.assertEqual(self.kinds[0][0], "stack")
+        self.assertEqual((self.count("gh", "stack", "rebase"), self.count("gh", "stack", "push")), (0, 0))
+
+    def test_a_conflict_in_the_rebase_is_kind_stack_and_pushes_nothing(self):
+        self.rebased(extra={("gh", "stack", "rebase"): (3, "", "CONFLICT in a.txt\n")})
+        self.assertEqual(self.kinds[0][0], "stack")
+        self.assertIn("gh stack rebase failed (conflict), exit 3: CONFLICT in a.txt; nothing pushed", self.kinds[0][1])
+        self.assertEqual(self.count("gh", "stack", "push"), 0)
+
+    def test_the_gh_stack_commands_get_the_identity_environment_and_a_closed_stdin(self):
+        with mock.patch.object(factory, "identity_exports", lambda: ({"GH_TOKEN": "tok"}, None)):
+            self.rebased()
+        steps = [i for i, c in enumerate(self.fake.calls) if c[:2] == ["gh", "stack"] or c[:2] == ["git", "clone"]]
+        self.assertEqual(len(steps), 5)
+        for i in steps:
+            self.assertEqual((self.fake.envs[i]["GH_TOKEN"], self.fake.inputs[i], self.fake.timeouts[i]), ("tok", "", 300))
+
+    def test_a_dry_run_calls_nothing_and_says_when_the_stack_would_be_rebased(self):
+        code, out, _ = self.stacked("1", "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("#1 would merge\n", out)
+        self.assertIn("#2 would merge with its stack\n", out)
+        self.nothing_started()
+        self.setUp()
+        code, out, _ = self.stacked("1", "--dry-run", extra={("git", "merge-base", "--is-ancestor", SHA, SHA): (1, "", "")})
+        self.assertEqual(code, 1)
+        self.assertIn("#1 would stop: its stack would be rebased first: #2 is not on top of #1", out)
+        self.nothing_started()
+
+    def test_a_rebased_stack_whose_worktrees_did_not_follow_stops_handover_on_the_next_pass(self):
+        """Pins today's gap (brief `worktree-follows-github-rebase`): the pushed heads are not the worktrees' heads."""
+        code, out, _ = self.stacked("1", prs=[pr(1, sha="new-1"), pr(2, base="worktree-t1", sha="new-2"),
+                                              pr(3, base="worktree-t2", sha="new-3")])
+        self.assertEqual(self.kinds[0][0], "handover")
+        self.assertIn("worktree head is not the pull request's head", self.kinds[0][1])
+        self.nothing_started()
+
+
+class StackLanderTests(unittest.TestCase):
+    def test_a_pass_that_merged_a_stack_ends_and_releases_every_member_and_cleans_once(self):
+        members = [{"number": n, "url": f"https://x/pull/{n}", "headRefName": f"worktree-t{n}"} for n in (1, 2, 3)]
+        p = {"stacked": {1: members[1:]}}
+        seen = []
+        repo = SimpleNamespace(root=ROOT, tasks=[{"path": f"/w/t{n}", "branch": f"worktree-t{n}"} for n in (1, 2, 3)])
+        out = io.StringIO()
+        with mock.patch.multiple(factory, attempt=lambda *a: None, run_clean=lambda: seen.append("clean"),
+                                 pull_main=lambda r: seen.append("pull"), read_lander=lambda r: {"unblocked": {}},
+                                 end_priority=lambda r, slug, why: seen.append(("end", slug)),
+                                 release_named=lambda r, pr, snap: seen.append(("release", pr["number"]))), \
+                redirect_stdout(out):
+            merged = factory.lander_pass(repo, None, p, members, [(members[0], None)], {})[0]
+        self.assertTrue(merged)
+        self.assertEqual(out.getvalue(), "".join(f"#{n} merged https://x/pull/{n}\n" for n in (1, 2, 3)))
+        self.assertEqual(seen, [("end", "t1"), ("end", "t2"), ("end", "t3"), "clean", "pull",
+                                ("release", 1), ("release", 2), ("release", 3)])
 
 
 if __name__ == "__main__":

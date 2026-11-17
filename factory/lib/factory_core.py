@@ -4961,6 +4961,12 @@ def merge_one(p, pr, merged, dry, permission=None):
     repo, n, base = p["repo"], str(pr["number"]), pr["baseRefName"]
     if pr["isCrossRepository"]:
         return FORK
+    try:
+        stack = open_stack(repo, n)
+    except NotEvaluated as e:
+        return "merge", str(e)
+    if stack[:1] == [pr["number"]]:
+        return stack_merge(p, pr, stack, dry, permission)
     reason = handover_reason(p, pr)
     if reason:
         return "handover", reason
@@ -5009,6 +5015,213 @@ def merge_one(p, pr, merged, dry, permission=None):
             return refusal(p, n, stop) if step[1] == "merge" else stop
     log_queue(repo, pr["number"], task_slug(repo, pr), pr["headRefOid"], "merged", approved_at=approved_at)
     return None
+
+
+STACK_TIMEOUT = 300  # each `gh stack` command, and the clone
+STACK_POLL = 2
+STACK_WAIT = 60
+MERGE_ASYNC = "repos/{owner}/{repo}/pulls/%s/merge-async"
+
+
+def open_stack(repo, n):
+    """The numbers of the open members of the GitHub stack of pull request `n`, bottom first ([] when it is in none);
+    NotEvaluated when the stack cannot be read."""
+    found = gh_json(repo, list, *stacks_call(f"{STACKS}?pull_request={n}"))
+    try:
+        return [m["number"] for m in found[0]["pull_requests"] if m.get("state") == "open"] if found else []
+    except (LookupError, TypeError) as e:
+        raise NotEvaluated(f"{STACKS}?pull_request={n}: {e!r}")
+
+
+def base_changed(p, m, approved_at):
+    """The stop when the base of `m` was changed after its approval, else None."""
+    try:
+        events = paged(p, f"repos/{{owner}}/{{repo}}/issues/{m['number']}/timeline")
+    except NotEvaluated as e:
+        return "pending", str(e)
+    if any(e.get("event") == "base_ref_changed" and e.get("created_at", "") > (approved_at or "") for e in events):
+        return "stale", "its base changed after its approval"
+
+
+def member_stop(p, m, below, perm):
+    """(stop, approved_at) of member `m` of a stack, above `below` (None for the bottom): the gate of `merge_one`, with the
+    base chain, and for an upper member the base-change check. `perm` as `approval` takes it."""
+    repo = p["repo"]
+    if m["isCrossRepository"]:
+        return FORK, None
+    if reason := handover_reason(p, m):
+        return ("handover", reason), None
+    stop, approved_at = approval(p, m, perm) if perm is not None else (None, None)
+    stop = stop or below and base_changed(p, m, approved_at)
+    if not stop and m["baseRefName"] != (below["headRefName"] if below else repo.default):
+        stop = "stack", f"its base {m['baseRefName']} is not {below['headRefName'] if below else repo.default}"
+    if not stop:
+        try:
+            stop = checks_stop(p, str(m["number"]))
+        except NotEvaluated as e:
+            stop = "ci", str(e)
+    return stop, approved_at
+
+
+def stack_gate(p, pr, prs, permission):
+    """((kind, reason) of the first member of `prs` (bottom to top) that stops the stack, else None; the approval times).
+    A member the human's word did not name needs GitHub's own approval. The reason of a member other than `pr`
+    names it, so that nobody blames `pr`'s task for it."""
+    times = []
+    for i, m in enumerate(prs):
+        perm = permission if permission is not None or m["number"] == pr["number"] else {}
+        stop, approved_at = member_stop(p, m, prs[i - 1] if i else None, perm)
+        if stop:
+            return (stop if m["number"] == pr["number"] else (stop[0], f"stack member #{m['number']}: {stop[1]}")), times
+        times.append(approved_at)
+    return None, times
+
+
+def stack_done(p, prs):
+    """Hand the members above the bottom to the callers (`cmd_merge`, `lander_pass`), which count them as merged."""
+    p.setdefault("stacked", {})[prs[0]["number"]] = prs[1:]
+
+
+def stack_merge(p, pr, numbers, dry, permission):
+    """`merge_one` for the bottom `pr` of an open GitHub stack with open members `numbers`: all of it merges with one
+    call on the top, or none of it. Never the kinds `behind` and `conflict`, which send a task's worktree to update."""
+    repo = p["repo"]
+    try:
+        prs = [p["gh"](dict, "pr", "view", str(m), "--json", PR_FIELDS) for m in numbers]
+    except NotEvaluated as e:
+        return "pending", str(e)
+    stop, times = stack_gate(p, pr, prs, permission)
+    if stop:
+        return stop
+    if not fetched(p, prs[0]):
+        return "pending", f"git fetch {repo.remote} failed: cannot tell whether its stack is on top of {repo.default}"
+    above = [repo.git("merge-base", "--is-ancestor", below["headRefOid"], m["headRefOid"])[0] for below, m in zip(prs, prs[1:])]
+    behind = repo.git("merge-base", "--is-ancestor", f"{repo.remote}/{repo.default}", prs[0]["headRefOid"])[0]
+    if any(rc not in (0, 1) for rc in [behind, *above]):
+        return "pending", "cannot tell whether its stack is linear: git merge-base failed"
+    loose = next((f"#{m['number']} is not on top of #{below['number']}" for rc, below, m in zip(above, prs, prs[1:]) if rc), None)
+    if dry:
+        return ("stack", f"its stack would be rebased first: {loose}") if loose else stack_done(p, prs)
+    if loose:
+        return stack_rebase(p, prs, loose)
+    return stack_call(p, prs, times, behind == 1) or stack_done(p, prs)
+
+
+def api_reply(out, err):
+    """(HTTP status word, details dict, message) of a `gh api -i` answer."""
+    body = re.split(r"\r?\n\r?\n", out, maxsplit=1)[-1]
+    try:
+        details = json.loads(body).get("details")
+    except (ValueError, AttributeError):
+        details = None
+    details = details if isinstance(details, dict) else {}
+    return (out.split(None, 2)[1:2] or [""])[0], details, details.get("message") or (out or err).strip()
+
+
+def stack_call(p, prs, times, behind):
+    """The one `merge-async` call on the top of `prs`, then its poll: None when merged, else the stop."""
+    repo, top = p["repo"], prs[-1]
+    for m in prs:
+        if m["isDraft"] and (stop := gh_step(repo, "pr", "ready", str(m["number"]))):
+            return stop
+    for m in prs:
+        try:
+            seen = p["gh"](dict, "pr", "view", str(m["number"]), "--json", "headRefOid,state")
+        except NotEvaluated as e:
+            return "pending", str(e)
+        if seen.get("state") != "OPEN" or seen.get("headRefOid") != m["headRefOid"]:
+            return "pending", f"stack member #{m['number']}: its head changed during the pass"
+    path = MERGE_ASYNC % top["number"]
+    rc, out, err = run(["gh", *stacks_call("-i", "-X", "PUT", path, "-f", f"sha={top['headRefOid']}", "-f", "merge_method=merge",
+                                           "-f", "merge_action=direct_merge")], cwd=repo.root)
+    status, details, message = api_reply(out, err)
+    if status != "202" or not details.get("uuid"):
+        return "merge", f"merge-async on #{top['number']}: {message}"
+    uuid = details["uuid"]
+    log_queue(repo, top["number"], task_slug(repo, top), top["headRefOid"], "merge-async", uuid=uuid, behind=behind)
+    for _ in range(STACK_WAIT // STACK_POLL):
+        time.sleep(STACK_POLL)
+        try:
+            answer = gh_json(repo, dict, *stacks_call(f"{path}/{uuid}"))
+        except NotEvaluated as e:
+            return "pending", f"merge-async on #{top['number']} was accepted and has not finished ({uuid}): {e}"
+        if answer.get("status") == "merged":
+            for m, approved_at in zip(prs, times):
+                log_queue(repo, m["number"], task_slug(repo, m), m["headRefOid"], "merged", approved_at=approved_at)
+            return None
+        if answer.get("status") == "failed":
+            if behind:
+                return stack_rebase(p, prs, "behind")
+            return "merge", f"merge-async on #{top['number']} failed: {(answer.get('details') or {}).get('message')}"
+    return "pending", f"merge-async on #{top['number']} was accepted and has not finished ({uuid})"
+
+
+def patch_ids(clone, lo, hi):
+    """The patch ids of the commits of `lo..hi` in `clone`, oldest first; None when git cannot say."""
+    rc, log_out, _ = run(["git", "log", "-p", "--reverse", f"{lo}..{hi}"], cwd=clone)
+    if rc != 0:
+        return None
+    rc, ids, _ = run(["git", "patch-id", "--stable"], cwd=clone, input=log_out)
+    return [line.split()[0] for line in ids.splitlines()] if rc == 0 else None
+
+
+def diff_changed(clone, default, old, new, i):
+    """Whether member `i` shows other patches after the rebase (`new` heads) than at its gated head (`old`)."""
+    below_old = f"origin/{default}" if i == 0 else old[i - 1]
+    lo = run(["git", "merge-base", below_old, old[i]], cwd=clone)[1].strip()
+    before = patch_ids(clone, lo, old[i])
+    after = patch_ids(clone, f"origin/{default}" if i == 0 else new[i - 1], new[i])
+    return before is None or before != after
+
+
+def stack_rebase(p, prs, why):
+    """Rebase and force-push the members `prs` onto the default branch in a clone of the script's own, with `gh stack`:
+    always a stop (`pending` when it pushed). Nothing is pushed when a head moved or a diff changed."""
+    repo = p["repo"]
+    exports, error = identity_exports()
+    if error:
+        return "stack", error
+    env = {**os.environ, **exports}
+    names, old = [m["headRefName"] for m in prs], [m["headRefOid"] for m in prs]
+    with tempfile.TemporaryDirectory() as clone:
+        def step(*argv, cwd=clone):
+            return run(list(argv), cwd=cwd, timeout=STACK_TIMEOUT, env=env, input="")
+
+        def tail(done):
+            return f"exit {done[0]}: {' | '.join((done[1] + done[2]).strip().splitlines()[-3:])}"
+
+        url = repo.git("remote", "get-url", repo.remote)[1].strip()
+        for label, argv, cwd in (("git clone", ["git", "clone", url, clone], repo.root),
+                                 ("gh stack checkout", ["gh", "stack", "checkout", str(prs[-1]["number"])], clone)):
+            if (done := step(*argv, cwd=cwd))[0] != 0:
+                return "stack", f"{label} failed, {tail(done)}"
+        rc, out, err = step("gh", "stack", "view", "--json")
+        try:
+            seen = [b["name"] for b in json.loads(out)["branches"]] if rc == 0 else None
+        except (ValueError, LookupError, TypeError):
+            seen = None
+        if seen != names:
+            return "stack", f"gh stack view does not show the stack of the pull requests: {seen} instead of {names}"
+        for m, name in zip(prs, names):
+            seen = step("git", "rev-parse", f"refs/remotes/origin/{name}")[1].strip()
+            if seen != m["headRefOid"]:
+                return "stack", f"stack member #{m['number']}: its head in the clone is not the one checked ({m['headRefOid'][:7]} -> {seen[:7]})"
+        if (done := step("gh", "stack", "rebase"))[0] != 0:
+            return "stack", f"gh stack rebase failed{' (conflict)' if done[0] == 3 else ''}, {tail(done)}; nothing pushed"
+        new = [step("git", "rev-parse", f"refs/heads/{name}")[1].strip() for name in names]
+        for i, m in enumerate(prs):
+            if diff_changed(clone, repo.default, old, new, i):
+                return "stack", f"stack member #{m['number']}: its diff changed in the rebase; nothing pushed"
+        for m, name in zip(prs, names):
+            out = step("git", "ls-remote", "origin", f"refs/heads/{name}")[1]
+            if out.split()[:1] != [m["headRefOid"]]:
+                return "stack", (f"stack member #{m['number']}: its remote head changed since its approval was checked "
+                                 f"({m['headRefOid'][:7]} -> {out[:7] or 'unreadable'}); nothing pushed")
+        if (done := step("gh", "stack", "push"))[0] != 0:
+            return "stack", f"gh stack push failed, {tail(done)}"
+    for m, head in zip(prs, new):
+        log_queue(repo, m["number"], task_slug(repo, m), m["headRefOid"], "rebased", new=head)
+    return "pending", f"its stack was rebased onto {repo.default} in this pass ({why}): it merges on a later pass, on green heads"
 
 
 def run_clean():
@@ -5063,7 +5276,10 @@ def cmd_merge(args):
         print("nothing to merge")
     selected, merged, failed = bottom_up(selected), False, False
     permission = {} if args.approved else None
+    landed = set()
     for i, pr in enumerate(selected):
+        if pr["number"] in landed:
+            continue
         named = pr["number"] in args.prs
         stop = ("skipped", f"its base {pr['baseRefName']} was skipped") if pr["baseRefName"] in skipped and not named \
             else merge_one(p, pr, merged, args.dry_run, permission)
@@ -5087,6 +5303,9 @@ def cmd_merge(args):
                   + (f" (its base is changed to {repo.default} first; it merges on the pass after that)"
                      if pr["baseRefName"] != repo.default else "")
                   + (" (draft: would be marked ready)" if pr["isDraft"] else ""))
+        for member in p.get("stacked", {}).pop(pr["number"], []):
+            landed.add(member["number"])
+            print(f"#{member['number']} {'would merge with its stack' if args.dry_run else 'merged ' + member['url']}")
     if merged and not args.dry_run:
         failed = run_clean() != 0 or failed
         pull_main(repo)
@@ -7616,11 +7835,14 @@ def lander_pass(repo, fallback, p, snap, line, updated):
     for pr, permission in line:
         stop = attempt(repo, p, pr, permission)
         if stop is None:
-            print(f"#{pr['number']} merged {pr['url']}")
-            end_priority(repo, task_slug(repo, pr), "merged")
+            members = [pr, *p.get("stacked", {}).pop(pr["number"], [])]
+            for each in members:
+                print(f"#{each['number']} merged {each['url']}")
+                end_priority(repo, task_slug(repo, each), "merged")
             run_clean()
             pull_main(repo)
-            release_named(repo, pr, snap)
+            for each in members:
+                release_named(repo, each, snap)
             return True, stops, set()
         if (old := held_at(state, pr)) and stop[0] == "ci" and stop[1].startswith("failed or cancelled checks"):
             stops[pr["number"]] = (pr, "not-ours", old["text"])
