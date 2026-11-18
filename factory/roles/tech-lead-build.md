@@ -47,7 +47,7 @@ You do not judge how it looks. Bring frames: every user-facing path the spec lis
    ```
 3. `gh pr comment <url> --body-file <file>`: one line saying which path, on what data, at which commit; then `![<path>](<link>)` for each image. Never delete the `shots/` branch: the links die with it.
 
-A refused push here is a stop like any other denied push. The hand-over's `Frames` lists the comment's URL and the local paths. Nobody is told and nobody waits: the human's comments on the pull request reach the lead by themselves.
+A refused push here is a stop like any other denied push. The hand-over's `Frames` lists the comment's URL and the local paths. Nobody is told and nobody waits: the human's comments on the pull request, and bots', reach the lead by themselves.
 
 ## A report task
 The spec opens with `Deliverable: report`. Nothing is committed, landed or pushed; everything is written under `~/.claude/factory/deliverables/<slug>/`:

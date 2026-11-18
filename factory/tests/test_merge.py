@@ -778,6 +778,19 @@ class ApprovedTests(World):
                 self.approved([pr(1)], reviews={1: reviews})
                 self.assertEqual(self.merges(), ["1"] if merged else [])
 
+    def test_a_bots_lgtm_and_verdicts_neither_approve_nor_withdraw_an_approval(self):
+        comments = [comment(login="rev-bot", type="Bot", at=NOW - 30)]
+        reviews = [review("APPROVED", login="rev-bot", type="Bot", at=NOW - 30), review("CHANGES_REQUESTED", login="rev-bot", type="Bot", at=NOW - 20)]
+        for label, lgtm in (("approved", [comment()]), ("unapproved", [])):
+            with self.subTest(label):
+                self.setUp()
+                without = self.approved([pr(1)], {1: lgtm})
+                merged = self.merges()
+                self.setUp()
+                with_bots = self.approved([pr(1)], {1: lgtm + comments}, reviews={1: reviews})
+                self.assertEqual((with_bots, self.merges()), (without, merged))
+                self.assertEqual(merged, ["1"] if lgtm else [])
+
     def test_lgtm_from_author_false_leaves_the_author_out_only(self):
         (self.store / "settings.toml").write_text('[merging]\nlgtm_from_author = false\n')
         self.approved([pr(1)], {1: [comment()]})
