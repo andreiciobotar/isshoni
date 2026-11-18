@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from tests.support import AGENTS, PRICES, PRICES_PATH, PROJECTS
+from tests.support import AGENTS, PRICES, PRICES_PATH, PROJECTS, user_prices
 from tests.test_cli import run
 from isshoni import metrics, prices as price_file, sessioncache, transcript
 
@@ -124,6 +124,19 @@ class SessionCacheTests(unittest.TestCase):
         with mock.patch.object(transcript, "load_session", wraps=transcript.load_session) as m:
             cache.load(self.path)
         self.assertEqual(m.call_count, 1)
+
+    def test_changed_user_price_file_is_a_miss(self):
+        with user_prices("[models.a]\nlike = 'claude-opus-5-5'\n") as path:
+            sessioncache.SessionCache(self.projects, price_file.load()).load(self.path)
+            with mock.patch.object(transcript, "load_session", wraps=transcript.load_session) as m:
+                sessioncache.SessionCache(self.projects, price_file.load()).load(self.path)
+                self.assertEqual(m.call_count, 0)  # unchanged: a hit
+                write(path, "[models.b]\nlike = 'claude-opus-5-5'\n")
+                sessioncache.SessionCache(self.projects, price_file.load()).load(self.path)
+                self.assertEqual(m.call_count, 1)
+                os.unlink(path)
+                sessioncache.SessionCache(self.projects, price_file.load()).load(self.path)
+                self.assertEqual(m.call_count, 2)  # no user file any more: another key
 
     def test_corrupt_entry_is_a_miss_then_repaired(self):
         self.cache.load(self.path)

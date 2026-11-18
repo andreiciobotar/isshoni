@@ -51,9 +51,12 @@ modules:
 test-python: modules
 	$(NOLEFT) python3 -m unittest discover -s tests
 
+# Tests that run the monitor without --prices must not read the developer's own price file: a config home that never exists.
+NOCONFIG := XDG_CONFIG_HOME=/nonexistent
+
 test-go: modules
 	go vet ./...
-	$(NOLEFT) go test $(GOTESTFLAGS) ./...
+	$(NOCONFIG) $(NOLEFT) go test $(GOTESTFLAGS) ./...
 
 fmt-check:
 	@files=$$(gofmt -l $$(git ls-files -co --exclude-standard '*.go')); [ -z "$$files" ] || { echo "isshoni: gofmt would change these files:" >&2; echo "$$files" >&2; echo "Fix with: gofmt -w $$files" >&2; exit 1; }
@@ -67,7 +70,7 @@ golden:
 	go test ./internal/tui -update
 
 test-factory:
-	$(NOLEFT) python3 -m unittest discover -s factory/tests
+	$(NOCONFIG) $(NOLEFT) python3 -m unittest discover -s factory/tests
 
 # Set everything up (dependencies, dashboard, plugin, settings, cost alerts, gh stack, GitHub App) and rerun to repair, e.g. make wizard ARGS="--yes --owner my-org"
 wizard:

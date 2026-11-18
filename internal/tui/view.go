@@ -417,6 +417,9 @@ func (m *model) helpScreen(p paint) []string {
 	if m.prices.AsOf != "" { // second line, so a short terminal still shows it; the path gives way to keep the box as wide as the rest
 		pre, post := "Prices: ", fmt.Sprintf(" (%s, as of %s)", m.prices.Currency, m.prices.AsOf)
 		path := []rune(m.prices.Path)
+		if m.prices.UserPath != "" {
+			path = []rune(m.prices.Path + " + " + m.prices.UserPath)
+		}
 		if room := bw - width(pre) - width(post); len(path) > room {
 			path = append([]rune("…"), path[max(0, len(path)-max(room, 1)+1):]...)
 		}

@@ -1,5 +1,9 @@
+import contextlib
 import os
+import shutil
 import sys
+import tempfile
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -23,3 +27,19 @@ def load(threshold=0.5):
 
 def by_desc(s, desc):
     return next(d for d in s.dispatches if d.description == desc)
+
+
+@contextlib.contextmanager
+def user_prices(text=None):
+    """An empty config home for the block; yields the path of the user price file, written with `text` when given."""
+    home = os.path.realpath(tempfile.mkdtemp())
+    try:
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": home}):
+            path = prices.user_path()
+            if text is not None:
+                os.makedirs(os.path.dirname(path))
+                with open(path, "w") as f:
+                    f.write(text)
+            yield path
+    finally:
+        shutil.rmtree(home, True)

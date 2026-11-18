@@ -22,11 +22,25 @@ Cost: every command shows money next to tokens, priced per message from
 read; an optional `long_prompt` table for a model that charges more above a prompt
 size). Edit the file or pass `--prices PATH` (`isshoni-tui --prices` passes it on); a
 missing or invalid file exits 2. A model id matches a table exactly or minus a trailing
-`-YYYYMMDD`. A model with no table is never counted as zero: it shows as `unpriced`,
+`-YYYYMMDD`; nothing else is guessed, because a proxy's `provider/model` may bill
+differently. A model with no table is never counted as zero: it shows as `unpriced`,
 figures that contain its tokens end in `*`, and a footer names it. In `--json` every
 usage object gains `cost` and `unpriced` (tokens), each session, task and repository a
 `cost` block beside `tokens` (with `unpriced_tokens`, `unpriced_models`), agents
-`cost_p50`/`cost_p90`, and each document a `prices` block. Limits: cost is the list
+`cost_p50`/`cost_p90`, and each document a `prices` block. Your own prices: `$XDG_CONFIG_HOME/isshoni/prices.toml`, else
+`~/.config/isshoni/prices.toml`, is read when `--prices` is absent and overlays the built-in
+file: only `[models."<id>"]` tables are allowed, and an entry adds a model or replaces a
+built-in one. A table is the five rates, or exactly `like = "<id>"`, which takes the whole
+table of a model that has rates (not another `like`; valid in any price file). A missing
+file is normal; an invalid one exits 2 naming the file and the entry. With `--prices PATH`
+the file is read alone. The path is shown beside the built-in one (`prices:` footer, the
+`prices` block as `user_path`, the dashboard help). `isshoni price MODEL --like ID` or
+`isshoni price MODEL --input N --output N --cache-write-5m N --cache-write-1h N --cache-read N`
+(non-negative, per million tokens in the built-in currency) writes one table into that file
+and prints one line: the path, the id and the rates now in force (and the id it follows).
+It validates before it writes, changes nothing on an error (exit 2) and rewrites the whole
+file from its tables, so comments are not kept (the first line says so). To remove a price,
+delete its table. Limits: cost is the list
 price at the file's `as_of` date, not what a subscription charges; fast mode, US-only
 inference, web search and batch are not priced; it is a lower bound, because Claude
 Code makes helper calls (web search and fetch summaries) that it does not write to the
@@ -737,7 +751,7 @@ The recording is gated, because the dashboard has no repository filter and the s
 
 ## Cache
 
-Parsing a transcript is slow, so parsed sessions are cached, one file per transcript, in `$XDG_CACHE_HOME/isshoni/sessions` (else `~/.cache/isshoni/sessions`). Set `ISSHONI_CACHE_DIR` to another directory, or to an empty value to turn the cache off. An entry is dropped when its transcript or its `subagents/` files change, or when the parser or the price file does. Each run deletes the entries of transcripts that no longer exist, so the cache stays a small fraction of the transcripts' size; only a projects directory you stop using leaves its folder behind. Deleting the whole cache is always safe and costs one slow run. Entries are Python pickles, trusted like the code itself: the cache directory and its files are private to you (0700 and 0600), and anything that can write there can run code as you. The cache lives outside `~/.claude/projects`, which is still only read.
+Parsing a transcript is slow, so parsed sessions are cached, one file per transcript, in `$XDG_CACHE_HOME/isshoni/sessions` (else `~/.cache/isshoni/sessions`). Set `ISSHONI_CACHE_DIR` to another directory, or to an empty value to turn the cache off. An entry is dropped when its transcript or its `subagents/` files change, or when the parser or a price file (yours included) does. Each run deletes the entries of transcripts that no longer exist, so the cache stays a small fraction of the transcripts' size; only a projects directory you stop using leaves its folder behind. Deleting the whole cache is always safe and costs one slow run. Entries are Python pickles, trusted like the code itself: the cache directory and its files are private to you (0700 and 0600), and anything that can write there can run code as you. The cache lives outside `~/.claude/projects`, which is still only read.
 
 ## Shutdown
 

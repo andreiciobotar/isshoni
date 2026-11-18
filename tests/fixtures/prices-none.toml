@@ -1,0 +1,11 @@
+# Prices for a model the fixtures do not use: every fixture model is unpriced (the "none priced" state).
+currency = "USD"
+as_of = "2026-01-01"
+source = "test"
+
+[models.vendor-model-x]
+input = 1
+output = 2
+cache_write_5m = 3
+cache_write_1h = 4
+cache_read = 0.1

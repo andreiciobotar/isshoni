@@ -10,3 +10,8 @@ os.environ["ISSHONI_CACHE_DIR"] = ""
 _factory_home = tempfile.mkdtemp(prefix="factory-home-")
 atexit.register(shutil.rmtree, _factory_home, True)
 os.environ["FACTORY_HOME"] = _factory_home
+
+# Nor the developer's own price file (XDG_CONFIG_HOME/isshoni/prices.toml): an empty config home.
+_config_home = tempfile.mkdtemp(prefix="config-home-")
+atexit.register(shutil.rmtree, _config_home, True)
+os.environ["XDG_CONFIG_HOME"] = _config_home

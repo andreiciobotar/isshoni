@@ -21,7 +21,7 @@ def _digest(text):
 def _fingerprint(prices):
     """Hash of the code and price file a parsed session depends on."""
     h = hashlib.sha256(repr(sys.version_info[:2]).encode())
-    for p in (transcript.__file__, price_file.__file__, prices.path):
+    for p in (transcript.__file__, price_file.__file__, prices.path, *([prices.user] if prices.user else [])):
         try:
             with open(p, "rb") as f:
                 h.update(f.read())
