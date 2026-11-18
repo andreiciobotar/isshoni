@@ -9,7 +9,7 @@ In a clone of the repository, `make wizard` does every setup step (see Setup and
 
 The factory never updates itself. When the copy you run was installed by Claude Code (it is listed in `~/.claude/plugins/installed_plugins.json` with its `gitCommitSha`) and the source repository's default branch has plugin commits it lacks, `factory status` (text form, not with `--cached`, which asks no remote) prints, after the `acting on GitHub` line, and the `SessionStart` hook prints as a `systemMessage` (only for a session that is not a subagent and whose `cwd` is not a task worktree):
 
-`the installed factory is N plugin commits behind main (installed YYYY-MM-DD): refresh with claude plugin marketplace update <marketplace> && claude plugin uninstall <plugin>@<marketplace> --keep-data && claude plugin install <plugin>@<marketplace>`
+`the installed factory is N plugin commit(s) behind main (installed YYYY-MM-DD): refresh with claude plugin marketplace update <marketplace> && claude plugin uninstall <plugin>@<marketplace> --keep-data && claude plugin install <plugin>@<marketplace>`
 
 `claude plugin update` is not the refresh: while `plugin.json`'s version is unchanged it reports "already at the latest version" and leaves `gitCommitSha` where it was (tried with Claude Code 2.1.327); uninstall and install moves it. A session already running keeps the old copy until it restarts.
 

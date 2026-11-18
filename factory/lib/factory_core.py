@@ -1523,7 +1523,7 @@ def copy_behind():
         pass
     try:
         behind = count_plugin_commits(copy)
-        line = behind and (f"the installed factory is {behind} plugin commits behind main (installed {copy['date']}): refresh with "
+        line = behind and (f"the installed factory is {behind} plugin commit{'s' * (behind != 1)} behind main (installed {copy['date']}): refresh with "
                            f"claude plugin marketplace update {copy['marketplace']} && claude plugin uninstall {copy['plugin']}@{copy['marketplace']} --keep-data "
                            f"&& claude plugin install {copy['plugin']}@{copy['marketplace']}")
     except Exception as e:

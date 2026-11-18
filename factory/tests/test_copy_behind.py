@@ -211,7 +211,7 @@ class CopyBehindTests(unittest.TestCase):
     def test_a_changed_installed_commit_ignores_the_cache(self):
         self.assertEqual(factory.copy_behind(), LINE.format(n=2))
         self.install(self.commits[1])
-        self.assertEqual(factory.copy_behind(), LINE.format(n=1))
+        self.assertEqual(factory.copy_behind(), LINE.format(n=1).replace("commits", "commit"))
         self.install(self.commits[4])
         self.assertIsNone(factory.copy_behind())
 
