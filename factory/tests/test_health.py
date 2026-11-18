@@ -35,8 +35,14 @@ def row(slug, **kw):
 
 
 def lead(slug, sid=SID, **kw):
-    return {"sessionId": sid, "name": slug, "cwd": f"{WT}/{slug}", "kind": "background", "status": "busy",
-            "state": "working", "startedAt": (NOW - 3 * HOUR) * 1000, **kw}
+    row = {"sessionId": sid, "name": slug, "cwd": f"{WT}/{slug}", "kind": "background", "status": "busy",
+           "state": "working", "startedAt": (NOW - 3 * HOUR) * 1000, **kw}
+    return {"pid": 1, **row} if "status" in row else row  # the listing has a status exactly when it has a pid
+
+
+def ended(slug, **kw):
+    """A lead whose process has ended: the listing shows no status and no pid."""
+    return {k: v for k, v in lead(slug, **{"state": "done", **kw}).items() if k not in ("status", "pid")}
 
 
 FINISHED = {"status": "idle", "state": "done"}
@@ -169,7 +175,7 @@ class CriteriaTests(Home):
     def test_ended_undeclared(self):
         r = {"state": "working", "ts": iso(NOW - HOUR)}
         repo = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"{WT}/x", "branch": "worktree-x"}])
-        exited = {k: v for k, v in lead("x", state="done").items() if k != "status"}
+        exited = ended("x")
         found = check("ended-undeclared", pic(declared={"x": r}, sessions=[exited], repo=repo))
         self.assertEqual(found, [("x", "x", "declared working 1h ago; its lead has no live session and no run holds its lock")])
         self.assertEqual(check("ended-undeclared", pic(declared={"x": r}, sessions=[], repo=repo))[0][0], "x")
@@ -659,7 +665,7 @@ class WatchTests(Harness):
         entries.append({"timestamp": "TR", "message": {"role": "user", "content": [
             {"type": "tool_result", "content": [{"type": "text", "text": "ok"}]}]}})
         path.write_text("partial\n" + "".join(json.dumps(e) + "\nnot json\n" for e in entries) + '{"no": "message"}\n')
-        self.tick(sessions=[DISPATCHER | {"name": "dispatcher-repo"}, lead("x", **FINISHED)])
+        self.tick(sessions=[DISPATCHER | {"name": "dispatcher-repo"}, ended("x")])
         [argv] = self.claude_runs()
         self.assertEqual(argv[:-1], [
             "claude", "-p", "--model", "opus", "--permission-mode", "dontAsk", "--strict-mcp-config", "--settings",
@@ -1305,7 +1311,7 @@ class RoutingTests(Home):
         self.assertEqual((task["lead"], task["worktree"], task["branch"], task["pid"]),
                          ("x", f"{WT}/x", "worktree-x", 4242))
         self.assertEqual(factory.firing_for_run(p, f)["transcripts"], [str(main), str(sub)])
-        gone = factory.firing_for_run(pic(rows=[row("x", session="working", dirty=None, ahead=None, behind=None)], sessions=[lead("x", **FINISHED)]), f)
+        gone = factory.firing_for_run(pic(rows=[row("x", session="working", dirty=None, ahead=None, behind=None)], sessions=[ended("x")]), f)
         self.assertEqual((gone["task"]["lead"], gone["task"]["pid"]), ("x", None))
 
     def test_a_firing_without_a_row_carries_only_worktree_lead_pid_and_transcripts(self):
@@ -1315,12 +1321,12 @@ class RoutingTests(Home):
         out = factory.firing_for_run(pic(rows=None, sessions=[lead("x", pid=4242)]), f)
         self.assertEqual(out["task"], {"worktree": f"{WT}/x", "lead": "x", "pid": 4242})
         self.assertEqual(out["transcripts"], [str(main)])
-        gone = factory.firing_for_run(pic(rows=None, sessions=[lead("x", **FINISHED)]), f)
+        gone = factory.firing_for_run(pic(rows=None, sessions=[ended("x")]), f)
         self.assertEqual(gone["task"], {"worktree": f"{WT}/x", "lead": "x", "pid": None})
 
     def test_a_lead_message_for_an_every_tick_finding_is_recorded_for_a_lead_live_or_retired(self):
         sent = [{"id": "aaa", "slug": "x", "criterion": "busy-after-handover"}]
-        for label, session, recorded in (("live", lead("x", pid=4242), 1), ("retired", lead("x", **FINISHED), 1), ("none", None, 0)):
+        for label, session, recorded in (("live", lead("x", pid=4242), 1), ("retired", ended("x"), 1), ("none", None, 0)):
             with self.subTest(label), mock.patch.object(factory, "log_firing") as log, mock.patch.object(factory, "forward"):
                 p = pic(rows=None, sessions=[session] if session else [])
                 factory.record_decisions(p, sent, {"sent": True, "decisions": [self.told_lead()]}, "r1")

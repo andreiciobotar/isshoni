@@ -15,7 +15,7 @@ from unittest import mock
 
 from test_factory import BIN, ROOT, WT, FakeRun, factory, invoke, porcelain, repo_answers
 from test_factory import DISPATCHER
-from test_health import HOUR, NOW, SID, Harness, check, choice, decided, fired, iso, lead, pic, register, reply
+from test_health import HOUR, NOW, SID, Harness, check, choice, decided, ended, fired, iso, lead, pic, register, reply
 
 FAKE_CLAUDE = """#!/bin/sh
 case "$1" in
@@ -276,16 +276,18 @@ class EveryTickTests(Harness):
         self.tick(at=NOW + 60, sessions=[DISPATCHER | {"name": "dispatcher-repo"}, idle])
         self.assertEqual([r["criterion"] for r in self.records() if "criterion" in r], ["overrun"])
 
-    def test_a_lead_that_is_gone_raises_the_fact_whatever_the_listing_shows(self):
-        exited = {k: v for k, v in lead("x", state="stopped", cwd=ROOT).items() if k != "status"}
-        for label, sessions in (("an exited row at the main checkout", self.gone + [exited]), ("no row", self.gone)):
-            with self.subTest(label):
-                self.seed("firings", [])
-                self.declare()
-                self.tick(sessions=sessions)
-                [record] = [r for r in self.records() if "criterion" in r]
-                self.assertEqual((record["criterion"], record["detail"]),
-                                 ("ended-undeclared", "declared working 1h ago; its lead has no live session and no run holds its lock"))
+    def gone_lead_raises_the_fact(self, sessions):
+        self.declare()
+        self.tick(sessions=sessions)
+        [record] = [r for r in self.records() if "criterion" in r]
+        self.assertEqual((record["criterion"], record["detail"]),
+                         ("ended-undeclared", "declared working 1h ago; its lead has no live session and no run holds its lock"))
+
+    def test_an_exited_row_at_the_main_checkout_raises_the_fact(self):
+        self.gone_lead_raises_the_fact(self.gone + [ended("x", state="stopped", cwd=ROOT)])
+
+    def test_a_lead_with_no_row_raises_the_fact(self):
+        self.gone_lead_raises_the_fact(self.gone)
 
     def test_no_working_task_runs_no_session_listing(self):
         self.declare("handed-over")
@@ -357,7 +359,7 @@ class EveryTickTests(Harness):
         entries = [{"timestamp": "T0", "message": {"role": "user", "content": "start"}}]
         self.transcript("{sid}.jsonl", NOW - 60).write_text("".join(json.dumps(e) + "\n" for e in entries))
         self.declare()
-        self.tick(sessions=[*self.gone, lead("x", pid=100, status="idle")])
+        self.tick(sessions=[*self.gone, ended("x")])
         [sent] = json.loads(self.claude_runs()[0][-1].partition("\n\n")[2])["firings"]
         self.assertEqual(sent["transcript_tail"], ["T0 user: start"])
 
