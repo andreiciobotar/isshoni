@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import test_factory
 from test_factory import ROOT, FakeTime, WT, FakeRun, factory, invoke, repo_answers, task_entry
 from test_health import DISPATCHER, NOW, Harness, check, iso, pic, row
 
@@ -1516,6 +1518,24 @@ class StackMergeTests(World):
         self.assertEqual([r["pr"] for r in self.queued() if r["step"] == "merged"], [1, 2, 3])
         self.assertEqual(self.count("git", "clone"), 0)
 
+    def test_the_clean_after_a_stack_merge_removes_the_members_in_a_real_repository(self):
+        """The merge is faked as above; `run_clean` is the real one, over the merged-stack repository of the end-to-end tests."""
+        e = test_factory.EndToEndTests()
+        e.setUp()
+        self.addCleanup(e.doCleanups)
+        self.addCleanup(os.chdir, os.getcwd())
+        listing, real_run, real_clean = e.merged_stack(), factory.run, factory.run_clean
+
+        def clean_there():
+            with mock.patch.object(factory, "run", real_run), mock.patch.dict(os.environ, {**e.env, "FAKE_PR": listing}):
+                os.chdir(e.repo)
+                return real_clean()
+        with mock.patch.object(factory, "run_clean", clean_there):
+            code, out, err = self.stacked("1")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(e.git("branch", "--list", "mts-*"), "")
+        self.assertEqual(e.git("worktree", "list", "--porcelain").count("worktree "), 1)
+
     def queued(self):
         return [{k: v for k, v in r.items() if k != "ts"} for r in self.records("queue")]
 
@@ -1595,7 +1615,7 @@ class StackMergeTests(World):
         code, out, _ = self.rebased()
         self.assertEqual(code, 1)
         self.assertEqual([self.count(*s) for s in CLONE_STEPS], [1, 1, 1, 1, 1])
-        self.assertEqual((self.count(*PUT), self.count("git", "merge")), (1, 0))
+        self.assertEqual((self.count(*PUT), self.count("git", "merge", "--no-edit")), (1, 0))
         self.assertEqual(self.kinds, [("pending", "its stack was rebased onto main in this pass (behind): "
                                                   "it merges on a later pass, on green heads")])
         self.assertEqual([(r["pr"], r["head"], r["new"]) for r in self.queued() if r["step"] == "rebased"],
@@ -1690,13 +1710,12 @@ class StackMergeTests(World):
         self.assertIn("#1 would stop: its stack would be rebased first: #2 is not on top of #1", out)
         self.nothing_started()
 
-    def test_a_rebased_stack_whose_worktrees_did_not_follow_stops_handover_on_the_next_pass(self):
-        """Pins today's gap (brief `worktree-follows-github-rebase`): the pushed heads are not the worktrees' heads."""
-        code, out, _ = self.stacked("1", prs=[pr(1, sha="new-1"), pr(2, base="worktree-t1", sha="new-2"),
-                                              pr(3, base="worktree-t2", sha="new-3")])
-        self.assertEqual(self.kinds[0][0], "handover")
-        self.assertIn("worktree head is not the pull request's head", self.kinds[0][1])
-        self.nothing_started()
+    def test_a_rebased_stack_levels_each_members_worktree_right_after_the_push(self):
+        """The pushed heads are not the worktrees' heads until `level` moves them: no tick may find them apart."""
+        seen = []
+        with mock.patch.object(factory, "level", lambda repo, row: seen.append((row["slug"], self.count("gh", "stack", "push")))):
+            self.rebased()
+        self.assertEqual(seen, [("t1", 1), ("t2", 1), ("t3", 1)])
 
 
 class PatchIdTests(unittest.TestCase):

@@ -46,6 +46,9 @@ class Attribution(unittest.TestCase):
 
         def lander(settings, tmp):
             land = factory.Landing.__new__(factory.Landing)
+            if lander_in_worktrees:
+                (tmp / ".claude" / "worktrees" / "s").mkdir(parents=True)
+                (tmp / ".claude" / "worktrees" / "s" / ".git").write_text("gitdir: elsewhere\n")  # a worktree has one
             land.__dict__.update(repo=repo(tmp), path=repo(tmp).worktree_path("s") if lander_in_worktrees else str(tmp), branch="b", remote="origin", slug="s", lean=settings["lean_start"],
                                  mode="auto", declared=True, old_head="h", base="main", merged=False, target="main")
             land.out = lambda *a: "h" if a[0] == "rev-parse" else "x" if a[0] == "diff" else ""
