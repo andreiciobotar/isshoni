@@ -2466,14 +2466,14 @@ class CleanTests(unittest.TestCase):
             pr = [{"state": "MERGED", "url": "u", "headRefOid": self.HEAD, "baseRefName": "main"}]
         answers = repo_answers(entries or [task_entry("x")], list(sessions),
                                git_task_answers("x", time.time(), dirty=dirty, pr=pr))
-        answers.update({("git", "worktree", "remove"): (0, "", ""), ("git", "branch"): (0, "", ""),
+        answers.update({("git", "worktree", "remove"): (0, "", ""), ("git", "update-ref"): (0, "", ""),
                         ("git", "branch", "-r"): (0, "  origin/worktree-x\n", ""), ("claude", "rm"): (0, "", "")})
         answers.update(extra or {})
         return invoke(["clean"] + (["--dry-run"] if dry else []), answers, tasks=tasks)
 
     @staticmethod
     def removed_anything(fake):
-        return any(c[:3] in (["git", "branch", "-d"], ["git", "worktree", "remove"]) or c[:2] == ["claude", "rm"]
+        return any(c[:3] in (["git", "update-ref", "-d"], ["git", "worktree", "remove"]) or c[:2] == ["claude", "rm"]
                    for c in fake.calls)
 
     def pr(self, state="MERGED", base="main", head=HEAD):
@@ -2490,7 +2490,7 @@ class CleanTests(unittest.TestCase):
             "open pr": (dict(pr=self.pr("OPEN")), "no merged pull request \\(open\\)"),
             "closed pr": (dict(pr=self.pr("CLOSED")), "no merged pull request \\(closed\\)"),
             "gh missing": (dict(pr="missing"), "pull request state is unknown"),
-            "merged into another task's branch": (dict(pr=self.pr(base="worktree-y")), "merged into worktree-y, not main"),
+            "merged into another task's branch": (dict(pr=self.pr(base="worktree-y")), "merged into worktree-y, and its head is not in origin/main"),
             "merged, base missing": (dict(pr=self.pr(base="")), "unknown branch"),
             "newer commits": (dict(pr=self.pr(head="other")), "newer than its merged pull request"),
             "empty head": (dict(pr=self.pr(head=""), extra={("git", "log"): (0, "", "")}), "cannot compare its head"),
@@ -2555,6 +2555,12 @@ class CleanTests(unittest.TestCase):
                     self.assertIn(["git", "branch", "-r", "--contains", "HEAD"], fake.calls)
         code, out, _, _ = self.settled(pr=self.pr("CLOSED"))
         self.assertEqual(out.strip(), "removed x")
+
+    def test_a_sessionless_task_with_an_unknown_head_is_kept_and_no_branch_is_deleted(self):
+        code, out, _, fake = self.settled(extra={("git", "log"): (0, "", "")})
+        self.assertEqual((code, out.strip()), (
+            0, "kept x: its head is unknown, so its branch cannot be deleted at a known commit"))
+        self.assertFalse(fake.ran("git", "update-ref"))
 
     def test_settled_task_is_kept_when_a_check_fails(self):
         bg = {"id": "ab", "cwd": f"{WT}/x", "kind": "background", "status": "busy", "state": "working"}
@@ -2642,7 +2648,7 @@ class CleanTests(unittest.TestCase):
                                git_task_answers("x", time.time(), pr=self.pr()),
                                {("git", "config", "--get", "branch.worktree-y.factoryBase"): (0, "worktree-x\n", ""),
                                 ("gh", "pr", "list", "--head", "worktree-y"): (0, json.dumps(y_pr), ""),
-                                ("git", "worktree", "remove"): (0, "", ""), ("git", "branch"): (0, "", "")})
+                                ("git", "worktree", "remove"): (0, "", ""), ("git", "update-ref"): (0, "", "")})
         _, out, _, fake = invoke(["clean"], answers)
         return out, fake
 
@@ -2660,11 +2666,25 @@ class CleanTests(unittest.TestCase):
         self.assertEqual(out.splitlines(), ["removed x", "removed y"])
         self.assertTrue(fake.ran("git", "worktree", "remove", f"{WT}/x"))
 
+    def test_main_is_fetched_once_when_a_merged_pull_request_has_another_base(self):
+        for name, pr, count in (("merged elsewhere", self.pr(base="worktree-y"), 1), ("merged into main", self.pr(), 0),
+                                ("open", self.pr("OPEN", "worktree-y"), 0)):
+            with self.subTest(name):
+                _, _, _, fake = self.clean(pr=pr, extra={("git", "fetch"): (0, "", "")})
+                self.assertEqual([c for c in fake.calls if c[:2] == ["git", "fetch"]],
+                                 [["git", "fetch", "origin", "main"]] * count)
+
+    def test_a_failed_fetch_warns_and_keeps_the_task(self):
+        code, out, err, _ = self.clean(pr=self.pr(base="worktree-y"), extra={("git", "fetch"): (1, "", "offline")})
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "kept x: its pull request was merged into worktree-y, and its head is not in origin/main")
+        self.assertIn("warning: cannot fetch main from origin: offline", err)
+
     def test_remove_without_session_uses_git(self):
         code, out, _, fake = self.clean()
         self.assertEqual((code, out.strip()), (0, "removed x"))
         self.assertIn(["git", "worktree", "remove", f"{WT}/x"], fake.calls)
-        self.assertIn(["git", "branch", "-d", "worktree-x"], fake.calls)
+        self.assertIn(["git", "update-ref", "-d", "refs/heads/worktree-x", "sha-x"], fake.calls)
         self.assertNotIn("--force", [a for c in fake.calls for a in c])
         self.assertFalse(fake.ran("claude", "rm"))
 
@@ -2674,7 +2694,7 @@ class CleanTests(unittest.TestCase):
         self.assertEqual((code, out.strip()), (0, "removed x"))
         self.assertIn(["claude", "rm", "ab12"], fake.calls)
         self.assertFalse(fake.ran("git", "worktree", "remove"))
-        self.assertFalse(fake.ran("git", "branch"))
+        self.assertFalse(fake.ran("git", "update-ref"))
 
     def test_the_session_removed_is_the_lead_not_a_probe_listed_before_it(self):
         probe = {"id": "pr1", "name": "probe-x", "kind": "background", "state": "done", "cwd": f"{WT}/x"}
@@ -2725,10 +2745,10 @@ class CleanTests(unittest.TestCase):
         self.assertNotIn("removed", out)
 
     def test_failed_branch_delete_names_the_branch(self):
-        code, out, err, fake = self.clean(extra={("git", "branch"): (1, "", "not fully merged")})
+        code, out, err, fake = self.clean(extra={("git", "update-ref"): (1, "", "cannot lock ref")})
         self.assertEqual(code, 1)
         self.assertRegex(err, "branch worktree-x")
-        self.assertIn("not fully merged", err)
+        self.assertIn("cannot lock ref", err)
         self.assertIn(["git", "worktree", "remove", f"{WT}/x"], fake.calls)
 
 
@@ -2984,6 +3004,72 @@ print(os.environ["FAKE_LSOF"])
         self.assertEqual((p.returncode, p.stdout.strip(), p.stderr), (0, "removed demo-task", ""))
         self.assertFalse(task_dir.exists())
         self.assertEqual(self.git("branch", "--list", "worktree-demo-task"), "")
+
+    STACK = (("mts-a", "main"), ("mts-b", "mts-a"), ("mts-c", "mts-b"))
+
+    def merged_stack(self, landed=3):
+        """Three stacked task worktrees on branches without an upstream, and the remote's main holding a merge commit over
+        the first `landed` heads; the local main and its checkout stay where they were and `origin/main` is removed, so
+        only the fetch in `clean` can show the merge. Returns the pull requests GitHub would list, each merged into the
+        branch below it."""
+        below, heads = "main", {}
+        for name, _ in self.STACK:
+            self.git("worktree", "add", "-q", "-b", name, f".claude/worktrees/{name}", below)
+            (self.repo / ".claude/worktrees" / name / f"{name}.txt").write_text(name)
+            self.git("-C", f".claude/worktrees/{name}", "add", ".")
+            self.git("-C", f".claude/worktrees/{name}", "commit", "-q", "-m", name)
+            heads[name] = below = self.git("-C", f".claude/worktrees/{name}", "rev-parse", "HEAD").strip()
+        tip = heads[self.STACK[landed - 1][0]]
+        merge = self.git("commit-tree", f"{tip}^{{tree}}", "-p", "main", "-p", tip, "-m", "merge").strip()
+        self.git("push", "-q", "origin", f"{merge}:refs/heads/main")
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        return json.dumps([{"state": "MERGED", "url": "u", "headRefOid": heads[name], "baseRefName": base,
+                            "headRefName": name} for name, base in self.STACK])
+
+    def record_bases(self):
+        for (name, _), (above, _) in zip(self.STACK, self.STACK[1:]):
+            self.git("config", f"branch.{above}.factoryBase", name)
+
+    def clean_a_merged_stack(self, recorded):
+        listing = self.merged_stack()
+        if recorded:
+            self.record_bases()
+        p = self.factory("clean", env={"FAKE_PR": listing})
+        self.assertEqual((p.returncode, p.stderr), (0, ""))
+        self.assertEqual(p.stdout.splitlines(), [f"removed {name}" for name, _ in self.STACK])
+        self.assertEqual(self.git("branch", "--list", "mts-*"), "")
+        self.assertEqual(self.git("worktree", "list", "--porcelain").count("worktree "), 1)
+
+    def test_clean_removes_a_stack_merged_with_one_call_whatever_base_github_records(self):
+        self.clean_a_merged_stack(recorded=True)
+
+    def test_clean_removes_a_merged_stack_with_no_recorded_bases(self):
+        self.clean_a_merged_stack(recorded=False)
+
+    def test_a_merged_member_whose_head_is_not_in_the_default_branch_is_kept_with_the_one_below_it(self):
+        listing = self.merged_stack(landed=2)
+        self.record_bases()
+        p = self.factory("clean", env={"FAKE_PR": listing})
+        self.assertEqual((p.returncode, p.stderr), (0, ""))
+        self.assertEqual(p.stdout.splitlines(), [
+            "removed mts-a", "kept mts-b: mts-c is stacked on it",
+            "kept mts-c: its pull request was merged into mts-b, and its head is not in origin/main"])
+        self.assertEqual(self.git("for-each-ref", "--format=%(refname:short)", "refs/heads/mts-*").split(), ["mts-b", "mts-c"])
+
+    def test_a_squash_merged_branch_with_no_upstream_is_removed(self):
+        self.git("worktree", "add", "-q", "-b", "mts-sq", ".claude/worktrees/mts-sq")
+        task = self.repo / ".claude/worktrees/mts-sq"
+        (task / "sq.txt").write_text("sq")
+        self.git("-C", str(task), "add", ".")
+        self.git("-C", str(task), "commit", "-q", "-m", "work")
+        head = self.git("-C", str(task), "rev-parse", "HEAD").strip()
+        self.git("commit", "-q", "--allow-empty", "-m", "the squash, a commit of its own")
+        listing = json.dumps([{"state": "MERGED", "url": "u", "headRefOid": head, "baseRefName": "main",
+                               "headRefName": "mts-sq"}])
+        p = self.factory("clean", env={"FAKE_PR": listing})
+        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, "removed mts-sq\n", ""))
+        self.assertFalse(task.exists())
+        self.assertEqual(self.git("branch", "--list", "mts-sq"), "")
 
     def test_clean_removes_only_dead_agent_worktrees(self):
         agents = {n: self.repo / ".claude/worktrees" / f"agent-{n}" for n in "abcdefg"}
@@ -3257,7 +3343,7 @@ class PullRequestBatchTests(unittest.TestCase):
         cache = self.home / ".claude/factory/cache"
         before = {p.name: p.read_bytes() for p in cache.iterdir()}
         answers = repo_answers([task_entry("x")], (), git_task_answers("x", time.time()), {BATCH: (1, "", "HTTP 502")})
-        answers.update({("git", "worktree", "remove"): (0, "", ""), ("git", "branch"): (0, "", ""), ("claude", "rm"): (0, "", "")})
+        answers.update({("git", "worktree", "remove"): (0, "", ""), ("git", "update-ref"): (0, "", ""), ("claude", "rm"): (0, "", "")})
         fake, out = FakeRun(answers), io.StringIO()
         with mock.patch.object(factory, "run", fake), redirect_stdout(out), mock.patch.object(os, "getcwd", return_value=ROOT):
             factory.main(["clean"])
