@@ -212,7 +212,8 @@ class LaunchTests(BuildCase):
         with mock.patch.object(factory, "spawn") as spawn, redirect_stderr(io.StringIO()) as err:
             self.assertEqual(factory.main(["build", SLUG]), 2)
         spawn.assert_not_called()
-        self.assertIn(f"the worktree {wt} has no .git, so git there answers from no repository: nothing ran.", err.getvalue())
+        self.assertEqual(err.getvalue(), f"factory: {SLUG}: the worktree {wt} has no .git, so git there answers from no repository: nothing ran. "
+                         "Change nothing and hand back with this line.\n")
         self.assertEqual((self.declared(), self.records("techlead")), ([], []))
 
     def test_a_missing_spec_or_a_run_that_is_going_fails_in_both_halves_and_starts_nothing(self):

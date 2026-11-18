@@ -10,6 +10,7 @@ is removed. A headless session with this checkout's plugin (--plugin-dir), start
 import argparse
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -46,12 +47,20 @@ def main():
         (wt / ".git").unlink()
         state = lambda: (git("status", "--porcelain", cwd=main_dir, env=env), git("stash", "list", cwd=main_dir, env=env))
         before = state()
-        p = subprocess.run(["claude", "-p", "--model", "haiku", "--plugin-dir", str(PLUGIN), "--permission-mode", "bypassPermissions",
-                            "--max-budget-usd", args.budget, PROMPT], cwd=wt, env=env, capture_output=True, text=True, timeout=600)
+        proc = subprocess.Popen(["claude", "-p", "--model", "haiku", "--plugin-dir", str(PLUGIN), "--permission-mode", "bypassPermissions",
+                                 "--max-budget-usd", args.budget, PROMPT], cwd=wt, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True)
+        try:
+            out, err = proc.communicate(timeout=600)
+        finally:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         after = state()
-        print(f"exit {p.returncode}\n--- answer\n{p.stdout}\n--- stderr\n{p.stderr}")
+        print(f"exit {proc.returncode}\n--- answer\n{out}\n--- stderr\n{err}")
         print(f"--- main checkout before: {before!r}\n--- main checkout after:  {after!r}\n--- proof.txt written: {(wt / 'proof.txt').exists()}")
-        ok = "has no .git" in p.stdout and before == after and not (wt / "proof.txt").exists()
+        ok = "has no .git" in out and before == after and not (wt / "proof.txt").exists()
         print("PASS" if ok else "FAIL")
         return 0 if ok else 1
     finally:

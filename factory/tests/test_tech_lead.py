@@ -212,7 +212,8 @@ class SendBackTests(Case):
         self.assertEqual(to, "lead")
         [r] = self.records("techlead")
         self.assertEqual(r["outcome"], "unstarted")
-        self.assertIn(f"the worktree {wt} has no .git, so git there answers from no repository: nothing ran.", r["reason"])
+        self.assertEqual(r["reason"], f"{SLUG}: the worktree {wt} has no .git, so git there answers from no repository: nothing ran. "
+                         "Change nothing and hand back with this line.")
 
     def test_a_process_that_cannot_start_falls_back_to_the_lead(self):
         with mock.patch.object(factory, "spawn", side_effect=OSError("no fork")):

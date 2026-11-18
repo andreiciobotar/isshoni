@@ -7241,7 +7241,7 @@ def tech_lead_missing(repo, slug):
     if not os.path.isdir(worktree):
         return f"the worktree {worktree} is missing"
     if gone := worktree_gone(worktree):
-        return gone
+        return gone.removeprefix("factory: ")
     return None if spec.is_file() else f"the spec {spec} is missing"
 
 
