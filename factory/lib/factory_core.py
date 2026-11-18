@@ -1836,6 +1836,8 @@ def clean_row(repo, row, rows, files, dry_run):
     a task go has shown its commits are kept elsewhere, and a branch that moved since stays."""
     slug = row["slug"]
     reason = keep_rule(repo, row, rows, files)[0]
+    if not reason and not row["session_id"] and not row["head"]:
+        reason = "its head is unknown, so its branch cannot be deleted at a known commit"
     if not reason and not dry_run:
         sessions = list_sessions()
         if sessions is None:

@@ -2928,8 +2928,9 @@ print(os.environ["FAKE_LSOF"])
 
     def merged_stack(self, landed=3):
         """Three stacked task worktrees on branches without an upstream, and the remote's main holding a merge commit over
-        the first `landed` heads; the local main, its checkout and `origin/main` stay where they were. Returns the pull
-        requests GitHub would list, each merged into the branch below it."""
+        the first `landed` heads; the local main and its checkout stay where they were and `origin/main` is removed, so
+        only the fetch in `clean` can show the merge. Returns the pull requests GitHub would list, each merged into the
+        branch below it."""
         below, heads = "main", {}
         for name, _ in self.STACK:
             self.git("worktree", "add", "-q", "-b", name, f".claude/worktrees/{name}", below)
