@@ -2496,6 +2496,12 @@ class CleanTests(unittest.TestCase):
         code, out, _, _ = self.settled(pr=self.pr("CLOSED"))
         self.assertEqual(out.strip(), "removed x")
 
+    def test_a_sessionless_task_with_an_unknown_head_is_kept_and_no_branch_is_deleted(self):
+        code, out, _, fake = self.settled(extra={("git", "log"): (0, "", "")})
+        self.assertEqual((code, out.strip()), (
+            0, "kept x: its head is unknown, so its branch cannot be deleted at a known commit"))
+        self.assertFalse(fake.ran("git", "update-ref"))
+
     def test_settled_task_is_kept_when_a_check_fails(self):
         bg = {"id": "ab", "cwd": f"{WT}/x", "kind": "background", "status": "busy", "state": "working"}
         cases = {
