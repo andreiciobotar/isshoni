@@ -837,6 +837,11 @@ def finished(s):
     return "pid" not in s and s.get("state") in ("done", "stopped")
 
 
+def live(sessions):
+    """The first of `sessions` that has a process (an idle one keeps its `pid`), else None."""
+    return next((s for s in sessions if "pid" in s), None)
+
+
 def unplaced_block(sessions):
     """Why `clean` must stop: an unfinished session has no cwd, so it could be using any task."""
     for s in sessions:
@@ -904,7 +909,7 @@ def lead_session(sessions, repo, slug):
     """The listing row of the lead of the task `slug`: named `slug`, live in the task's worktree or exited (as `sessions_in`
     says); a live one first. None when there is none."""
     mine = [s for s in sessions_in(sessions, repo.root, repo.worktree_path(slug)) if s.get("name") == slug]
-    return next((s for s in mine if "pid" in s), mine[0] if mine else None)
+    return live(mine) or (mine[0] if mine else None)
 
 
 UNKNOWN_PR = ("unknown", "", "", "", False)
@@ -2108,8 +2113,8 @@ def live_reason(repo, slug, sessions, files):
     mine = sessions_in(sessions, repo.root, repo.worktree_path(slug))
     if reason := unplaced_block(sessions) or session_block(mine):
         return reason
-    if live := next((s for s in mine if "pid" in s), None):
-        return f"session {live.get('id')} has a process (pid {live['pid']}), so its lead is live"
+    if running := live(mine):
+        return f"session {running.get('id')} has a process (pid {running['pid']}), so its lead is live"
     if build_running(repo, slug):
         return "a build or tech lead run holds its lock"
     users, error = files.users(repo.worktree_path(slug))
@@ -2581,7 +2586,7 @@ def build_running(repo, slug):
 
 
 def c_ended_undeclared(p, _):
-    """A task declared `working` whose lead has no live session and that no run holds. Needs only `declared`, `repo.tasks`
+    """A task declared `working` none of whose sessions has a process (an idle lead keeps its `pid`) and that no run holds. Needs only `declared`, `repo.tasks`
     and `sessions`, so the watch can run it on every tick."""
     repo = p["repo"]
     here = {os.path.basename(t["path"]): t["path"] for t in repo.tasks}
@@ -2589,7 +2594,7 @@ def c_ended_undeclared(p, _):
     if working and (p["sessions"] is None or unplaced_block(p["sessions"])):
         raise NotEvaluated("sessions cannot be listed with `claude agents --json --all`, or one has no working directory")
     return [(slug, slug, f"declared working {age(epoch(r.get('ts')), p['now'])} ago; its lead has no live session and no run holds its lock")
-            for slug, path, r in working if not session_block(sessions_in(p["sessions"], repo.root, path)) and not build_running(repo, slug)]
+            for slug, path, r in working if not live(sessions_in(p["sessions"], repo.root, path)) and not build_running(repo, slug)]
 
 
 def c_merged_not_cleaned(p, _):

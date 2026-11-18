@@ -169,11 +169,18 @@ class CriteriaTests(Home):
     def test_ended_undeclared(self):
         r = {"state": "working", "ts": iso(NOW - HOUR)}
         repo = SimpleNamespace(root=ROOT, default="main", tasks=[{"path": f"{WT}/x", "branch": "worktree-x"}])
-        done = lead("x", status="idle", state="done")
-        found = check("ended-undeclared", pic(declared={"x": r}, sessions=[done], repo=repo))
+        exited = {k: v for k, v in lead("x", state="done").items() if k != "status"}
+        found = check("ended-undeclared", pic(declared={"x": r}, sessions=[exited], repo=repo))
         self.assertEqual(found, [("x", "x", "declared working 1h ago; its lead has no live session and no run holds its lock")])
         self.assertEqual(check("ended-undeclared", pic(declared={"x": r}, sessions=[], repo=repo))[0][0], "x")
-        for label, declared, sessions in (("a live lead", {"x": r}, [lead("x")]), ("handed over", {"x": r | {"state": "handed-over"}}, [done]),
+        for state in ("stopped", "working"):
+            with self.subTest(f"exited {state}"):
+                self.assertEqual(len(check("ended-undeclared", pic(declared={"x": r}, sessions=[exited | {"state": state}], repo=repo))), 1)
+        interactive = {"sessionId": "s9", "kind": "interactive", "cwd": f"{WT}/x", "pid": 7}
+        for label, declared, sessions in (("a live lead", {"x": r}, [lead("x", pid=1)]), ("handed over", {"x": r | {"state": "handed-over"}}, [exited]),
+                                          ("idle with a process", {"x": r}, [lead("x", pid=1, **FINISHED)]),
+                                          ("idle done with a process", {"x": r}, [lead("x", pid=1, status="idle", state="done")]),
+                                          ("interactive", {"x": r}, [interactive]),
                                           ("blocked", {"x": r | {"state": "blocked"}}, []), ("no worktree", {"y": r}, [])):
             with self.subTest(label):
                 self.assertEqual(check("ended-undeclared", pic(declared=declared, sessions=sessions, repo=repo)), [])
@@ -842,7 +849,7 @@ class WatchTests(Harness):
     def test_a_condition_that_ended_is_cleared_and_fires_anew_under_a_new_id(self):
         self.tick()
         first = self.records()[0]["id"]
-        self.tick(at=NOW + 1800, sessions=[DISPATCHER | {"name": "dispatcher-repo"}, lead("x")])
+        self.tick(at=NOW + 1800, sessions=[DISPATCHER | {"name": "dispatcher-repo"}, lead("x", pid=1)])
         self.assertEqual(self.records()[1], {"ts": iso(NOW + 1800), "repo": ROOT, "id": first, "cleared": True})
         self.tick(at=NOW + 3600)
         self.assertEqual([r["id"] for r in self.records()][0], first)

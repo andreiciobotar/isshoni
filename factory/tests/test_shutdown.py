@@ -265,6 +265,28 @@ class EveryTickTests(Harness):
         self.assertIn("nothing new", self.tick(sessions=self.alive))
         self.assertEqual((self.count("claude", "agents"), self.count("claude", "-p")), (1, 0))
 
+    def test_a_lead_idle_with_a_process_after_its_overrun_ask_is_not_ended(self):
+        self.declare()
+        started = int((NOW - 130 * 60) * 1000)
+        with mock.patch.object(os, "getcwd", return_value=f"{WT}/x"):
+            code, out, _ = self.cli("overrun", "landing left; with 20 minutes I land it", entries=["x"],
+                                    sessions=[DISPATCHER | {"name": "dispatcher-repo"}, lead("x", pid=100, startedAt=started)], at=NOW)
+        self.assertEqual(code, 0, out)
+        idle = lead("x", pid=100, status="idle", state="working", startedAt=started)
+        self.tick(at=NOW + 60, sessions=[DISPATCHER | {"name": "dispatcher-repo"}, idle])
+        self.assertEqual([r["criterion"] for r in self.records() if "criterion" in r], ["overrun"])
+
+    def test_a_lead_that_is_gone_raises_the_fact_whatever_the_listing_shows(self):
+        exited = {k: v for k, v in lead("x", state="stopped", cwd=ROOT).items() if k != "status"}
+        for label, sessions in (("an exited row at the main checkout", self.gone + [exited]), ("no row", self.gone)):
+            with self.subTest(label):
+                self.seed("firings", [])
+                self.declare()
+                self.tick(sessions=sessions)
+                [record] = [r for r in self.records() if "criterion" in r]
+                self.assertEqual((record["criterion"], record["detail"]),
+                                 ("ended-undeclared", "declared working 1h ago; its lead has no live session and no run holds its lock"))
+
     def test_no_working_task_runs_no_session_listing(self):
         self.declare("handed-over")
         self.assertIn("nothing new", self.tick())
