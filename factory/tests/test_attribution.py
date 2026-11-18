@@ -37,7 +37,7 @@ class Attribution(unittest.TestCase):
             return result
 
     def builders(self, lander_in_worktrees=False):
-        repo = lambda tmp: SimpleNamespace(root=tmp, default="main", remote="origin", worktree_path=lambda name: f"{tmp}/.claude/worktrees/{name}",
+        repo = lambda tmp: SimpleNamespace(root=str(tmp), default="main", remote="origin", worktree_path=lambda name: f"{tmp}/.claude/worktrees/{name}",
                               git=lambda *a, **k: (0, "", ""))
 
         def ops(settings, tmp):
@@ -56,7 +56,7 @@ class Attribution(unittest.TestCase):
             return land.conflict([], "CONFLICT (content): x")
 
         return {
-            "lead": lambda s, tmp: factory.build_launch_argv("s", "d", "brief", s, "main", "origin", 0, 3600, tmp),
+            "lead": lambda s, tmp: factory.build_launch_argv("s", "d", "brief", s, "main", "origin", 0, 3600, str(tmp)),
             "site manager": lambda s, tmp: factory.site_manager_argv(pic(dispatcher="d", lean_start=s["lean_start"]), []),
             "ops watch": ops,
             "courier": lambda s, tmp: factory.courier(repo(tmp), "n", "l") or None,

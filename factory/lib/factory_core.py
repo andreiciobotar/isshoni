@@ -317,8 +317,6 @@ SETTINGS = (
             "The dispatcher session names the served dashboard's `d` key reads; `isshoni host add` sets it. Unset by default.", json_arg),
     Setting("merging", "lgtm_from_author", True, boolean,
             "Whether an `lgtm` comment by the pull request's author counts as the human's word. Default true.", toml_arg),
-    Setting("ops", "tools", None, ops_tool_list,
-            "The MCP tools the ops explorer may call, read-only ones only. Unset by default: no MCP tools.", json_arg),
     Setting("kaizen", "review_hours", 1, int_in(0),
             "Hours between kaizen reviews, counted from the last one of any outcome; 0 turns the review off. Default 1.", toml_arg),
     Setting("kaizen", "issues_repo", "", issues_repo,
@@ -326,8 +324,7 @@ SETTINGS = (
     Setting("paths", "monitor", None, nonempty,
             "The isshoni command the cost criteria and the digest run; the wizard's cost step sets it. Unset by default."),
 )
-UNSET_EXAMPLES = {"monitor": '"/path/to/ccmon/bin/isshoni"', "dispatchers": '["dispatcher-<repository>"]',
-                  "tools": '["mcp__metrics__query"]'}
+UNSET_EXAMPLES = {"monitor": '"/path/to/ccmon/bin/isshoni"', "dispatchers": '["dispatcher-<repository>"]'}
 TABLES = tuple(dict.fromkeys(s.table for s in SETTINGS))
 SETTINGS_HEADER = ("# The factory's settings. Edit a line and save: no reinstall.\n"
                    "# A model is an alias (fable, opus, sonnet, haiku) or a full id (claude-...).")
@@ -433,6 +430,11 @@ def reserve(cap, percent):
 def checked(data, where):
     """The values of the parsed settings `data`, each checked; `where(table, key)` says where an error is."""
     for table, keys in data.items():
+        if table == "ops" and isinstance(keys, dict) and "tools" in keys:
+            warn(f"{where(table, 'tools')}: ops.tools is no longer read: production access is recorded per repository "
+                 "(run factory ops grant <tools> in each repository, from your own terminal), then delete this line")
+            if not (keys := {k: v for k, v in keys.items() if k != "tools"}):
+                continue
         if table in TABLES and not isinstance(keys, dict):
             raise Fail(f"{where(table)}: {table} must be a table")
         for key in keys if table in TABLES else [None]:
@@ -598,8 +600,37 @@ def mcp_servers(path, *keys):
         return {}
 
 
+def read_access(path):
+    """The production-access record in `path`, checked (see docs/factory.md, "Reading production"); Fail when it cannot be read as one."""
+    try:
+        rec = json.loads(path.read_text())
+        ok = isinstance(rec, dict) and isinstance(rec["root"], str) and repo_state(rec["root"], "ops-access", "json") == path \
+            and isinstance(rec["at"], str) and rec["by"] in ("human", "session") and isinstance(rec["words"], str) \
+            and (rec["state"] == "declined" or rec["state"] == "granted" and rec["tools"] and ops_tool_list(rec["tools"]) is None)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise Fail(f"{path} cannot be read as a production-access record ({why(e)}): fix or delete it")
+    if not ok:
+        raise Fail(f"{path} is not a production-access record: fix or delete it")
+    return rec
+
+
+def ops_access(root):
+    """The record of the production access of the repository at `root`, or None when nobody has recorded one."""
+    path = repo_state(root, "ops-access", "json")
+    return read_access(path) if path.exists() else None
+
+
+def ops_refusal(access):
+    """Why the ops explorer holds no tools for `access` (a record or None), or None when its list is granted."""
+    if access is None:
+        return "production access is not recorded for this repository: the dispatcher asks the human (factory ops access)"
+    if access["state"] == "declined":
+        return f"the human declined production access for this repository ({access['at']}): do not ask for it"
+    return None
+
+
 def ops_servers(tools, root):
-    """The definitions of the servers `tools` (ops.tools) name, as `[{name: definition}]`: the first of local scope
+    """The definitions of the servers `tools` (a repository's granted list) name, as `[{name: definition}]`: the first of local scope
     (`~/.claude.json`, this repository), project scope (`.mcp.json`) and user scope (`~/.claude.json`) that has the name."""
     names = list(dict.fromkeys(OPS_TOOL_RE.fullmatch(t)[1] for t in tools or ()))
     scopes = [mcp_servers(CLAUDE_JSON, "projects", root), mcp_servers(Path(root) / ".mcp.json"), mcp_servers(CLAUDE_JSON)] if names else []
@@ -608,7 +639,7 @@ def ops_servers(tools, root):
         if found := next((s[name] for s in scopes if name in s), None):
             out.append({name: found})
         else:
-            warn(f"ops.tools names server {name}, which is not configured here (claude mcp add)")
+            warn(f"factory ops grant names server {name}, which is not configured here (claude mcp add)")
     return out
 
 
@@ -619,7 +650,7 @@ def model_key(path):
 
 def agent_definitions(settings, root):
     """The `--agents` JSON of a session: every file in factory/agents as `factory:<name>`, its model the configured one.
-    The ops explorer also gets the MCP servers `ops.tools` names, defined inline: no other agent holds an MCP tool."""
+    The ops explorer also gets the MCP servers the repository at `root` granted, defined inline: no other agent holds an MCP tool."""
     models, out = settings["models"], {}
     for path in sorted((PLUGIN_ROOT / "agents").glob("*.md")):
         head, _, body = path.read_text().removeprefix("---\n").partition("\n---\n")
@@ -638,7 +669,7 @@ def agent_definitions(settings, root):
             "description": meta["description"], "prompt": body, "model": models[model_key(path)],
             **({"tools": [t.strip() for t in meta["tools"].split(",")]} if "tools" in meta else {}),
             **({"skills": meta["skills"]} if "skills" in meta else {})}
-    if servers := ops_servers(settings["tools"], root):
+    if servers := ops_servers((ops_access(root) or {}).get("tools"), root):
         out[OPS_AGENT]["mcpServers"] = servers
     return out
 
@@ -2407,7 +2438,8 @@ def save_evidence(p):
 
 @command("ops-hook", "gate and record the ops explorer's MCP calls from a hook payload on stdin (run by the plugin's hooks)")
 def cmd_ops_hook(args):
-    """The ops explorer's MCP calls: before one, allow it when its tool is on ops.tools and deny it otherwise; after one,
+    """The ops explorer's MCP calls: before one, allow it when its tool is on the list recorded for the repository of the
+    payload's cwd and deny it otherwise; after one,
     save its evidence. Nothing for any other agent. A failure before a call exits 2, which blocks it."""
     try:
         p = json.loads(sys.stdin.read())
@@ -2417,9 +2449,15 @@ def cmd_ops_hook(args):
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
         event, tool = p["hook_event_name"], p["tool_name"]
         if event == "PreToolUse":
-            allowed = any(tool == t or t.endswith("__*") and tool.startswith(t[:-1]) for t in load_settings()["tools"] or ())
-            decision = {"permissionDecision": "allow", "permissionDecisionReason": "on ops.tools"} if allowed else {
-                "permissionDecision": "deny", "permissionDecisionReason": f"{tool} is not on ops.tools: the ops explorer is read-only"}
+            if not isinstance(p.get("cwd"), str):
+                raise Fail("the payload has no cwd")
+            access = ops_access(Repo(p["cwd"]).root)
+            refusal = ops_refusal(access)
+            if refusal is None and any(tool == t or t.endswith("__*") and tool.startswith(t[:-1]) for t in access["tools"]):
+                decision = {"permissionDecision": "allow", "permissionDecisionReason": "on this repository's list"}
+            else:
+                decision = {"permissionDecision": "deny", "permissionDecisionReason":
+                            refusal or f"{tool} is not on this repository's list (factory ops access): the ops explorer is read-only"}
             out = {"hookEventName": event, **decision}
         elif event == "PostToolUse":
             try:
@@ -4036,8 +4074,11 @@ def ops_start(args):
     if not (math.isfinite(args.budget) and args.budget > 0):
         raise Fail("ops: --budget takes a positive, finite number of dollars")
     repo = Repo()
-    if not ops_servers(load_settings()["tools"], repo.root):
-        raise Fail("ops: ops.tools resolves no server for this repository: there is nothing to read through")
+    access = ops_access(repo.root)
+    if refusal := ops_refusal(access):
+        raise Fail(f"ops: {refusal}")
+    if not ops_servers(access["tools"], repo.root):
+        raise Fail("ops: the recorded list resolves no server for this repository: there is nothing to read through")
     w = {"name": args.name, "repo": repo.root, "goal": args.goal, "state": "watching", "verdict": None, "started": now(),
          "until": iso(until), "every_seconds": every, "ticks": 0, "missed": 0, "last_look": None, "next_look": now(),
          "spent_usd": 0.0, "reserved_usd": 0.0, "unpriced_ticks": 0, "budget_usd": args.budget, "notes": str(ops_file(args.name, "notes.md")),
@@ -4087,6 +4128,44 @@ def ops_list(args):
     return 0
 
 
+def ops_access_line(access):
+    if access is None:
+        return "production access: not asked"
+    said = f" by {access['by']}" + (f", {access['words']}" if access["words"] else "")
+    return f"production access: {access['state']} {access['at']}" + (f" {' '.join(access['tools'])}" if access["state"] == "granted" else "") + said
+
+
+def ops_record(root, state, words, tools=None):
+    """Record the production access of this repository, replacing any earlier record, and print it."""
+    access = {"root": root, "state": state, **({"tools": tools} if tools else {}), "at": now(),
+              "by": "session" if os.environ.get("CLAUDECODE") else "human", "words": words}
+    ops_private(repo_state(root, "ops-access", "json"), json.dumps(access))
+    print(ops_access_line(access))
+    return 0
+
+
+def ops_access_show(args):
+    print(ops_access_line(ops_access(Repo().root)))
+    return 0
+
+
+def ops_grant(args):
+    if os.environ.get("CLAUDECODE"):
+        raise Fail("only the human grants production access: run this in your own terminal")
+    if problem := ops_tool_list(args.tools):
+        raise Fail(f"ops: the tools{problem}")
+    tools = list(dict.fromkeys(args.tools))
+    root = Repo().root
+    ops_servers(tools, root)
+    return ops_record(root, "granted", args.words, tools)
+
+
+def ops_decline(args):
+    if not args.words.strip():
+        raise Fail("ops: --words is required: it is the only trace that the human said no")
+    return ops_record(Repo().root, "declined", args.words)
+
+
 def args_ops(parser):
     actions = parser.add_subparsers(dest="action", required=True)
     begin = actions.add_parser("start", help="the human starts a watch from a terminal")
@@ -4097,11 +4176,17 @@ def args_ops(parser):
     begin.add_argument("--budget", required=True, type=float, metavar="USD", help="what the looks may cost in all")
     actions.add_parser("list", help="every watch in the store, newest first").add_argument("--json", action="store_true")
     actions.add_parser("stop", help="stop a watch").add_argument("name")
+    actions.add_parser("access", help="say whether this repository's production access is not asked, declined or granted")
+    give = actions.add_parser("grant", help="the human records the read-only MCP tools the ops explorer may call here")
+    give.add_argument("tools", nargs="+", metavar="TOOL", help="mcp__<server>__<tool> or mcp__<server>__*")
+    give.add_argument("--words", default="", help="the human's words")
+    actions.add_parser("decline", help="record that the human keeps production from the factory").add_argument("--words", required=True)
 
 
-@command("ops", "a watch over a running system: start, list or stop (looks run on the watch tick)", args_ops)
+@command("ops", "production access (access, grant, decline) and a watch over a running system (start, list, stop; looks run on the watch tick)", args_ops)
 def cmd_ops(args):
-    return {"start": ops_start, "list": ops_list, "stop": ops_stop}[args.action](args)
+    return {"start": ops_start, "list": ops_list, "stop": ops_stop, "access": ops_access_show,
+            "grant": ops_grant, "decline": ops_decline}[args.action](args)
 
 
 def ops_inform(repo, w, event, saw, tell=True):
@@ -4178,15 +4263,20 @@ def ops_look(repo, w):
     if remaining <= 0:
         ops_move(w, "out-of-budget", "out of budget", ops_used(w), informs)
         return ops_finish(repo, w, informs)
-    out, reason, cost, session, turns, folder, n = {}, None, 0.0, None, None, None, 0
-    if ops_servers(load_settings()["tools"], repo.root):
+    out, cost, session, turns, folder, n = {}, 0.0, None, None, None, 0
+    try:
+        access = ops_access(repo.root)
+        reason = ops_refusal(access)
+    except Fail as e:
+        access, reason = None, why(e)
+    if not reason and ops_servers(access["tools"], repo.root):
         cap = min(float(OPS_TICK_BUDGET), remaining)
         out, reason, cost, session, turns, folder, n = ops_run(repo, w, final, cap)
         if cost is None:
             w["reserved_usd"] = round(w["reserved_usd"] + cap, 6)
         w["spent_usd"], w["unpriced_ticks"] = round(w["spent_usd"] + (cost or 0), 6), w["unpriced_ticks"] + (cost is None)
     else:
-        reason = "ops.tools names no configured server"
+        reason = reason or "the recorded list names no configured server"
     checks = out.get("checks")
     if not w.get("checks") and n and isinstance(checks, dict) and all(isinstance(checks.get(k), str) and checks[k].strip() for k in OPS_CHECKS):
         w["checks"] = {k: checks[k] for k in OPS_CHECKS}
@@ -8455,12 +8545,13 @@ def review_mirror(issues):
                     set_feedback(prefix, status, by=REVIEW_BY)
 
 
-def review_patterns(target, settings):
+def review_patterns(target):
     """[(the kind of detail, its pattern)] that a public proposal must not hold: see docs/factory.md."""
     roots = {r["repo"] for name in (*REVIEW_ACTIVITY, "firings", "ops") for r in read_log(name) if isinstance(r.get("repo"), str)}
     others = {n for n in (remote_repo(root) for root in roots) if n and "/".join(n).lower() != target.lower()}
     hosts = load_hosts()
-    names = {OPS_TOOL_RE.fullmatch(t)[1] for t in settings["tools"] or []} | set(hosts) \
+    records = [read_access(path) for path in STORE.expanduser().glob("ops-access-*.json")]
+    names = {OPS_TOOL_RE.fullmatch(t)[1] for r in records if r["state"] == "granted" for t in r["tools"]} | set(hosts) \
         | {str(e.get("target")).split("@")[-1] for e in hosts.values() if isinstance(e, dict) and e.get("target")}
 
     def words(ws):
@@ -8513,10 +8604,10 @@ def review_labels(target):
     return None
 
 
-def review_post(target, settings, folder, issues, started):
+def review_post(target, folder, issues, started):
     """Check, scan and post each file in proposals/: ([{"file", "issue", "kind"}], [{"file", "why"}]). A refusal or a
     bad file holds that file only; held files stay in the folder."""
-    posted, held, patterns, labels = [], [], review_patterns(target, settings), None
+    posted, held, patterns, labels = [], [], review_patterns(target), None
     for path in sorted((folder / "proposals").glob("*.md")):
         try:
             kind, fields, sections = review_parse(path.read_text(), issues)
@@ -8595,7 +8686,7 @@ def review_run(repo, settings):
             if blocked:
                 held = [{"file": p.name, "why": blocked} for p in sorted((folder / "proposals").glob("*.md"))]
             else:
-                posted, held = review_post(target, settings, folder, issues, folder.name.removeprefix("kaizen-review-"))
+                posted, held = review_post(target, folder, issues, folder.name.removeprefix("kaizen-review-"))
             with open(folder / "report.md", "a") as f:
                 f.write(f"\n\nScript record: posted {len(posted)}, held {len(held)}"
                         + "".join(f"; held {h['file']}: {h['why']}" for h in held) + "\n")

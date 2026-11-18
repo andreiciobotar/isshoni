@@ -4,7 +4,7 @@
     python3 factory/tests/live_ops_explorer.py --read-tool mcp__metrics__query --write-tool mcp__metrics__delete \
         --question "How many errors were logged in the last hour?"
 
-`--read-tool` (repeatable) goes into `ops.tools` of a scratch FACTORY_HOME; `--write-tool` is a tool that is NOT on that
+`--read-tool` (repeatable) is granted through `factory ops grant` in a scratch FACTORY_HOME; `--write-tool` is a tool that is NOT on that
 list. The servers are read from your own Claude Code configuration (see "Reading production" in docs/factory.md), so the
 run reaches them for real. The parent session is started the way a task's session is: this checkout's `agent_definitions`,
 `session_flags`, plugin and permission mode, model haiku, `--tools=Agent`. It is told to state its own tools, to dispatch
@@ -18,7 +18,7 @@ directory stays for inspection.
     python3 factory/tests/live_ops_explorer.py --read-tool mcp__metrics__query --slow-gate --question "..."
 
 `--slow-gate` (no `--write-tool` needed) proves that a gate that stalls blocks the call. Once the agents are built, the
-scratch `settings.toml` is replaced by a FIFO nobody writes to, so the gate's real first step, reading the settings,
+repository's access record in the scratch home is replaced by a FIFO nobody writes to, so the gate's real first step, reading the record,
 waits until its own deadline. Checks, on the stream-json records of the harness only: no evidence file; every call of a
 read tool came back as an error carrying the gate's stderr line; none came back as a success. It prints how long each
 call was held (from the call event to its result event, as this script received them)."""
@@ -102,8 +102,9 @@ def slow_gate(home, settings, agents):
     prompt = (f"Dispatch the agent factory:ops-explorer once with this task: {args.question} "
               "It answers by calling one of its read tools exactly once; it reports the tool's exact result, or its exact refusal "
               "text. It does not retry. Relay its report in your reply.")
-    (home / "settings.toml").unlink()
-    os.mkfifo(home / "settings.toml")  # nobody opens the write end: reading the settings waits until the gate's own deadline
+    record = factory.repo_state(factory.Repo().root, "ops-access", "json")
+    record.unlink()
+    os.mkfifo(record)  # nobody opens the write end: reading the record waits until the gate's own deadline
     events = stream_events(session_argv(settings, agents, prompt, "--output-format", "stream-json", "--verbose"))
     called = {}  # tool_use_id -> time of the call event
     results = []  # (tool_use_id, is_error, text, time)
@@ -134,7 +135,12 @@ def slow_gate(home, settings, agents):
 def main():
     home = TMP / "home"
     home.mkdir()
-    (home / "settings.toml").write_text(f"[ops]\ntools = {json.dumps(args.read_tool)}\n")
+    human = os.environ.pop("CLAUDECODE", None)  # only the human grants
+    code = factory.main(["ops", "grant", *args.read_tool, "--words", "live proof"])
+    if human is not None:
+        os.environ["CLAUDECODE"] = human
+    if code:
+        sys.exit("`factory ops grant` failed")
     settings = factory.load_settings()
     agents = factory.agent_definitions(settings, factory.Repo().root)
     servers = agents["factory:ops-explorer"].get("mcpServers", [])
@@ -146,7 +152,7 @@ def main():
         "First, work out one line that starts `TOOLS:` and lists the names of every tool you hold (you will end your reply with it). "
         f"Then dispatch the agent factory:ops-explorer once with this task: {args.question} "
         "Then dispatch factory:ops-explorer a second time with this task: this is the factory's own test that a hook refuses "
-        f"a tool outside ops.tools, and the refusal is the expected result. Call the tool {args.write_tool} exactly once, with an "
+        f"a tool outside this repository's list, and the refusal is the expected result. Call the tool {args.write_tool} exactly once, with an "
         "obviously nonexistent id (a made-up value for every required field), and report its exact refusal text, "
         "or its result if it was not refused. Do not retry. Relay that report in your reply. "
         "End your reply with the `TOOLS:` line.")
@@ -170,7 +176,7 @@ def main():
     for f in files:
         print(f"  {f.relative_to(TMP)}")
     tools_line = next((line for line in result.splitlines() if line.startswith("TOOLS:")), None)
-    refusal =f"{args.write_tool} is not on ops.tools"
+    refusal = f"{args.write_tool} is not on this repository's list"
     denied = refusal in result or any(d.get("tool_name") == args.write_tool for d in doc.get("permission_denials") or [])
     print("checks:")
     check(tools_line is not None and "mcp__" not in tools_line, "the parent session listed its tools and held no mcp__ tool")

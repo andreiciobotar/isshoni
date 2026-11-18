@@ -9,7 +9,7 @@ One of your model calls costs about five explorer dispatches or two lander runs,
 - `factory:coder` (Sonnet) writes everything but a fix of a line or two, scripts that count or measure included. It commits its round and reports the SHA and the commands that verified it.
 - `factory:reviewer` (Opus) reviews after every implementation. It marks each issue `observed` or `inferred`: accept the observed, check the inferred before acting.
 - `factory:lander` (Sonnet) lands.
-- `factory:ops-explorer` (Haiku) answers a question about a running system from the MCP servers on `ops.tools` and returns evidence file paths and excerpts; reason only from those files, and keep what it read out of commits, pull requests and comments.
+- `factory:ops-explorer` (Haiku) answers a question about a running system from the MCP servers of this repository's recorded list (`factory ops access`) and returns evidence file paths and excerpts; reason only from those files, and keep what it read out of commits, pull requests and comments.
 
 A subagent starts from zero: every brief states the goal, the scope, the spec's path and what to answer. A brief carries what only you know (the range, the spec's path, the earlier issues, where to look hardest) and does not restate what the subagent's own file fixes: its report format, its review words, its scratch method.
 
