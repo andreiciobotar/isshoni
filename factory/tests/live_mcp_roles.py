@@ -317,7 +317,7 @@ def background(trusted):
                 break
             time.sleep(2)
         before = calls("small")
-        rc, out, err = sh(["claude", "--bg", "--resume", row["sessionId"], SCRATCH_ONLY + "Load mcp__small__read_02 with ToolSearch if it is not loaded, call it with id 2, then say done."], cwd=trusted)
+        rc, out, err = sh(["claude", "--bg", "--resume", row["sessionId"], SCRATCH_ONLY + "Load mcp__small__read_02 with ToolSearch if it is not loaded, call it with id 2, then say done. If it is unavailable because the server is still connecting, run `sleep 10` with Bash and try again, up to 6 times."], cwd=trusted)
         print(f"  session {row['id']} stopped, then woken: {' | '.join((out + err).strip().splitlines()[:2])[:300]}")
         sessions.extend(re.findall(r"backgrounded\s*·\s*(\S+)", out + err))
         for _ in range(60):

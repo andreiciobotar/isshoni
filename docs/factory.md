@@ -195,7 +195,7 @@ The human records, per repository, which MCP tools the **lead** and the **tech l
 | kind | function | servers from the record |
 |---|---|---|
 | lead | `build_launch_argv` | yes (`lead`) |
-| lead woken | `reach_lead` | argv unchanged; the woken session reported its saved options, `--mcp-config` among them, and still held and called the server (proof 4) |
+| lead woken | `reach_lead` | argv unchanged; the woken session reported its saved options, `--mcp-config` among them, and still held and called the server (proof 4); its first turn can start before the server has reconnected, the tool then reported unavailable (2 of 3 runs on 2026-11-18), so the proof's prompt waits and retries |
 | build-run tech lead | `build_argv` | yes (`tech-lead`) |
 | merge-queue tech lead | `tech_lead_argv` | yes (`tech-lead`) |
 | coder, reviewer, explorer, lander subagents | `agent_definitions` | none; a coder has no `tools:` line and inherits the tools' names from its parent, and the gate denies the call |
