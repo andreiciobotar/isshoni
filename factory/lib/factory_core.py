@@ -1848,7 +1848,7 @@ def keep_rule(repo, row, rows, files=None):
     if nested:
         return f"another worktree is registered inside it: {nested[0]}", False
     stacked = [r["slug"] for r in rows if r["stacked_on"] == row["branch"]
-               and not (r["pr_state"] == "merged" and r["pr_base"] == repo.default)]
+               and not landed(repo, r)]
     if stacked:
         return f"{', '.join(stacked)} is stacked on it", True
     reason = merged_reason(repo, row)
@@ -1918,14 +1918,25 @@ def closed_reason(repo, row, rows, files):
             if lost else None)
 
 
+def landed(repo, row):
+    """Whether the row's pull request is merged into the default branch, or merged elsewhere with its head already in the
+    default branch (an upper member of a stack merged with one call). A squash merge into the default branch counts by its base."""
+    if row["pr_state"] != "merged":
+        return False
+    if row["pr_base"] == repo.default:
+        return True
+    return bool(row["head"]) and repo.git("merge-base", "--is-ancestor", row["head"], f"{repo.remote}/{repo.default}")[0] == 0
+
+
 def merged_reason(repo, row):
-    """Why rule 1 (merged into the default branch at the local head) does not hold, or None."""
+    """Why rule 1 (merged into the default branch, or with its head in it, at the local head) does not hold, or None."""
     if row["pr_state"] == "unknown":
         return "its pull request state is unknown"
     if row["pr_state"] != "merged":
         return f"no merged pull request ({row['pr_state']})"
-    if row["pr_base"] != repo.default:
-        return f"its pull request was merged into {row['pr_base'] or 'an unknown branch'}, not {repo.default}"
+    if not landed(repo, row):
+        return (f"its pull request was merged into {row['pr_base'] or 'an unknown branch'}, "
+                f"and its head is not in {repo.remote}/{repo.default}")
     if not row["head"] or not row["pr_head"]:
         return "cannot compare its head with the merged pull request"
     if row["head"] != row["pr_head"]:
@@ -1935,10 +1946,12 @@ def merged_reason(repo, row):
 
 def clean_row(repo, row, rows, files, dry_run):
     """Remove one task when nothing keeps it, and print what came of it. Returns ("removed" | "would remove" | "kept" |
-    "failed", why it was kept). A closed task's branch goes by `update-ref -d` at the head judged: its commits may live in
-    another task's branch, which `branch -d` refuses, and a branch that moved since stays."""
+    "failed", why it was kept). The branch goes by `update-ref -d` at the head judged, not `branch -d`: every rule that lets
+    a task go has shown its commits are kept elsewhere, and a branch that moved since stays."""
     slug = row["slug"]
     reason = keep_rule(repo, row, rows, files)[0]
+    if not reason and not row["session_id"] and not row["head"]:
+        reason = "its head is unknown, so its branch cannot be deleted at a known commit"
     if not reason and not dry_run:
         sessions = list_sessions()
         if sessions is None:
@@ -1954,9 +1967,8 @@ def clean_row(repo, row, rows, files, dry_run):
     if row["session_id"]:
         steps = [["claude", "rm", row["session_id"]]]
     else:
-        branch = (["update-ref", "-d", f"refs/heads/{row['branch']}", row["head"]] if row["state"] == "closed"
-                  else ["branch", "-d", row["branch"]])
-        steps = [["git", "worktree", "remove", row["path"]], ["git", *branch]]
+        steps = [["git", "worktree", "remove", row["path"]],
+                 ["git", "update-ref", "-d", f"refs/heads/{row['branch']}", row["head"]]]
     for argv in steps:
         rc, _, err = run(argv, cwd=repo.root)
         if rc != 0:
@@ -1982,6 +1994,10 @@ def cmd_clean(args):
     failed = False
     rows = collect(repo, sessions, load_settings()["task_time_limit_hours"])
     files = OpenFiles()
+    if any(r["pr_state"] == "merged" and r["pr_base"] != repo.default for r in rows):
+        if (fetched := act_git(repo.root, "fetch", repo.remote, repo.default, timeout=GH_TIMEOUT))[0] != 0:
+            sys.stderr.write(f"factory: warning: cannot fetch {repo.default} from {repo.remote}: {fetched[2].strip()}; "
+                             f"judging by the {repo.remote}/{repo.default} it had\n")
     for row in rows:
         failed |= clean_row(repo, row, rows, files, args.dry_run)[0] == "failed"
     for agent in repo.agents:

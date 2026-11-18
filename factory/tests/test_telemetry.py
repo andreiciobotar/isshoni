@@ -447,7 +447,7 @@ class TaskEventTests(StoreCase):
     def clean(self):
         answers = tf.repo_answers([tf.task_entry("x")], [], tf.git_task_answers("x", time.time(), dirty="", pr=[
             {"state": "MERGED", "url": "u", "headRefOid": "sha-x", "baseRefName": "main"}]))
-        answers.update({("git", "worktree", "remove"): (0, "", ""), ("git", "branch"): (0, "", "")})
+        answers.update({("git", "worktree", "remove"): (0, "", ""), ("git", "update-ref"): (0, "", "")})
         return tf.invoke(["clean"], answers)
 
     def test_new_records_task_started(self):
