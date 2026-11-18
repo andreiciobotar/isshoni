@@ -672,9 +672,9 @@ SKILL_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 USER_SKILLS = Path("~/.claude/skills")
 
 
-def skill_file(name, *checkouts):
-    """The SKILL.md of `name` (already checked against SKILL_NAME_RE): in the `.claude/skills` of the first of `checkouts` that has it, else in the user's skills; None when nowhere."""
-    paths = (*(Path(c) / ".claude" / "skills" / name / "SKILL.md" for c in checkouts), USER_SKILLS.expanduser() / name / "SKILL.md")
+def skill_file(name, checkout):
+    """The SKILL.md of `name` (already checked against SKILL_NAME_RE): in the `.claude/skills` of `checkout`, else in the user's skills; None when nowhere."""
+    paths = (Path(checkout) / ".claude" / "skills" / name / "SKILL.md", USER_SKILLS.expanduser() / name / "SKILL.md")
     return next((p for p in paths if p.is_file()), None)
 
 
