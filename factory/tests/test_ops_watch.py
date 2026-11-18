@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from test_factory import DISPATCHER, LEAN_SETTINGS, NO_ATTRIBUTION, ROOT, factory
+from test_factory import DISPATCHER, LEAN_SETTINGS, NO_ATTRIBUTION, ROOT, factory, put_access
 from test_health import NOW, SchedHarness, iso
 
 CHECKS = {"read": "mcp__metrics__query: errors in the last 10m", "fine": "0 errors", "alarm": "any error", "done": "served reaches 30"}
@@ -25,7 +25,7 @@ class OpsHarness(SchedHarness):
 
     def setUp(self):
         super().setUp()
-        (self.store / "settings.toml").write_text('[ops]\ntools = ["mcp__metrics__query"]\n')
+        self.access = put_access(ROOT, tools=["mcp__metrics__query"])
         self.claude_json = self.home / "claude.json"
         self.claude_json.write_text(json.dumps({"mcpServers": {"metrics": SERVER}}))
         env = mock.patch.dict(os.environ)
@@ -105,9 +105,17 @@ class StartTests(OpsHarness):
         self.claude_json.write_text("{}")
         code, _, err = self.start()
         self.assertEqual(code, 2)
-        self.assertIn("ops.tools resolves no server", err)
-        (self.store / "settings.toml").write_text("")
-        self.assertIn("ops.tools resolves no server", self.start()[2])
+        self.assertIn("the recorded list resolves no server", err)
+        self.assertFalse((self.store / "ops").exists())
+
+    def test_it_refuses_a_repository_that_was_not_asked_or_declined(self):
+        self.access.unlink()
+        self.assertEqual(self.start()[1:], ("", "factory: ops: production access is not recorded for this repository: "
+                                               "the dispatcher asks the human (factory ops access)\n"))
+        put_access(ROOT, state="declined", words="no prod")
+        self.assertEqual(self.start()[1:], ("", "factory: ops: the human declined production access for this repository "
+                                               "(2026-11-18T10:40:00Z): do not ask for it\n"))
+        self.assertFalse((self.store / "ops").exists())
 
     def test_it_writes_private_state_and_notes_and_installs_the_job(self):
         code, out, _ = self.start()
@@ -195,7 +203,7 @@ class LookTests(OpsHarness):
         self.assertIn("Final look: no", argv[-1])
 
     def test_without_lean_start_only_the_strict_flag_and_the_attribution_setting_remain(self):
-        (self.store / "settings.toml").write_text('[sessions]\nlean_start = false\n[ops]\ntools = ["mcp__metrics__query"]\n')
+        (self.store / "settings.toml").write_text("[sessions]\nlean_start = false\n")
         self.tick()
         [argv] = self.ops_runs()
         self.assertIn("--strict-mcp-config", argv)
@@ -243,7 +251,17 @@ class LookTests(OpsHarness):
         self.claude_json.write_text("{}")
         self.tick()
         self.assertEqual(self.sessions_run, 0)
-        self.assertEqual((self.watch()["last_look"]["saw"], self.ops_records()[0]["cost_usd"]), ("ops.tools names no configured server", 0.0))
+        self.assertEqual((self.watch()["last_look"]["saw"], self.ops_records()[0]["cost_usd"]), ("the recorded list names no configured server", 0.0))
+
+    def test_a_record_that_went_missing_or_cannot_be_read_is_could_not_look_without_a_run(self):
+        self.start()
+        self.access.unlink()
+        self.tick()
+        self.assertTrue(self.watch()["last_look"]["saw"].startswith("production access is not recorded"))
+        self.access.write_text("{")
+        self.tick(at=NOW + EVERY)
+        self.assertEqual((self.sessions_run, self.watch()["last_look"]["outcome"]), (0, "could-not-look"))
+        self.assertIn(self.access.name, self.watch()["last_look"]["saw"])
 
     def test_the_checks_are_stored_once_and_the_next_look_gets_them(self):
         self.tick()

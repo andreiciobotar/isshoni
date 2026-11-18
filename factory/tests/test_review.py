@@ -12,7 +12,7 @@ from subprocess import CompletedProcess
 from types import SimpleNamespace
 from unittest import mock
 
-from test_factory import RealReviewStarted, factory, stub_popen
+from test_factory import RealReviewStarted, factory, put_access, stub_popen
 
 TARGET = "me/widgets"
 ISSUE_URL = f"https://github.com/{TARGET}/issues/41"
@@ -409,7 +409,7 @@ class ScanTests(Store):
         super().setUp()
         self.put("tasks", 1, repo=self.root)
         self.put("tasks", 1, repo="/elsewhere/secretproject")
-        self.settings_file('[ops]\ntools = ["mcp__prodmetrics__query"]\n')
+        self.record = put_access("/elsewhere/secretproject", tools=["mcp__prodmetrics__query"])
         (self.store / "hosts.json").write_text(json.dumps({"edgebox": {"target": "deploy@10.0.0.9", "repos": []}}))
         remotes = {self.root: ("me", "widgets"), "/elsewhere/secretproject": ("me", "gizmos")}
         patcher = mock.patch.object(factory, "remote_repo", lambda cwd=None: remotes.get(cwd))
@@ -432,6 +432,15 @@ class ScanTests(Store):
                            ("at 10.20.30.40 it", "an IPv4 address")):
             with self.subTest(text):
                 self.assertEqual(self.held(text), kind)
+
+    def test_a_server_granted_in_another_repository_is_held(self):
+        put_access("/elsewhere/other", tools=["mcp__granted__query"])
+        self.assertEqual(self.held("the granted server"), "a host or MCP server name")
+
+    def test_an_unreadable_record_fails_the_scan(self):
+        self.record.write_text("{")
+        with self.assertRaisesRegex(factory.Fail, "cannot be read as a production-access record"):
+            self.held("text")
 
     def test_a_repository_seen_only_in_the_firings_or_ops_log_is_found(self):
         for name in ("firings", "ops"):

@@ -6,7 +6,7 @@
 `--model` is `models.ops_watch` of a scratch FACTORY_HOME (try sonnet, then haiku). The scratch directory holds a scratch
 repository whose `.mcp.json` names `ops_proof_server.py`, a stdio MCP server with one read tool that answers
 {"served": 10*n, "errors": 0}, n counting its calls. The watch is started through the CLI (`main(["ops", "start", ...])`, with
-CLAUDECODE unset) with `--every 5s`, then the real `factory watch` runs in the scratch repository until the watch ends.
+CLAUDECODE unset), after `ops grant` of its one tool, with `--every 5s`, then the real `factory watch` runs in the scratch repository until the watch ends.
 The scheduler is a fake (no job is installed on this machine) and desktop notifications are off.
 
 Checks, all on files the script owns: at least 3 look records with evidence; an evidence file with a non-empty response per look;
@@ -86,7 +86,7 @@ def setup():
     (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"proof": {"command": sys.executable, "args": [str(SERVER), str(state)]}}}))
     (repo / "CLAUDE.md").write_text("To read production, call the `read_served` tool of the `proof` MCP server (no arguments). "
                                     "It returns the requests served so far and how many failed.\n")
-    (home / "settings.toml").write_text(f'[models]\nops_watch = "{args.model}"\n[ops]\ntools = ["mcp__proof__read_served"]\n')
+    (home / "settings.toml").write_text(f'[models]\nops_watch = "{args.model}"\n')
     os.chdir(repo)
     return repo, home, state
 
@@ -99,6 +99,8 @@ def main():
     factory.scheduler = lambda: FakeScheduler()
     factory.review_tick = lambda *_: None  # the proof copy of the watch is not to start a review
     print(f"scratch: {TMP}\nmodel: {args.model}")
+    code = factory.main(["ops", "grant", "mcp__proof__read_served", "--words", "proof"])
+    print(f"ops grant: exit {code}")
     code = factory.main(["ops", "start", "proof", GOAL, "--every", "5s", "--until", "30m", "--budget", args.budget])
     print(f"ops start: exit {code}")
     stop, ticks = time.time() + args.wait, 0

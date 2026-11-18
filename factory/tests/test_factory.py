@@ -230,6 +230,15 @@ def repo_answers(entries, sessions=(), *extras):
     return answers
 
 
+def put_access(root, state="granted", tools=("mcp__metrics__query", "mcp__logs__*"), **fields):
+    """Record the production access of the repository at `root` in the store, as `factory ops grant` does."""
+    path = factory.repo_state(root, "ops-access", "json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"root": root, "state": state, **({"tools": list(tools)} if state == "granted" else {}),
+                                "at": "2026-11-18T10:40:00Z", "by": "human", "words": "", **fields}))
+    return path
+
+
 class SlugTests(unittest.TestCase):
     def test_valid(self):
         for slug in ("abc", "tui-now-running", "a1b", "x" * 40, "a-b-c"):
@@ -542,7 +551,7 @@ class AckTests(unittest.TestCase):
 
 DEFAULT_SETTINGS = {
     "worktree_cap": 5, "reserve_percent": 10, "task_time_limit_hours": 2, "extension_minutes": 60, "lead_permission_mode": "auto",
-    "lean_start": True, "dispatchers": None, "lgtm_from_author": True, "tools": None, "review_hours": 1, "issues_repo": "", "monitor": None,
+    "lean_start": True, "dispatchers": None, "lgtm_from_author": True, "review_hours": 1, "issues_repo": "", "monitor": None,
     "models": {"dispatcher": "fable", "lead": "fable", "explorer": "haiku", "coder": "sonnet", "reviewer": "opus",
                "lander": "sonnet", "ops_explorer": "haiku", "ops_watch": "sonnet", "site_manager": "opus", "kaizen_review": "fable",
                "courier": "haiku", "tech_lead": "opus"}}
@@ -629,8 +638,6 @@ lean_start = false
 dispatchers = ["dispatcher-a"]
 [merging]
 lgtm_from_author = false
-[ops]
-tools = ["mcp__metrics__query", "mcp__logs__*"]
 [kaizen]
 review_hours = 3
 issues_repo = "me/widgets"
@@ -640,7 +647,7 @@ monitor = "/bin/isshoni"
         self.assertEqual(got, {
             "worktree_cap": 2, "reserve_percent": 25, "task_time_limit_hours": 0.5, "extension_minutes": 60,
             "lead_permission_mode": "plan", "lean_start": False, "dispatchers": ["dispatcher-a"], "lgtm_from_author": False, "monitor": "/bin/isshoni",
-            "tools": ["mcp__metrics__query", "mcp__logs__*"], "review_hours": 3, "issues_repo": "me/widgets",
+            "review_hours": 3, "issues_repo": "me/widgets",
             "models": {"dispatcher": "opus", "lead": "claude-opus-4-1[1m]", "explorer": "sonnet", "coder": "haiku",
                        "reviewer": "fable", "lander": "claude-haiku-4-5", "ops_explorer": "opus", "ops_watch": "haiku", "site_manager": "opus",
                        "kaizen_review": "haiku", "courier": "sonnet", "tech_lead": "haiku"}})
@@ -663,14 +670,21 @@ monitor = "/bin/isshoni"
                 ("sessions", "lean_start", '"yes"'), ("sessions", "lean_start", "1"),
                 ("sessions", "dispatchers", '"a"'), ("sessions", "dispatchers", "[1]"), ("sessions", "dispatchers", '[""]'),
                 ("merging", "lgtm_from_author", '"no"'), ("merging", "lgtm_from_author", "0"),
-                ("ops", "tools", '["Bash"]'), ("ops", "tools", '["mcp__x"]'), ("ops", "tools", '["mcp____y"]'),
-                ("ops", "tools", '"mcp__x__y"'), ("ops", "tools", "[1]"),
-                ("ops", "tools", '["mcp__a__q*"]'), ("ops", "tools", '["mcp__a__*x"]'),
                 ("paths", "monitor", '""'), ("paths", "monitor", "3")):
             with self.subTest(f"{table}.{key} = {bad}"):
                 with self.assertRaises(factory.Fail) as raised:
                     self.load(f"# c\n\n[{table}]\n{key} = {bad}\n")
                 self.assertTrue(str(raised.exception).startswith(f"settings.toml line 4: {table}.{key} "), raised.exception)
+
+    def test_an_old_ops_tools_line_is_named_and_grants_nothing(self):
+        self.assertEqual(self.load('# c\n[ops]\ntools = ["mcp__metrics__query"]\n'), DEFAULT_SETTINGS)
+        self.assertEqual(self.err, "factory: settings.toml line 3: ops.tools is no longer read: production access is recorded per "
+                                   "repository (run factory ops grant <tools> in each repository, from your own terminal), then delete this line\n")
+
+    def test_ops_tools_is_no_setting_any_more(self):
+        self.path.write_text("")
+        with self.assertRaisesRegex(factory.Fail, r"^unknown setting 'ops.tools'"):
+            factory.set_setting("ops.tools", '["mcp__metrics__query"]')
 
     def test_the_message_for_the_cap(self):
         with self.assertRaisesRegex(factory.Fail, r"^settings.toml line 3: limits.worktree_cap must be an integer of at least 1$"):
@@ -1014,6 +1028,13 @@ class AgentDefinitionTests(unittest.TestCase):
     MODELS = {**DEFAULT_SETTINGS["models"], "coder": "haiku", "lander": "claude-haiku-4-5"}
     SETTINGS = {**DEFAULT_SETTINGS, "models": MODELS}
 
+    def setUp(self):
+        self.store = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.store)
+        patcher = mock.patch.object(factory, "STORE", self.store)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def files(self, text_by_name):
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d)
@@ -1062,9 +1083,9 @@ class OpsServersTests(unittest.TestCase):
         self.root = self.dir / "repo"
         self.root.mkdir()
         self.claude_json = self.dir / "claude.json"
-        patcher = mock.patch.object(factory, "CLAUDE_JSON", self.claude_json)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (mock.patch.object(factory, "CLAUDE_JSON", self.claude_json), mock.patch.object(factory, "STORE", self.dir)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         factory.warned.clear()
 
     def servers(self, tools):
@@ -1087,7 +1108,7 @@ class OpsServersTests(unittest.TestCase):
         self.claude_json.write_text(json.dumps({"mcpServers": {"a": {"type": "http", "url": "u"}}}))
         got, err = self.servers(["mcp__a__x", "mcp__gone__x", "mcp__gone__y"])
         self.assertEqual(got, [{"a": {"type": "http", "url": "u"}}])
-        self.assertEqual(err, "factory: ops.tools names server gone, which is not configured here (claude mcp add)\n")
+        self.assertEqual(err, "factory: factory ops grant names server gone, which is not configured here (claude mcp add)\n")
 
     def test_an_unreadable_or_malformed_config_file_counts_as_not_found(self):
         (self.root / ".mcp.json").write_text("{not json")
@@ -1101,17 +1122,124 @@ class OpsServersTests(unittest.TestCase):
 
     def test_the_servers_go_to_the_ops_explorer_entry_only(self):
         self.claude_json.write_text(json.dumps({"mcpServers": {"metrics": {"type": "http", "url": "u"}}}))
-        got = factory.agent_definitions({**DEFAULT_SETTINGS, "tools": ["mcp__metrics__query"]}, str(self.root))
+        put_access(str(self.root), tools=["mcp__metrics__query"])
+        got = factory.agent_definitions(DEFAULT_SETTINGS, str(self.root))
         self.assertEqual(got["factory:ops-explorer"]["mcpServers"], [{"metrics": {"type": "http", "url": "u"}}])
         self.assertEqual([k for k, v in got.items() if "mcpServers" in v], ["factory:ops-explorer"])
-        for settings in (DEFAULT_SETTINGS, {**DEFAULT_SETTINGS, "tools": ["mcp__other__q"]}):
-            with redirect_stderr(io.StringIO()):
-                self.assertNotIn("mcpServers", factory.agent_definitions(settings, str(self.root))["factory:ops-explorer"])
+
+    def test_each_repository_gets_its_own_servers(self):
+        a, b = self.dir / "a", self.dir / "b"
+        self.claude_json.write_text(json.dumps({"mcpServers": {"metrics": {"type": "http", "url": "m"}, "logs": {"type": "http", "url": "l"}}}))
+        put_access(str(a), tools=["mcp__metrics__query"])
+        put_access(str(b), tools=["mcp__logs__*"])
+        servers = lambda root: factory.agent_definitions(DEFAULT_SETTINGS, str(root))["factory:ops-explorer"]["mcpServers"]
+        self.assertEqual((servers(a), servers(b)), ([{"metrics": {"type": "http", "url": "m"}}], [{"logs": {"type": "http", "url": "l"}}]))
+
+    def test_a_repository_that_declined_or_was_not_asked_gets_no_server(self):
+        self.claude_json.write_text(json.dumps({"mcpServers": {"metrics": {"type": "http", "url": "m"}}}))
+        put_access(str(self.root), state="declined", words="no prod")
+        put_access(str(self.dir / "other"), tools=["mcp__metrics__query"])
+        for root in (self.root, self.dir / "never-asked"):
+            self.assertNotIn("mcpServers", factory.agent_definitions(DEFAULT_SETTINGS, str(root))["factory:ops-explorer"])
+
+
+class OpsAccessTests(unittest.TestCase):
+    """`factory ops access|grant|decline` in a scratch store, for the repository at ROOT."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        claude_json = self.dir / "claude.json"
+        claude_json.write_text(json.dumps({"mcpServers": {"metrics": {"type": "http", "url": "u"}}}))
+        for patcher in (mock.patch.object(factory, "STORE", self.dir), mock.patch.object(factory, "CLAUDE_JSON", claude_json),
+                        mock.patch.object(factory, "Repo", lambda cwd=None: mock.Mock(root=ROOT)),
+                        mock.patch.dict(os.environ)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        os.environ.pop("CLAUDECODE", None)
+        factory.warned.clear()
+        self.file = factory.repo_state(ROOT, "ops-access", "json")
+
+    def cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = factory.main(["ops", *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def record(self):
+        return json.loads(self.file.read_text())
+
+    def test_a_repository_nobody_asked_about_says_so(self):
+        self.assertEqual(self.cli("access"), (0, "production access: not asked\n", ""))
+
+    def test_the_human_grants_a_list_and_it_is_recorded_privately(self):
+        code, out, err = self.cli("grant", "mcp__metrics__query", "mcp__metrics__*", "--words", "axiom, read only")
+        rec = self.record()
+        self.assertEqual((code, err, stat.S_IMODE(self.file.stat().st_mode)), (0, "", 0o600))
+        self.assertEqual({k: v for k, v in rec.items() if k != "at"}, {"root": ROOT, "state": "granted", "by": "human",
+                         "tools": ["mcp__metrics__query", "mcp__metrics__*"], "words": "axiom, read only"})
+        self.assertEqual(out, f"production access: granted {rec['at']} mcp__metrics__query mcp__metrics__* by human, axiom, read only\n")
+        self.assertEqual(self.cli("access")[1], out)
+
+    def test_a_grant_with_no_words_says_only_who(self):
+        _, out, _ = self.cli("grant", "mcp__metrics__query")
+        self.assertRegex(out, r"^production access: granted \S+ mcp__metrics__query by human\n$")
+
+    def test_a_session_cannot_grant_and_nothing_is_written(self):
+        os.environ["CLAUDECODE"] = "1"
+        self.assertEqual(self.cli("grant", "mcp__metrics__query"),
+                         (2, "", "factory: only the human grants production access: run this in your own terminal\n"))
+        self.assertFalse(self.file.exists())
+
+    def test_an_invalid_tool_is_refused_and_nothing_is_written(self):
+        for bad in ("Bash", "mcp__x", "mcp____y", "mcp__a__q*"):
+            code, _, err = self.cli("grant", "mcp__metrics__query", bad)
+            self.assertEqual((code, err.startswith("factory: ops: the tools must be a list of MCP tool names")), (2, True), bad)
+        self.assertFalse(self.file.exists())
+
+    def test_a_server_that_is_not_configured_is_warned_about(self):
+        code, _, err = self.cli("grant", "mcp__gone__query")
+        self.assertEqual((code, err), (0, "factory: factory ops grant names server gone, which is not configured here (claude mcp add)\n"))
+
+    def test_a_decline_needs_words_and_a_session_may_make_it(self):
+        for argv in (("decline",), ("decline", "--words", "  ")):
+            with self.subTest(argv), redirect_stderr(io.StringIO()):
+                try:
+                    code = self.cli(*argv)[0]
+                except SystemExit as e:
+                    code = e.code
+                self.assertEqual(code, 2)
+        self.assertFalse(self.file.exists())
+        os.environ["CLAUDECODE"] = "1"
+        code, out, _ = self.cli("decline", "--words", "no prod for this one")
+        self.assertEqual((code, self.record()["by"], self.record()["state"]), (0, "session", "declined"))
+        self.assertEqual(out, f"production access: declined {self.record()['at']} by session, no prod for this one\n")
+        self.assertNotIn("tools", self.record())
+
+    def test_each_command_replaces_the_earlier_record(self):
+        self.cli("decline", "--words", "no")
+        self.assertTrue(self.cli("grant", "mcp__metrics__query")[1].startswith("production access: granted "))
+        self.assertEqual(self.record()["state"], "granted")
+        self.cli("grant", "mcp__metrics__get")
+        self.assertEqual(self.record()["tools"], ["mcp__metrics__get"])
+        self.assertTrue(self.cli("decline", "--words", "changed my mind")[1].startswith("production access: declined "))
+        self.assertEqual(self.record()["state"], "declined")
+
+    def test_a_record_that_cannot_be_read_fails_naming_the_file(self):
+        good = {"root": ROOT, "state": "granted", "tools": ["mcp__metrics__query"], "at": "t", "by": "human", "words": ""}
+        for what, text in (("not json", "{"), ("a list", "[]"), ("another root", json.dumps({**good, "root": "/other"})),
+                           ("no tools", json.dumps({**good, "tools": []})), ("bad tool", json.dumps({**good, "tools": ["Bash"]})),
+                           ("bad state", json.dumps({**good, "state": "maybe"})), ("bad by", json.dumps({**good, "by": "robot"})),
+                           ("no words", json.dumps({k: v for k, v in good.items() if k != "words"}))):
+            with self.subTest(what):
+                self.file.write_text(text)
+                code, _, err = self.cli("access")
+                self.assertEqual(code, 2)
+                self.assertIn(str(self.file), err)
 
 
 class OpsHookTests(InStore):
     OPS = "factory:ops-explorer"
-    TOOLS = '[ops]\ntools = ["mcp__metrics__query", "mcp__logs__*"]\n'
 
     def setUp(self):
         super().setUp()
@@ -1119,10 +1247,23 @@ class OpsHookTests(InStore):
                         mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": ""})):
             patcher.start()
             self.addCleanup(patcher.stop)
+        self.a, self.b = self.repository("a"), self.repository("b")
+        self.worktree = self.dir / "a" / ".claude" / "worktrees" / "task"
+        self.git(self.a, "worktree", "add", "-q", str(self.worktree), "-b", "task")
+        self.plain = self.dir / "plain"
+        self.plain.mkdir()
 
-    def hook(self, payload, settings=TOOLS):
-        if settings is not None:
-            self.path.write_text(settings)
+    def git(self, cwd, *args):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True, capture_output=True)
+
+    def repository(self, name):
+        path = self.dir / name
+        path.mkdir()
+        self.git(path, "init", "-q")
+        self.git(path, "commit", "-q", "--allow-empty", "-m", "init")
+        return os.path.realpath(path)
+
+    def hook(self, payload):
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(sys, "stdin", io.StringIO(payload if isinstance(payload, str) else json.dumps(payload))), \
                 redirect_stdout(out), redirect_stderr(err):
@@ -1133,27 +1274,51 @@ class OpsHookTests(InStore):
         return code, out.getvalue(), err.getvalue()
 
     def pre(self, tool, **extra):
-        return {"hook_event_name": "PreToolUse", "agent_type": self.OPS, "tool_name": tool, "session_id": "s1", **extra}
+        return {"hook_event_name": "PreToolUse", "agent_type": self.OPS, "tool_name": tool, "session_id": "s1", "cwd": self.a, **extra}
 
-    def decision(self, tool, **kw):
-        code, out, err = self.hook(self.pre(tool), **kw)
+    def decision(self, tool, **extra):
+        code, out, err = self.hook(self.pre(tool, **extra))
         self.assertEqual((code, err), (0, ""))
         return json.loads(out)["hookSpecificOutput"]
 
     def test_a_listed_tool_is_allowed_and_an_unlisted_one_denied_with_the_reason(self):
+        put_access(self.a)
         self.assertEqual(self.decision("mcp__metrics__query"), {
-            "hookEventName": "PreToolUse", "permissionDecision": "allow", "permissionDecisionReason": "on ops.tools"})
+            "hookEventName": "PreToolUse", "permissionDecision": "allow", "permissionDecisionReason": "on this repository's list"})
         self.assertEqual(self.decision("mcp__metrics__delete"), {
             "hookEventName": "PreToolUse", "permissionDecision": "deny",
-            "permissionDecisionReason": "mcp__metrics__delete is not on ops.tools: the ops explorer is read-only"})
+            "permissionDecisionReason": "mcp__metrics__delete is not on this repository's list (factory ops access): the ops explorer is read-only"})
+
+    def test_each_repository_allows_its_own_list_only_from_any_of_its_worktrees(self):
+        put_access(self.a, tools=["mcp__metrics__query"])
+        put_access(self.b, tools=["mcp__logs__query"])
+        for tool, cwd, want in (("mcp__metrics__query", self.a, "allow"), ("mcp__metrics__query", str(self.worktree), "allow"),
+                                ("mcp__logs__query", self.a, "deny"), ("mcp__logs__query", str(self.worktree), "deny"),
+                                ("mcp__logs__query", self.b, "allow"), ("mcp__metrics__query", self.b, "deny")):
+            self.assertEqual(self.decision(tool, cwd=cwd)["permissionDecision"], want, (tool, cwd))
+
+    def test_a_declined_and_a_not_asked_repository_are_denied_with_different_reasons(self):
+        put_access(self.b, state="declined", words="no prod")
+        self.assertEqual(self.decision("mcp__metrics__query")["permissionDecisionReason"],
+                         "production access is not recorded for this repository: the dispatcher asks the human (factory ops access)")
+        self.assertEqual(self.decision("mcp__metrics__query", cwd=self.b),
+                         {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason":
+                          "the human declined production access for this repository (2026-11-18T10:40:00Z): do not ask for it"})
+
+    def test_an_old_ops_tools_line_grants_nothing(self):
+        self.path.write_text('[ops]\ntools = ["mcp__metrics__query"]\n')
+        with redirect_stderr(io.StringIO()) as err:
+            settings = factory.load_settings()
+            servers = factory.agent_definitions(settings, self.a)["factory:ops-explorer"]
+        self.assertIn("ops.tools is no longer read", err.getvalue())
+        self.assertNotIn("mcpServers", servers)
+        self.assertIn("is not recorded", self.decision("mcp__metrics__query")["permissionDecisionReason"])
 
     def test_a_server_wildcard_covers_that_server_only(self):
+        put_access(self.a)
         for tool, want in (("mcp__logs__x", "allow"), ("mcp__logs__", "allow"), ("mcp__logsx__y", "deny"),
                            ("mcp__other__x", "deny"), ("mcp__metrics__*", "deny")):
             self.assertEqual(self.decision(tool)["permissionDecision"], want, tool)
-
-    def test_unset_tools_deny_everything(self):
-        self.assertEqual(self.decision("mcp__metrics__query", settings="")["permissionDecision"], "deny")
 
     def test_another_agent_or_none_is_not_its_business(self):
         for extra in ({"agent_type": "factory:coder"}, {"agent_type": None}):
@@ -1163,19 +1328,28 @@ class OpsHookTests(InStore):
         self.assertEqual(self.hook(payload), (0, "", ""))
 
     def test_a_failure_before_a_call_exits_2_and_never_allows(self):
-        for what, payload, settings in (
-                ("garbage", "{nope", self.TOOLS), ("not an object", "[1]", self.TOOLS),
-                ("no tool name", {"hook_event_name": "PreToolUse", "agent_type": self.OPS}, self.TOOLS),
-                ("malformed settings", self.pre("mcp__metrics__query"), "not toml"),
-                ("settings of the wrong type", self.pre("mcp__metrics__query"), '[ops]\ntools = "mcp__metrics__query"\n')):
+        record = put_access(self.a)
+        cwdless = self.pre("mcp__metrics__query")
+        del cwdless["cwd"]
+        for what, payload in (
+                ("garbage", "{nope"), ("not an object", "[1]"),
+                ("no tool name", {"hook_event_name": "PreToolUse", "agent_type": self.OPS}),
+                ("no cwd", cwdless), ("a cwd outside any repository", self.pre("mcp__metrics__query", cwd=str(self.plain)))):
             with self.subTest(what):
-                code, out, err = self.hook(payload, settings)
+                code, out, err = self.hook(payload)
                 self.assertEqual((code, out), (2, ""))
                 self.assertTrue(err.startswith("factory ops-hook: "), err)
-        self.path.unlink()
-        self.path.mkdir()
-        code, out, err = self.hook(self.pre("mcp__metrics__query"), None)
-        self.assertEqual((code, out), (2, ""))
+        for what, text in (("a record that is not JSON", "not json"), ("a record of another repository", json.dumps(
+                {**json.loads(record.read_text()), "root": self.b})), ("a grant with no tools", json.dumps(
+                {**json.loads(record.read_text()), "tools": []}))):
+            with self.subTest(what):
+                record.write_text(text)
+                code, out, err = self.hook(self.pre("mcp__metrics__query"))
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn(record.name, err)
+        record.unlink()
+        record.mkdir()
+        self.assertEqual(self.hook(self.pre("mcp__metrics__query"))[:2], (2, ""))
 
     def test_a_gate_that_waits_for_its_input_blocks_the_call_after_its_deadline(self):
         started = time.monotonic()
