@@ -1210,9 +1210,12 @@ class FollowRebaseTests(ScratchRepoBase):
 
     def test_an_unpushed_merge_of_the_default_branch_is_not_lost_to_a_rebase_with_equal_patches(self):
         self.task_commit("a.txt", "one\ntwo\ntask\n")
-        self.main_moves("evil.txt", "mine\n")
+        self.main_moves("c.txt", "c moved\n")
         self.git("fetch", "-q", cwd=self.wt)
-        self.git("merge", "-q", "--no-edit", "origin/main", cwd=self.wt)
+        self.git("merge", "-q", "--no-commit", "--no-ff", "origin/main", cwd=self.wt)
+        self.write(self.wt, "evil.txt", "mine\n")  # added by the merge commit itself: no patch id, and the remote never holds it
+        self.git("add", "evil.txt", cwd=self.wt)
+        self.git("commit", "-q", "--no-edit", cwd=self.wt)
         self.main_moves("b.txt", "b moved\n")
         self.rewrite()
         old = self.git("rev-parse", "HEAD", cwd=self.wt)

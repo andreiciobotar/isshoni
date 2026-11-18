@@ -7845,7 +7845,7 @@ def level(repo, task):
         return None
     base = f"{remote}/{repo.default}"
     ours, theirs = patch_ids(path, base, "HEAD"), patch_ids(path, base, f"{remote}/{branch}")
-    rc, held, _ = act_git(path, "reflog", "show", "--format=%H", f"{remote}/{branch}")
+    rc, held, _ = repo.git("reflog", "show", "--format=%H", f"{remote}/{branch}", path=path)
     pushed = rc == 0 and repo.git("rev-parse", "HEAD", path=path)[1].strip() in held.split()  # HEAD was the remote's head: no local commit is lost
     if pushed and ours and ours == theirs and act_git(path, "reset", "--keep", f"{remote}/{branch}")[0] == 0:
         return None
