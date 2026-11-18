@@ -60,6 +60,7 @@ factory env                                                              # expor
 factory land (<slug> | --all)
 factory tech-lead <slug> <number> <evidence> [--dispatcher <session-name>]   # started by the lander's loop; usable by hand
 factory overlap <old base> <old head> <target>                           # what both sides changed, and whether anyone must look
+factory scratch <commit>                                                 # a new directory with that commit's files (no .git); prints its path (run in a worktree; needs Python 3.11.4 or later)
 factory rerun <number>                                                   # re-run a red check once when the failure looks like a flake (a held pull request: on the human's word)
 factory unblock <number> [--by <text>]                                   # release a pull request the queue holds as not-ours
 ```
@@ -77,6 +78,7 @@ factory unblock <number> [--by <text>]                                   # relea
 - **`retro`** takes the task from the working directory and reads the JSON from `<file>` when one is given (exit 2 if it cannot be read), else from stdin. On success it prints `retro: stored for <slug>`; a failure prints nothing on stdout.
 - **`land`** lands a handed-over task whose base moved or merged, or whose pull request conflicts, without waking its lead (see Landing without the lead). It is for use by hand: merging no longer goes through it, and a waiting branch is updated only by the lander in its turn.
 - **`tech-lead`** runs a tech lead on a pull request that came back from the merge queue, in the foreground (see Tech lead). The lander's loop starts it detached.
+- **`scratch <commit>`** is run in a worktree (or any repository) by an agent that needs another commit's files, such as a reviewer running tests on a base SHA. It makes a new directory with `tempfile.mkdtemp` (prefix `scratch-`) under `$CLAUDE_JOB_DIR/tmp` when that variable is set (`tmp` is created if missing), else under the system temporary directory, fills it with the tree of `<commit>` as `git archive` gives it (any commit-ish git resolves here), and prints its absolute path alone on stdout. The copy has no `.git`: it is not a repository or a worktree, and the command never runs `git worktree` or touches the index, the working tree or a ref. It needs no store, task or GitHub. An unresolvable commit, or a directory outside a repository, exits 1 with git's message on stderr, nothing on stdout, and no directory left behind. It deletes nothing else: the job's scratch folder is removed with the job.
 - **`merge`** and **`lander`** take a pull request from approved to the default branch (see Merging).
 
 ## Declared state, phases and the cap
@@ -204,10 +206,10 @@ Leads and the dispatcher talk through Claude Code's `SendMessage`, by session na
 ### A lead the harness retired
 Claude Code retires a background session that has sat at its prompt for 60 minutes (its daemon's sweep; `~/.claude/daemon.log` has `bg retire <id>: idle-prompt, idle 60m`): the process ends, the conversation is kept, no `SessionEnd` hook fires. `claude agents --json --all` then lists it with no `pid` and no `status` (`state` is the last turn's summary, `cwd` is the main checkout), and `SendMessage` by name answers "No agent named '<slug>' is reachable". The idle count is wall-clock, so a sleep counts: after a wake expect every lead that was waiting to be retired at once. No tick runs during a sleep and the first after it delivers what was recorded meanwhile (staged, not yet proven by a real sleep).
 
-Every line the script sends a lead (`forward`) is first recorded in the lead outbox, `outbox-YYYY-MM.jsonl` (`id`, `ts`, `repo`, `slug`, `line`; later records of the same `id` add `tries` or `end`: `delivered` or `dispatcher`), then delivered by `reach_lead`. A live lead (the listing row has a `pid`) gets one courier send per line. A retired one gets `claude --bg --resume <sessionId> <the lines joined by newlines>`, run in its worktree with no other flag: the session wakes with the options it was saved with (rules, tools, agents, permission mode), and any flag makes the harness start a copy instead. The resume counts when it exits 0 and prints `backgrounded · <the session's own id>`; a copy is stopped and counts as failed. The pending rows of a slug are always delivered together, oldest first, so a lead brought back gets everything it missed.
+Every line the script sends a lead (`forward`) is first recorded in the lead outbox, `outbox-YYYY-MM.jsonl` (`id`, `ts`, `repo`, `slug`, `line`; later records of the same `id` add `tries` with `why` (the reason of the failed try) or `end`: `delivered` or `dispatcher`), then delivered by `reach_lead`. A live lead (the listing row has a `pid`) gets one courier send per line. A retired one gets `claude --bg --resume <sessionId> <the lines joined by newlines>`, run in its worktree with no other flag: the session wakes with the options it was saved with (rules, tools, agents, permission mode), and any flag makes the harness start a copy instead. The resume counts when it exits 0 and prints `backgrounded · <the session's own id>`; a copy is stopped and counts as failed. The pending rows of a slug are always delivered together, oldest first, so a lead brought back gets everything it missed.
 - Delivered: `forward` returns `lead`.
 - A live lead the courier could not reach, or no session named the slug: the dispatcher gets `<HEAD>: <slug> (<why>): <line>` and the row ends `dispatcher`. `<why>` is `not delivered to its lead: <the courier's reply or error, first line>` or `its lead is gone: no session named <slug>`.
-- A retired lead that could not be resumed (`its lead is gone: resume failed: <first line of the output, or timed out, or started a copy>`): the row stays pending, `forward` returns `queued`, and nobody is told yet. Each tick, `drain_outbox` (at the start of `watch_tick`, so on every tick, the lander loop's included, and on ticks where the site manager is not consulted; a failure in it is printed and the tick goes on) tries again. After the third failed try of a slug (`forward`'s is the first) its pending rows end `dispatcher` and the dispatcher gets one line, `LEAD GONE: <slug> (<why>): <n> line(s) not delivered, oldest first: <line> | <line>`, else a desktop notice. The task keeps its declared state.
+- A retired lead that could not be resumed (`its lead is gone: resume failed: <first line of the output, or timed out, or started a copy>`): the row stays pending, `forward` returns `queued`, and nobody is told yet. Each tick, `drain_outbox` (at the start of `watch_tick`, so on every tick, the lander loop's included, and on ticks where the site manager is not consulted; a failure in it is printed and the tick goes on) tries again. After the third failed try of a slug (`forward`'s is the first) its pending rows end `dispatcher` and the dispatcher gets one line, `<HEAD>: <slug> (<why>): <n> line(s) not delivered, oldest first: <line> | <line>`, else a desktop notice. `<HEAD>` is `LEAD GONE` when `why` starts `its lead is gone:` and `NOT DELIVERED` when it starts `not delivered to its lead:` (the lead has a live session: send it the lines by name); a live lead's line queued by `factory lead` waits in the outbox the same way, since `forward` hands a live lead's own line to the dispatcher on its first failure. Each failed try of a tick is printed, so it lands in `watch.log`: `outbox: <slug>: try <n> failed: <why>`; a notice to the dispatcher that fails prints `outbox: not delivered to the dispatcher <name>: <why>` (or why none was found) and falls to the desktop notice. `factory log outbox` prints the rows. The site manager's row of a task has `messages` for the rows queued since its declared state that are pending or ended `dispatcher`: `queued` (age), `tries`, `why`, `end`, never the line. The task keeps its declared state.
 - A task declared `closed`: its lead is never reached or resumed, by `forward` or by the drain. Its pending rows end `dispatcher` at once and the dispatcher gets one line, `LEAD GONE: <slug> (its task is closed): <n> line(s) not delivered, oldest first: <line> | <line>`. `factory lead` refuses it: `<slug> is closed`.
 - A retired lead with nothing pending is not resumed.
 
@@ -304,7 +306,7 @@ A `Bash`, `Edit`, `Write` or `NotebookEdit` call from a directory inside `.claud
 
 The lead and its explorers are isolated. A build run (as first started: a headless session in the worktree's directory) and its coder, reviewer, explorer and lander were not, until they were started with `--worktree` (see Isolation to the worktree). The table's two columns are those two conditions. In the second, the one that held for them before, nothing but the role line keeps git inside the worktree. That line, which begins `- Keep git in this worktree`, is the same in `factory/agents/{coder,explorer,reviewer,lander}.md`, `factory/roles/lead.md` and `.claude/agents/{coder,explorer,reviewer}.md`, and `tests/test_repo.py` holds the eight together.
 
-What the short line leaves out: `$CLAUDE_JOB_DIR` counts as a `$` (print it once, type the path). `$(...)` counts. Another branch is read with `git show <branch>:<path>`. Pipes, `&&`, heredocs and redirects are accepted.
+What the short line says (the 2026-11-17 table below measured it). The check reads the whole text of the call, and `git` inside another word counts (`.gitignore`, `github.com`: P22, P25). Refused: a call that names git and holds a value filled in as it runs (`$?`, `$CLAUDE_JOB_DIR` or any `$NAME`, `$(...)`, a backtick, a loop variable: P3, P10, P22, P28, P38); a heredoc with an unquoted delimiter whose body names git (Q1, Q3); a heredoc that writes a file after `&&` (`mkdir -p d && cat > f <<'EOF'`), with git or without (P29, R2); R1, R3 and R4 show that `;` before a heredoc, and `&&` before a heredoc fed to a command, passed. Accepted: plain commands with literal values, also chained or piped (P4 to P7, P12, P24, P33); a heredoc that is the whole call, its delimiter quoted, whatever its body (P13 to P15, P18, P19, Q2). So a variable is printed once and its value typed, and anything longer goes in a script file run as one command (P16, P17). `HOME=`, `GIT_DIR`, `-C` and a `cd` to another checkout are refused by design (P39). Another branch is read with `git show <branch>:<path>`. A command's exit code is read from the Bash result, which carries `Exit code N` for a failure and no such line for 0 (P1, P2); `; echo $?` beside git is refused (P3). Another commit's files are copied with `factory scratch <commit>`.
 
 Measured 2026-11-16, each command as one Bash call, once. `S` is the job's scratch directory as a literal path, `MAIN` the main checkout, `WT` the task's worktree; `$CLAUDE_JOB_DIR` was typed where shown.
 
@@ -360,6 +362,62 @@ Measured 2026-11-16, each command as one Bash call, once. `S` is the job's scrat
 Refusal cells abbreviate the message, each of which begins `This session is isolated in the worktree <WT>, but this command`: *complex* is "names git in a form too complex to verify that it stays inside the worktree"; *word* is "has a word that can't be verified before it runs"; *via `-C`* is "redirects git to the shared checkout via -C" (the same with `--git-dir`); *sets `HOME`* is "sets HOME, injecting git configuration whose effect on where git writes can't be verified"; *sets `GIT_DIR`* is "sets GIT_DIR to the shared checkout"; *changes directory to MAIN* is "changes directory to the shared checkout before running git".
 
 A18 and B16 to B19 are what the check exists to stop; B10 to B15, A10, A11, A13 and A20 to A22 are what it stops because it cannot verify them. The build worker column ran every row with the check not active.
+
+Measured again 2026-11-17 on Claude Code 2.1.326, once, by a lead's explorer and the lead, in an isolated session, each command one Bash call; `S` is the job's scratch folder as a literal path. The refusal texts are in the installed binary: `strings -n 8 "$(readlink "$(which claude)" || which claude)" | grep -n "too complex to verify"` (the lines around them hold the other reasons: `sets HOME`, `redirects git to the shared checkout via`, `changes directory to the shared checkout`, `names git more than once in a single command`, `hands text naming git to a shell`). The binary is minified: the grammar above was measured, not read. *complex* and *names git* are the two texts that contain `too complex to verify`; `names git more than once` was not reproduced (P4 passed).
+
+| # | Command | Result |
+|---|---|---|
+| P1 | `git merge-base --is-ancestor HEAD~1 HEAD` | accepted; blank, no exit-code line |
+| P2 | `git merge-base --is-ancestor HEAD HEAD~1` | accepted; result carries `Exit code 1` |
+| P3 | `git merge-base --is-ancestor HEAD HEAD~1; echo $?` | refused, names git |
+| P4 | `git status --short; git log -1 --oneline` | accepted |
+| P5 | `git status --short && ls README.md` | accepted |
+| P6 | `ls README.md; git status --short` | accepted |
+| P7 | `git log -1 --oneline \| head -1` | accepted |
+| P8 | `ls README.md; echo $?` | accepted |
+| P9 | `ls "$CLAUDE_JOB_DIR/tmp"` | accepted |
+| P10 | `git archive -o "$CLAUDE_JOB_DIR/tmp/p/a.tar" HEAD README.md` | refused, names git |
+| P11 | `git archive -o S/a.tar HEAD README.md` | accepted |
+| P12 | `mkdir -p S/c && git archive HEAD README.md \| tar -x -C S/c` | accepted |
+| P13 | heredoc as the whole call, `cat > S/h1.txt <<'EOF'`, body `hello` | accepted |
+| P14 | the same, body `git status --short` | accepted |
+| P15 | the same, body `see github.com` | accepted |
+| P16 | `printf '%s\n' 'git status --short' > S/h4.sh` | accepted |
+| P17 | `bash S/h4.sh` | accepted |
+| P18 | heredoc `python3 - <<'EOF'`, body `print('hello')` | accepted |
+| P19 | the same, body `print('github')` | accepted |
+| P20 | `cd S && ls` | accepted; the next call ran in the worktree again |
+| P21 | `for f in README.md CLAUDE.md; do wc -l $f; done` | accepted |
+| P22 | `for f in README.md .gitignore; do wc -l $f; done` | refused, names git |
+| P23 | `wc -l .gitignore \| head -1` | accepted |
+| P24 | `wc -l .gitignore; ls README.md` | accepted |
+| P25 | `wc -l .gitignore && ls "$CLAUDE_JOB_DIR"` | refused, names git |
+| P26 | `gh pr list --limit 1; ls README.md` | accepted |
+| P27 | `python3 -c "import pathlib; pathlib.Path('S/h5.sh').write_text('git status --short\n')"` | accepted |
+| P28 | `git log -1 --oneline $(echo HEAD)` | refused, names git |
+| P29 | `mkdir -p S/d && cat > S/d/x.txt <<'EOF'`, body `hello` | refused, complex |
+| P30 | heredoc `cat > S/h6.txt <<'EOF'`, body `hello`, then `ls README.md` on the next line | accepted |
+| P31 | the same, body `see github.com` | accepted |
+| P32 | `git diff --stat HEAD~1 HEAD > S/o.txt` | accepted |
+| P33 | two lines: `ls README.md`, `git status --short` | accepted |
+| P34 | `git status --short; echo done` | accepted |
+| P35 | `T=S; ls $T` | accepted |
+| P36 | `T=S; git archive -o $T/b.tar HEAD README.md` | accepted |
+| P37 | `cd S && bash h4.sh` | accepted (ran; git failed there, `Exit code 128`) |
+| P38 | ``echo `git rev-parse --short HEAD` `` | refused, names git |
+| P39 | `HOME=S git status --short` | refused, sets `HOME` |
+| P40 | `rm -rf S/c` | accepted |
+| Q1 | heredoc as the whole call, `cat > S/q1.sh <<EOF` (unquoted), body `git status --short` | refused, names git |
+| Q2 | `cat > S/q2.sh <<'EOF'`, body a `for` loop running `git log` on `"$f"`, then `echo $?` | accepted |
+| Q3 | `cat > S/q3.sh <<EOF` (unquoted), body `git log -1 --oneline -- "\$1"` | refused, names git |
+| Q4 | `cd S && git init -q r` | accepted |
+| R1 | `ls README.md; cat > S/r1.txt <<'EOF'`, body `hello` | accepted |
+| R2 | `ls README.md && cat > S/r2.txt <<'EOF'`, body `hello` | refused, complex |
+| R3 | `mkdir -p S/d; cat > S/d/x.txt <<'EOF'`, body `hello` | accepted |
+| R4 | `cd S && python3 - <<'EOF'`, body `print('hello')` | accepted |
+| R5 | `git status --short; git rev-parse --short HEAD; git log -1 --oneline` | accepted |
+
+32 of P1 to P40 accepted, 8 refused; Q1 to Q4: 2 and 2; R1 to R5: 4 and 1. P36 (a variable assigned a literal in the same call) passes and is left out of the shared line on purpose.
 
 **The number.** The review counts distinct `slug` of outbox feedback entries whose text matches, case-insensitive, `worktree[- ](guard|isolation|rule|sandbox)|isolation guard|Bash guard|letters .?.?git|too complex|complex command|one plain command`, over distinct `slug` of all feedback entries in the window: 16 of 37 (43%) in the 24 hours to 2026-11-15T20:24Z. The target is at most 2 of the 20 tasks whose `TaskStarted` follows this change's merge, counted the same way when the 20th has handed over. Of the matching entries in tasks that had a build run, those filed after the task's first run are 4 (lead 2, coder 1, reviewer 1, the last two naming the rule sentence, not a refusal), so the entries now come from leads and their explorers.
 
@@ -831,7 +889,7 @@ The draft flag of a task's pull request follows its recorded state: ready for re
 ## Comments on a pull request
 Each `watch` tick notices new reviews, plain comments and (for a pull request with a new review) comments on lines, on the open pull requests of tasks, and forwards what **the human** wrote to the task's lead, verbatim.
 - **The human** is a `User` account (an App with write access is not one) whose association is `OWNER`, `MEMBER` or `COLLABORATOR` and whose repository permission is `admin` or `write`, from GitHub's records, never from comment text. A bot, and anyone else, is logged and not forwarded; third-party tools and other authors are not handled yet. An `APPROVED` review, an `lgtm` comment (the merge path owns them) and a `COMMENTED` review with no body (its line comments are the content) are logged, not forwarded.
-- **Forwarding**: one batch file per task per tick, `~/.claude/factory/comments/<slug>-<UTC time>.md`, the comments quoted in fenced blocks, marked as data. A headless run on `models.courier` (Haiku by default; `claude -p`, about $0.01 and 3 s; it sees only the recipient's name and one fixed line, never comment text) sends `PR COMMENTS: <slug>: <k> new from the human on #<n>: read <path>` to the lead's session. A lead the harness retired is brought back with the line (see Messages). When the lead cannot be reached, the dispatcher gets it once, as `PR COMMENTS: <slug> (not delivered to its lead: <why>): ...` or `(its lead is gone: <why>)`; failing that, a desktop notice names the file. The batch file is the durable copy.
+- **Forwarding**: one batch file per task per tick, `~/.claude/factory/comments/<slug>-<UTC time>.md`, the comments quoted in fenced blocks, marked as data. A headless run on `models.courier` (Haiku by default; `claude -p`, about $0.01 and 3 s; it sees the recipient's name and one line, carried as marked data, never comment text) sends `PR COMMENTS: <slug>: <k> new from the human on #<n>: read <path>` to the lead's session. A lead the harness retired is brought back with the line (see Messages). When the lead cannot be reached, the dispatcher gets it once, as `PR COMMENTS: <slug> (not delivered to its lead: <why>): ...` or `(its lead is gone: <why>)`; failing that, a desktop notice names the file. The batch file is the durable copy.
 - **Visual work** uses this and nothing else. The first build run of a task with something to look at ends at a rough, reviewed pass: its draft pull request is open and the tech lead posts the screenshot in a comment, again after each pass that changes what is seen. The human comments there when they wish (a draft is watched like any other pull request); no frame goes through the dispatcher and nobody waits. The images live in commits on a side branch `shots/<slug>`, never merged, and are linked by commit SHA from `raw.githubusercontent.com`, because GitHub has no API for comment attachments and an image on the task's branch would enter the default branch's history. The branch is not deleted: the links die with it. Screenshots are public with the repository: no other repository's name, no home path, nothing about the owner's server.
 - **How soon**: one tick, the watch interval. **Cost**: no GitHub call without a task working, blocked or handed over; one `gh pr list` per tick; one more call per pull request with a new review; one courier run (`models.courier`) per batch; nothing on a quiet day.
 - **Where**: `comments-YYYY-MM.jsonl` logs every new item once (`ts`, `repo`, `slug`, `pr`, `id`, `url`, `kind`, `author`, `association`, `author_kind`, `decision`, `to`, `batch`; no text). What was seen is in `comments-<repo>-<hash>.json` in the store. The first run after install records what is there and forwards nothing.
@@ -1029,6 +1087,7 @@ Tests load the entry point once (`test_factory.py`) and share its `factory_core`
 
 ## Known limits
 - The recorded pull request number (see More than one machine): a clash already present at the first record is recorded; before a task's first record the branch name decides, as before; a replaced pull request is not the task's until `factory state handed-over <new url>`, and until then `factory land` stops and says so; the url must equal GitHub's `url` exactly.
+- The courier is a model: a line is delivered when it replies `sent`, and nothing checks the tool call. The line is carried between two marker lines as data for the other session, and can be free text from `factory lead`.
 - A live lead whose courier fails after sending some lines may get those lines again on retry. `forward` from a detached run and the tick's drain are not locked against each other, so a line may rarely be delivered twice.
 - A lead the harness retired (see Messages): a task whose lead cannot be brought back is closed by the site manager or the human (see Closed tasks), not by the outbox; nothing keeps sessions from retiring, bounds build runs, records session ids in the store or covers the dispatcher's own retirement; a lead with no process and nothing pending is left alone (if its task is declared `working`, that is `ended-undeclared`'s); lines that reached the dispatcher before the outbox are not replayed; a line `factory lead` queues waits for the next tick; the drain runs at the start of every tick, the lander loop's too; a tick that hangs stops it.
 - `factory.lastTest` (the last test command handed over, written by `factory state handed-over`) stays in the repository's git config after `factory uninstall`; remove it with `git config --unset factory.lastTest`. The `branch.<b>.factoryTest` and `factoryGolden` keys go with their branches.

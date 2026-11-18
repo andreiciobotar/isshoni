@@ -19,7 +19,7 @@ from test_merge import RECORDED, SESSION, World, pr, review
 GREEN = [{"name": "test", "bucket": "pass"}]
 PENDING = [{"name": "test", "bucket": "pending"}]
 RED = [{"name": "test", "bucket": "fail", "link": "https://x/run/2"}]
-COURIER_LINE = re.compile(r"nothing else: (.*)\. Then reply", re.S)
+COURIER_LINE = re.compile(r"\n---8<---\n(.*)\n---8<---$", re.S)
 REAL_RERUN = factory.rerun_line  # Loop replaces it with a double
 RUN_LINK = "https://github.com/o/r/actions/runs/101/job/1"
 RED_RUN = [{"name": "test", "bucket": "fail", "link": RUN_LINK}]
