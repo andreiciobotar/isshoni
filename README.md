@@ -119,4 +119,3 @@ Every view, the Agents one too, and its keys: [docs/isshoni.md](docs/isshoni.md#
 
 Early and changing; built with itself. Source-available, not open source ([MIT with the Commons Clause](LICENSE)): use it, at work too, change it, [contribute](CONTRIBUTING.md). Don't sell it.
 <!-- scratch: worktree follows rebase proof 1 -->
-<!-- scratch: worktree follows rebase proof 2 -->
