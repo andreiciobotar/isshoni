@@ -218,6 +218,15 @@ func TestHelpSaysWherePricesComeFrom(t *testing.T) {
 	}
 }
 
+func TestHelpNamesTheUserPriceFile(t *testing.T) {
+	m := fakeModel(true, 140, 40)
+	m.help = true
+	m.prices.UserPath = "/u/isshoni/prices.toml"
+	if out := plain(m); !strings.Contains(out, "Prices: /p/prices.toml + /u/isshoni/prices.toml (USD, as of 2026-11-14)") {
+		t.Fatalf("help lacks the user price file:\n%s", out)
+	}
+}
+
 func TestFmtDuration(t *testing.T) {
 	cases := map[time.Duration]string{0: "0s", 42 * time.Second: "42s", 90 * time.Second: "1m30s", 5 * time.Minute: "5m00s", 62 * time.Minute: "1h02m", -time.Second: "0s"}
 	for in, want := range cases {

@@ -224,6 +224,15 @@ class SetPriceTests(unittest.TestCase):
                     self.assertEqual(f.read(), text)
             self.assertEqual(os.listdir(os.path.dirname(path)), ["prices.toml"])
 
+    def test_a_key_toml_cannot_hold_is_refused_and_the_file_kept(self):
+        text = '[models."a\\u007fb"]\n' + RATES5
+        with user_prices(text) as path:
+            with self.assertRaises(SessionError):
+                prices.set_price("m", {"like": OPUS})
+            with open(path) as f:
+                self.assertEqual(f.read(), text)
+            self.assertEqual(os.listdir(os.path.dirname(path)), ["prices.toml"])
+
     def test_a_broken_user_file_is_not_overwritten(self):
         with user_prices("[models.a\n") as path:
             with self.assertRaises(SessionError):

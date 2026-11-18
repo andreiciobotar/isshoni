@@ -174,8 +174,15 @@ def set_price(model, table):
     os.makedirs(os.path.dirname(user), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(user), suffix=".tmp")
     try:
+        text = _dump(models)
+        try:
+            written = tomllib.loads(text)["models"]
+        except tomllib.TOMLDecodeError:  # a key json.dumps leaves raw (DEL) is invalid TOML
+            written = None
+        if written != models:
+            raise SessionError("the user file cannot hold these model ids %s as TOML" % sorted(models))
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(_dump(models))
+            f.write(text)
         os.replace(tmp, user)
     except BaseException:
         os.unlink(tmp)
