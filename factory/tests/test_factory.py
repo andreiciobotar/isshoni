@@ -206,7 +206,8 @@ def invoke(argv, answers, settings=None, env=None, tasks=(), cwd=None, events=No
             with open(store / f"events-{month}.jsonl", "a") as f:
                 f.write(json.dumps(e) + "\n")
         with mock.patch.object(factory, "run", fake), redirect_stdout(out), redirect_stderr(err), \
-                mock.patch.object(os, "getcwd", return_value=cwd or ROOT):
+                mock.patch.object(os, "getcwd", return_value=cwd or ROOT), \
+                mock.patch.object(factory, "copy_commit", return_value=None):  # its own `git` call would be the last in `fake.calls`
             code = factory.main(argv)
         fake.tasks = [r for r in written() if r not in seeded]
     return code, out.getvalue(), err.getvalue(), fake
@@ -1468,7 +1469,8 @@ class NewTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--model") + 1], "opus")
         self.assertEqual(started, [("TaskStarted", "demo-task", {
             "base": "main", "lead_model": "opus", "mode": "team",
-            "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet", "ops-explorer": "haiku", "reviewer": "opus"}})])
+            "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet", "ops-explorer": "haiku", "reviewer": "opus"},
+            "commit": None})])
         started.clear()
         with mock.patch.object(factory, "task_event", lambda kind, repo, slug, **kw: started.append((kind, slug, kw))):
             _, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), '[models]\nlead = "haiku"\n')
@@ -2887,6 +2889,10 @@ print(os.environ["FAKE_LSOF"])
         self.assertEqual(argv[1:6], ["--bg", "--worktree", "demo-task", "-n", "demo-task"])
         self.assertIn("build it", argv[-1])
         self.assertIn("dispatcher-repo", argv[-1])
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=BIN.parent.parent, capture_output=True, text=True).stdout.strip()
+        (started,) = [json.loads(line) for f in (self.home / ".claude" / "factory").glob("events-*.jsonl")
+                      for line in f.read_text().splitlines() if '"TaskStarted"' in line]
+        self.assertEqual(started["commit"], head)
 
         # the fake does not make worktrees; create the one claude would have made
         self.git("worktree", "add", "-q", "-b", "worktree-demo-task", ".claude/worktrees/demo-task")
