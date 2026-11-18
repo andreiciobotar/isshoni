@@ -143,12 +143,11 @@ class DissolveTests(World):
         code, _, _ = self.merge("1", prs=[pr(1)], extra=extra)
         self.assertEqual((code, self.unstacks(), self.gh_mutations()), (1, [], []))
 
-    def test_a_merged_base_is_unstacked_before_the_retarget(self):
+    def test_a_stack_member_on_a_merged_base_is_left_alone(self):
         extra = self.stacked({("gh", "pr", "list", "--head", "worktree-t1"): MERGED})
-        code, _, _ = self.merge("2", prs=[pr(2, base="worktree-t1")], extra=extra)
-        self.assertEqual(code, 1)
-        self.assertEqual(len(self.unstacks()), 1)
-        self.assertLess(self.index("gh", "api", "-H", V, "-i"), self.index("gh", "pr", "edit"))
+        code, out, _ = self.merge("2", prs=[pr(2, base="worktree-t1")], extra=extra)
+        self.assertEqual((code, self.unstacks(), self.gh_mutations()), (1, [], []))
+        self.assertNotIn("base changed", out)
 
     def test_the_landing_unstacks_before_it_retargets(self):
         landing = factory.Landing.__new__(factory.Landing)

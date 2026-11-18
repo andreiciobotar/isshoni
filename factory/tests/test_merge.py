@@ -149,7 +149,7 @@ class MergeCommandTests(World):
                                   extra={("gh", "pr", "list", "--head", "worktree-t1"): merged})
         self.assertEqual(code, 1)
         self.assertIn("#2 stopped: its base was changed to main in this pass: it merges on the next one\n", out)
-        self.assertEqual([c[:2] for c in self.pr_calls()], [["pr", "checks"], ["pr", "edit"]])
+        self.assertEqual([c[:2] for c in self.pr_calls()], [["pr", "edit"], ["pr", "checks"]])
         self.setUp()
         code, out, _ = self.merge("2", prs=[pr(2)])
         self.assertEqual(code, 0)
@@ -265,7 +265,7 @@ class MergeCommandTests(World):
                                          ("git", "merge-base", "--is-ancestor"): (1, "", "")})
         self.assertEqual(code, 1)
         self.assertIn(self.behind(5), out)
-        self.assertEqual(self.gh_mutations(), [])
+        self.assertEqual(self.gh_mutations(), [["pr", "edit", "5", "--base", "main"]])
 
     def test_every_pull_request_gets_a_fresh_fetch(self):
         self.merge("1", "2", prs=[pr(1), pr(2)])
