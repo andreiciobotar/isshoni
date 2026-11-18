@@ -222,13 +222,17 @@ BRANCH_RULE = ("gh", "api", "repos/{owner}/{repo}/branches/main")
 RULESET = ("gh", "api", "repos/{owner}/{repo}/rules/branches/main")
 
 
+def protection(contexts=(), checks=()):
+    return json.dumps({"protection": {"enabled": True, "required_status_checks": {"contexts": list(contexts), "checks": list(checks)}}})
+
+
 def repo_answers(entries, sessions=(), *extras):
     answers = {
         ("git", "worktree", "list"): (0, porcelain((ROOT, "main", False), *entries), ""),
         ("git", "symbolic-ref"): (0, "refs/remotes/origin/main\n", ""),
         ("claude", "agents"): (0, json.dumps(list(sessions)), ""),
         ("claude", "plugin", "list"): (0, json.dumps(PLUGINS), ""),
-        BRANCH_RULE: (0, "1\n", ""),
+        BRANCH_RULE: (0, protection(contexts=["ci"]), ""),
     }
     for extra in extras:
         answers.update(extra)
@@ -1554,26 +1558,42 @@ class NewTests(unittest.TestCase):
         self.assertFalse(fake.ran(*RULESET))
         self.assertTrue(fake.ran("claude", "--bg"))
 
+    OTHER_RULE = json.dumps([{"type": "pull_request", "parameters": {}}])
+    OFF = json.dumps({"protection": {"enabled": False, "required_status_checks": {"checks": [], "contexts": [], "enforcement_level": "off"}}})
+
     def test_a_required_status_checks_ruleset_rule_starts(self):
-        code, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK, {BRANCH_RULE: (0, "0\n", ""), RULESET: (0, "1\n", "")}, self.NO_PR))
+        rules = json.dumps([{"type": "pull_request"}, {"type": "required_status_checks", "parameters": {}}])
+        code, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK, {BRANCH_RULE: (0, self.OFF, ""), RULESET: (0, rules, "")}, self.NO_PR))
         self.assertEqual((code, err), (0, ""))
         self.assertTrue(fake.ran(*RULESET) and fake.ran("claude", "--bg"))
 
+    def test_a_branch_with_only_checks_and_no_contexts_starts(self):
+        branch = json.dumps({"protection": {"required_status_checks": {"checks": [{"context": "ci"}]}}})
+        code, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK, {BRANCH_RULE: (0, branch, "")}, self.NO_PR))
+        self.assertEqual((code, err), (0, ""))
+        self.assertFalse(fake.ran(*RULESET))
+        self.assertTrue(fake.ran("claude", "--bg"))
+
     def test_no_required_check_anywhere_refuses_before_anything_is_made(self):
-        none = {BRANCH_RULE: (0, "0\n", ""), RULESET: (0, "0\n", "")}  # also a rules list with only other types
-        for argv in (self.ARGS, self.ARGS + ["--base", "alpha"]):
-            with self.subTest(argv=argv):
-                code, _, err, fake = invoke(argv, self.answers([task_entry("alpha")], (), self.OK, none))
-                self.assertEqual(code, 2)
-                self.assertEqual(err.splitlines()[-1], "factory: repo has no CI: no merge rule on main requires a status check "
-                                                       "(branch protection or a ruleset); no task starts here")
-                self.assertFalse(fake.ran("git", "worktree", "add") or fake.ran("claude", "--bg"))
-                self.assertEqual(fake.tasks, [])
+        for name, branch in (("off", self.OFF), ("no required checks", json.dumps({"protection": {"enabled": True}}))):
+            for argv in (self.ARGS, self.ARGS + ["--base", "alpha"]):
+                with self.subTest(name, argv=argv):
+                    none = {BRANCH_RULE: (0, branch, ""), RULESET: (0, self.OTHER_RULE, "")}
+                    code, _, err, fake = invoke(argv, self.answers([task_entry("alpha")], (), self.OK, none))
+                    self.assertEqual(code, 2)
+                    self.assertEqual(err.splitlines()[-1], "factory: repo has no CI: no merge rule on main requires a status check "
+                                                           "(branch protection or a ruleset); no task starts here")
+                    self.assertFalse(fake.ran("git", "worktree", "add") or fake.ran("claude", "--bg"))
+                    self.assertEqual(fake.tasks, [])
 
     def test_unreadable_merge_rules_warn_and_start(self):
         for name, answers in (("branch", {BRANCH_RULE: (1, "", "HTTP 502\n")}),
                               ("shape", {BRANCH_RULE: (0, "[]", "")}),
-                              ("rules", {BRANCH_RULE: (0, "0\n", ""), RULESET: (124, "", "")})):
+                              ("not json", {BRANCH_RULE: (0, "oops", "")}),
+                              ("no protection", {BRANCH_RULE: (0, "{}", "")}),
+                              ("null protection", {BRANCH_RULE: (0, '{"protection": null}', "")}),
+                              ("rules", {BRANCH_RULE: (0, self.OFF, ""), RULESET: (124, "", "")}),
+                              ("rules shape", {BRANCH_RULE: (0, self.OFF, ""), RULESET: (0, "{}", "")})):
             with self.subTest(name):
                 code, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK, answers))
                 self.assertEqual(code, 0, err)
@@ -2843,7 +2863,12 @@ else:
 """
     FAKE_GH = """#!/usr/bin/env python3
 import os, sys
-print(os.environ.get("FAKE_CHECKS", "1") if sys.argv[1:2] == ["api"] else os.environ["FAKE_PR"])
+if sys.argv[1:2] != ["api"]:
+    print(os.environ["FAKE_PR"])
+elif sys.argv[2].endswith("/rules/branches/main"):
+    print("[]")
+else:
+    print(os.environ.get("FAKE_CHECKS", '{"protection": {"required_status_checks": {"contexts": ["ci"]}}}'))
 """
     FAKE_LSOF = """#!/usr/bin/env python3
 import os
@@ -2900,7 +2925,7 @@ print(os.environ["FAKE_LSOF"])
             proc.wait()
 
     def test_new_in_a_repository_without_ci_creates_nothing(self):
-        p = self.factory("new", "demo-task", "--brief", "build it", env={"FAKE_CHECKS": "0"})
+        p = self.factory("new", "demo-task", "--brief", "build it", env={"FAKE_CHECKS": '{"protection": {"required_status_checks": {"contexts": []}}}'})
         self.assertEqual(p.returncode, 2)
         self.assertIn("has no CI: no merge rule on main requires a status check", p.stderr)
         self.assertFalse((self.repo / ".claude/worktrees/demo-task").exists())

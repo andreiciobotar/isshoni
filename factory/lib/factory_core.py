@@ -939,11 +939,32 @@ def pull_request(repo, branch, timeout=PR_TIMEOUT):
     return pr_fields(prs[0]) if prs else NO_PR
 
 
-def required_checks(repo, endpoint, jq):
-    """(how many required status checks `gh api` finds at repos/{owner}/{repo}/`endpoint`, None) or (None, the one-line reason it could not)."""
-    rc, out, err = run(["gh", "api", f"repos/{{owner}}/{{repo}}/{endpoint}", "--jq", jq], cwd=repo.root, timeout=GH_TIMEOUT)
-    if rc == 0 and out.strip().isdigit():
-        return int(out), None
+def protection_checks(doc):
+    """How many required status checks a `branches/{branch}` answer lists; None when it has no `protection` object."""
+    protection = doc.get("protection") if isinstance(doc, dict) else None
+    if not isinstance(protection, dict):
+        return None
+    checks = protection.get("required_status_checks")
+    checks = checks if isinstance(checks, dict) else {}
+    return len(checks.get("contexts") or []) + len(checks.get("checks") or [])
+
+
+def ruleset_checks(doc):
+    """How many `required_status_checks` rules a `rules/branches/{branch}` answer lists; None when it is not a list."""
+    if not isinstance(doc, list):
+        return None
+    return sum(1 for rule in doc if isinstance(rule, dict) and rule.get("type") == "required_status_checks")
+
+
+def required_checks(repo, endpoint, count):
+    """(what `count` finds in the `gh api` answer at repos/{owner}/{repo}/`endpoint`, None) or (None, the one-line reason it could not)."""
+    rc, out, err = run(["gh", "api", f"repos/{{owner}}/{{repo}}/{endpoint}"], cwd=repo.root, timeout=GH_TIMEOUT)
+    try:
+        found = count(json.loads(out)) if rc == 0 else None
+    except ValueError:
+        found = None
+    if found is not None:
+        return found, None
     return None, f"timed out after {GH_TIMEOUT:.0f} s" if rc == 124 else (err.strip().splitlines() or ["gh answered with an unexpected shape"])[0]
 
 
@@ -1547,9 +1568,8 @@ def cmd_new(args):
         raise Fail(f"branch {branch} already exists on {repo.remote} (another machine's task?); pick another slug")
     if rc != 2:
         sys.stderr.write(f"factory: warning: cannot check {repo.remote} for branch {branch}: {err.strip()}; continuing\n")
-    for endpoint, jq in ((f"branches/{repo.default}", "[.protection.required_status_checks | .contexts, .checks | values] | add | length"),
-                         (f"rules/branches/{repo.default}", 'map(select(.type == "required_status_checks")) | length')):
-        found, error = required_checks(repo, endpoint, jq)
+    for endpoint, count in ((f"branches/{repo.default}", protection_checks), (f"rules/branches/{repo.default}", ruleset_checks)):
+        found, error = required_checks(repo, endpoint, count)
         if error:
             sys.stderr.write(f"factory: warning: cannot check the merge rules of {repo.default} for CI: {error}; continuing\n")
         if error or found:
