@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from test_factory import factory
+from test_factory import DISPATCHER, NewTests, factory, invoke, repo_answers
 from test_mcp_roles import InScratchStore
 
 ALPHA, BETA = "alpha-rule", "beta-rule"
@@ -237,6 +237,14 @@ class SkillsStartTests(InScratchRepo):
         with redirect_stderr(io.StringIO()):
             self.assertEqual(factory.role_skills(self.root, "coder"), [])
 
+    def test_a_worktree_with_its_own_skills_does_not_fall_back_to_the_main_checkouts(self):
+        skill(Path(self.root) / ".claude" / "worktrees" / "s" / ".claude" / "skills", "other")
+        self.put({"coder": [ALPHA]})
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(factory.role_skills(self.root, "coder", self.repo.worktree_path("s")), [])
+        self.assertIn(f"names {ALPHA} for coder, which is not in .claude/skills of {self.repo.worktree_path('s')}", err.getvalue())
+
     def test_a_skill_deleted_afterwards_is_left_out_and_warned_about_once_per_role(self):
         self.put({"lead": [ALPHA, BETA], "coder": [BETA], "tech-lead": [BETA], "reviewer": [BETA]})
         (self.user / BETA / "SKILL.md").unlink()
@@ -255,14 +263,27 @@ class SkillsStartTests(InScratchRepo):
         self.assertEqual(got["agents"]["factory:coder"]["skills"], factory.agent_definitions(SETTINGS, "/elsewhere")["factory:coder"]["skills"])
 
     def test_a_new_task_resolves_all_four_roles_once(self):
-        self.put({role: [BETA] for role in factory.SKILL_ROLES})
         (self.user / BETA / "SKILL.md").unlink()
+        record = {"roles": {role: [BETA] for role in factory.SKILL_ROLES}}
+        answers = repo_answers([], [dict(DISPATCHER, name="d1")], NewTests.OK)
+        with mock.patch.object(factory, "skills_record", return_value=record):
+            code, _, err, _ = invoke(["new", "demo-task", "--brief", "do it", "--dispatcher", "d1"], answers)
+        self.assertEqual(code, 0, err)
+        roles = [line.split(" for ")[1].split(",")[0] for line in err.splitlines() if "skills record names" in line]
+        self.assertEqual(sorted(roles), sorted(factory.SKILL_ROLES))
+
+    def test_the_ops_watch_reads_no_skills_record(self):
+        self.file.write_text("{")
+        notes = Path(self.root) / "notes.md"
+        notes.write_text("")
+        watch = {"name": "w", "goal": "g", "until": "u", "notes": str(notes), "checks": None}
         err = io.StringIO()
         with redirect_stderr(err):
-            factory.role_skills(self.root, "tech-lead")  # as `factory new` does before the launch
-            factory.build_launch_argv("s", "d", "brief", SETTINGS, "main", "origin", 0, 3600, self.root)
-        roles = [line.split(" for ")[1].split(",")[0] for line in err.getvalue().splitlines()]
-        self.assertEqual(sorted(roles), sorted(factory.SKILL_ROLES))
+            argv = factory.ops_argv(SimpleNamespace(root=self.root), watch, False, 1)
+            self.assertEqual(list(json.loads(argv[argv.index("--agents") + 1])), [factory.OPS_AGENT])
+            with self.assertRaises(factory.Fail):
+                factory.agent_definitions(SETTINGS, self.root)
+        self.assertEqual(err.getvalue(), "")
 
 
 class DispatcherCheckTests(unittest.TestCase):
@@ -276,6 +297,11 @@ class DispatcherCheckTests(unittest.TestCase):
     def test_the_registered_dispatcher_passes_and_returns_itself(self):
         me = {"sessionId": "me", "name": "d"}
         self.assertIs(self.check({"CLAUDE_CODE_SESSION_ID": "me"}, [me], (me, None)), me)
+
+    def test_the_skills_commands_name_themselves(self):
+        with mock.patch.dict(os.environ, clear=True), self.assertRaises(factory.Fail) as cm:
+            factory.require_dispatcher(SimpleNamespace(root="/r"), [], command="factory skills")
+        self.assertEqual(str(cm.exception), "CLAUDE_CODE_SESSION_ID is not set; run factory skills from the dispatcher session")
 
     def test_each_way_to_fail_keeps_its_message(self):
         me, other = {"sessionId": "me", "name": "d"}, {"sessionId": "o", "name": "x"}

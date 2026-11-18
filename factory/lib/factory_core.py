@@ -686,14 +686,16 @@ def skills_record(root):
 
 
 def role_skills(root, role, where=None):
-    """The skills recorded for `role` in the repository at `root` that are found (in the worktree `where` when given, else in `root`, then the user's),
-    in the record's order. A name no longer found is warned about and left out."""
+    """The skills recorded for `role` in the repository at `root` that are found, in the record's order. Claude Code reads the main checkout's
+    `.claude/skills` only when the worktree `where` has none at its root: so look in `where` when it has, else in `root`, then in the user's.
+    A name no longer found is warned about and left out."""
+    here = where if where and (Path(where) / ".claude" / "skills").is_dir() else root
     found = []
     for name in ((skills_record(root) or {}).get("roles", {}).get(role) or []):
-        if skill_file(name, where or root, root):
+        if skill_file(name, here):
             found.append(name)
         else:
-            warn(f"skills record names {name} for {role}, which is not in .claude/skills of {where or root} or the user's skills: starting without it (factory skills access)")
+            warn(f"skills record names {name} for {role}, which is not in .claude/skills of {here} or the user's skills: starting without it (factory skills access)")
     return found
 
 
@@ -740,7 +742,7 @@ def skills_gate(repo):
     if sessions is None:
         raise Fail("cannot list sessions with `claude agents --json --all`")
     try:
-        require_dispatcher(repo, sessions)
+        require_dispatcher(repo, sessions, command="factory skills")
     except Fail as e:
         raise Fail(f"only the dispatcher records skills, on the human's word ({e})")
 
@@ -831,12 +833,15 @@ def model_key(path):
     return path.stem.replace("-", "_")
 
 
-def agent_definitions(settings, root, where=None):
+def agent_definitions(settings, root, where=None, only=None):
     """The `--agents` JSON of a session: every file in factory/agents as `factory:<name>`, its model the configured one.
     The ops explorer also gets the MCP servers the repository at `root` granted, defined inline: no other agent holds an MCP tool.
-    The coder and the reviewer get the skills recorded for them, preloaded (looked up in the worktree `where` when given)."""
+    The coder and the reviewer get the skills recorded for them, preloaded (looked up in the worktree `where` when given).
+    With `only` (an agent key, `factory:<name>`), just that file is read, and no skills record."""
     models, out = settings["models"], {}
     for path in sorted((PLUGIN_ROOT / "agents").glob("*.md")):
+        if only and f"factory:{path.stem}" != only:
+            continue
         head, _, body = path.read_text().removeprefix("---\n").partition("\n---\n")
         meta, key = {}, None
         for line in head.splitlines():
@@ -1833,11 +1838,11 @@ def args_new(parser):
                              "or the human says so")
 
 
-def require_dispatcher(repo, sessions, fallback=None):
+def require_dispatcher(repo, sessions, fallback=None, command="factory new"):
     """The calling session (`CLAUDE_CODE_SESSION_ID`) among `sessions`, when it is the dispatcher of `repo`; else Fail."""
     caller_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not caller_id:
-        raise Fail("CLAUDE_CODE_SESSION_ID is not set; run factory new from the dispatcher session")
+        raise Fail(f"CLAUDE_CODE_SESSION_ID is not set; run {command} from the dispatcher session")
     caller = next((s for s in sessions if caller_id in (s.get("sessionId"), s.get("id"))), None)
     if caller is None:
         raise Fail(f"the calling session {caller_id} is not listed by `claude agents --json --all`")
@@ -4506,7 +4511,7 @@ def ops_argv(repo, w, final, cap):
     prompt = (f"Watch: {w['name']}\nGoal: {w['goal']}\nNow: {now()}\nUntil: {w['until']}\nFinal look: {'yes' if final else 'no'}\n"
               f"Checks: {checks}\nThe last {OPS_NOTES_KEPT} entries of the notes, oldest first:\n" + "\n".join(entries))
     return ["claude", "-p", "--model", settings["models"]["ops_watch"],
-            "--agents", json.dumps({OPS_AGENT: agent_definitions(settings, repo.root)[OPS_AGENT]}),
+            "--agents", json.dumps(agent_definitions(settings, repo.root, only=OPS_AGENT)),
             "--permission-mode", "dontAsk", "--plugin-dir", str(PLUGIN_ROOT),
             *session_flags(settings["lean_start"]), *([] if settings["lean_start"] else ["--strict-mcp-config"]), "--tools=Agent", "--allowedTools", f"Agent({OPS_AGENT})",
             *SETTINGS_ISOLATION, "--max-turns", str(OPS_TICK_TURNS), "--max-budget-usd", str(round(cap, 4)),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live proof of skills per role. Run by hand, never by unittest; it costs real money (two short haiku runs with two subagents each).
+"""Live proof of skills per role. Run by hand, never by unittest; it costs real money (four short haiku runs with two subagents each).
 
     python3 factory/tests/live_skills_roles.py [--trusted-dir DIR] [--keep]
 
@@ -56,6 +56,7 @@ REPO = TMP / "repo"
 PROJECTS = Path("~/.claude/projects").expanduser()
 MARKERS = {"proof-review-rule": "ZEPHYRQUILL", "proof-build-rule": "MARIGOLDVEX"}
 failures, transcripts, spend = [], set(), [0.0]
+RUNS = 3
 BRIEF = "State every marker word in your instructions, change nothing."
 PROMPT = ("Send no message to anyone, run no `factory` command, write nothing yourself. After your own first steps by your instructions, use the Agent tool once with "
           f"subagent_type factory:reviewer and once with subagent_type factory:coder, the prompt of each being exactly: {BRIEF} "
@@ -206,11 +207,16 @@ try:
     cli("skills", "grant", "--role", "reviewer", "proof-review-rule", "--words", "live proof")
     cli("skills", "grant", "--role", "tech-lead", "proof-build-rule", "--words", "live proof")
     print(cli("skills", "access").rstrip())
-    for attempt in range(1, 4):  # the sentence tells the session to load the skill; a haiku run does not always
-        events1, got1 = run("with the record")
-        if any(b.get("name") == "Skill" for e in events1 if e.get("type") == "assistant" and not e.get("parent_tool_use_id") for b in blocks(e)):
-            break
-    print(f"  the session called Skill in attempt {attempt} (up to 3 are made)")
+    called_skill = lambda events: any(b.get("name") == "Skill" for e in events if e.get("type") == "assistant" and not e.get("parent_tool_use_id") for b in blocks(e))
+    attempts, chosen = [], None
+    for attempt in range(1, RUNS + 1):  # all runs are made, so the rate is not biased by stopping at the first call
+        events, got = run(f"with the record, run {attempt}")
+        attempts.append(called_skill(events))
+        print(f"  run {attempt}: the session {'called' if attempts[-1] else 'did not call'} Skill")
+        if chosen is None or (attempts[-1] and not any(attempts[:-1])):
+            chosen = events, got
+    print(f"  called Skill in {sum(attempts)} of {len(attempts)} runs (the first run that did is the one measured below, else the first)")
+    events1, got1 = chosen
     rev, cod = got1.get("factory:reviewer", (None, "")), got1.get("factory:coder", (None, ""))
     check(MARKERS["proof-review-rule"] in rev[1], "the reviewer's answer holds the review marker")
     check(bool(cod[0]) and MARKERS["proof-review-rule"] not in cod[1], "the coder answered and its answer lacks the review marker")
@@ -235,7 +241,7 @@ try:
     print(f"- reviewer first request (input + cache creation + cache read): with {r1}, without {r0}; difference {None if None in (r1, r0) else r1 - r0} tokens per reviewer start")
     print(f"- Skill call of the session: about {skill_tokens} tokens returned (estimated from the next request; {parallel} tool call(s) in that request)")
     print(f"- session first request: with the sentence {s1}, without {s0}; difference {None if None in (s1, s0) else s1 - s0} tokens")
-    print(f"- spend of the two runs: ${spend[0]:.4f}")
+    print(f"- spend of all runs: ${spend[0]:.4f}")
     # transcripts hold the subagents' files too: the revoke must have left no marker in any of the second run's
     second = {e["session_id"] for e in events2 if e.get("session_id")}
     files = [f for sid in second for p in glob.glob(str(PROJECTS / "*" / f"{sid}*")) for f in ([Path(p)] if os.path.isfile(p) else Path(p).rglob("*")) if f.is_file()]
