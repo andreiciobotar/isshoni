@@ -13,7 +13,8 @@ from unittest import mock
 from test_factory import factory
 
 LINE = ("the installed factory is {n} plugin commits behind main (installed 2026-11-16): refresh with "
-        "claude plugin marketplace update factory && claude plugin update factory@factory")
+        "claude plugin marketplace update factory && claude plugin uninstall factory@factory --keep-data "
+        "&& claude plugin install factory@factory")
 COULD_NOT = "the installed factory could not be compared with main: "
 TASK = "/work/repo/.claude/worktrees/some-task"
 
