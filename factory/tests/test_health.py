@@ -42,7 +42,7 @@ def lead(slug, sid=SID, **kw):
 
 def ended(slug, **kw):
     """A lead whose process has ended: the listing shows no status and no pid."""
-    return {k: v for k, v in lead(slug, **{"state": "done", **kw}).items() if k not in ("status", "pid")}
+    return {k: v for k, v in lead(slug, **{"state": "done", "cwd": ROOT, **kw}).items() if k not in ("status", "pid")}
 
 
 FINISHED = {"status": "idle", "state": "done"}
@@ -183,9 +183,9 @@ class CriteriaTests(Home):
             with self.subTest(f"exited {state}"):
                 self.assertEqual(len(check("ended-undeclared", pic(declared={"x": r}, sessions=[exited | {"state": state}], repo=repo))), 1)
         interactive = {"sessionId": "s9", "kind": "interactive", "cwd": f"{WT}/x", "pid": 7}
-        for label, declared, sessions in (("a live lead", {"x": r}, [lead("x", pid=1)]), ("handed over", {"x": r | {"state": "handed-over"}}, [exited]),
-                                          ("idle with a process", {"x": r}, [lead("x", pid=1, **FINISHED)]),
-                                          ("idle done with a process", {"x": r}, [lead("x", pid=1, status="idle", state="done")]),
+        for label, declared, sessions in (("a live lead", {"x": r}, [lead("x")]), ("handed over", {"x": r | {"state": "handed-over"}}, [exited]),
+                                          ("idle with a process", {"x": r}, [lead("x", **FINISHED)]),
+                                          ("idle done with a process", {"x": r}, [lead("x", status="idle", state="done")]),
                                           ("interactive", {"x": r}, [interactive]),
                                           ("blocked", {"x": r | {"state": "blocked"}}, []), ("no worktree", {"y": r}, [])):
             with self.subTest(label):
@@ -855,7 +855,7 @@ class WatchTests(Harness):
     def test_a_condition_that_ended_is_cleared_and_fires_anew_under_a_new_id(self):
         self.tick()
         first = self.records()[0]["id"]
-        self.tick(at=NOW + 1800, sessions=[DISPATCHER | {"name": "dispatcher-repo"}, lead("x", pid=1)])
+        self.tick(at=NOW + 1800, sessions=[DISPATCHER | {"name": "dispatcher-repo"}, lead("x")])
         self.assertEqual(self.records()[1], {"ts": iso(NOW + 1800), "repo": ROOT, "id": first, "cleared": True})
         self.tick(at=NOW + 3600)
         self.assertEqual([r["id"] for r in self.records()][0], first)
@@ -1265,7 +1265,7 @@ class RoutingTests(Home):
                                "run": "r1", "looked": ["ps -ax"], "to": "lead"})
 
     def test_the_script_sends_a_lead_message_live_or_retired_with_the_reason_as_its_text(self):
-        for session in (lead("x", pid=4242), lead("x", **FINISHED)):
+        for session in (lead("x", pid=4242), ended("x")):
             self.assertEqual(len(self.logged({}, self.told_lead(), session=session)), 1)
             self.assertEqual([a[2:] for a in self.forwarded], [("x", "SITE MANAGER", "because")])
         self.logged({}, self.told_lead(), session=None)
