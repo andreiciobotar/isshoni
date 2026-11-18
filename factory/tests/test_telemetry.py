@@ -458,7 +458,8 @@ class TaskEventTests(StoreCase):
                          {"repo": tf.ROOT, "slug": "demo-task", "role": "dispatcher", "model": None, "version": VERSION,
                           "session": "sid-d", "event": "TaskStarted", "base": "main", "lead_model": "fable",
                           "mode": "team", "models": {"coder": "sonnet", "explorer": "haiku", "lander": "sonnet",
-                                                     "ops-explorer": "haiku", "reviewer": "opus"}})
+                                                     "ops-explorer": "haiku", "reviewer": "opus"},
+                          "commit": None})
 
     def test_clean_records_task_removed(self):
         code, out, _, _ = self.clean()

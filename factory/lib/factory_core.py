@@ -54,6 +54,8 @@ JOBS_DIR = Path("~/.claude/jobs")
 STALE_HOURS = 24
 GH_SLOW = 2
 PR_TIMEOUT = 10
+COPY_CHECK_SECONDS = 3600  # how long `copy_behind` keeps its answer
+COPY_GIT_TIMEOUT = 5  # for each of its git calls that reaches the network (the hook has 10 s for everything)
 PR_BUDGET = 20
 PR_LIST_LIMIT = 100
 STATUS_PR_FIELDS = "state,url,headRefOid,baseRefName,headRefName,isDraft"
@@ -1447,6 +1449,89 @@ def task_event(event, repo, slug, **extra):
         pass
 
 
+def installed_copy():
+    """The `installed_plugins.json` entry of the installed copy this script runs from, as {sha, date, plugin, marketplace}
+    (`sha` None when Claude Code recorded none), or None: a checkout, a task worktree or `--plugin-dir` is never listed."""
+    try:
+        doc = json.loads((PLUGIN_ROOT.parents[3] / "installed_plugins.json").read_text())
+        for key, entries in doc["plugins"].items():
+            for e in entries:
+                if Path(e["installPath"]).resolve() == PLUGIN_ROOT:
+                    sha = e.get("gitCommitSha")
+                    plugin, _, marketplace = key.rpartition("@")
+                    return {"sha": sha if isinstance(sha, str) else None, "plugin": plugin, "marketplace": marketplace,
+                            "date": str(e.get("lastUpdated") or e["installedAt"])[:10]}
+    except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError):
+        pass
+    return None
+
+
+def copy_commit():
+    """The full SHA of the copy that runs this script (an installed copy's recorded one, else HEAD of its checkout), or None."""
+    if copy := installed_copy():
+        return copy["sha"]
+    rc, out, _ = run(["git", "rev-parse", "HEAD"], cwd=PLUGIN_ROOT, timeout=COPY_GIT_TIMEOUT)
+    return out.strip() if rc == 0 and out.strip() else None
+
+
+def copy_git(args, cwd=None):
+    rc, out, err = run(["git", *args], cwd=cwd, timeout=COPY_GIT_TIMEOUT, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    if rc != 0:
+        raise Fail(f"git {args[0]}: {(err.strip().splitlines() or ['failed'])[-1]}", 1)
+    return out.strip()
+
+
+def count_plugin_commits(copy):
+    """How many commits touching the plugin the source's default branch has beyond the installed commit. Fetches into the
+    factory's own blobless bare clone (the marketplace clone is Claude Code's, and shallow). Raises."""
+    if not copy["sha"]:
+        raise Fail("Claude Code recorded no commit for the installed copy", 1)
+    plugins = PLUGIN_ROOT.parents[3]
+    where = json.loads((plugins / "known_marketplaces.json").read_text())[copy["marketplace"]]["installLocation"]
+    url = copy_git(["remote", "get-url", "origin"], cwd=where)
+    clone = CACHE.expanduser() / "plugin-source.git"
+    if clone.is_dir():
+        copy_git(["fetch", "-q", "--no-tags", "origin", "HEAD"], cwd=clone)
+        head = copy_git(["rev-parse", "FETCH_HEAD"], cwd=clone)
+    else:
+        try:
+            copy_git(["clone", "-q", "--bare", "--filter=blob:none", "--single-branch", "--no-tags", url, str(clone)])
+        except Fail:
+            shutil.rmtree(clone, ignore_errors=True)
+            raise
+        head = copy_git(["rev-parse", "HEAD"], cwd=clone)
+    manifest = json.loads(copy_git(["show", f"{head}:.claude-plugin/marketplace.json"], cwd=clone))
+    (path,) = [p["source"] for p in manifest["plugins"] if p["name"] == copy["plugin"]]
+    return int(copy_git(["rev-list", "--count", f"{copy['sha']}..{head}", "--", path.removeprefix("./")], cwd=clone))
+
+
+def copy_behind():
+    """The one line `status` and the SessionStart hook show when the installed copy lacks plugin commits that the source's
+    default branch has, the line saying it could not be compared, or None (not an installed copy, or at main). Kept in
+    `cache/copy-behind.json` for COPY_CHECK_SECONDS per installed commit: a failure is not retried within it."""
+    copy = installed_copy()
+    if not copy:
+        return None
+    path = CACHE.expanduser() / "copy-behind.json"
+    try:
+        held = json.loads(path.read_text())
+        if held["commit"] == copy["sha"] and 0 <= time.time() - held["asked"] < COPY_CHECK_SECONDS:
+            return held["line"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    try:
+        behind = count_plugin_commits(copy)
+        line = behind and (f"the installed factory is {behind} plugin commits behind main (installed {copy['date']}): refresh with "
+                           f"claude plugin marketplace update {copy['marketplace']} && claude plugin update {copy['plugin']}@{copy['marketplace']}")
+    except Exception as e:
+        line = f"the installed factory could not be compared with main: {(why(e).splitlines() or [''])[0]}"
+    try:
+        write_json(path, {"commit": copy["sha"], "asked": time.time(), "line": line or None})
+    except OSError:  # the cache only saves asks
+        pass
+    return line or None
+
+
 # ---- commands ---------------------------------------------------------------
 
 def args_new(parser):
@@ -1579,7 +1664,7 @@ def cmd_new(args):
             sys.stderr.write(f"factory: warning: cannot record the size of {branch}: {err.strip()}\n")
     # mode: a record for `isshoni kaizen --modes`, which compares these tasks with those started before the team (`single`).
     task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"], mode="team",
-               models=agent_models(settings["models"]), **({"size": size} if size else {}))
+               models=agent_models(settings["models"]), commit=copy_commit(), **({"size": size} if size else {}))
     try:
         declare(repo, args.slug, "dispatcher", "working")
     except (OSError, ValueError, KeyError):
@@ -1693,6 +1778,8 @@ def cmd_status(args):
         print("acting on GitHub with your gh login (" + (
             f"this repository is not on GitHub under {stored.get('owner')}, the App's owner" if stored and stored.get("bot_login") else
             "the App is stored but not installed: factory wizard" if stored else "no App identity: factory wizard") + ")")
+    if line := copy_behind():
+        print(line)
     refused = {s["head"]: s["text"] for s in read_lander(repo)["stopped"].values()
                if s["kind"] == "merge" and s["text"].startswith(REFUSED)}
     for r in rows:
@@ -2162,8 +2249,8 @@ def cmd_close(args):
 
 @command("hook", "record one hook payload read from stdin (run by the plugin's hooks)")
 def cmd_hook(args):
-    """Record one hook payload and keep the watch job in step with the dispatcher. Prints nothing and exits 0
-    whatever happens."""
+    """Record one hook payload and keep the watch job in step with the dispatcher. Exits 0 whatever happens. Prints nothing,
+    except a `systemMessage` at the start of a session outside a task worktree when `copy_behind()` has a line."""
     p = {}
     try:
         p = json.loads(sys.stdin.read())
@@ -2204,6 +2291,12 @@ def cmd_hook(args):
         pass
     try:
         follow_dispatcher(p)
+    except Exception:
+        pass
+    try:  # last: a slow or failed check loses nothing recorded above
+        if (p.get("hook_event_name") == "SessionStart" and not p.get("agent_id") and not WORKTREE_RE.match(str(p.get("cwd")))
+                and (line := copy_behind())):
+            print(json.dumps({"systemMessage": line}))
     except Exception:
         pass
     return 0
