@@ -1166,6 +1166,165 @@ class RealLevelTests(ScratchRepoBase):
         self.assertEqual(self.git("status", "--porcelain", cwd=self.wt), "")
 
 
+class FollowRebaseTests(ScratchRepoBase):
+    """Real git: the remote branch of the task was rewritten by a rebase; `level` follows it only when no patch changed."""
+
+    def refs(self):
+        return self.git("for-each-ref", "--format=%(refname) %(objectname)", cwd=self.remote)
+
+    def rewrite(self, then=None):
+        """Someone else rebases the remote branch onto the moved main and force-pushes it; `then` edits it first."""
+        other = self.root.parent / "other"
+        if not other.exists():
+            self.git("clone", "-q", str(self.remote), str(other), cwd=self.root.parent)
+        self.git("checkout", "-q", "worktree-t1", cwd=other)
+        self.git("rebase", "-q", "origin/main", cwd=other)
+        if then:
+            then(other)
+        self.git("push", "-q", "--force", "origin", "worktree-t1", cwd=other)
+
+    def follows(self, commits):
+        for i in range(commits):
+            self.task_commit(f"t{i}.txt", f"task {i}\n")
+        self.main_moves("b.txt", "b moved\n")
+        self.rewrite()
+        refs, new = self.refs(), self.git("rev-parse", "worktree-t1", cwd=self.remote)
+        self.assertIsNone(self.level())
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), new)
+        self.assertEqual(self.refs(), refs)
+
+    def test_a_remote_branch_rebased_with_one_commit_is_followed_and_nothing_is_pushed(self):
+        self.follows(1)
+
+    def test_a_remote_branch_rebased_with_two_commits_is_followed(self):
+        self.follows(2)
+
+    def test_an_upper_member_holding_the_lower_ones_old_commits_follows_its_rebased_branch(self):
+        self.commit(self.wt, "lower.txt", "lower\n", "lower member")
+        self.git("push", "-q", "origin", "HEAD:worktree-lower", cwd=self.wt)
+        self.task_commit("upper.txt", "upper\n")
+        self.main_moves("b.txt", "b moved\n")
+        self.rewrite()
+        new = self.git("rev-parse", "worktree-t1", cwd=self.remote)
+        self.assertIsNone(self.level())
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), new)
+
+    def test_an_unpushed_merge_of_the_default_branch_is_not_lost_to_a_rebase_with_equal_patches(self):
+        self.task_commit("a.txt", "one\ntwo\ntask\n")
+        self.main_moves("c.txt", "c moved\n")
+        self.git("fetch", "-q", cwd=self.wt)
+        self.git("merge", "-q", "--no-commit", "--no-ff", "origin/main", cwd=self.wt)
+        self.write(self.wt, "evil.txt", "mine\n")  # added by the merge commit itself: no patch id, and the remote never holds it
+        self.git("add", "evil.txt", cwd=self.wt)
+        self.git("commit", "-q", "--no-edit", cwd=self.wt)
+        self.main_moves("b.txt", "b moved\n")
+        self.rewrite()
+        old = self.git("rev-parse", "HEAD", cwd=self.wt)
+        self.assertEqual(self.level(), "its worktree and origin/worktree-t1 have diverged")
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), old)
+        self.assertTrue((self.wt / "evil.txt").exists())
+
+    def test_a_pushed_update_merge_then_a_rebase_of_the_remote_follows(self):
+        self.task_commit("a.txt", "one\ntwo\ntask\n")
+        self.main_moves("evil.txt", "main\n")
+        self.assertIsNone(self.update()[0])
+        self.main_moves("b.txt", "b moved\n")
+        self.rewrite()
+        new = self.git("rev-parse", "worktree-t1", cwd=self.remote)
+        self.assertIsNone(self.level())
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), new)
+
+    def diverged(self, local=False, then=None):
+        self.task_commit("a.txt", "one\ntwo\ntask\n")
+        self.main_moves("b.txt", "b moved\n")
+        if local:
+            self.commit(self.wt, "local.txt", "local\n", "local only")
+        self.rewrite(then)
+        old = self.git("rev-parse", "HEAD", cwd=self.wt)
+        self.assertEqual(self.level(), "its worktree and origin/worktree-t1 have diverged")
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), old)
+
+    def test_a_local_commit_the_remote_lacks_stays_diverged(self):
+        self.diverged(local=True)
+
+    def test_a_remote_commit_the_worktree_lacks_on_a_rewritten_branch_stays_diverged(self):
+        self.diverged(then=lambda other: self.commit(other, "c.txt", "elsewhere\n", "pushed from elsewhere"))
+
+    def test_a_rewritten_commit_whose_patch_differs_stays_diverged(self):
+        def amend(other):
+            self.write(other, "a.txt", "one\ntwo\nother\n")
+            self.git("commit", "-q", "--amend", "-a", "--no-edit", cwd=other)
+        self.diverged(then=amend)
+
+    def test_uncommitted_changes_and_a_busy_worktree_are_not_moved(self):
+        self.task_commit("a.txt", "one\ntwo\ntask\n")
+        self.main_moves("b.txt", "b moved\n")
+        self.rewrite()
+        old = self.git("rev-parse", "HEAD", cwd=self.wt)
+        self.write(self.wt, "a.txt", "dirty\n")
+        self.assertEqual(self.level(), "the worktree has uncommitted changes")
+        self.assertEqual((self.git("rev-parse", "HEAD", cwd=self.wt), (self.wt / "a.txt").read_text()), (old, "dirty\n"))
+        self.git("checkout", "a.txt", cwd=self.wt)
+        repo = SimpleNamespace(root=str(self.root), remote="origin", default="main",
+                               git=lambda *a, path=None: self.run_git(path or self.root, *a))
+        with mock.patch.object(factory, "land_busy", lambda *a: "its lead is running"):
+            self.assertEqual(factory.level(repo, {"path": str(self.wt), "branch": "worktree-t1"}), "its lead is running")
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), old)
+
+
+class AttemptStackTests(unittest.TestCase):
+    """`attempt` on the bottom of a stack of three whose worktrees are all behind their rewritten heads."""
+
+    def setUp(self):
+        self.prs = [pr(1), pr(2, base="worktree-t1", sha="sha-2"), pr(3, base="worktree-t2", sha="sha-3")]
+        self.prs[0]["headRefOid"] = "sha-1"
+        self.rows = [{"slug": f"t{n}", "branch": f"worktree-t{n}", "path": f"/w/t{n}", "phase": "review", "head": f"old-{n}", "pr": None}
+                     for n in (1, 2, 3)]
+        self.refused, self.levelled, self.asked = {}, [], 0
+        self.repo = SimpleNamespace(remote="origin", git=lambda *a, path=None: (0, f"sha-{path[-1]}\n", ""))
+
+    def merge_one(self, p, pr, *_):
+        self.asked += 1
+        stale = next((r for r in self.rows if r["head"] != f"sha-{r['slug'][1:]}"), None)
+        if stale is None:
+            return ("merge", "done")
+        return ("handover", f"stack member #{stale['slug'][1:]}: task {stale['slug']}'s worktree head is not the pull request's head")
+
+    def level(self, repo, row):
+        self.levelled.append(row["slug"])
+        if reason := self.refused.get(row["slug"]):
+            return reason
+        row["head"] = f"sha-{row['slug'][1:]}"
+        return None
+
+    def attempt(self):
+        with mock.patch.object(factory, "merge_one", self.merge_one), mock.patch.object(factory, "level", self.level):
+            return factory.attempt(self.repo, {"rows": self.rows}, self.prs, self.prs[0], None)
+
+    def test_every_member_is_levelled_in_one_pass_and_merge_one_is_asked_again(self):
+        self.assertEqual(self.attempt(), ("merge", "done"))
+        self.assertEqual((self.levelled, self.asked), (["t1", "t2", "t3"], 2))
+
+    def test_a_refused_member_keeps_the_stop_whose_one_line_ends_with_the_reason_and_the_others_follow(self):
+        self.refused["t2"] = "the worktree has uncommitted changes"
+        kind, line = self.attempt()
+        self.assertEqual((kind, self.levelled, self.asked), ("handover", ["t1", "t2", "t3"], 2))
+        self.assertEqual(line, "stack member #2: task t2's worktree head is not the pull request's head: "
+                               "the worktree has uncommitted changes")
+
+    def test_a_foreign_members_reason_is_not_put_on_the_stop_of_a_member_that_was_not_levelled(self):
+        self.rows[0]["phase"] = "working"
+        self.refused["t2"] = "the worktree has uncommitted changes"
+        kind, line = self.attempt()
+        self.assertEqual((kind, self.levelled), ("handover", ["t2", "t3"]))
+        self.assertEqual(line, "stack member #1: task t1's worktree head is not the pull request's head")
+
+    def test_a_pull_request_in_no_stack_is_levelled_once_as_before(self):
+        self.prs, self.rows = self.prs[:1], self.rows[:1]
+        self.assertEqual(self.attempt(), ("merge", "done"))
+        self.assertEqual(self.levelled, ["t1"])
+
+
 class HeldUpdateTests(ScratchRepoBase):
     """Real git: #1 is held on a red check, its fix has merged (main moved); what the pass does to the branch."""
 
