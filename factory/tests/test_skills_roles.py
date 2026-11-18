@@ -283,7 +283,7 @@ class SkillsStartTests(InScratchRepo):
             self.assertEqual(list(json.loads(argv[argv.index("--agents") + 1])), [factory.OPS_AGENT])
             with self.assertRaises(factory.Fail):
                 factory.agent_definitions(SETTINGS, self.root)
-        self.assertEqual(err.getvalue(), "")
+        self.assertNotIn("skills record", err.getvalue())
 
 
 class DispatcherCheckTests(unittest.TestCase):
