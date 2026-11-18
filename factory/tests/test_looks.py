@@ -218,6 +218,24 @@ class Picture(Harness):
         self.assertEqual((tasks["m"]["merged"], tasks["m"]["extended_minutes"]), ("3h", 20))
         self.assertNotIn("children", tasks["a"])
 
+    def test_messages_are_the_queued_or_returned_rows_since_the_declared_time(self):
+        def put(rid, ago, **fields):
+            return [{"ts": iso(NOW - ago), "repo": ROOT, "id": rid, "slug": "x", **fields}]
+        self.seed("outbox", [
+            *put("old", 1200, line="L0"), *put("pending", 300, line="L1"), *put("pending", 200, tries=2, why="no"),
+            *put("back", 400, line="L2"), *put("back", 100, tries=3, why="gone"), *put("back", 100, end="dispatcher"),
+            *put("done", 300, line="L3"), *put("done", 100, end="delivered"),
+            {**put("other", 300, line="L4")[0], "slug": "y"}])
+        base = row("x", session="none", extensions=[], dirty=None, ahead=None, behind=None, pr_draft=False)
+        p = pic(rows=[base], declared={"x": {"ts": iso(NOW - 600)}}, repo=SimpleNamespace(root=ROOT, default="main", tasks=[], worktree_path=lambda s: f"{WT}/{s}"))
+        [task] = factory.look_picture(p, None, [], [])["tasks"]
+        self.assertEqual(task["messages"], [{"queued": "6m", "tries": 3, "why": "gone", "end": "dispatcher"},
+                                            {"queued": "5m", "tries": 2, "why": "no"}])
+        self.assertNotIn("L1", json.dumps(task))
+        p["declared"] = {}
+        [task] = factory.look_picture(p, None, [], [])["tasks"]
+        self.assertEqual(len(task["messages"]), 3)
+
     def test_calls_are_the_ten_newest_of_the_day_newest_first_and_a_lead_call_among_them_still_refuses(self):
         self.seed("firings", [r for i in range(12) for r in (
             fired(f"f{i}", criterion="review-loops" if i == 11 else f"c{i}", subject="x", ts=NOW - 2000 + i), {**decided(f"f{i}", "escalated", ts=NOW - 1000 + i), "to": "lead"})])

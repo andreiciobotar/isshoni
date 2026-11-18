@@ -29,7 +29,7 @@ How to use a look: you are given facts and what changed since the last look. Mos
 **What:** A lead declared itself blocked a while ago and is still blocked (`state`, `declared`, `waits_on` in its row).
 **Why it matters:** The human may not have seen the question and the task stands still; a repeat costs a read.
 **What it has looked like:** The script used to fire this at 30 minutes. It fired once, suppressed.
-**A good call:** Blocked on a question: escalate once; the human may not have seen it. A task paused by the script (`paused`, `waits_on`) for more than 30 minutes: escalate to the dispatcher with the waited tasks and their states; you never lift a pause.
+**A good call:** Blocked on a question: escalate once; the human may not have seen it. A row with `messages` means an answer was queued for the lead: pending (no `end`) means it is on its way, suppress; `end` `dispatcher` means it came back undelivered, so escalate and say that with its `why` instead of "nothing shows an answer". A task paused by the script (`paused`, `waits_on`) for more than 30 minutes: escalate to the dispatcher with the waited tasks and their states; you never lift a pause.
 **Score (to 2026-11-15):** fired 1; escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 1; missed 0.
 
 ## handover-unacknowledged

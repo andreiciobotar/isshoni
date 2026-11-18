@@ -54,7 +54,7 @@ class Overrun(Harness):
 
     def lines(self):
         """(name, line) of each message a courier was asked to send."""
-        return [(c[-1].split("session named ")[1].split(". ")[0], c[-1].split("nothing else: ")[1].rsplit(". Then", 1)[0])
+        return [(c[-1].split("session named ")[1].split(". ")[0], c[-1].split("---8<---\n")[1].rsplit("\n---8<---", 1)[0])
                 for c in self.claude_runs() if "--json-schema" not in c]
 
     def decisions(self):
