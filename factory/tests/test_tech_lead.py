@@ -108,6 +108,7 @@ class Case(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = os.path.realpath(tmp.name) + "/repo"
         os.makedirs(f"{self.root}/.claude/worktrees/{SLUG}")
+        Path(f"{self.root}/.claude/worktrees/{SLUG}/.git").write_text("gitdir: elsewhere\n")  # a worktree has one
         patcher = mock.patch.dict(os.environ, {"HOME": tmp.name, "CLAUDE_CODE_SESSION_ID": "sid-d"})
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -201,6 +202,18 @@ class SendBackTests(Case):
         self.assertEqual((r["outcome"], r["pr"], r["slug"], r["role"], r["model"], r["cost_usd"], r["session"]),
                          ("unstarted", N, SLUG, "tech-lead", "opus", None, None))
         self.assertIn(str(self.spec), r["reason"])
+
+    def test_a_worktree_with_no_git_is_not_started_and_an_unstarted_record_says_why(self):
+        wt = f"{self.root}/.claude/worktrees/{SLUG}"
+        os.unlink(f"{wt}/.git")
+        with mock.patch.object(factory, "spawn") as spawn:
+            to, _ = self.send_back()
+        spawn.assert_not_called()
+        self.assertEqual(to, "lead")
+        [r] = self.records("techlead")
+        self.assertEqual(r["outcome"], "unstarted")
+        self.assertEqual(r["reason"], f"{SLUG}: the worktree {wt} has no .git, so git there answers from no repository: nothing ran. "
+                         "Change nothing and hand back with this line.")
 
     def test_a_process_that_cannot_start_falls_back_to_the_lead(self):
         with mock.patch.object(factory, "spawn", side_effect=OSError("no fork")):
