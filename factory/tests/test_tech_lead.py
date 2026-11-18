@@ -108,6 +108,7 @@ class Case(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = os.path.realpath(tmp.name) + "/repo"
         os.makedirs(f"{self.root}/.claude/worktrees/{SLUG}")
+        Path(f"{self.root}/.claude/worktrees/{SLUG}/.git").write_text("gitdir: elsewhere\n")  # a worktree has one
         patcher = mock.patch.dict(os.environ, {"HOME": tmp.name, "CLAUDE_CODE_SESSION_ID": "sid-d"})
         patcher.start()
         self.addCleanup(patcher.stop)

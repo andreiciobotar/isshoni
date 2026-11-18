@@ -879,6 +879,7 @@ class NoLeadTests(Loop):
         self.spawned = []
         for patcher in (mock.patch.object(factory, "spawn", lambda argv, *rest: self.spawned.append(argv)),
                         mock.patch.object(factory, "tech_lead_missing", lambda repo, slug: None),
+                        mock.patch.object(factory, "worktree_gone", lambda path: None),
                         mock.patch.object(factory, "has_test_rule", lambda path: False)):  # the worktree is not on disk
             patcher.start()
             self.addCleanup(patcher.stop)

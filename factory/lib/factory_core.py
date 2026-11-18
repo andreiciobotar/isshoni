@@ -59,6 +59,7 @@ STATUS_PR_FIELDS = "state,url,headRefOid,baseRefName,headRefName,isDraft"
 KEEP_MONTHS = 12
 BOUND_RE = re.compile(r"\d{4}-\d{2}(-\d{2}(T\d{2}(:\d{2}(:\d{2}Z?)?)?)?)?")
 WORKTREE_RE = re.compile(r"(.*?)/\.claude/worktrees/([^/]+)(?:/|$)")
+EACH_WORKTREE_RE = re.compile(r"/\.claude/worktrees/([^/]+)(?=/|$)")  # every one on a path, not only the first
 MODEL_RE = re.compile(rb'"model"\s*:\s*"([^"]+)"')
 ITEM_RE = re.compile(r"(?:[-*]|\d+\.)\s+")
 LINK_RE = re.compile(r"[a-z][a-z0-9+.-]*://")
@@ -80,7 +81,7 @@ PROMPT_FROM = (("<agent-message", "subagent"), ("<cross-session-message", "sessi
                ("<task-notification", "notification"))
 
 COMMANDS = {}  # name -> (help, options, function), filled by @command where each command is defined
-COMMAND_ORDER = ("new", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "retro", "env",
+COMMAND_ORDER = ("new", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "guard-hook", "retro", "env",
                  "feedback", "review", "log", "health", "watch", "ops", "digest", "firing", "miss", "firings",
                  "pauses", "lead", "merge", "lander", "tech-lead", "build", "land", "overlap", "rerun", "schedule",
                  "dispatcher", "settings", "wizard", "uninstall")  # `factory --help` order; a name not here follows, by name
@@ -128,6 +129,25 @@ def release_held():
         stop_on_signal(held[0], None)
 
 
+def worktree_gone(path):
+    """The line that refuses work in `path`, or None: `path` is inside `.claude/worktrees/<name>` and that worktree has
+    no `.git` entry, so git there would answer from the nearest ancestor that has one (found without calling git)."""
+    path = os.fspath(path)
+    for m in EACH_WORKTREE_RE.finditer(path):
+        tree = path[:m.end()]
+        if os.path.lexists(os.path.join(tree, ".git")):
+            continue
+        found = os.path.dirname(tree)
+        while not os.path.lexists(os.path.join(found, ".git")):
+            if found == os.path.dirname(found):
+                found = "no repository"
+                break
+            found = os.path.dirname(found)
+        return (f"factory: {m.group(1)}: the worktree {tree} has no .git, so git there answers from {found}: nothing ran. "
+                "Change nothing and hand back with this line.")
+    return None
+
+
 def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
     """The only place a subprocess is waited for (`spawn` starts one detached), and the owner of its lifetime. Returns (returncode, stdout, stderr).
     Every call ends after `timeout` seconds (RUN_TIMEOUT unless told otherwise; `gh` gets GH_TIMEOUT). A `group=True`
@@ -136,6 +156,8 @@ def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
     A signal that arrives while the child starts is held until the child is known, then ends it.
     `gh` acts as the App when an identity is installed (unless the caller's `env` brings a `GH_TOKEN`), and a call that is slow or fails is logged to gh-YYYY-MM.jsonl.
     A `claude` child gets no `ANTHROPIC_LOG`: its debug logging would share the stdout that is read as JSON."""
+    if cwd is not None and (gone := worktree_gone(cwd)):
+        return 1, "", gone
     timeout = timeout or (GH_TIMEOUT if argv[0] == "gh" else RUN_TIMEOUT)
     if argv[0] == "gh" and "GH_TOKEN" not in (env or {}):
         try:
@@ -679,6 +701,8 @@ def run_in_worktree(repo, path, argv, **kw):
     """`run` for a session started with `worktree_flags`: from the main checkout when isolated, else in the worktree,
     said once to be not isolated. A lock the harness leaves on an isolated run is released after it, only when the
     worktree was not locked before: a lock that was already there (a live lead's) is never touched."""
+    if gone := worktree_gone(path):
+        return 1, "", gone
     name = isolated_name(repo, path)
     if name is None:
         print(f"factory: {path} is not under {repo.root}/.claude/worktrees: this session is not isolated to its worktree",
@@ -2252,6 +2276,23 @@ def cmd_ops_hook(args):
     except Exception as e:
         print(f"factory ops-hook: {why(e)}", file=sys.stderr)
         return 2
+    return 0
+
+
+@command("guard-hook", "deny Bash, Edit, Write and NotebookEdit calls from a worktree that has no .git (run by the plugin's hooks)")
+def cmd_guard_hook(args):
+    """From a hook payload on stdin: nothing when the session's directory is in no worktree or in healthy ones, else deny
+    the call with `worktree_gone`'s line. Reads nothing but the payload and the directory tree; an unreadable payload is `{}`."""
+    try:
+        p = json.loads(sys.stdin.read())
+    except ValueError:
+        p = {}
+    p = p if isinstance(p, dict) else {}
+    cwd = p.get("cwd")
+    sources = [d for d in (os.environ.get("CLAUDE_PROJECT_DIR"), cwd if isinstance(cwd, str) else None) if d] or [os.getcwd()]
+    if line := next(filter(None, map(worktree_gone, sources)), None):
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                 "permissionDecisionReason": line}}))
     return 0
 
 
@@ -8352,7 +8393,7 @@ def main(argv=None):
         signal.alarm(OPS_HOOK_DEADLINE)
     args = parse_args(argv)
     try:
-        if not STORE.expanduser().is_absolute() and args.cmd != "ops-hook":  # which refuses only the ops explorer's calls
+        if not STORE.expanduser().is_absolute() and args.cmd not in ("ops-hook", "guard-hook"):  # which use no store
             if args.cmd == "hook":
                 return 0
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
