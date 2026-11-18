@@ -109,6 +109,16 @@
             "timeout": 60
           }
         ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/factory\" guard-hook || exit 2",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [
