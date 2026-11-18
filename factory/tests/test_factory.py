@@ -218,12 +218,17 @@ NO_ATTRIBUTION = {"attribution": {"commit": "", "pr": "", "sessionUrl": False}}
 LEAN_SETTINGS = {**NO_ATTRIBUTION, "disableBundledSkills": True, "enabledPlugins": {"alpha@m": False, "zeta@m": False}}
 
 
+BRANCH_RULE = ("gh", "api", "repos/{owner}/{repo}/branches/main")
+RULESET = ("gh", "api", "repos/{owner}/{repo}/rules/branches/main")
+
+
 def repo_answers(entries, sessions=(), *extras):
     answers = {
         ("git", "worktree", "list"): (0, porcelain((ROOT, "main", False), *entries), ""),
         ("git", "symbolic-ref"): (0, "refs/remotes/origin/main\n", ""),
         ("claude", "agents"): (0, json.dumps(list(sessions)), ""),
         ("claude", "plugin", "list"): (0, json.dumps(PLUGINS), ""),
+        BRANCH_RULE: (0, "1\n", ""),
     }
     for extra in extras:
         answers.update(extra)
@@ -1540,6 +1545,41 @@ class NewTests(unittest.TestCase):
         self.assertEqual(gh[:6], ["gh", "pr", "list", "--head", "worktree-demo-task", "--state"])
         self.assertEqual(gh[6], "all")
 
+    NO_PR = {("gh", "pr"): (0, "[]", "")}
+
+    def test_a_required_check_in_branch_protection_starts_without_reading_the_rules(self):
+        code, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK, self.NO_PR))
+        self.assertEqual((code, err), (0, ""))
+        self.assertTrue(fake.ran(*BRANCH_RULE))
+        self.assertFalse(fake.ran(*RULESET))
+        self.assertTrue(fake.ran("claude", "--bg"))
+
+    def test_a_required_status_checks_ruleset_rule_starts(self):
+        code, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK, {BRANCH_RULE: (0, "0\n", ""), RULESET: (0, "1\n", "")}, self.NO_PR))
+        self.assertEqual((code, err), (0, ""))
+        self.assertTrue(fake.ran(*RULESET) and fake.ran("claude", "--bg"))
+
+    def test_no_required_check_anywhere_refuses_before_anything_is_made(self):
+        none = {BRANCH_RULE: (0, "0\n", ""), RULESET: (0, "0\n", "")}  # also a rules list with only other types
+        for argv in (self.ARGS, self.ARGS + ["--base", "alpha"]):
+            with self.subTest(argv=argv):
+                code, _, err, fake = invoke(argv, self.answers([task_entry("alpha")], (), self.OK, none))
+                self.assertEqual(code, 2)
+                self.assertEqual(err.splitlines()[-1], "factory: repo has no CI: no merge rule on main requires a status check "
+                                                       "(branch protection or a ruleset); no task starts here")
+                self.assertFalse(fake.ran("git", "worktree", "add") or fake.ran("claude", "--bg"))
+                self.assertEqual(fake.tasks, [])
+
+    def test_unreadable_merge_rules_warn_and_start(self):
+        for name, answers in (("branch", {BRANCH_RULE: (1, "", "HTTP 502\n")}),
+                              ("shape", {BRANCH_RULE: (0, "[]", "")}),
+                              ("rules", {BRANCH_RULE: (0, "0\n", ""), RULESET: (124, "", "")})):
+            with self.subTest(name):
+                code, _, err, fake = invoke(self.ARGS, self.answers([], (), self.OK, answers))
+                self.assertEqual(code, 0, err)
+                self.assertRegex(err, "factory: warning: cannot check the merge rules of main for CI: .+; continuing\n")
+                self.assertTrue(fake.ran("claude", "--bg"))
+
     def test_a_registered_dispatcher_of_any_name_starts_a_task(self):
         me = {"sessionId": "sid-d", "name": "whatever", "cwd": ROOT, "kind": "interactive", "pid": 7}
         code, _, err, fake = invoke(["new", "demo-task", "--brief", "x"], repo_answers([], [me], self.OK),
@@ -1897,7 +1937,7 @@ class NewTests(unittest.TestCase):
     def test_below_the_cap_asks_gh_only_about_the_new_branch(self):
         code, _, err, fake = invoke(self.ARGS, self.answers([task_entry("a")], (), self.OK, {("gh",): (0, "[]", "")}))
         self.assertEqual(code, 0, err)
-        self.assertEqual([c[4] for c in fake.calls if c[0] == "gh"], ["worktree-demo-task"])
+        self.assertEqual([c[4] for c in fake.calls if c[:3] == ["gh", "pr", "list"]], ["worktree-demo-task"])
 
     def test_invalid_settings_exit_2(self):
         code, _, err, _ = invoke(self.ARGS, self.answers([]), '[limits]\nworktree_cap = 0\n')
@@ -2802,8 +2842,8 @@ else:
     sys.exit(3)
 """
     FAKE_GH = """#!/usr/bin/env python3
-import os
-print(os.environ["FAKE_PR"])
+import os, sys
+print(os.environ.get("FAKE_CHECKS", "1") if sys.argv[1:2] == ["api"] else os.environ["FAKE_PR"])
 """
     FAKE_LSOF = """#!/usr/bin/env python3
 import os
@@ -2858,6 +2898,16 @@ print(os.environ["FAKE_LSOF"])
         finally:
             os.killpg(proc.pid, signal.SIGKILL)
             proc.wait()
+
+    def test_new_in_a_repository_without_ci_creates_nothing(self):
+        p = self.factory("new", "demo-task", "--brief", "build it", env={"FAKE_CHECKS": "0"})
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("has no CI: no merge rule on main requires a status check", p.stderr)
+        self.assertFalse((self.repo / ".claude/worktrees/demo-task").exists())
+        self.assertEqual(self.git("branch", "--list", "worktree-demo-task"), "")
+        tasks = self.home / ".claude/factory/tasks.jsonl"
+        self.assertNotIn("demo-task", tasks.read_text() if tasks.exists() else "")
+        self.assertFalse(self.argv_file.exists())
 
     def test_new_status_clean(self):
         p = self.factory("new", "demo-task", "--brief", "build it")

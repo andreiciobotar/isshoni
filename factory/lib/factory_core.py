@@ -939,6 +939,14 @@ def pull_request(repo, branch, timeout=PR_TIMEOUT):
     return pr_fields(prs[0]) if prs else NO_PR
 
 
+def required_checks(repo, endpoint, jq):
+    """(how many required status checks `gh api` finds at repos/{owner}/{repo}/`endpoint`, None) or (None, the one-line reason it could not)."""
+    rc, out, err = run(["gh", "api", f"repos/{{owner}}/{{repo}}/{endpoint}", "--jq", jq], cwd=repo.root, timeout=GH_TIMEOUT)
+    if rc == 0 and out.strip().isdigit():
+        return int(out), None
+    return None, f"timed out after {GH_TIMEOUT:.0f} s" if rc == 124 else (err.strip().splitlines() or ["gh answered with an unexpected shape"])[0]
+
+
 def needed_branches(repo):
     """The task branches and the recorded bases that still exist locally: the pull requests a status row reads."""
     needed = [wt["branch"] for wt in repo.tasks if wt["branch"]]
@@ -1539,6 +1547,17 @@ def cmd_new(args):
         raise Fail(f"branch {branch} already exists on {repo.remote} (another machine's task?); pick another slug")
     if rc != 2:
         sys.stderr.write(f"factory: warning: cannot check {repo.remote} for branch {branch}: {err.strip()}; continuing\n")
+    for endpoint, jq in ((f"branches/{repo.default}", "[.protection.required_status_checks | .contexts, .checks | values] | add | length"),
+                         (f"rules/branches/{repo.default}", 'map(select(.type == "required_status_checks")) | length')):
+        found, error = required_checks(repo, endpoint, jq)
+        if error:
+            sys.stderr.write(f"factory: warning: cannot check the merge rules of {repo.default} for CI: {error}; continuing\n")
+        if error or found:
+            break
+    else:
+        name = "/".join(remote_repo(repo.root) or ()) or os.path.basename(repo.root)
+        raise Fail(f"{name} has no CI: no merge rule on {repo.default} requires a status check "
+                   "(branch protection or a ruleset); no task starts here")
     setup = config_value(repo, "factory.setup")
     if args.base:
         for argv in (["worktree", "add", "-b", branch, path, base],
