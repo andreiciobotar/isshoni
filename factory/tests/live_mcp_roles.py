@@ -23,6 +23,9 @@ The records are made through the real `factory ops decline` and `factory mcp gra
    flag-free argv of `reach_lead`, and called again. The gate of a background session reads the default store, so its
    decisions are proved by the `-p` runs of 1 only.
 
+Every lead start passes the dispatcher name `d`, which no live session has: a scratch lead finds its dispatcher by session name,
+which a scratch FACTORY_HOME does not change, so the live name would reach the live dispatcher.
+
 The scratch directory and the sessions' transcripts are deleted at the end unless `--keep`; the size is printed."""
 import argparse
 import glob
