@@ -85,7 +85,7 @@ PROMPT_FROM = (("<agent-message", "subagent"), ("<cross-session-message", "sessi
 
 COMMANDS = {}  # name -> (help, options, function), filled by @command where each command is defined
 COMMAND_ORDER = ("new", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "guard-hook", "retro", "env",
-                 "feedback", "review", "log", "health", "watch", "ops", "digest", "firing", "miss", "firings",
+                 "feedback", "review", "log", "health", "watch", "ops", "mcp", "digest", "firing", "miss", "firings",
                  "pauses", "lead", "merge", "lander", "tech-lead", "build", "land", "overlap", "scratch", "rerun", "schedule",
                  "dispatcher", "settings", "wizard", "uninstall")  # `factory --help` order; a name not here follows, by name
 
@@ -268,6 +268,14 @@ OPS_TOOL_RE = re.compile(r"mcp__((?:(?!__).)+)__(\*|[^*]+)")
 def ops_tool_list(v):
     ok = name_list(v) is None and all(OPS_TOOL_RE.fullmatch(i) for i in v)
     return None if ok else " must be a list of MCP tool names: mcp__<server>__<tool> or mcp__<server>__*"
+
+
+MCP_ROLES = ("lead", "tech-lead")  # the `FACTORY_ROLE` spellings of the sessions that may hold MCP servers
+
+
+def mcp_tool_list(v):
+    ok = ops_tool_list(v) is None and not any(i.endswith("__*") for i in v)
+    return None if ok else " must be exact MCP tool names, mcp__<server>__<tool>: a role's list is tool by tool, so a tool that changes an outside system is held only when named, and a tool a server adds later is not covered"
 
 
 def toml_arg(raw):
@@ -620,6 +628,39 @@ def ops_access(root):
     return read_access(path) if path.exists() else None
 
 
+def read_mcp_access(path):
+    """The record of the MCP tools each role holds in `path`, checked (see docs/factory.md, "MCP servers for the lead and the tech lead"); Fail when it cannot be read as one."""
+    try:
+        rec = json.loads(path.read_text())
+        ok = isinstance(rec, dict) and isinstance(rec["root"], str) and repo_state(rec["root"], "mcp-access", "json") == path \
+            and isinstance(rec["at"], str) and rec["by"] in ("human", "session") and isinstance(rec["words"], str) \
+            and isinstance(rec["roles"], dict) and rec["roles"] and set(rec["roles"]) <= set(MCP_ROLES) \
+            and all(v and mcp_tool_list(v) is None for v in rec["roles"].values())
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise Fail(f"{path} cannot be read as an MCP-servers record ({why(e)}): fix or delete it")
+    if not ok:
+        raise Fail(f"{path} is not an MCP-servers record: fix or delete it")
+    return rec
+
+
+def mcp_access(root):
+    """The record of the MCP tools each role holds in the repository at `root`, or None when nobody has recorded one."""
+    path = repo_state(root, "mcp-access", "json")
+    return read_mcp_access(path) if path.exists() else None
+
+
+def role_mcp_flag(root, role):
+    """The argv words that give the session of `role` the servers of its recorded tools: the definitions go to a file of the
+    store only the owner reads, and only its path is on the command line. Nothing when the repository has no list for `role`."""
+    record = mcp_access(root)
+    if not record or role not in record["roles"]:
+        return []
+    servers = ops_servers(record["roles"][role], root, "the MCP-servers record")
+    path = repo_state(root, f"mcp-config-{role}", "json")
+    ops_private(path, json.dumps({"mcpServers": {name: d for server in servers for name, d in server.items()}}))
+    return [f"--mcp-config={path}"]
+
+
 def ops_refusal(access):
     """Why the ops explorer holds no tools for `access` (a record or None), or None when its list is granted."""
     if access is None:
@@ -629,9 +670,23 @@ def ops_refusal(access):
     return None
 
 
-def ops_servers(tools, root):
+def ops_covers(tools, tool):
+    """Whether the list `tools` (exact names and `mcp__<server>__*`) holds `tool`."""
+    return any(tool == t or t.endswith("__*") and tool.startswith(t[:-1]) for t in tools)
+
+
+def production_forbids(access, tool):
+    """Whether the production record `access` (or None) names the server of `tool` but its list does not cover `tool`."""
+    if access is None or access["state"] != "granted":
+        return False
+    server = OPS_TOOL_RE.fullmatch(tool)[1]
+    return any(OPS_TOOL_RE.fullmatch(t)[1] == server for t in access["tools"]) and not ops_covers(access["tools"], tool)
+
+
+def ops_servers(tools, root, source="factory ops grant"):
     """The definitions of the servers `tools` (a repository's granted list) name, as `[{name: definition}]`: the first of local scope
-    (`~/.claude.json`, this repository), project scope (`.mcp.json`) and user scope (`~/.claude.json`) that has the name."""
+    (`~/.claude.json`, this repository), project scope (`.mcp.json`) and user scope (`~/.claude.json`) that has the name.
+    A server found nowhere is warned about as named by `source`."""
     names = list(dict.fromkeys(OPS_TOOL_RE.fullmatch(t)[1] for t in tools or ()))
     scopes = [mcp_servers(CLAUDE_JSON, "projects", root), mcp_servers(Path(root) / ".mcp.json"), mcp_servers(CLAUDE_JSON)] if names else []
     out = []
@@ -639,7 +694,7 @@ def ops_servers(tools, root):
         if found := next((s[name] for s in scopes if name in s), None):
             out.append({name: found})
         else:
-            warn(f"factory ops grant names server {name}, which is not configured here (claude mcp add)")
+            warn(f"{source} names server {name}, which is not configured here (claude mcp add)")
     return out
 
 
@@ -810,7 +865,7 @@ def build_launch_argv(slug, dispatcher, brief, settings, base, remote, now, limi
         "--agents", json.dumps(agent_definitions(settings, root)),
         "--permission-mode", settings["lead_permission_mode"],
         "--plugin-dir", str(PLUGIN_ROOT),
-        *session_flags(settings["lean_start"]), *lean,
+        *session_flags(settings["lean_start"]), *lean, *role_mcp_flag(root, "lead"),
         "--disallowedTools", *LEAD_DENIED,
         "--append-system-prompt", lead_rules,
         prompt,
@@ -2442,6 +2497,34 @@ def save_evidence(p):
     return path
 
 
+def mcp_gate(p):
+    """The gate for an MCP call of a session that is not the ops explorer: the lead and the tech lead of a repository with an
+    MCP-servers record may call the tools listed for them, no subagent may call any, and the rest is not its business (see
+    docs/factory.md, "MCP servers for the lead and the tech lead"). Fail when the record cannot be read."""
+    if p.get("hook_event_name") != "PreToolUse":
+        return 0
+    role = tags({k: v for k, v in p.items() if k not in ("agent_id", "agent_type")})["role"]
+    if role == "other":
+        return 0
+    if not STORE.expanduser().is_absolute():
+        raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
+    if not isinstance(p.get("cwd"), str):
+        raise Fail("the payload has no cwd")
+    root = Repo(p["cwd"]).root
+    if (record := mcp_access(root)) is None:
+        return 0
+    tool = p["tool_name"]
+    if p.get("agent_id"):
+        decision = {"permissionDecision": "deny", "permissionDecisionReason":
+                    "MCP servers are given to the lead and the tech lead, not to their subagents (factory mcp access)"}
+    elif ops_covers(record["roles"].get(role, ()), tool) and not production_forbids(ops_access(root), tool):
+        decision = {"permissionDecision": "allow", "permissionDecisionReason": f"on this repository's list for the {role}"}
+    else:
+        decision = {"permissionDecision": "deny", "permissionDecisionReason": f"{tool} is not on this repository's list for the {role} (factory mcp access)"}
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", **decision}}))
+    return 0
+
+
 @command("ops-hook", "gate and record the ops explorer's MCP calls from a hook payload on stdin (run by the plugin's hooks)")
 def cmd_ops_hook(args):
     """The ops explorer's MCP calls: before one, allow it when its tool is on the list recorded for the repository of the
@@ -2450,7 +2533,7 @@ def cmd_ops_hook(args):
     try:
         p = json.loads(sys.stdin.read())
         if p.get("agent_type") != OPS_AGENT:
-            return 0
+            return mcp_gate(p)
         if not STORE.expanduser().is_absolute():
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
         event, tool = p["hook_event_name"], p["tool_name"]
@@ -2459,7 +2542,7 @@ def cmd_ops_hook(args):
                 raise Fail("the payload has no cwd")
             access = ops_access(Repo(p["cwd"]).root)
             refusal = ops_refusal(access)
-            if refusal is None and any(tool == t or t.endswith("__*") and tool.startswith(t[:-1]) for t in access["tools"]):
+            if refusal is None and ops_covers(access["tools"], tool):
                 decision = {"permissionDecision": "allow", "permissionDecisionReason": "on this repository's list"}
             else:
                 decision = {"permissionDecision": "deny", "permissionDecisionReason":
@@ -4164,6 +4247,61 @@ def ops_grant(args):
     root = Repo().root
     ops_servers(tools, root)
     return ops_record(root, "granted", args.words, tools)
+
+
+def mcp_access_line(record):
+    if record is None:
+        return "mcp servers: none recorded"
+    said = f" by {record['by']}" + (f", {record['words']}" if record["words"] else "")
+    return "\n".join([*(f"mcp servers, {role}: {' '.join(tools)}" for role, tools in record["roles"].items()), f"recorded {record['at']}{said}"])
+
+
+def mcp_access_show(args):
+    print(mcp_access_line(mcp_access(Repo().root)))
+    return 0
+
+
+def mcp_grant(args):
+    if os.environ.get("CLAUDECODE"):
+        raise Fail("only the human gives a role MCP servers: run this in your own terminal")
+    if problem := mcp_tool_list(args.tools):
+        raise Fail(f"mcp: the tools{problem}")
+    tools, root = list(dict.fromkeys(args.tools)), Repo().root
+    if (production := ops_access(root)) is None:
+        raise Fail("mcp: answer production access first: factory ops grant ... or factory ops decline --words ...")
+    if bad := next((t for t in tools if production_forbids(production, t)), None):
+        raise Fail(f"mcp: {bad} is a tool of a production server and not on the production list (factory ops access): a role never reads more of production than was granted read-only")
+    if production["state"] == "declined":
+        print("production access is declined here: by this line you say none of these servers reads production")
+    ops_servers(tools, root, "factory mcp grant")
+    old = mcp_access(root)
+    record = {"root": root, "roles": {**(old["roles"] if old else {}), **dict.fromkeys(args.role, tools)}, "at": now(), "by": "human", "words": args.words}
+    ops_private(repo_state(root, "mcp-access", "json"), json.dumps(record))
+    print(mcp_access_line(record))
+    return 0
+
+
+def mcp_revoke(args):
+    root = Repo().root
+    for name in ("mcp-access", *(f"mcp-config-{role}" for role in MCP_ROLES)):
+        repo_state(root, name, "json").unlink(missing_ok=True)
+    print(f"{mcp_access_line(None)} (revoked{', ' + args.words if args.words else ''})")
+    return 0
+
+
+def args_mcp(parser):
+    actions = parser.add_subparsers(dest="action", required=True)
+    actions.add_parser("access", help="say which MCP tools the lead and the tech lead hold in this repository")
+    give = actions.add_parser("grant", help="the human records the MCP tools a role holds here")
+    give.add_argument("--role", action="append", required=True, choices=MCP_ROLES, help="a role to give these tools; repeat for both")
+    give.add_argument("tools", nargs="+", metavar="TOOL", help="mcp__<server>__<tool>, exactly")
+    give.add_argument("--words", default="", help="the human's words")
+    actions.add_parser("revoke", help="delete the record and the server definitions written for it").add_argument("--words", default="")
+
+
+@command("mcp", "the MCP servers the lead and the tech lead hold (access, grant, revoke)", args_mcp)
+def cmd_mcp(args):
+    return {"access": mcp_access_show, "grant": mcp_grant, "revoke": mcp_revoke}[args.action](args)
 
 
 def ops_decline(args):
@@ -7789,7 +7927,7 @@ def tech_lead_argv(repo, slug, pr, evidence, spec, settings):
     return ["claude", "-p", "--model", settings["models"]["tech_lead"], "--permission-mode", settings["lead_permission_mode"],
             "--agents", json.dumps(agent_definitions(settings, repo.root)),
             "--plugin-dir", str(PLUGIN_ROOT), *worktree_flags(isolated_name(repo, tech_lead_paths(repo, slug)[0]), settings["lean_start"]), f"--tools={TECH_LEAD_KIT}",
-            "--allowedTools", *TECH_LEAD_TOOLS, "--disallowedTools", *TECH_LEAD_DENIED,
+            *role_mcp_flag(repo.root, "tech-lead"), "--allowedTools", *TECH_LEAD_TOOLS, "--disallowedTools", *TECH_LEAD_DENIED,
             "--max-budget-usd", TECH_LEAD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(TECH_LEAD_SCHEMA),
             "--append-system-prompt", with_review_words(TECH_LEAD_ROLE), tech_lead_prompt(repo, slug, pr, evidence, spec)]
 
@@ -7995,7 +8133,7 @@ def build_argv(repo, slug, spec, handover, note, settings, findings=()):
     """The build's launch command, the one place another runner would plug in."""
     return ["claude", "-p", "--model", settings["models"]["tech_lead"],
             "--agents", json.dumps(agent_definitions(settings, repo.root)), "--permission-mode", settings["lead_permission_mode"],
-            "--plugin-dir", str(PLUGIN_ROOT), *worktree_flags(isolated_name(repo, repo.worktree_path(slug)), settings["lean_start"]), f"--tools={LEAD_TOOLS}", "--disallowedTools", *BUILD_DENIED,
+            "--plugin-dir", str(PLUGIN_ROOT), *worktree_flags(isolated_name(repo, repo.worktree_path(slug)), settings["lean_start"]), f"--tools={LEAD_TOOLS}", *role_mcp_flag(repo.root, "tech-lead"), "--disallowedTools", *BUILD_DENIED,
             "--max-budget-usd", BUILD_BUDGET, "--output-format", "json", "--json-schema", json.dumps(BUILD_SCHEMA),
             "--append-system-prompt", with_review_words(BUILD_ROLE), build_prompt(repo, slug, spec, handover, note, findings)]
 
