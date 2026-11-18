@@ -1208,6 +1208,28 @@ class FollowRebaseTests(ScratchRepoBase):
         self.assertIsNone(self.level())
         self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), new)
 
+    def test_an_unpushed_merge_of_the_default_branch_is_not_lost_to_a_rebase_with_equal_patches(self):
+        self.task_commit("a.txt", "one\ntwo\ntask\n")
+        self.main_moves("evil.txt", "mine\n")
+        self.git("fetch", "-q", cwd=self.wt)
+        self.git("merge", "-q", "--no-edit", "origin/main", cwd=self.wt)
+        self.main_moves("b.txt", "b moved\n")
+        self.rewrite()
+        old = self.git("rev-parse", "HEAD", cwd=self.wt)
+        self.assertEqual(self.level(), "its worktree and origin/worktree-t1 have diverged")
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), old)
+        self.assertTrue((self.wt / "evil.txt").exists())
+
+    def test_a_pushed_update_merge_then_a_rebase_of_the_remote_follows(self):
+        self.task_commit("a.txt", "one\ntwo\ntask\n")
+        self.main_moves("evil.txt", "main\n")
+        self.assertIsNone(self.update()[0])
+        self.main_moves("b.txt", "b moved\n")
+        self.rewrite()
+        new = self.git("rev-parse", "worktree-t1", cwd=self.remote)
+        self.assertIsNone(self.level())
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), new)
+
     def diverged(self, local=False, then=None):
         self.task_commit("a.txt", "one\ntwo\ntask\n")
         self.main_moves("b.txt", "b moved\n")
@@ -1285,6 +1307,13 @@ class AttemptStackTests(unittest.TestCase):
         self.assertEqual((kind, self.levelled, self.asked), ("handover", ["t1", "t2", "t3"], 2))
         self.assertEqual(line, "stack member #2: task t2's worktree head is not the pull request's head: "
                                "the worktree has uncommitted changes")
+
+    def test_a_foreign_members_reason_is_not_put_on_the_stop_of_a_member_that_was_not_levelled(self):
+        self.rows[0]["phase"] = "working"
+        self.refused["t2"] = "the worktree has uncommitted changes"
+        kind, line = self.attempt()
+        self.assertEqual((kind, self.levelled), ("handover", ["t2", "t3"]))
+        self.assertEqual(line, "stack member #1: task t1's worktree head is not the pull request's head")
 
     def test_a_pull_request_in_no_stack_is_levelled_once_as_before(self):
         self.prs, self.rows = self.prs[:1], self.rows[:1]

@@ -7830,7 +7830,7 @@ def level(repo, task):
     """Fast-forward the worktree of `task` to its own remote branch (someone pressed "Update branch" on GitHub, or pushed
     from elsewhere), or `git reset --keep` it onto a remote branch rewritten with the same patches (a rebase); nothing
     is pushed. None, or why not: the lead may be running, the worktree is dirty or cannot be read, or the two have
-    diverged (a local commit the remote lacks, another patch, a squash)."""
+    diverged (a `HEAD` that was never the remote branch's head per its reflog, another patch, a squash)."""
     path, branch, remote = task["path"], task["branch"], repo.remote
     busy = land_busy(repo, path)
     if busy:
@@ -7845,7 +7845,9 @@ def level(repo, task):
         return None
     base = f"{remote}/{repo.default}"
     ours, theirs = patch_ids(path, base, "HEAD"), patch_ids(path, base, f"{remote}/{branch}")
-    if ours and ours == theirs and act_git(path, "reset", "--keep", f"{remote}/{branch}")[0] == 0:
+    rc, held, _ = act_git(path, "reflog", "show", "--format=%H", f"{remote}/{branch}")
+    pushed = rc == 0 and repo.git("rev-parse", "HEAD", path=path)[1].strip() in held.split()  # HEAD was the remote's head: no local commit is lost
+    if pushed and ours and ours == theirs and act_git(path, "reset", "--keep", f"{remote}/{branch}")[0] == 0:
         return None
     return f"its worktree and {remote}/{branch} have diverged"
 
@@ -7872,7 +7874,7 @@ def attempt(repo, p, snap, pr, permission):
     refused, levelled = [], 0
     for m, row in lagging:
         if reason := level(repo, row):
-            refused.append(reason)
+            refused.append((row["slug"], reason))
             continue
         row["head"] = repo.git("rev-parse", "HEAD", path=row["path"])[1].strip()
         pushed = repo.git("rev-parse", f"{repo.remote}/{row['branch']}", path=row["path"])[1].strip()
@@ -7881,8 +7883,10 @@ def attempt(repo, p, snap, pr, permission):
         levelled += 1
     if levelled:
         stop = merge_one(p, pr, False, False, permission)
-    if refused and stop and stop[0] == "handover":
-        stop = (stop[0], f"{stop[1]}: {refused[0]}")
+    if stop and stop[0] == "handover":
+        for slug, reason in refused:
+            if f"task {slug}'s worktree head is not the pull request's head" in stop[1]:
+                return stop[0], f"{stop[1]}: {reason}"
     return stop
 
 
