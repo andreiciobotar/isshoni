@@ -1192,7 +1192,7 @@ class OpsAccessTests(unittest.TestCase):
         self.assertFalse(self.file.exists())
 
     def test_an_invalid_tool_is_refused_and_nothing_is_written(self):
-        for bad in ("Bash", "mcp__x", "mcp____y", "mcp__a__q*"):
+        for bad in ("Bash", "mcp__x", "mcp____y", "mcp__a__q*", "mcp__a__*x"):
             code, _, err = self.cli("grant", "mcp__metrics__query", bad)
             self.assertEqual((code, err.startswith("factory: ops: the tools must be a list of MCP tool names")), (2, True), bad)
         self.assertFalse(self.file.exists())

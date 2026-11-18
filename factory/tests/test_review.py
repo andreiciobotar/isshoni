@@ -417,7 +417,7 @@ class ScanTests(Store):
         self.addCleanup(patcher.stop)
 
     def held(self, text):
-        patterns = factory.review_patterns(TARGET, factory.load_settings())
+        patterns = factory.review_patterns(TARGET)
         return next((k for k, p in patterns if p.search(text)), None)
 
     def test_each_kind_of_private_detail_is_found_by_its_kind(self):
@@ -463,7 +463,7 @@ class ScanTests(Store):
             (folder / "proposals" / f"{i}.md").write_text(proposal_file().replace("Problem text", f"it broke at {secret}"))
         spy = mock.Mock(return_value=(0, "", ""))
         with mock.patch.object(factory, "review_gh", spy):
-            posted, held = factory.review_post(TARGET, factory.load_settings(), folder, [], "S")
+            posted, held = factory.review_post(TARGET, folder, [], "S")
         self.assertEqual((posted, len(held)), ([], 4))
         self.assertEqual([h["why"] for h in held][:1], ["it holds a path under a home directory"])
         for h, secret in zip(held, ("alice", "gizmos", "prodmetrics", "10.20")):

@@ -3938,12 +3938,11 @@ def ops_access_line(access):
     return f"production access: {access['state']} {access['at']}" + (f" {' '.join(access['tools'])}" if access["state"] == "granted" else "") + said
 
 
-def ops_record(state, words, tools=None):
+def ops_record(root, state, words, tools=None):
     """Record the production access of this repository, replacing any earlier record, and print it."""
-    repo = Repo()
-    access = {"root": repo.root, "state": state, **({"tools": tools} if tools else {}), "at": now(),
+    access = {"root": root, "state": state, **({"tools": tools} if tools else {}), "at": now(),
               "by": "session" if os.environ.get("CLAUDECODE") else "human", "words": words}
-    ops_private(repo_state(repo.root, "ops-access", "json"), json.dumps(access))
+    ops_private(repo_state(root, "ops-access", "json"), json.dumps(access))
     print(ops_access_line(access))
     return 0
 
@@ -3959,14 +3958,15 @@ def ops_grant(args):
     if problem := ops_tool_list(args.tools):
         raise Fail(f"ops: the tools{problem}")
     tools = list(dict.fromkeys(args.tools))
-    ops_servers(tools, Repo().root)
-    return ops_record("granted", args.words, tools)
+    root = Repo().root
+    ops_servers(tools, root)
+    return ops_record(root, "granted", args.words, tools)
 
 
 def ops_decline(args):
     if not args.words.strip():
         raise Fail("ops: --words is required: it is the only trace that the human said no")
-    return ops_record("declined", args.words)
+    return ops_record(Repo().root, "declined", args.words)
 
 
 def args_ops(parser):
@@ -8313,7 +8313,7 @@ def review_mirror(issues):
                     set_feedback(prefix, status, by=REVIEW_BY)
 
 
-def review_patterns(target, settings):
+def review_patterns(target):
     """[(the kind of detail, its pattern)] that a public proposal must not hold: see docs/factory.md."""
     roots = {r["repo"] for name in (*REVIEW_ACTIVITY, "firings", "ops") for r in read_log(name) if isinstance(r.get("repo"), str)}
     others = {n for n in (remote_repo(root) for root in roots) if n and "/".join(n).lower() != target.lower()}
@@ -8372,10 +8372,10 @@ def review_labels(target):
     return None
 
 
-def review_post(target, settings, folder, issues, started):
+def review_post(target, folder, issues, started):
     """Check, scan and post each file in proposals/: ([{"file", "issue", "kind"}], [{"file", "why"}]). A refusal or a
     bad file holds that file only; held files stay in the folder."""
-    posted, held, patterns, labels = [], [], review_patterns(target, settings), None
+    posted, held, patterns, labels = [], [], review_patterns(target), None
     for path in sorted((folder / "proposals").glob("*.md")):
         try:
             kind, fields, sections = review_parse(path.read_text(), issues)
@@ -8454,7 +8454,7 @@ def review_run(repo, settings):
             if blocked:
                 held = [{"file": p.name, "why": blocked} for p in sorted((folder / "proposals").glob("*.md"))]
             else:
-                posted, held = review_post(target, settings, folder, issues, folder.name.removeprefix("kaizen-review-"))
+                posted, held = review_post(target, folder, issues, folder.name.removeprefix("kaizen-review-"))
             with open(folder / "report.md", "a") as f:
                 f.write(f"\n\nScript record: posted {len(posted)}, held {len(held)}"
                         + "".join(f"; held {h['file']}: {h['why']}" for h in held) + "\n")
