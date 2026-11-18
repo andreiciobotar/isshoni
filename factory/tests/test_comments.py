@@ -457,6 +457,17 @@ class BotOutputTests(Comments):
         self.tick([pr(comments=[comment("IC_1"), bot_comment("IC_2"), bot_comment("IC_3")])], bots={"IC_2", "IC_3"})
         self.assertEqual(len(self.calls("gh", "api", "--paginate", "--slurp", REST_COMMENTS)), 1)
 
+    def test_an_owner_associated_app_without_write_access_is_looked_up_and_forwarded_as_bot_output(self):
+        self.prime()
+        self.tick([pr(comments=[comment("IC_1", login="app-x")])], permission={"app-x": "read"}, bots={"IC_1"})
+        self.assertEqual(self.decisions(), {"IC_1": "bot-output"})
+        self.assertEqual(len(self.bot_files()), 1)
+
+    def test_a_failing_permission_call_leaves_a_human_associated_item_unseen_without_a_rest_list(self):
+        self.prime()
+        out = self.tick([pr(comments=[comment("IC_1", login="app-x")])], permission={}, bots={"IC_1"})
+        self.assertEqual((self.decisions(), self.calls("gh", "api", "--paginate"), out.count("comments: #1: gh api")), ({}, [], 1))
+
 
 class BotBlocklistCommandTests(Harness):
     def setUp(self):
@@ -480,6 +491,13 @@ class BotBlocklistCommandTests(Harness):
         self.assertEqual(self.run_it("remove", "author", "noisy")[:2], (0, "removed author noisy\n"))
         self.assertEqual(self.run_it("remove", "author", "noisy")[:2], (0, "author noisy: not there\n"))
         self.assertEqual(json.loads(self.path.read_text()), {"authors": [], "bodies": ["^cov"]})
+
+    def test_a_write_that_fails_leaves_the_old_record_in_place(self):
+        self.run_it("add", "author", "noisy")
+        with mock.patch.object(factory.os, "replace", side_effect=OSError("disk")):
+            code = self.run_it("add", "author", "other")[0]
+        self.assertNotEqual(code, 0)
+        self.assertEqual(json.loads(self.path.read_text()), {"authors": ["noisy"], "bodies": []})
 
     def test_a_body_that_does_not_compile_is_refused(self):
         code, _, err = self.run_it("add", "body", "(")

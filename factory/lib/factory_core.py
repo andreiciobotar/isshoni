@@ -6171,7 +6171,14 @@ def watch_comments(repo, fallback, snap):
             print(f"comments: #{n}: {e}")
             continue
         own, unread = own_logins(pr), False
-        lookup = {i["id"] for i in news(current) if i["kind"] != "line" and not i["bot"] and i["association"] not in HUMAN_ASSOCIATIONS}
+        kinds = {}  # None: the permission call failed, the item stays unseen
+        for i in news(current):
+            try:
+                kinds[i["id"]] = author_kind(p, i, permission)
+            except NotEvaluated as e:
+                print(f"comments: #{n}: {e}")
+                kinds[i["id"]] = None
+        lookup = {i["id"] for i in news(current) if i["kind"] != "line" and not i["bot"] and kinds[i["id"]] == "other"}
         bots = {}
         for kind in {i["kind"] for i in news(current) if i["id"] in lookup}:
             try:
@@ -6183,14 +6190,13 @@ def watch_comments(repo, fallback, snap):
             if i["id"] in lookup and i["kind"] not in bots:  # the next tick tries the item again
                 retry.add(i["id"])
                 continue
-            if i["id"] in lookup:
-                i["bot"] = i["id"] in bots[i["kind"]]
-            try:
-                i["author_kind"] = author_kind(p, i, permission)
-            except NotEvaluated as e:  # only this item stays unseen: the next tick tries it again
-                print(f"comments: #{n}: {e}")
+            if kinds[i["id"]] is None:  # only this item stays unseen: the next tick tries it again
                 retry.add(i["id"])
                 continue
+            i["author_kind"] = kinds[i["id"]]
+            if i["id"] in lookup:
+                i["bot"] = i["id"] in bots[i["kind"]]
+                i["author_kind"] = author_kind(p, i, permission)
             mine = bare(i["author"]) in own
             third = i["author_kind"] == "bot" and not mine
             if third and blocklist is None:  # nothing goes past a blocklist that cannot be read
