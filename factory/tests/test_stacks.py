@@ -21,7 +21,7 @@ def node(n, base, head, fork=False):
 
 
 def stack(number, *members):
-    return {"number": number, "open": True, "pull_requests": [{"number": n} for n in members]}
+    return {"number": number, "open": True, "pull_requests": [{"number": n, "state": "open"} for n in members]}
 
 
 def posts(fake):
@@ -136,20 +136,12 @@ class DissolveTests(World):
     def unstacks(self):
         return [c for c in self.fake.calls if c[-1].endswith("/unstack")]
 
-    def test_a_stacked_pull_request_is_unstacked_before_it_is_merged(self):
-        code, _, _ = self.merge("1", prs=[pr(1)], extra=self.stacked())
-        self.assertEqual(code, 0)
-        self.assertEqual(len(self.unstacks()), 1)
-        self.assertLess(self.index("gh", "api", "-H", V, "-i"), self.index("gh", "pr", "merge"))
-        self.assertLess(self.index("gh", "pr", "view"), self.index("gh", "api", "-H", V, "-i"))
-
-    def test_a_dry_run_and_a_stopped_gate_unstack_nothing(self):
-        code, _, _ = self.merge("1", "--dry-run", prs=[pr(1)], extra=self.stacked())
-        self.assertEqual((code, self.unstacks()), (0, []))
-        code, _, _ = self.merge("1", prs=[pr(1)], mergeable="CONFLICTING", extra=self.stacked())
-        self.assertEqual((code, self.unstacks()), (1, []))
-        code, _, _ = self.merge("1", prs=[pr(1)], checks=[], extra=self.stacked())
-        self.assertEqual((code, self.unstacks()), (1, []))
+    def test_the_bottom_of_a_stack_is_not_unstacked_by_a_dry_run_or_a_stopped_gate(self):
+        extra = self.stacked({("gh", "pr", "view"): (1, "", "boom")})
+        code, _, _ = self.merge("1", "--dry-run", prs=[pr(1)], extra=extra)
+        self.assertEqual((code, self.unstacks(), self.gh_mutations()), (1, [], []))
+        code, _, _ = self.merge("1", prs=[pr(1)], extra=extra)
+        self.assertEqual((code, self.unstacks(), self.gh_mutations()), (1, [], []))
 
     def test_a_merged_base_is_unstacked_before_the_retarget(self):
         extra = self.stacked({("gh", "pr", "list", "--head", "worktree-t1"): MERGED})
@@ -171,11 +163,6 @@ class DissolveTests(World):
     def test_a_failed_unstack_stops_before_any_edit_or_merge(self):
         for answer in ((1, "", "locked"), (0, "HTTP/2.0 200 OK\n\n{}", "")):
             with self.subTest(answer=answer):
-                self.setUp()
-                code, out, _ = self.merge("1", prs=[pr(1)], extra=self.stacked({UNSTACK: answer}))
-                self.assertEqual(code, 1)
-                self.assertIn("#1 stopped: gh api", out)
-                self.assertEqual(self.gh_mutations(), [])
                 self.setUp()
                 extra = self.stacked({UNSTACK: answer, ("gh", "pr", "list", "--head", "worktree-t1"): MERGED})
                 code, _, _ = self.merge("2", prs=[pr(2, base="worktree-t1")], extra=extra)

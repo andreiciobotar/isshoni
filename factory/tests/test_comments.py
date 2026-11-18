@@ -206,7 +206,7 @@ class WatchCommentsTests(Comments):
         self.assertEqual(len(self.couriers()), 2)
         self.assertEqual([c[-1].split("named ")[1].split(".")[0] for c in self.couriers()], ["t1", "dispatcher-repo"])
         self.assertEqual(self.calls("notify")[0][1], "factory: comments on #1")
-        self.assertEqual((self.logs()[0]["to"], out), ("human", "comments: #1 1 forwarded to human, 1 logged\n"))
+        self.assertEqual((self.logs()[0]["to"], out), ("human", "outbox: not delivered to the dispatcher dispatcher-repo: failed: no\ncomments: #1 1 forwarded to human, 1 logged\n"))
         self.assertEqual(self.tick([pr(comments=[comment("IC_1")])]), "")
 
     def test_nobody_alive_makes_a_notice(self):
@@ -281,7 +281,8 @@ class WatchCommentsTests(Comments):
         with mock.patch.object(factory, "forward", side_effect=[("lead"), RuntimeError("boom")]):
             with self.assertRaises(RuntimeError):
                 self.tick(prs)
-        self.assertEqual(self.tick(prs, sessions=[]), "comments: #2 1 forwarded to human, 1 logged\n")
+        self.assertEqual(self.tick(prs, sessions=[]),
+                         "outbox: no dispatcher session for /repo: run /factory:dispatch in a session there\ncomments: #2 1 forwarded to human, 1 logged\n")
 
     def test_hostile_body_stays_in_a_longer_fence_and_out_of_the_prompt(self):
         self.prime()
