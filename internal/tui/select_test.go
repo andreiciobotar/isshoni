@@ -51,19 +51,51 @@ func selectRow(m *model, key string) {
 	m.fixScroll()
 }
 
+// mixRow is one mix entry summed without sumTotals: the tokens the share is over (without cache reads),
+// the cost and the tokens with no price.
+type mixRow struct {
+	tokens   float64
+	cost     float64
+	unpriced int64
+}
+
+// amount is what stands beside the share: dollars, or the token count for a row with no price at all.
+func (r mixRow) amount() string {
+	if r.cost == 0 && r.unpriced > 0 {
+		return Human(r.tokens)
+	}
+	return Money(r.cost, "USD")
+}
+
 // sums totals a group's agent roles, models and cost without sumTotals.
-func sums(group []*data.Session) (byRole, byModel map[string]float64, cost float64) {
-	byRole, byModel = map[string]float64{}, map[string]float64{}
+func sums(group []*data.Session) (byRole, byModel map[string]mixRow, cost float64) {
+	byRole, byModel = map[string]mixRow{}, map[string]mixRow{}
+	add := func(m map[string]mixRow, k string, u data.Usage) {
+		r := m[k]
+		r.tokens += float64(u.Input + u.Output + u.CacheWrite)
+		r.cost += u.Cost
+		r.unpriced += u.Unpriced
+		m[k] = r
+	}
 	for _, s := range group {
 		cost += s.Cost.Total
 		for k, u := range s.ByAgent {
-			byRole[agentRole(k)] += u.Cost
+			add(byRole, agentRole(k), u)
 		}
 		for k, u := range s.ByModel {
-			byModel[k] += u.Cost
+			add(byModel, k, u)
 		}
 	}
 	return
+}
+
+// shareOf is a row's share of its mix, whose total is the sum of the tokens of its rows.
+func shareOf(m map[string]mixRow, k string) string {
+	var total float64
+	for _, r := range m {
+		total += r.tokens
+	}
+	return pct(100 * m[k].tokens / total)
 }
 
 // paneLine is the pane header: the line under the first box (the table).
@@ -104,10 +136,10 @@ func TestMixIsTheRowUnderTheCursor(t *testing.T) {
 				byRole, byModel, cost := sums(r.group)
 				var agentSum, modelSum float64
 				for _, v := range byRole {
-					agentSum += v
+					agentSum += v.cost
 				}
 				for _, v := range byModel {
-					modelSum += v
+					modelSum += v.cost
 				}
 				if d := agentSum - cost; d > 1e-9 || d < -1e-9 {
 					t.Fatalf("%s %s: agent costs %v != row cost %v", name, r.label(), agentSum, cost)
@@ -120,9 +152,9 @@ func TestMixIsTheRowUnderTheCursor(t *testing.T) {
 				}
 				where := fmt.Sprintf("%s %dx%d %s", name, sz[0], sz[1], r.label())
 				if sz[0] >= 120 {
-					for _, title := range []string{"Agent mix · ", "Model mix · "} {
-						if !strings.Contains(out, title+r.label()) {
-							t.Fatalf("%s: no title %q", where, title+r.label())
+					for _, title := range []string{"Agent tokens · ", "Model tokens · "} {
+						if want := trunc(title+r.label(), 32); !strings.Contains(out, want) { // the box cuts a title at 32
+							t.Fatalf("%s: no title %q", where, want)
 						}
 					}
 				}
@@ -131,13 +163,13 @@ func TestMixIsTheRowUnderTheCursor(t *testing.T) {
 				}
 				if sz[0] >= 120 {
 					for role, v := range byRole {
-						want := Money(v, "USD") + " " + pct(100*v/cost)
+						want := v.amount() + " " + shareOf(byRole, role)
 						if ln := lineWith(t, out, "● "+role); !strings.Contains(strings.Join(strings.Fields(ln), " "), want) {
 							t.Fatalf("%s: agent %s: want %q in %q", where, role, want, ln)
 						}
 					}
 					for k, v := range byModel {
-						want := Money(v, "USD") + " " + pct(100*v/cost)
+						want := v.amount() + " " + shareOf(byModel, k)
 						ln := lineWith(t, out, shortModel(k))
 						if got := strings.Join(strings.Fields(ln), " "); !strings.Contains(got, want) {
 							t.Fatalf("%s: model %s: want %q in %q", where, k, want, ln)
@@ -146,12 +178,12 @@ func TestMixIsTheRowUnderTheCursor(t *testing.T) {
 				} else {
 					entries := map[string]string{}
 					for role, v := range byRole {
-						entries[role] = Money(v, "USD") + " " + pct(100*v/cost)
+						entries[role] = v.amount() + " " + shareOf(byRole, role)
 					}
 					checkStrip(t, where+" agents", lineWith(t, out, "agents "), entries)
 					entries = map[string]string{}
 					for k, v := range byModel {
-						entries[shortModel(k)] = Money(v, "USD") + " " + pct(100*v/cost)
+						entries[shortModel(k)] = v.amount() + " " + shareOf(byModel, k)
 					}
 					checkStrip(t, where+" models", lineWith(t, out, "models "), entries)
 				}
@@ -324,7 +356,7 @@ func TestFoldRepository(t *testing.T) {
 			}
 			cur := m.rows()[mustCursor(m)]
 			out := plain(m)
-			if cur.name != "alpha" || !cur.folded || !strings.Contains(out, "alpha ×4 ▸") || !strings.Contains(out, "mix · repo alpha ×4") {
+			if cur.name != "alpha" || !cur.folded || !strings.Contains(out, "alpha ×4 ▸") || !strings.Contains(out, "tokens · repo alpha ×4") {
 				t.Fatalf("%s from %q: cursor on %s\n%s", ks[0], from, cur.label(), out)
 			}
 			for _, same := range []string{"Sessions  5 in 2 repos, 2 tasks", "totals of all 5 sessions shown"} {
@@ -431,7 +463,7 @@ func TestFollowOntoAFoldedRepository(t *testing.T) {
 	if r := m.rows()[mustCursor(m)]; m.selID != "a2000000" || r.name != "alpha" || !r.folded {
 		t.Fatalf("following a folded session: selID %q, cursor on %s", m.selID, r.label())
 	}
-	if out := plain(m); !strings.Contains(out, "mix · repo alpha ×4") || !strings.Contains(paneLine(out), "repo alpha ×4") {
+	if out := plain(m); !strings.Contains(out, "tokens · repo alpha ×4") || !strings.Contains(paneLine(out), "repo alpha ×4") {
 		t.Fatalf("the mix and the pane show the folded row\n%s", out)
 	}
 	// unfolding and folding move the cursor to the repository row, so each turns follow mode off

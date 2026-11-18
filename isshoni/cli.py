@@ -431,6 +431,8 @@ def cmd_events(args):
 
 
 def cmd_price(args):
+    if args.prices is not None:
+        raise SessionError("price writes your own price file; --prices does not apply")
     if args.like is not None:
         if any(v is not None for v in (args.input, args.output, args.cache_write_5m, args.cache_write_1h, args.cache_read)):
             raise SessionError("--like excludes the rates")

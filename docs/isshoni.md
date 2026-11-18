@@ -39,7 +39,7 @@ the file is read alone. The path is shown beside the built-in one (`prices:` foo
 (non-negative, per million tokens in the built-in currency) writes one table into that file
 and prints one line: the path, the id and the rates now in force (and the id it follows).
 It validates before it writes, changes nothing on an error (exit 2) and rewrites the whole
-file from its tables, so comments are not kept (the first line says so). To remove a price,
+file from its tables, keeping only the five rates, `long_prompt` and `like` (the first line says so). To remove a price,
 delete its table. Limits: cost is the list
 price at the file's `as_of` date, not what a subscription charges; fast mode, US-only
 inference, web search and batch are not priced; it is a lower bound, because Claude
@@ -507,8 +507,12 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   the rest (with fewer than 4 rows left over there is no pane content: the tree keeps them). The **pane header** is one line
   about the cursor row of any kind: live dot, the row, the repository and task of a
   session, its span, cost, tokens, the main and subagent shares and the repeat, loop and
-  warning counts; fields drop from the right when the width is short. Money and share in
-  the mix are over that row's cost, and a strip (under 120 columns, below the pane
+  warning counts; fields drop from the right when the width is short. Every mix (the agent
+  and model boxes, titled `Agent tokens` and `Model tokens` from 120 columns; the strips;
+  the Agents view's models strip; the Session view's agent bar) takes share, bar length and
+  model order from usage: tokens without cache reads (input, output, cache write), priced or
+  not. Beside each share is an amount: dollars (`*` when some of the row's tokens
+  are unpriced), or the row's token count when none of it is priced, never `$0`. A strip (under 120 columns, below the pane
   header) ends in `+N` when N entries do not fit. On a session row the pane shows its
   **Timeline** (when there is room for its lanes) above its **Dispatches**, none
   selected; the dispatches load a moment after the cursor rests on the row (the pane

@@ -760,7 +760,7 @@ type kv struct {
 // amount is the row's dollars; a row with no price at all shows its tokens instead of a zero.
 func (m *model) amount(r kv) string {
 	if r.cost == 0 && r.unpriced > 0 {
-		return Human(int64(r.v))
+		return Human(r.v)
 	}
 	return m.money(r.cost, r.unpriced)
 }
@@ -842,7 +842,7 @@ func (m *model) agentMixBox(p paint, label string, t totals, w, h int) block {
 	if len(rows) == 0 {
 		lines = []string{in.t("no data yet", th.Faint)}
 	}
-	return p.boxed(boxTitle("Agent mix by tokens", label), lines, w, h, th.Yellow)
+	return p.boxed(boxTitle("Agent tokens", label), lines, w, h, th.Yellow)
 }
 
 func (m *model) modelMixBox(p paint, label string, t totals, w, h int) block {
@@ -866,5 +866,5 @@ func (m *model) modelMixBox(p paint, label string, t totals, w, h int) block {
 	if len(rows) == 0 {
 		lines = []string{in.t("no data yet", th.Faint)}
 	}
-	return p.boxed(boxTitle("Model mix", label), lines, w, h, th.Teal)
+	return p.boxed(boxTitle("Model tokens", label), lines, w, h, th.Teal)
 }

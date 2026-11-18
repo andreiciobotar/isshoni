@@ -407,6 +407,7 @@ func (m *model) helpScreen(p paint) []string {
 		p.t("s sorts by recent · cost · subagent share.", th.Faint),
 		p.t("The mix and the pane under the table show the cursor row; enter opens a", th.Faint),
 		p.t("session full screen. The tiles total every session.", th.Faint),
+		p.t("Mix shares are tokens without cache reads (input, output, cache write).", th.Faint),
 		p.t("While a row is selected the order is held; s or the all row re-sorts.", th.Faint),
 		p.t("A dot pulses on sessions written in the last 30 seconds.", th.Faint),
 		p.t("Factory: every 30 s while shown, asking GitHub; every 2 min off it, not.", th.Faint))

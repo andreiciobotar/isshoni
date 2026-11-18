@@ -56,6 +56,14 @@ class PriceCommandTests(unittest.TestCase):
                 self.assertNotEqual(err, "")
                 self.assertFalse(os.path.exists(path))
 
+    def test_prices_option_is_refused(self):
+        with user_prices() as path:
+            rc, out, err = run("--prices", PRICES_PATH, "price", "m", "--like", "claude-opus-5-5")
+            self.assertEqual((rc, out), (2, ""))
+            self.assertEqual(err.count("\n"), 1)
+            self.assertIn("--prices does not apply", err)
+            self.assertFalse(os.path.exists(path))
+
     def test_a_second_command_keeps_the_first_entry(self):
         with user_prices():
             run("price", "a", "--like", "claude-opus-5-5")
