@@ -203,6 +203,17 @@ class SendBackTests(Case):
                          ("unstarted", N, SLUG, "tech-lead", "opus", None, None))
         self.assertIn(str(self.spec), r["reason"])
 
+    def test_a_worktree_with_no_git_is_not_started_and_an_unstarted_record_says_why(self):
+        wt = f"{self.root}/.claude/worktrees/{SLUG}"
+        os.unlink(f"{wt}/.git")
+        with mock.patch.object(factory, "spawn") as spawn:
+            to, _ = self.send_back()
+        spawn.assert_not_called()
+        self.assertEqual(to, "lead")
+        [r] = self.records("techlead")
+        self.assertEqual(r["outcome"], "unstarted")
+        self.assertIn(f"the worktree {wt} has no .git, so git there answers from no repository: nothing ran.", r["reason"])
+
     def test_a_process_that_cannot_start_falls_back_to_the_lead(self):
         with mock.patch.object(factory, "spawn", side_effect=OSError("no fork")):
             to, _ = self.send_back()

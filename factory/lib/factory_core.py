@@ -7236,10 +7236,12 @@ def tech_lead_paths(repo, slug):
 
 
 def tech_lead_missing(repo, slug):
-    """None, or why a tech lead cannot work on `slug`: its worktree or its spec is not there."""
+    """None, or why a tech lead cannot work on `slug`: its worktree has no .git or is not there, or its spec is not."""
     worktree, spec = tech_lead_paths(repo, slug)
     if not os.path.isdir(worktree):
         return f"the worktree {worktree} is missing"
+    if gone := worktree_gone(worktree):
+        return gone
     return None if spec.is_file() else f"the spec {spec} is missing"
 
 
