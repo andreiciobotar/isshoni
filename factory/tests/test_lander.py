@@ -490,7 +490,7 @@ class MergeInOrderTests(Loop):
         self.sim.add(2, base="worktree-t1")
         self.go("lander")
         self.assertEqual(self.sim.merged, [1, 2])
-        self.assertEqual(self.sim.events("push", "merge", "edit"), [("push", 1), ("merge", 1), ("push", 2), ("edit", 2), ("merge", 2)])
+        self.assertEqual(self.sim.events("push", "merge", "edit"), [("push", 1), ("merge", 1), ("edit", 2), ("push", 2), ("merge", 2)])
 
     def test_a_base_change_is_a_silent_wait_and_the_loop_merges_after_one_poll(self):
         self.sim.add(1)
@@ -506,6 +506,86 @@ class MergeInOrderTests(Loop):
         self.assertEqual((code, seen), (0, [(factory.POLL, [("edit", 2)], "pending")]))
         self.assertEqual(self.sim.events("edit", "merge"), [("edit", 2), ("merge", 2)])
         self.assertEqual((self.sim.lines, self.lander_json()["stopped"], self.lander_json()["waiting"]), ([], {}, {}))
+
+
+class RetargetTests(Loop):
+    """Every pass changes the base of an owned pull request whose base merged: #1 is merged, #2 is opened on its head."""
+
+    def merged_base(self, **kw):
+        self.sim.add(1)
+        self.sim.merged = [1]
+        self.sim.add(2, base="worktree-t1", behind=False, **kw)
+
+    def edits(self):
+        return self.sim.events("edit")
+
+    def test_a_handed_over_pull_request_that_is_not_approved_is_retargeted_once_and_not_merged(self):
+        self.merged_base(approved=False)
+        code, out, _ = self.go("lander")
+        self.assertEqual((code, self.sim.merged, self.sim.events("edit", "merge")), (0, [1], [("edit", 2)]))
+        self.assertEqual([l for l in out.splitlines() if "base" in l],
+                         ["#2 base changed from worktree-t1 to main: its base merged (https://x/pull/1)"])
+
+    def test_an_approved_pull_request_is_retargeted_in_one_pass_and_merged_in_a_later_one(self):
+        self.merged_base()
+        asleep, seen = factory.time.sleep, []
+
+        def sleep(seconds):
+            seen.append(self.sim.events("edit", "merge"))
+            asleep(seconds)
+        with mock.patch.object(factory.time, "sleep", sleep):
+            code, out, _ = self.go("lander")
+        self.assertEqual((code, seen), (0, [[("edit", 2)]]))
+        self.assertEqual(self.sim.events("edit", "merge"), [("edit", 2), ("merge", 2)])
+        self.assertEqual(out.count("#2 base changed from worktree-t1 to main"), 1)
+
+    def test_a_draft_of_a_working_task_is_retargeted_while_another_task_is_handed_over(self):
+        self.merged_base(draft=True, approved=False)
+        self.sim.add(3, behind=False, approved=False)
+        code, out, _ = self.go("lander", state={"t1": "handed-over", "t2": "working", "t3": "handed-over"})
+        self.assertEqual((code, self.edits()), (0, [("edit", 2)]))
+        self.assertIn("#2 base changed from worktree-t1 to main", out)
+
+    def test_a_pull_request_no_task_owns_is_not_retargeted(self):
+        self.merged_base(approved=False)
+        code, out, _ = self.go("lander", tasks=["t1"])
+        self.assertEqual((code, self.edits()), (0, []))
+        self.assertNotIn("base", out)
+
+    def test_a_cross_repository_pull_request_is_not_retargeted(self):
+        self.merged_base(approved=False)
+        listed = self.sim.listed
+        self.sim.listed = lambda n: {**listed(n), "isCrossRepository": True} if n == 2 else listed(n)
+        code, out, _ = self.go("lander")
+        self.assertEqual((code, self.edits()), (0, []))
+        self.assertNotIn("base changed", out)
+
+    def test_a_base_whose_pull_request_is_open_or_missing_or_unreadable_is_not_retargeted(self):
+        listing = {"open": (0, json.dumps([{"state": "OPEN", "url": "u", "headRefOid": "z", "baseRefName": "main"}]), ""),
+                   "missing": (0, "[]", ""), "unreadable": (1, "", "boom")}
+        for label, answer in listing.items():
+            with self.subTest(label):
+                self.setUp()
+                self.sim.add(2, base="feature", approved=False, behind=False)
+                code, out, _ = self.go("lander", extra={("gh", "pr", "list", "--head", "feature"): answer})
+                self.assertEqual((code, self.edits()), (0, []))
+                self.assertNotIn("base", out)
+
+    def test_a_failed_edit_is_a_line_and_the_stop_of_a_pull_request_in_the_line(self):
+        handle = self.sim.handle
+        self.sim.handle = lambda a, cwd: (1, "", "no edit") if a[:3] == ["gh", "pr", "edit"] else handle(a, cwd)
+        self.merged_base(approved=False)
+        code, out, _ = self.go("lander")
+        self.assertIn("#2 base not changed to main: gh pr edit 2 --base main: no edit\n", out)
+        self.assertNotIn("#2 stopped", out)
+        self.setUp()
+        handle = self.sim.handle
+        self.sim.handle = lambda a, cwd: (1, "", "no edit") if a[:3] == ["gh", "pr", "edit"] else handle(a, cwd)
+        self.merged_base()
+        code, out, _ = self.go("lander")
+        self.assertEqual((code, self.sim.merged), (1, [1]))
+        self.assertIn("#2 base not changed to main: gh pr edit 2 --base main: no edit\n", out)
+        self.assertRegex(out, r"#2 stopped \w+: gh pr edit 2 --base main: no edit")
 
 
 class HoldTests(Loop):

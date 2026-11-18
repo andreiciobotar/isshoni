@@ -143,12 +143,11 @@ class DissolveTests(World):
         code, _, _ = self.merge("1", prs=[pr(1)], extra=extra)
         self.assertEqual((code, self.unstacks(), self.gh_mutations()), (1, [], []))
 
-    def test_a_merged_base_is_unstacked_before_the_retarget(self):
+    def test_a_stack_member_on_a_merged_base_is_left_alone(self):
         extra = self.stacked({("gh", "pr", "list", "--head", "worktree-t1"): MERGED})
-        code, _, _ = self.merge("2", prs=[pr(2, base="worktree-t1")], extra=extra)
-        self.assertEqual(code, 1)
-        self.assertEqual(len(self.unstacks()), 1)
-        self.assertLess(self.index("gh", "api", "-H", V, "-i"), self.index("gh", "pr", "edit"))
+        code, out, _ = self.merge("2", prs=[pr(2, base="worktree-t1")], extra=extra)
+        self.assertEqual((code, self.unstacks(), self.gh_mutations()), (1, [], []))
+        self.assertNotIn("base changed", out)
 
     def test_the_landing_unstacks_before_it_retargets(self):
         landing = factory.Landing.__new__(factory.Landing)
@@ -160,13 +159,7 @@ class DissolveTests(World):
         self.assertEqual([c[-1].rpartition("/")[2] if c[1] == "api" else c[1] for c in fake.calls],
                          ["stacks?pull_request=1", "unstack", "pr"])
 
-    def test_a_failed_unstack_stops_before_any_edit_or_merge(self):
-        for answer in ((1, "", "locked"), (0, "HTTP/2.0 200 OK\n\n{}", "")):
-            with self.subTest(answer=answer):
-                self.setUp()
-                extra = self.stacked({UNSTACK: answer, ("gh", "pr", "list", "--head", "worktree-t1"): MERGED})
-                code, _, _ = self.merge("2", prs=[pr(2, base="worktree-t1")], extra=extra)
-                self.assertEqual((code, self.gh_mutations()), (1, []))
+    def test_a_failed_unstack_stops_the_landing_before_any_edit(self):
         landing = factory.Landing.__new__(factory.Landing)
         landing.repo, landing.url, landing.pr_base, landing.target_branch = REPO, "https://x/pull/1", "dev", "main"
         fake = FakeRun({("gh", "api", "-H", V, f"{STACKS}?pull_request=1"): (0, json.dumps([stack(7, 1, 2)]), ""),
