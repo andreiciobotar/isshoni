@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import test_factory
 from test_factory import ROOT, FakeTime, WT, FakeRun, factory, invoke, repo_answers, task_entry
 from test_health import DISPATCHER, NOW, Harness, check, iso, pic, row
 
@@ -1515,6 +1517,24 @@ class StackMergeTests(World):
         self.assertEqual([out.count(f"#{n} merged https://x/pull/{n}\n") for n in (1, 2, 3)], [1, 1, 1])
         self.assertEqual([r["pr"] for r in self.queued() if r["step"] == "merged"], [1, 2, 3])
         self.assertEqual(self.count("git", "clone"), 0)
+
+    def test_the_clean_after_a_stack_merge_removes_the_members_in_a_real_repository(self):
+        """The merge is faked as above; `run_clean` is the real one, over the merged-stack repository of the end-to-end tests."""
+        e = test_factory.EndToEndTests()
+        e.setUp()
+        self.addCleanup(e.doCleanups)
+        self.addCleanup(os.chdir, os.getcwd())
+        listing, real_run, real_clean = e.merged_stack(), factory.run, factory.run_clean
+
+        def clean_there():
+            with mock.patch.object(factory, "run", real_run), mock.patch.dict(os.environ, {**e.env, "FAKE_PR": listing}):
+                os.chdir(e.repo)
+                return real_clean()
+        with mock.patch.object(factory, "run_clean", clean_there):
+            code, out, err = self.stacked("1")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(e.git("branch", "--list", "mts-*"), "")
+        self.assertEqual(e.git("worktree", "list", "--porcelain").count("worktree "), 1)
 
     def queued(self):
         return [{k: v for k, v in r.items() if k != "ts"} for r in self.records("queue")]

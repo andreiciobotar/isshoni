@@ -60,6 +60,7 @@ STATUS_PR_FIELDS = "state,url,headRefOid,baseRefName,headRefName,isDraft"
 KEEP_MONTHS = 12
 BOUND_RE = re.compile(r"\d{4}-\d{2}(-\d{2}(T\d{2}(:\d{2}(:\d{2}Z?)?)?)?)?")
 WORKTREE_RE = re.compile(r"(.*?)/\.claude/worktrees/([^/]+)(?:/|$)")
+EACH_WORKTREE_RE = re.compile(r"/\.claude/worktrees/([^/]+)(?=/|$)")  # every one on a path, not only the first
 MODEL_RE = re.compile(rb'"model"\s*:\s*"([^"]+)"')
 ITEM_RE = re.compile(r"(?:[-*]|\d+\.)\s+")
 LINK_RE = re.compile(r"[a-z][a-z0-9+.-]*://")
@@ -81,7 +82,7 @@ PROMPT_FROM = (("<agent-message", "subagent"), ("<cross-session-message", "sessi
                ("<task-notification", "notification"))
 
 COMMANDS = {}  # name -> (help, options, function), filled by @command where each command is defined
-COMMAND_ORDER = ("new", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "retro", "env",
+COMMAND_ORDER = ("new", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "guard-hook", "retro", "env",
                  "feedback", "review", "log", "health", "watch", "ops", "digest", "firing", "miss", "firings",
                  "pauses", "lead", "merge", "lander", "tech-lead", "build", "land", "overlap", "scratch", "rerun", "schedule",
                  "dispatcher", "settings", "wizard", "uninstall")  # `factory --help` order; a name not here follows, by name
@@ -129,6 +130,25 @@ def release_held():
         stop_on_signal(held[0], None)
 
 
+def worktree_gone(path):
+    """The line that refuses work in `path`, or None: `path` is inside `.claude/worktrees/<name>` and that worktree has
+    no `.git` entry, so git there would answer from the nearest ancestor that has one (found without calling git)."""
+    path = os.fspath(path)
+    for m in EACH_WORKTREE_RE.finditer(path):
+        tree = path[:m.end()]
+        if os.path.lexists(os.path.join(tree, ".git")):
+            continue
+        found = os.path.dirname(tree)
+        while not os.path.lexists(os.path.join(found, ".git")):
+            if found == os.path.dirname(found):
+                found = "no repository"
+                break
+            found = os.path.dirname(found)
+        return (f"factory: {m.group(1)}: the worktree {tree} has no .git, so git there answers from {found}: nothing ran. "
+                "Change nothing and hand back with this line.")
+    return None
+
+
 def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
     """The only place a subprocess is waited for (`spawn` starts one detached), and the owner of its lifetime. Returns (returncode, stdout, stderr).
     Every call ends after `timeout` seconds (RUN_TIMEOUT unless told otherwise; `gh` gets GH_TIMEOUT). A `group=True`
@@ -137,6 +157,8 @@ def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
     A signal that arrives while the child starts is held until the child is known, then ends it.
     `gh` acts as the App when an identity is installed (unless the caller's `env` brings a `GH_TOKEN`), and a call that is slow or fails is logged to gh-YYYY-MM.jsonl.
     A `claude` child gets no `ANTHROPIC_LOG`: its debug logging would share the stdout that is read as JSON."""
+    if cwd is not None and (gone := worktree_gone(cwd)):
+        return 1, "", gone
     timeout = timeout or (GH_TIMEOUT if argv[0] == "gh" else RUN_TIMEOUT)
     if argv[0] == "gh" and "GH_TOKEN" not in (env or {}):
         try:
@@ -680,6 +702,8 @@ def run_in_worktree(repo, path, argv, **kw):
     """`run` for a session started with `worktree_flags`: from the main checkout when isolated, else in the worktree,
     said once to be not isolated. A lock the harness leaves on an isolated run is released after it, only when the
     worktree was not locked before: a lock that was already there (a live lead's) is never touched."""
+    if gone := worktree_gone(path):
+        return 1, "", gone
     name = isolated_name(repo, path)
     if name is None:
         print(f"factory: {path} is not under {repo.root}/.claude/worktrees: this session is not isolated to its worktree",
@@ -1739,7 +1763,7 @@ def keep_rule(repo, row, rows, files=None):
     if nested:
         return f"another worktree is registered inside it: {nested[0]}", False
     stacked = [r["slug"] for r in rows if r["stacked_on"] == row["branch"]
-               and not (r["pr_state"] == "merged" and r["pr_base"] == repo.default)]
+               and not landed(repo, r)]
     if stacked:
         return f"{', '.join(stacked)} is stacked on it", True
     reason = merged_reason(repo, row)
@@ -1809,14 +1833,25 @@ def closed_reason(repo, row, rows, files):
             if lost else None)
 
 
+def landed(repo, row):
+    """Whether the row's pull request is merged into the default branch, or merged elsewhere with its head already in the
+    default branch (an upper member of a stack merged with one call). A squash merge into the default branch counts by its base."""
+    if row["pr_state"] != "merged":
+        return False
+    if row["pr_base"] == repo.default:
+        return True
+    return bool(row["head"]) and repo.git("merge-base", "--is-ancestor", row["head"], f"{repo.remote}/{repo.default}")[0] == 0
+
+
 def merged_reason(repo, row):
-    """Why rule 1 (merged into the default branch at the local head) does not hold, or None."""
+    """Why rule 1 (merged into the default branch, or with its head in it, at the local head) does not hold, or None."""
     if row["pr_state"] == "unknown":
         return "its pull request state is unknown"
     if row["pr_state"] != "merged":
         return f"no merged pull request ({row['pr_state']})"
-    if row["pr_base"] != repo.default:
-        return f"its pull request was merged into {row['pr_base'] or 'an unknown branch'}, not {repo.default}"
+    if not landed(repo, row):
+        return (f"its pull request was merged into {row['pr_base'] or 'an unknown branch'}, "
+                f"and its head is not in {repo.remote}/{repo.default}")
     if not row["head"] or not row["pr_head"]:
         return "cannot compare its head with the merged pull request"
     if row["head"] != row["pr_head"]:
@@ -1826,10 +1861,12 @@ def merged_reason(repo, row):
 
 def clean_row(repo, row, rows, files, dry_run):
     """Remove one task when nothing keeps it, and print what came of it. Returns ("removed" | "would remove" | "kept" |
-    "failed", why it was kept). A closed task's branch goes by `update-ref -d` at the head judged: its commits may live in
-    another task's branch, which `branch -d` refuses, and a branch that moved since stays."""
+    "failed", why it was kept). The branch goes by `update-ref -d` at the head judged, not `branch -d`: every rule that lets
+    a task go has shown its commits are kept elsewhere, and a branch that moved since stays."""
     slug = row["slug"]
     reason = keep_rule(repo, row, rows, files)[0]
+    if not reason and not row["session_id"] and not row["head"]:
+        reason = "its head is unknown, so its branch cannot be deleted at a known commit"
     if not reason and not dry_run:
         sessions = list_sessions()
         if sessions is None:
@@ -1845,9 +1882,8 @@ def clean_row(repo, row, rows, files, dry_run):
     if row["session_id"]:
         steps = [["claude", "rm", row["session_id"]]]
     else:
-        branch = (["update-ref", "-d", f"refs/heads/{row['branch']}", row["head"]] if row["state"] == "closed"
-                  else ["branch", "-d", row["branch"]])
-        steps = [["git", "worktree", "remove", row["path"]], ["git", *branch]]
+        steps = [["git", "worktree", "remove", row["path"]],
+                 ["git", "update-ref", "-d", f"refs/heads/{row['branch']}", row["head"]]]
     for argv in steps:
         rc, _, err = run(argv, cwd=repo.root)
         if rc != 0:
@@ -1873,6 +1909,10 @@ def cmd_clean(args):
     failed = False
     rows = collect(repo, sessions, load_settings()["task_time_limit_hours"])
     files = OpenFiles()
+    if any(r["pr_state"] == "merged" and r["pr_base"] != repo.default for r in rows):
+        if (fetched := act_git(repo.root, "fetch", repo.remote, repo.default, timeout=GH_TIMEOUT))[0] != 0:
+            sys.stderr.write(f"factory: warning: cannot fetch {repo.default} from {repo.remote}: {fetched[2].strip()}; "
+                             f"judging by the {repo.remote}/{repo.default} it had\n")
     for row in rows:
         failed |= clean_row(repo, row, rows, files, args.dry_run)[0] == "failed"
     for agent in repo.agents:
@@ -2258,6 +2298,23 @@ def cmd_ops_hook(args):
     except Exception as e:
         print(f"factory ops-hook: {why(e)}", file=sys.stderr)
         return 2
+    return 0
+
+
+@command("guard-hook", "deny Bash, Edit, Write and NotebookEdit calls from a worktree that has no .git (run by the plugin's hooks)")
+def cmd_guard_hook(args):
+    """From a hook payload on stdin: nothing when the session's directory is in no worktree or in healthy ones, else deny
+    the call with `worktree_gone`'s line. Reads nothing but the payload and the directory tree; an unreadable payload is `{}`."""
+    try:
+        p = json.loads(sys.stdin.read())
+    except ValueError:
+        p = {}
+    p = p if isinstance(p, dict) else {}
+    cwd = p.get("cwd")
+    sources = [d for d in (os.environ.get("CLAUDE_PROJECT_DIR"), cwd if isinstance(cwd, str) else None) if d] or [os.getcwd()]
+    if line := next(filter(None, map(worktree_gone, sources)), None):
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                 "permissionDecisionReason": line}}))
     return 0
 
 
@@ -7251,10 +7308,12 @@ def tech_lead_paths(repo, slug):
 
 
 def tech_lead_missing(repo, slug):
-    """None, or why a tech lead cannot work on `slug`: its worktree or its spec is not there."""
+    """None, or why a tech lead cannot work on `slug`: its worktree has no .git or is not there, or its spec is not."""
     worktree, spec = tech_lead_paths(repo, slug)
     if not os.path.isdir(worktree):
         return f"the worktree {worktree} is missing"
+    if gone := worktree_gone(worktree):
+        return gone.removeprefix("factory: ")
     return None if spec.is_file() else f"the spec {spec} is missing"
 
 
@@ -8408,7 +8467,7 @@ def main(argv=None):
         signal.alarm(OPS_HOOK_DEADLINE)
     args = parse_args(argv)
     try:
-        if not STORE.expanduser().is_absolute() and args.cmd != "ops-hook":  # which refuses only the ops explorer's calls
+        if not STORE.expanduser().is_absolute() and args.cmd not in ("ops-hook", "guard-hook"):  # which use no store
             if args.cmd == "hook":
                 return 0
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
