@@ -32,6 +32,8 @@ class CopyBehindTests(unittest.TestCase):
         self.source = self.tmp / "source"
         self.source.mkdir()
         self.git(self.source, "init", "-q", "-b", "main")
+        self.git(self.source, "config", "uploadpack.allowFilter", "true")
+        self.git(self.source, "config", "uploadpack.allowAnySHA1InWant", "true")
         (self.source / ".claude-plugin").mkdir()
         (self.source / ".claude-plugin" / "marketplace.json").write_text(
             json.dumps({"name": "factory", "plugins": [{"name": "factory", "source": "./factory"}]}))
@@ -40,7 +42,7 @@ class CopyBehindTests(unittest.TestCase):
         self.commits = [self.commit("factory/a.txt")]
         self.commits += [self.commit(f) for f in ("factory/a.txt", "docs.txt", "docs.txt", "factory/a.txt", "docs.txt")]
         plugins = self.tmp / "plugins"
-        self.git(self.tmp, "clone", "-q", str(self.source), str(plugins / "marketplaces" / "factory"))
+        self.git(self.tmp, "clone", "-q", f"file://{self.source}", str(plugins / "marketplaces" / "factory"))
         self.root = plugins / "cache" / "factory" / "factory" / "0.1.0"
         self.root.mkdir(parents=True)
         (self.root / ".claude-plugin").mkdir()
@@ -138,6 +140,39 @@ class CopyBehindTests(unittest.TestCase):
         self.assertTrue(json.loads(out)["systemMessage"].startswith(COULD_NOT))
         self.assertEqual([e["event"] for e in self.recorded()], ["SessionStart"])
         self.assertFalse((self.store / "cache" / "plugin-source.git").exists())
+
+    def test_status_cached_asks_no_remote_and_prints_no_line(self):
+        out = io.StringIO()
+        with contextlib.chdir(self.repo), redirect_stdout(out), redirect_stderr(io.StringIO()), \
+                mock.patch.object(factory, "copy_behind", side_effect=AssertionError("asked")):
+            self.assertEqual(factory.main(["status", "--cached"]), 0)
+        self.assertNotIn("installed factory", out.getvalue())
+
+    def test_a_repointed_marketplace_source_is_followed(self):
+        self.assertEqual(factory.copy_behind(), LINE.format(n=2))
+        other = self.tmp / "other"
+        self.git(self.tmp, "clone", "-q", str(self.source), str(other))
+        (other / "factory" / "b.txt").write_text("x\n")
+        self.git(other, "add", "factory/b.txt")
+        self.git(other, "commit", "-q", "-m", "b")
+        self.git(self.tmp / "plugins" / "marketplaces" / "factory", "remote", "set-url", "origin", f"file://{other}")
+        (self.store / "cache" / "copy-behind.json").unlink()
+        self.assertEqual(factory.copy_behind(), LINE.format(n=3))
+
+    def test_an_entry_without_dates_is_compared_with_a_question_mark(self):
+        path = self.tmp / "plugins" / "installed_plugins.json"
+        doc = json.loads(path.read_text())
+        for k in ("installedAt", "lastUpdated"):
+            del doc["plugins"]["factory@factory"][0][k]
+        path.write_text(json.dumps(doc))
+        self.assertEqual(factory.copy_behind(), LINE.format(n=2).replace("2026-11-16", "?"))
+
+    def test_an_entry_without_a_commit_says_so(self):
+        path = self.tmp / "plugins" / "installed_plugins.json"
+        doc = json.loads(path.read_text())
+        del doc["plugins"]["factory@factory"][0]["gitCommitSha"]
+        path.write_text(json.dumps(doc))
+        self.assertTrue(factory.copy_behind().startswith(COULD_NOT))
 
     def test_a_missing_marketplace_file_says_so(self):
         (self.tmp / "plugins" / "known_marketplaces.json").unlink()

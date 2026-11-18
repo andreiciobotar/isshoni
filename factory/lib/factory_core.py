@@ -1460,7 +1460,7 @@ def installed_copy():
                     sha = e.get("gitCommitSha")
                     plugin, _, marketplace = key.rpartition("@")
                     return {"sha": sha if isinstance(sha, str) else None, "plugin": plugin, "marketplace": marketplace,
-                            "date": str(e.get("lastUpdated") or e["installedAt"])[:10]}
+                            "date": str(e.get("lastUpdated") or e.get("installedAt") or "?")[:10]}
     except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError):
         pass
     return None
@@ -1475,7 +1475,8 @@ def copy_commit():
 
 
 def copy_git(args, cwd=None):
-    rc, out, err = run(["git", *args], cwd=cwd, timeout=COPY_GIT_TIMEOUT, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    rc, out, err = run(["git", *args], cwd=cwd, timeout=COPY_GIT_TIMEOUT, group=True,
+                       env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
     if rc != 0:
         raise Fail(f"git {args[0]}: {(err.strip().splitlines() or ['failed'])[-1]}", 1)
     return out.strip()
@@ -1491,6 +1492,7 @@ def count_plugin_commits(copy):
     url = copy_git(["remote", "get-url", "origin"], cwd=where)
     clone = CACHE.expanduser() / "plugin-source.git"
     if clone.is_dir():
+        copy_git(["remote", "set-url", "origin", url], cwd=clone)
         copy_git(["fetch", "-q", "--no-tags", "origin", "HEAD"], cwd=clone)
         head = copy_git(["rev-parse", "FETCH_HEAD"], cwd=clone)
     else:
@@ -1779,7 +1781,7 @@ def cmd_status(args):
         print("acting on GitHub with your gh login (" + (
             f"this repository is not on GitHub under {stored.get('owner')}, the App's owner" if stored and stored.get("bot_login") else
             "the App is stored but not installed: factory wizard" if stored else "no App identity: factory wizard") + ")")
-    if line := copy_behind():
+    if not args.cached and (line := copy_behind()):
         print(line)
     refused = {s["head"]: s["text"] for s in read_lander(repo)["stopped"].values()
                if s["kind"] == "merge" and s["text"].startswith(REFUSED)}
