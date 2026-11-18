@@ -5226,6 +5226,9 @@ def stack_rebase(p, prs, why):
             return "stack", f"gh stack push failed, {tail(done)}"
     for m, head in zip(prs, new):
         log_queue(repo, m["number"], task_slug(repo, m), m["headRefOid"], "rebased", new=head)
+    for m in prs:
+        if (row := task_of(p, m)) and row["phase"] == "review":
+            level(repo, row)
     return "pending", f"its stack was rebased onto {repo.default} in this pass ({why}): it merges on a later pass, on green heads"
 
 
@@ -7825,8 +7828,9 @@ def release_paused(repo, fallback):
 
 def level(repo, task):
     """Fast-forward the worktree of `task` to its own remote branch (someone pressed "Update branch" on GitHub, or pushed
-    from elsewhere); nothing is pushed. None, or why not: the lead may be running, the worktree is dirty or cannot be
-    read, or the two have diverged."""
+    from elsewhere), or `git reset --keep` it onto a remote branch rewritten with the same patches (a rebase); nothing
+    is pushed. None, or why not: the lead may be running, the worktree is dirty or cannot be read, or the two have
+    diverged (a local commit the remote lacks, another patch, a squash)."""
     path, branch, remote = task["path"], task["branch"], repo.remote
     busy = land_busy(repo, path)
     if busy:
@@ -7837,23 +7841,48 @@ def level(repo, task):
     rc, out, err = act_git(path, "fetch", remote, timeout=GH_TIMEOUT)
     if rc != 0:
         return f"git fetch {remote} failed: {' '.join((err or out).split())}"
-    if act_git(path, "merge", "--ff-only", f"{remote}/{branch}")[0] != 0:
-        return f"its worktree and {remote}/{branch} have diverged"
-    return None
+    if act_git(path, "merge", "--ff-only", f"{remote}/{branch}")[0] == 0:
+        return None
+    base = f"{remote}/{repo.default}"
+    ours, theirs = patch_ids(path, base, "HEAD"), patch_ids(path, base, f"{remote}/{branch}")
+    if ours and ours == theirs and act_git(path, "reset", "--keep", f"{remote}/{branch}")[0] == 0:
+        return None
+    return f"its worktree and {remote}/{branch} have diverged"
 
 
-def attempt(repo, p, pr, permission):
+def with_stacked(snap, pr):
+    """`pr` and every pull request of `snap` whose base chain reaches its head branch, bottom up."""
+    members, heads = [pr], {pr["headRefName"]}
+    while more := [q for q in snap if q["baseRefName"] in heads and q["number"] not in {m["number"] for m in members}]:
+        members += more
+        heads |= {q["headRefName"] for q in more}
+    return members
+
+
+def attempt(repo, p, snap, pr, permission):
     """`merge_one`, asked again once when its only fault is a worktree that is not on the head of its pull request and
-    `level` can fix that. When the worktree then holds a head GitHub does not show yet (a push of ours, a stale
-    `gh pr list`) the pull request is in flight, not stopped."""
-    stop, row = merge_one(p, pr, False, False, permission), task_of(p, pr)
-    if stop and stop[0] == "handover" and row and row["phase"] == "review" and row["head"] != pr["headRefOid"] \
-            and level(repo, row) is None:
+    `level` can fix that, for `pr` and for every pull request stacked on it. When a worktree then holds a head GitHub does
+    not show yet (a push of ours, a stale `gh pr list`) the pull request is in flight, not stopped. A worktree `level`
+    refused keeps the stop, whose line ends with the reason."""
+    stop = merge_one(p, pr, False, False, permission)
+    if not (stop and stop[0] == "handover"):
+        return stop
+    lagging = [(m, row) for m in with_stacked(snap, pr) if (row := task_of(p, m)) and row["phase"] == "review"
+               and row["head"] != m["headRefOid"]]
+    refused, levelled = [], 0
+    for m, row in lagging:
+        if reason := level(repo, row):
+            refused.append(reason)
+            continue
         row["head"] = repo.git("rev-parse", "HEAD", path=row["path"])[1].strip()
         pushed = repo.git("rev-parse", f"{repo.remote}/{row['branch']}", path=row["path"])[1].strip()
-        if row["head"] != pr["headRefOid"] and row["head"] == pushed:
+        if row["head"] != m["headRefOid"] and row["head"] == pushed:
             return "pending", f"GitHub does not show the pushed head {row['head']} yet"
+        levelled += 1
+    if levelled:
         stop = merge_one(p, pr, False, False, permission)
+    if refused and stop and stop[0] == "handover":
+        stop = (stop[0], f"{stop[1]}: {refused[0]}")
     return stop
 
 
@@ -7885,7 +7914,7 @@ def lander_pass(repo, fallback, p, snap, line, updated):
     if gone := state["unblocked"].keys() - {str(pr["number"]) for pr in snap}:
         write_lander(repo, {**state, "unblocked": {n: r for n, r in state["unblocked"].items() if n not in gone}})
     for pr, permission in line:
-        stop = attempt(repo, p, pr, permission)
+        stop = attempt(repo, p, snap, pr, permission)
         if stop is None:
             members = [pr, *p.get("stacked", {}).pop(pr["number"], [])]
             for each in members:
