@@ -1001,6 +1001,35 @@ def pull_request(repo, branch, timeout=PR_TIMEOUT):
     return pr_fields(prs[0]) if prs else NO_PR
 
 
+def protection_checks(doc):
+    """How many required status checks a `branches/{branch}` answer lists; None when it has no `protection` object."""
+    protection = doc.get("protection") if isinstance(doc, dict) else None
+    if not isinstance(protection, dict):
+        return None
+    checks = protection.get("required_status_checks")
+    checks = checks if isinstance(checks, dict) else {}
+    return len(checks.get("contexts") or []) + len(checks.get("checks") or [])
+
+
+def ruleset_checks(doc):
+    """How many `required_status_checks` rules a `rules/branches/{branch}` answer lists; None when it is not a list."""
+    if not isinstance(doc, list):
+        return None
+    return sum(1 for rule in doc if isinstance(rule, dict) and rule.get("type") == "required_status_checks")
+
+
+def required_checks(repo, endpoint, count):
+    """(what `count` finds in the `gh api` answer at repos/{owner}/{repo}/`endpoint`, None) or (None, the one-line reason it could not)."""
+    rc, out, err = run(["gh", "api", f"repos/{{owner}}/{{repo}}/{endpoint}"], cwd=repo.root, timeout=GH_TIMEOUT)
+    try:
+        found = count(json.loads(out)) if rc == 0 else None
+    except ValueError:
+        found = None
+    if found is not None:
+        return found, None
+    return None, f"timed out after {GH_TIMEOUT:.0f} s" if rc == 124 else (err.strip().splitlines() or ["gh answered with an unexpected shape"])[0]
+
+
 def needed_branches(repo):
     """The task branches and the recorded bases that still exist locally: the pull requests a status row reads."""
     needed = [wt["branch"] for wt in repo.tasks if wt["branch"]]
@@ -1687,6 +1716,16 @@ def cmd_new(args):
         raise Fail(f"branch {branch} already exists on {repo.remote} (another machine's task?); pick another slug")
     if rc != 2:
         sys.stderr.write(f"factory: warning: cannot check {repo.remote} for branch {branch}: {err.strip()}; continuing\n")
+    for endpoint, count in ((f"branches/{repo.default}", protection_checks), (f"rules/branches/{repo.default}", ruleset_checks)):
+        found, error = required_checks(repo, endpoint, count)
+        if error:
+            sys.stderr.write(f"factory: warning: cannot check the merge rules of {repo.default} for CI: {error}; continuing\n")
+        if error or found:
+            break
+    else:
+        name = "/".join(remote_repo(repo.root) or ()) or os.path.basename(repo.root)
+        raise Fail(f"{name} has no CI: no merge rule on {repo.default} requires a status check "
+                   "(branch protection or a ruleset); no task starts here")
     setup = config_value(repo, "factory.setup")
     if args.base:
         for argv in (["worktree", "add", "-b", branch, path, base],
