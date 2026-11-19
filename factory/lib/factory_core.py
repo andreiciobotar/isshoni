@@ -208,6 +208,18 @@ def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
     return result
 
 
+def short_wake():
+    """None when work can be started, else why not: on macOS a sleeping machine wakes briefly by itself (a dark wake, no
+    `Graphics` in its capabilities) and launchd runs the tick then. An unreadable answer is None: a broken probe never stops the factory."""
+    if sys.platform != "darwin":
+        return None
+    rc, out, _ = run(["pmset", "-g", "systemstate"], timeout=5)
+    line = next((l for l in out.splitlines() if l.startswith("Current System Capabilities are:")), None)
+    if rc == 0 and line is not None and "Graphics" not in line:
+        return "the machine is in a dark wake (asleep, awake for a moment)"
+    return None
+
+
 def spawn(argv, cwd, out_path):
     """Start `argv` detached in its own session, its output appended to `out_path`, and do not wait. Raises OSError."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3686,6 +3698,18 @@ def pending_asks(firings):
     return [f for f in firings if f["criterion"] == "overrun" and f["decision"] is None and not f["cleared"]]
 
 
+def close_moot(repo, ask):
+    """Close an `overrun` ask as moot when its task's newest record says the work is over: suppressed by the watch,
+    cleared, nobody told. Whether it did."""
+    task = read_tasks(repo.root).get(ask["slug"])
+    if not task or not declared_over(task["state"]):
+        return False
+    log_firing(repo, id=ask["id"], decision="suppressed", by="watch",
+               reason=f"{task['state'].replace('-', ' ')} at {task['ts']}, the ask is moot")
+    log_firing(repo, id=ask["id"], cleared=True)
+    return True
+
+
 def log_firing(repo, **fields):
     log("firings", {"ts": now(), "repo": repo.root, **fields})
 
@@ -4148,11 +4172,14 @@ def settle_collisions(p):
 
 def settle_asks(p, send, why):
     """An `overrun` firing is cleared once the tick that sent it is over, so a later ask is a new firing. One the site
-    manager left undecided is decided here, once: escalated to the human, the lead and the dispatcher told."""
+    manager left undecided is decided here, once: closed as moot when its task is over by now, else escalated to the
+    human, the lead and the dispatcher told."""
     repo = p["repo"]
     folded = {f["id"]: f for f in fold(repo_log("firings", repo.root) or [])[0]}
     for f in (f for f in send if f["criterion"] == "overrun"):
         if folded[f["id"]]["decision"] is None:
+            if close_moot(repo, f):
+                continue
             reason = f"the site manager did not decide: {why}"
             log_firing(repo, id=f["id"], decision="escalated", by="watch", to="dispatcher", reason=reason)
             tell_decision(p, f, "escalated", reason)
@@ -4660,6 +4687,10 @@ def cmd_watch(args):
     """One scheduled tick at a time per repository: cron starts one every two minutes, whatever the last one still does.
     The lander's loop runs last, while a task is handed over or the human's word stands."""
     repo = Repo()
+    if reason := short_wake():
+        log("ticks", {"ts": now(), "repo": repo.root, "outcome": "not run", "reason": reason})
+        print(f"watch: tick not run: {reason}")
+        return 0
     ops_tick(repo)
     review_tick(repo)
     with repo_lock(repo, "watch") as free:
@@ -4737,7 +4768,7 @@ def watch_tick(args, repo):
     facts = [{"name": name} for name, (_, always) in FACTS.items() if full or always]
     current, skipped = evaluate(p, facts)
     folded = fold(repo_log("firings", repo.root) or [])[0]
-    asks = pending_asks(folded)  # a lead's ask goes to the site manager on the next tick, not the next full pass
+    asks = [a for a in pending_asks(folded) if not close_moot(repo, a)]  # a lead's ask goes to the site manager on the next tick, not the next full pass
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
     evaluated = {c["name"] for c in [*facts, *(every if full else [])]} - {s["criterion"] for s in skipped}  # a killed digest leaves its firings open
@@ -8428,6 +8459,11 @@ def build_run(repo, settings, args, spec, handover, learned):
     slug = args.slug
     worktree, branch = repo.worktree_path(slug), f"worktree-{slug}"
     git = lambda *a: repo.git(*a, path=worktree)[1].strip()
+    if reason := short_wake():
+        print(f"build run waits: {reason}", flush=True)
+        while reason:
+            time.sleep(WATCH_INTERVAL)
+            reason = short_wake()
     declare(repo, slug, "tech-lead", "working")
     old_head, before, started, findings = git("rev-parse", "HEAD"), spec_hash(spec), time.monotonic(), pending_findings(repo, slug)
     learned["delivered"] = [f["id"] for f in findings]
@@ -9216,7 +9252,7 @@ def review_run(repo, settings):
                   else f"reached {float(REVIEW_BUDGET):g} USD" if doc.get("subtype") == "error_max_budget_usd"
                   else "the session ended with an error" if rc != 0 or doc.get("is_error")
                   else None if (folder / "report.md").is_file() else "the session wrote no report.md")
-        if not reason and target:
+        if (not reason or reason == "the session ended with an error" and (folder / "report.md").is_file()) and target:
             if blocked:
                 held = [{"file": p.name, "why": blocked} for p in sorted((folder / "proposals").glob("*.md"))]
             else:
