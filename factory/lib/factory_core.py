@@ -5244,6 +5244,34 @@ def log_queue(repo, pr_number, slug, head, step, **fields):
     log("queue", {"ts": now(), "repo": repo.root, "slug": slug, "pr": pr_number, "head": head, "step": step, **fields})
 
 
+def retarget_merged(p, prs):
+    """Change the base of each owned pull request of `prs` whose base is the head of a merged pull request to that
+    pull request's base. A member of a GitHub stack is left to GitHub. The snapshot keeps the old base, so that the
+    pull request does not merge in the pass that changed it; `p["retargeted"]` holds what `merge_one` then says."""
+    repo = p["repo"]
+    heads = {pr["headRefName"] for pr in prs}
+    for pr in prs:
+        base, n = pr["baseRefName"], str(pr["number"])
+        if base == repo.default or base in heads or not owned(repo, pr):
+            continue
+        state, url, _, into, _ = pull_request(repo, base)
+        if state != "merged" or not into:
+            continue
+        try:
+            if open_stack(repo, n):
+                continue
+        except NotEvaluated:
+            continue
+        stop = gh_step(repo, "pr", "edit", n, "--base", into)
+        if stop:
+            print(f"#{n} base not changed to {into}: {stop[1]}")
+            p.setdefault("retargeted", {})[pr["number"]] = stop
+        else:
+            print(f"#{n} base changed from {base} to {into}: its base merged ({url})")
+            p.setdefault("retargeted", {})[pr["number"]] = (
+                "pending", f"its base was changed to {into} in this pass: it merges on the next one")
+
+
 def merge_one(p, pr, merged, dry, permission=None):
     """Merge `pr` (with `dry`, only check it; `merged`: something would have merged before it). None, or the
     (kind, reason) of the first blocker. The invariant: a pull request is merged only when its head holds the
@@ -5289,8 +5317,8 @@ def merge_one(p, pr, merged, dry, permission=None):
     if base != repo.default:
         if dry:
             return None
-        return dissolve(repo, n) or gh_step(repo, "pr", "edit", n, "--base", repo.default) or \
-            ("pending", f"its base was changed to {repo.default} in this pass: it merges on the next one")
+        return p.get("retargeted", {}).get(pr["number"]) or \
+            ("pending", f"its base {base} has merged: a pass changes its base first")
     stop = mergeability(p, n)
     if stop:
         return stop
@@ -5570,6 +5598,8 @@ def cmd_merge(args):
     if not selected:
         print("nothing to merge")
     selected, merged, failed = bottom_up(selected), False, False
+    if not args.dry_run:
+        retarget_merged(p, selected)
     permission = {} if args.approved else None
     landed = set()
     for i, pr in enumerate(selected):
@@ -8488,6 +8518,7 @@ def drain(repo, fallback, tick=None, deadline=None):
             print(f"lander: {e}")
             break
         stopped &= {pr["number"] for pr in snap}
+        retarget_merged(p, snap)
         ensure_stacks(repo, snap)
         line = lander_queue(repo, snap, read_word(repo))
         if first and (holders := queue_holders(repo)):
