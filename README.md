@@ -33,7 +33,7 @@ git clone https://github.com/andreiciobotar/isshoni && cd isshoni
 make wizard    # checks the tools, builds the dashboard, installs the plugin, writes the settings
 ```
 
-Then, in Claude Code, in a GitHub repository whose default branch requires a status check:
+Then, in Claude Code, in a GitHub repository whose default branch requires a status check (the dispatcher offers `factory ci setup` when it does not):
 
 ```
 /factory:dispatch

@@ -1,3 +1,4 @@
+import base64
 import importlib.machinery
 import importlib.util
 import io
@@ -1621,6 +1622,155 @@ class NewSetupRealPathTests(unittest.TestCase):
         self.assertTrue(self.worktree.exists())
 
 
+OFFER_FIRST = ("repo has no CI: no merge rule on main requires a status check "
+               "(branch protection or a ruleset); no task starts here")
+
+
+class CiTests(unittest.TestCase):
+    OFF = json.dumps({"protection": {"enabled": False, "required_status_checks": {"checks": [], "contexts": []}}})
+    NONE = {BRANCH_RULE: (0, OFF, ""), RULESET: (0, "[]", "")}
+    REQUIRED_RULE = json.dumps([{"type": "required_status_checks", "parameters": {}}])
+    FILE = ("gh", "api", "repos/{owner}/{repo}/contents/.github/workflows/factory-ci.yml?ref=main")
+    PUT = ("gh", "api", "-X", "PUT")
+    POST = ("gh", "api", "-X", "POST", "repos/{owner}/{repo}/rulesets")
+    HEAD = ("gh", "api", "repos/{owner}/{repo}/commits/main")
+    RUNS = ("gh", "api", "repos/{owner}/{repo}/commits/abc/check-runs?per_page=100")
+    STATUS = ("gh", "api", "repos/{owner}/{repo}/commits/abc/status?per_page=100")
+    PULLS = ("gh", "api", "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=1")
+    REPORTED = (0, '{"check_runs": [{"name": "factory-ci"}]}', "")
+    SET_UP = [(0, "[]", ""), (0, REQUIRED_RULE, "")]  # the rules before the setup, and after it
+
+    def ci(self, argv, answers=None, env=None):
+        """(code, stdout, stderr, fake, the sleeps made); the human's terminal unless `env` says CLAUDECODE."""
+        answers = repo_answers([], [], {
+            **self.NONE, self.FILE: (1, "", "gh: Not Found (HTTP 404)"), self.PUT: (0, "{}", ""),
+            self.HEAD: (0, '{"sha": "abc"}', ""), self.STATUS: (0, '{"statuses": []}', ""), self.POST: (0, "{}", ""),
+            self.RUNS: [(0, '{"check_runs": []}', ""), self.REPORTED], RULESET: list(self.SET_UP), **(answers or {})})
+        with mock.patch.object(factory.time, "sleep") as sleep:
+            result = invoke(["ci", *argv], answers, env={"CLAUDECODE": "", **(env or {})})
+        return (*result, sleep)
+
+    def body(self, fake, prefix):
+        """The JSON body of the one write that starts with `prefix`."""
+        (body,) = [i for c, i in zip(fake.calls, fake.inputs) if tuple(c[:len(prefix)]) == prefix]
+        return json.loads(body)
+
+    def test_a_required_check_prints_nothing_and_reads_no_rules_when_the_branch_shows_one(self):
+        code, out, err, fake, _ = self.ci([], {BRANCH_RULE: (0, protection(contexts=["ci"]), "")})
+        self.assertEqual((code, out, err), (0, "", ""))
+        self.assertFalse(fake.ran(*RULESET))
+        code, out, err, _, _ = self.ci([], {RULESET: (0, self.REQUIRED_RULE, "")})
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_none_prints_the_offer_and_exits_1_and_new_refuses_with_the_way_out(self):
+        code, out, err, _, _ = self.ci([], {RULESET: (0, "[]", "")})
+        self.assertEqual((code, err), (1, ""))
+        lines = out.splitlines()
+        self.assertEqual(lines[0], OFFER_FIRST)
+        self.assertEqual(len(lines), 6)
+        self.assertEqual(lines[-1], "Or add any merge rule on main that requires a status check. Then run: factory ci")
+        answers = repo_answers([], [dict(DISPATCHER, name="d1")], NewTests.OK, self.NONE, NewTests.NO_PR)
+        code, _, err, fake = invoke(NewTests.ARGS, answers)
+        self.assertEqual(code, 2)
+        self.assertEqual(err.splitlines()[-1], f"factory: {OFFER_FIRST}; run factory ci for the way out")
+        self.assertFalse(fake.ran("git", "worktree", "add") or fake.ran("claude", "--bg"))
+        self.assertEqual(fake.tasks, [])
+
+    def test_unreadable_rules_warn_and_exit_0(self):
+        code, out, err, _, _ = self.ci([], {BRANCH_RULE: (1, "", "HTTP 502\n")})
+        self.assertEqual((code, out), (0, ""))
+        self.assertEqual(err, "factory: warning: cannot check the merge rules of main for CI: HTTP 502; continuing\n")
+
+    def test_setup_under_claudecode_is_refused_and_writes_nothing(self):
+        code, out, err, fake, _ = self.ci(["setup", "--test", "make test"], env={"CLAUDECODE": "1"})
+        self.assertEqual((code, out, err), (2, "", "factory: only the human sets up CI: run this in your own terminal\n"))
+        self.assertEqual(fake.calls, [])
+
+    def test_setup_with_a_test_command_commits_the_workflow_waits_for_the_check_and_requires_it(self):
+        code, out, err, fake, sleep = self.ci(["setup", "--test", "make test"])
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, "CI is in place: main requires factory-ci\n"
+                              "open pull requests get the check when the lander next brings them up to date\n")
+        human = [c for c in fake.calls if c[0] == "gh" and c[:3] not in (list(BRANCH_RULE), list(RULESET))]
+        self.assertEqual([c[3] if c[2] == "-X" else c[2].split("/", 3)[3] for c in human],
+                         ["contents/.github/workflows/factory-ci.yml?ref=main", "PUT", "commits/main",
+                          "commits/abc/check-runs?per_page=100", "commits/abc/status?per_page=100",
+                          "commits/abc/check-runs?per_page=100", "commits/abc/status?per_page=100", "POST"])
+        self.assertEqual(sleep.call_count, 1)
+        put = self.body(fake, self.PUT)
+        workflow = base64.b64decode(put["content"]).decode()
+        self.assertEqual((put["branch"], put["message"]), ("main", "Add the factory's CI workflow"))
+        self.assertIn("branches: [main]", workflow)
+        self.assertIn("        - run: |\n            make test\n", workflow)
+        self.assertIn("actions/checkout@v7", workflow)
+        post = self.body(fake, self.POST)
+        self.assertEqual(post["rules"], [{"type": "required_status_checks", "parameters": {
+            "required_status_checks": [{"context": "factory-ci"}], "strict_required_status_checks_policy": False}}])
+        self.assertEqual(post["conditions"], {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}})
+        self.assertEqual((post["name"], post["target"], post["enforcement"], post["bypass_actors"]),
+                         ("factory: required check", "branch", "active", []))
+        for call, env in zip(fake.calls, fake.envs):  # setup's own calls carry the human's login, never the App token
+            if call in human:
+                self.assertEqual(env["GH_TOKEN"], os.environ.get("GH_TOKEN", ""), call)
+        code, out, _, _, _ = self.ci([], {RULESET: (0, self.REQUIRED_RULE, "")})
+        self.assertEqual((code, out), (0, ""))
+
+    def test_setup_without_a_test_command_has_no_run_step(self):
+        _, _, _, fake, _ = self.ci(["setup"])
+        workflow = base64.b64decode(self.body(fake, self.PUT)["content"]).decode()
+        self.assertNotIn("- run:", workflow.replace("as a step: - run:", ""))
+        self.assertIn("the test command goes here", workflow)
+
+    def test_setup_with_a_check_that_is_reported_writes_no_workflow_and_requires_it(self):
+        answers = {self.PULLS: (0, '[{"head": {"sha": "def"}}]', ""), self.RUNS: (0, '{"check_runs": []}', ""),
+                   ("gh", "api", "repos/{owner}/{repo}/commits/def/check-runs?per_page=100"): (0, '{"check_runs": [{"name": "ci"}]}', ""),
+                   ("gh", "api", "repos/{owner}/{repo}/commits/def/status?per_page=100"): (0, '{"statuses": []}', "")}
+        code, out, _, fake, _ = self.ci(["setup", "--check", "ci"], answers)
+        self.assertEqual((code, out.splitlines()[0]), (0, "CI is in place: main requires ci"))
+        self.assertFalse(fake.ran(*self.PUT))
+        self.assertEqual(self.body(fake, self.POST)["rules"][0]["parameters"]["required_status_checks"], [{"context": "ci"}])
+
+    def test_setup_with_a_check_nobody_reports_lists_the_names_seen_and_creates_nothing(self):
+        answers = {self.PULLS: (0, "[]", ""), self.RUNS: (0, '{"check_runs": [{"name": "build"}]}', "")}
+        code, _, err, fake, _ = self.ci(["setup", "--check", "nope"], answers)
+        self.assertEqual(code, 1)
+        self.assertIn("no check nope", err)
+        self.assertIn("build", err)
+        self.assertFalse(fake.ran(*self.POST))
+
+    def test_a_rerun_with_the_workflow_present_commits_nothing(self):
+        code, out, _, fake, _ = self.ci(["setup"], {self.FILE: (0, "{}", ""), self.RUNS: self.REPORTED})
+        self.assertEqual(code, 0)
+        self.assertIn("is already on main: kept", out)
+        self.assertFalse(fake.ran(*self.PUT))
+        self.assertTrue(fake.ran(*self.POST))
+
+    def test_no_check_reported_within_the_limit_exits_1_with_no_rule(self):
+        with mock.patch.object(factory, "CI_WAIT", 0):
+            code, _, err, fake, _ = self.ci(["setup"], {self.RUNS: (0, '{"check_runs": []}', "")})
+        self.assertEqual(code, 1)
+        self.assertIn("the workflow is on main (abc) but GitHub reported no check factory-ci within 0 s (is Actions enabled?): "
+                      "no rule was created; run factory ci setup again", err)
+        self.assertFalse(fake.ran(*self.POST))
+
+    def test_a_refused_rule_prints_githubs_message_what_is_done_and_the_hint(self):
+        refusals = {"Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)": "a paid plan",
+                    "refusing to update workflow without `workflow` scope": "gh auth refresh -s workflow"}
+        for message, hint in refusals.items():
+            with self.subTest(message):
+                code, _, err, _, _ = self.ci(["setup", "--test", "x"], {self.POST: (1, "", message)})
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+                self.assertIn("done: .github/workflows/factory-ci.yml committed on main", err)
+                self.assertIn(hint, err)
+
+    def test_test_and_check_together_and_a_newline_in_the_test_are_refused(self):
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.ci(["setup", "--test", "a", "--check", "b"])
+        code, _, err, fake, _ = self.ci(["setup", "--test", "a\nb"])
+        self.assertEqual((code, err, fake.calls), (2, "factory: --test is one line\n", []))
+
+
 class NewTests(unittest.TestCase):
     ARGS = ["new", "demo-task", "--brief", "do it", "--dispatcher", "d1"]
     OK = {("claude", "--bg"): (0, "backgrounded · 96dc4869 · demo-task\n", ""), ("git", "ls-remote"): (2, "", "")}
@@ -1842,7 +1992,7 @@ class NewTests(unittest.TestCase):
                     code, _, err, fake = invoke(argv, self.answers([task_entry("alpha")], (), self.OK, none))
                     self.assertEqual(code, 2)
                     self.assertEqual(err.splitlines()[-1], "factory: repo has no CI: no merge rule on main requires a status check "
-                                                           "(branch protection or a ruleset); no task starts here")
+                                                           "(branch protection or a ruleset); no task starts here; run factory ci for the way out")
                     self.assertFalse(fake.ran("git", "worktree", "add") or fake.ran("claude", "--bg"))
                     self.assertEqual(fake.tasks, [])
 

@@ -84,7 +84,7 @@ PROMPT_FROM = (("<agent-message", "subagent"), ("<cross-session-message", "sessi
                ("<task-notification", "notification"))
 
 COMMANDS = {}  # name -> (help, options, function), filled by @command where each command is defined
-COMMAND_ORDER = ("new", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "guard-hook", "retro", "env",
+COMMAND_ORDER = ("new", "ci", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "guard-hook", "retro", "env",
                  "feedback", "review", "log", "health", "watch", "ops", "mcp", "digest", "firing", "miss", "firings",
                  "pauses", "lead", "merge", "lander", "tech-lead", "build", "land", "overlap", "scratch", "rerun", "schedule",
                  "dispatcher", "settings", "wizard", "uninstall")  # `factory --help` order; a name not here follows, by name
@@ -1226,6 +1226,17 @@ def required_checks(repo, endpoint, count):
     return None, f"timed out after {GH_TIMEOUT:.0f} s" if rc == 124 else (err.strip().splitlines() or ["gh answered with an unexpected shape"])[0]
 
 
+def ci_state(repo):
+    """("required", "") when a merge rule on the default branch requires a status check, ("none", "") when both rule endpoints answered with none, else ("unreadable", the one-line reason)."""
+    for endpoint, count in ((f"branches/{repo.default}", protection_checks), (f"rules/branches/{repo.default}", ruleset_checks)):
+        found, error = required_checks(repo, endpoint, count)
+        if error:
+            return "unreadable", error
+        if found:
+            return "required", ""
+    return "none", ""
+
+
 def needed_branches(repo):
     """The task branches and the recorded bases that still exist locally: the pull requests a status row reads."""
     needed = [wt["branch"] for wt in repo.tasks if wt["branch"]]
@@ -1934,16 +1945,11 @@ def cmd_new(args):
         raise Fail(f"branch {branch} already exists on {repo.remote} (another machine's task?); pick another slug")
     if rc != 2:
         sys.stderr.write(f"factory: warning: cannot check {repo.remote} for branch {branch}: {err.strip()}; continuing\n")
-    for endpoint, count in ((f"branches/{repo.default}", protection_checks), (f"rules/branches/{repo.default}", ruleset_checks)):
-        found, error = required_checks(repo, endpoint, count)
-        if error:
-            sys.stderr.write(f"factory: warning: cannot check the merge rules of {repo.default} for CI: {error}; continuing\n")
-        if error or found:
-            break
-    else:
-        name = "/".join(remote_repo(repo.root) or ()) or os.path.basename(repo.root)
-        raise Fail(f"{name} has no CI: no merge rule on {repo.default} requires a status check "
-                   "(branch protection or a ruleset); no task starts here")
+    state, reason = ci_state(repo)
+    if state == "unreadable":
+        sys.stderr.write(f"factory: warning: cannot check the merge rules of {repo.default} for CI: {reason}; continuing\n")
+    elif state == "none":
+        raise Fail(f"{no_ci_line(repo)}; run factory ci for the way out")
     setup = config_value(repo, "factory.setup")
     if args.base:
         for argv in (["worktree", "add", "-b", branch, path, base],
@@ -1994,6 +2000,137 @@ def cmd_new(args):
     # mode: a record for `isshoni kaizen --modes`, which compares these tasks with those started before the team (`single`).
     task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"], mode="team",
                models=agent_models(settings["models"]), commit=copy_commit(), **({"size": size} if size else {}))
+    return 0
+
+
+CI_WORKFLOW = ".github/workflows/factory-ci.yml"
+CI_NAME = "factory-ci"
+CI_POLL, CI_WAIT = 5, 120  # seconds between asks, and in all, for GitHub to report the check
+CI_BY_PULL_REQUEST = f"add {CI_WORKFLOW} by pull request yourself, then run: factory ci setup --check {CI_NAME}"
+CI_HINTS = (("without `workflow` scope", "gh auth refresh -s workflow"),
+            ("Repository rule violations", CI_BY_PULL_REQUEST),
+            ("Protected branch update failed", CI_BY_PULL_REQUEST),
+            ("Upgrade to GitHub Pro", "rulesets and branch protection need a public repository or a paid plan: the factory cannot work here"))
+
+
+def no_ci_line(repo):
+    name = "/".join(remote_repo(repo.root) or ()) or os.path.basename(repo.root)
+    return (f"{name} has no CI: no merge rule on {repo.default} requires a status check "
+            "(branch protection or a ruleset); no task starts here")
+
+
+def ci_workflow(default, test):
+    """The text of .github/workflows/factory-ci.yml; without `test` the job has no `run` step yet."""
+    step = f"        - run: |\n            {test}\n" if test else "        # the test command goes here as a step: - run: <command>\n"
+    return (f"# Written by `factory ci setup`. The default branch requires the check `{CI_NAME}` (the job below): rename both together.\n"
+            f"name: {CI_NAME}\non:\n  pull_request:\n  push:\n    branches: [{default}]\njobs:\n  {CI_NAME}:\n    runs-on: ubuntu-latest\n"
+            f"    steps:\n      - uses: actions/checkout@v7\n{step}")
+
+
+def human_gh(repo, *args, input=None):
+    """`gh` as the human's own login, which `factory ci setup` alone is allowed: `run()` adds the App token unless the
+    env holds a `GH_TOKEN`, so an empty one (the human's own, when their shell sets it) leaves `gh` to its stored login."""
+    return run(["gh", *args], cwd=repo.root, timeout=GH_TIMEOUT, input=input, env={"GH_TOKEN": "", **os.environ})
+
+
+def reported_checks(repo, sha):
+    """The names of the check runs and commit statuses GitHub reports on `sha`; Fail when it cannot be read."""
+    names = set()
+    for endpoint, field, key in ((f"commits/{sha}/check-runs?per_page=100", "check_runs", "name"),
+                                 (f"commits/{sha}/status?per_page=100", "statuses", "context")):
+        rc, out, err = human_gh(repo, "api", f"repos/{{owner}}/{{repo}}/{endpoint}")
+        try:
+            names |= {item[key] for item in json.loads(out)[field]} if rc == 0 else set()
+        except (ValueError, KeyError, TypeError):
+            rc, err = 1, "gh answered with an unexpected shape"
+        if rc != 0:
+            raise Fail(f"cannot read the checks of {sha}: {(err.strip().splitlines() or ['gh failed'])[0]}", code=1)
+    return names
+
+
+def ci_setup(repo, test, check):
+    done = []
+
+    def gh_or_stop(*args, input=None, absent=False):
+        rc, out, err = human_gh(repo, *args, input=input)
+        if rc == 0:
+            return out
+        if absent and "404" in err:
+            return None
+        message = err.strip() or out.strip() or "gh failed"
+        hint = next((h for needle, h in CI_HINTS if needle in message), "")
+        raise Fail(f"{message}\n  done: {', '.join(done) or 'nothing'}; the rest is not done\n  {hint}".rstrip(), code=1)
+
+    state, reason = ci_state(repo)
+    if state == "unreadable":
+        raise Fail(f"cannot read the merge rules of {repo.default}: {reason}", code=1)
+    if state == "required":
+        print(f"CI is in place: {repo.default} requires a status check")
+        return 0
+    if check is None:
+        if gh_or_stop("api", f"repos/{{owner}}/{{repo}}/contents/{CI_WORKFLOW}?ref={repo.default}", absent=True) is None:
+            body = {"message": "Add the factory's CI workflow", "branch": repo.default,
+                    "content": base64.b64encode(ci_workflow(repo.default, test).encode()).decode()}
+            gh_or_stop("api", "-X", "PUT", f"repos/{{owner}}/{{repo}}/contents/{CI_WORKFLOW}", "--input", "-", input=json.dumps(body))
+            done.append(f"{CI_WORKFLOW} committed on {repo.default}")
+        else:
+            print(f"{CI_WORKFLOW} is already on {repo.default}: kept")
+    head = json.loads(gh_or_stop("api", f"repos/{{owner}}/{{repo}}/commits/{repo.default}"))["sha"]
+    if check is None:
+        name, deadline = CI_NAME, time.monotonic() + CI_WAIT
+        while name not in reported_checks(repo, head):
+            if time.monotonic() >= deadline:
+                raise Fail(f"the workflow is on {repo.default} ({head}) but GitHub reported no check {name} within {CI_WAIT} s "
+                           f"(is Actions enabled?): no rule was created; run factory ci setup again", code=1)
+            time.sleep(CI_POLL)
+    else:
+        name, seen = check, reported_checks(repo, head)
+        latest = json.loads(gh_or_stop("api", "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=1"))
+        if latest:
+            seen |= reported_checks(repo, latest[0]["head"]["sha"])
+        if name not in seen:
+            raise Fail(f"GitHub reports no check {name} on {repo.default} or on the latest pull request; it reports: "
+                       f"{', '.join(sorted(seen)) or 'none'}", code=1)
+    rule = {"type": "required_status_checks",
+            "parameters": {"required_status_checks": [{"context": name}], "strict_required_status_checks_policy": False}}
+    gh_or_stop("api", "-X", "POST", "repos/{owner}/{repo}/rulesets", "--input", "-", input=json.dumps(
+        {"name": "factory: required check", "target": "branch", "enforcement": "active", "bypass_actors": [],
+         "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}, "rules": [rule]}))
+    if ci_state(repo)[0] != "required":
+        raise Fail(f"the rule requiring {name} is created but factory ci does not see it yet: run factory ci", code=1)
+    print(f"CI is in place: {repo.default} requires {name}")
+    print("open pull requests get the check when the lander next brings them up to date")
+    return 0
+
+
+def args_ci(parser):
+    setup = parser.add_subparsers(dest="action").add_parser(
+        "setup", help="the human adds a CI workflow and a ruleset requiring its check, as their own `gh` login")
+    only = setup.add_mutually_exclusive_group()
+    only.add_argument("--test", metavar="COMMAND", help="the command the workflow runs (one line)")
+    only.add_argument("--check", metavar="NAME", help="require this check, which the repository already reports; write no workflow")
+
+
+@command("ci", "check that the default branch requires a status check; `ci setup` makes it so", args_ci)
+def cmd_ci(args):
+    if args.action == "setup":
+        if os.environ.get("CLAUDECODE"):
+            raise Fail("only the human sets up CI: run this in your own terminal")
+        if args.test and "\n" in args.test:
+            raise Fail("--test is one line")
+        return ci_setup(Repo(), args.test, args.check)
+    repo = Repo()
+    state, reason = ci_state(repo)
+    if state == "unreadable":
+        sys.stderr.write(f"factory: warning: cannot check the merge rules of {repo.default} for CI: {reason}; continuing\n")
+    elif state == "none":
+        print(f"{no_ci_line(repo)}\n"
+              "The human sets it up with one command, in their own terminal, in this repository:\n"
+              f"  factory ci setup --test '<test command>'   one commit on {repo.default} adding {CI_WORKFLOW}, and a ruleset requiring its check {CI_NAME}\n"
+              "  factory ci setup                           the same with no test command yet (the check passes until one is added)\n"
+              "  factory ci setup --check <name>            only the ruleset, requiring a check this repository already reports\n"
+              f"Or add any merge rule on {repo.default} that requires a status check. Then run: factory ci")
+        return 1
     return 0
 
 
