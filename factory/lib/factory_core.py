@@ -158,7 +158,8 @@ def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
     this script kills whole; any other child stays in the script's group and only it is killed on a timeout.
     A signal that arrives while the child starts is held until the child is known, then ends it.
     `gh` acts as the App when an identity is installed (unless the caller's `env` brings a `GH_TOKEN`), and a call that is slow or fails is logged to gh-YYYY-MM.jsonl.
-    A `claude` child gets no `ANTHROPIC_LOG`: its debug logging would share the stdout that is read as JSON."""
+    A `claude` child gets no `ANTHROPIC_LOG`: its debug logging would share the stdout that is read as JSON. It gets
+    `FACTORY_SESSION=1`, which `factory_session` reads: its hooks belong to a session of the factory."""
     if cwd is not None and (gone := worktree_gone(cwd)):
         return 1, "", gone
     timeout = timeout or (GH_TIMEOUT if argv[0] == "gh" else RUN_TIMEOUT)
@@ -169,7 +170,7 @@ def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
         except Exception as e:  # fail closed: no token, and no `gh` run with the human's login
             return 1, "", why(e)
     if argv[0] == "claude":
-        env = {k: v for k, v in (os.environ if env is None else env).items() if k != "ANTHROPIC_LOG"}
+        env = {**{k: v for k, v in (os.environ if env is None else env).items() if k != "ANTHROPIC_LOG"}, "FACTORY_SESSION": "1"}
     started = time.monotonic()
     global HELD
     HELD = []
@@ -594,6 +595,8 @@ AGENT_KEYS = ("name", "description", "model", "tools", "skills")
 
 CLAUDE_JSON = Path("~/.claude.json")
 OPS_AGENT = "factory:ops-explorer"
+OPS_NOT_OURS = ("the ops explorer reads production only when a session of the factory started it (a task's lead or tech lead, "
+                "the dispatcher, the ops watch): this session is not one")
 OPS_HOOK_DEADLINE = 5  # seconds the ops-hook gives itself; the harness lets a call run when a hook outlives its own timeout
 
 
@@ -1642,6 +1645,17 @@ def tags(payload=None):
     return record(repo, slug, role, model, session)
 
 
+def factory_session(p, tag):
+    """Whether hook payload `p` (its `tags` are `tag`) comes from a session of the factory: `FACTORY_SESSION` is set, or
+    the slug is a declared task of the repository, or the session is the registered dispatcher. A subagent is its parent's."""
+    if os.environ.get("FACTORY_SESSION"):
+        return True
+    if tag["slug"] and tag["slug"] in read_tasks(tag["repo"]):
+        return True
+    registered = read_registration(tag["repo"])
+    return registered is not None and registered == p.get("session_id")
+
+
 def feedback_section(text):
     """Lines after the last 'Factory feedback' heading up to the next '#' line, or None without a heading."""
     lines = text.splitlines()
@@ -1951,6 +1965,10 @@ def cmd_new(args):
         sentence, line = run_setup(setup, path, tech_lead_paths(repo, args.slug)[1].with_suffix(".setup.log"))
         print(line)
     role_skills(repo.root, "tech-lead")  # the tech lead starts later: the one warning for its record is this one
+    try:  # before the launch: the lead's first hook finds its task declared (see `factory_session`)
+        declare(repo, args.slug, "dispatcher", "working")
+    except (OSError, ValueError, KeyError) as e:
+        sys.stderr.write(f"factory: warning: cannot declare {args.slug} ({e}); its lead will count as a session outside the factory\n")
     rc, out, err = run(build_launch_argv(args.slug, dispatcher, brief, settings, base, repo.remote, time.time(),
                                          task_limit(size, settings["task_time_limit_hours"]), repo.root, sentence),
                        cwd=repo.root)
@@ -1959,6 +1977,10 @@ def cmd_new(args):
         if made:
             remove_stacked(repo, path, branch)
         sys.stderr.write(err or out)
+        try:
+            declare(repo, args.slug, "dispatcher", "closed", reason="claude did not start the session")
+        except (OSError, ValueError, KeyError):
+            pass
         raise Fail("claude did not start the session", code=1)
     if rc != 0 or not match:
         sys.stderr.write(f"{out}{err}")
@@ -1972,10 +1994,6 @@ def cmd_new(args):
     # mode: a record for `isshoni kaizen --modes`, which compares these tasks with those started before the team (`single`).
     task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"], mode="team",
                models=agent_models(settings["models"]), commit=copy_commit(), **({"size": size} if size else {}))
-    try:
-        declare(repo, args.slug, "dispatcher", "working")
-    except (OSError, ValueError, KeyError):
-        pass
     return 0
 
 
@@ -2573,8 +2591,9 @@ def cmd_close(args):
 @command("hook", "record one hook payload read from stdin (run by the plugin's hooks)")
 def cmd_hook(args):
     """Record one hook payload and keep the watch job in step with the dispatcher. Exits 0 whatever happens. Prints nothing,
-    except a `systemMessage` at the start of a session outside a task worktree when `copy_behind()` has a line."""
-    p = {}
+    except a `systemMessage` at the start of a session of the factory outside a task worktree when `copy_behind()` has a line.
+    A session that is not the factory's (`factory_session`) gets no record, no feedback, no identity line and no notice."""
+    p, mine = {}, False
     try:
         p = json.loads(sys.stdin.read())
         event, tool_input = p["hook_event_name"], p.get("tool_input")
@@ -2582,6 +2601,9 @@ def cmd_hook(args):
         message = message if isinstance(message, str) else ""
         fields = {k: p[k] for k in COPIED.get(event, ()) if k in p}
         text, tag = None, tags(p)
+        mine = factory_session(p, tag)
+        if not mine:
+            raise ValueError("not a session of the factory")
         try:
             if event == "SessionStart" and tag["slug"] and not p.get("agent_id") and os.environ.get("CLAUDE_ENV_FILE"):
                 line = f'eval "$({shlex.quote(str(FACTORY))} env)"'
@@ -2617,7 +2639,7 @@ def cmd_hook(args):
     except Exception:
         pass
     try:  # last: a slow or failed check loses nothing recorded above
-        if (p.get("hook_event_name") == "SessionStart" and not p.get("agent_id") and not WORKTREE_RE.match(str(p.get("cwd")))
+        if (mine and p.get("hook_event_name") == "SessionStart" and not p.get("agent_id") and not WORKTREE_RE.match(str(p.get("cwd")))
                 and (line := copy_behind())):
             print(json.dumps({"systemMessage": line}))
     except Exception:
@@ -2647,8 +2669,9 @@ def mcp_gate(p):
     docs/factory.md, "MCP servers for the lead and the tech lead"). Fail when the record cannot be read."""
     if p.get("hook_event_name") != "PreToolUse":
         return 0
-    role = tags({k: v for k, v in p.items() if k not in ("agent_id", "agent_type")})["role"]
-    if role == "other":
+    tag = tags({k: v for k, v in p.items() if k not in ("agent_id", "agent_type")})
+    role = tag["role"]
+    if role == "other" or not factory_session(p, tag):
         return 0
     if not STORE.expanduser().is_absolute():
         raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
@@ -2672,8 +2695,8 @@ def mcp_gate(p):
 @command("ops-hook", "gate and record the ops explorer's MCP calls from a hook payload on stdin (run by the plugin's hooks)")
 def cmd_ops_hook(args):
     """The ops explorer's MCP calls: before one, allow it when its tool is on the list recorded for the repository of the
-    payload's cwd and deny it otherwise; after one,
-    save its evidence. Nothing for any other agent. A failure before a call exits 2, which blocks it."""
+    payload's cwd and deny it otherwise; after one, save its evidence. In a session that is not the factory's (`factory_session`) deny every
+    call, whatever the record says, and save nothing. Nothing for any other agent. A failure before a call exits 2, which blocks it."""
     try:
         p = json.loads(sys.stdin.read())
         if p.get("agent_type") != OPS_AGENT:
@@ -2681,17 +2704,20 @@ def cmd_ops_hook(args):
         if not STORE.expanduser().is_absolute():
             raise Fail(f"FACTORY_HOME must be an absolute path (or start with ~), got {str(STORE)!r}")
         event, tool = p["hook_event_name"], p["tool_name"]
+        mine = factory_session(p, tags(p))
         if event == "PreToolUse":
             if not isinstance(p.get("cwd"), str):
                 raise Fail("the payload has no cwd")
-            access = ops_access(Repo(p["cwd"]).root)
-            refusal = ops_refusal(access)
+            access = ops_access(Repo(p["cwd"]).root) if mine else None
+            refusal = ops_refusal(access) if mine else OPS_NOT_OURS
             if refusal is None and ops_covers(access["tools"], tool):
                 decision = {"permissionDecision": "allow", "permissionDecisionReason": "on this repository's list"}
             else:
                 decision = {"permissionDecision": "deny", "permissionDecisionReason":
                             refusal or f"{tool} is not on this repository's list (factory ops access): the ops explorer is read-only"}
             out = {"hookEventName": event, **decision}
+        elif event == "PostToolUse" and not mine:
+            return 0
         elif event == "PostToolUse":
             try:
                 said = f"Evidence saved: {save_evidence(p)}"
@@ -2710,7 +2736,8 @@ def cmd_ops_hook(args):
 @command("guard-hook", "deny Bash, Edit, Write and NotebookEdit calls from a worktree that has no .git (run by the plugin's hooks)")
 def cmd_guard_hook(args):
     """From a hook payload on stdin: nothing when the session's directory is in no worktree or in healthy ones, else deny
-    the call with `worktree_gone`'s line. Reads nothing but the payload and the directory tree; an unreadable payload is `{}`."""
+    the call with `worktree_gone`'s line when the session is the factory's (`factory_session`), else nothing. Reads nothing but the payload
+    and the directory tree until there is a line to print; an unreadable payload is `{}`."""
     try:
         p = json.loads(sys.stdin.read())
     except ValueError:
@@ -2718,7 +2745,7 @@ def cmd_guard_hook(args):
     p = p if isinstance(p, dict) else {}
     cwd = p.get("cwd")
     sources = [d for d in (os.environ.get("CLAUDE_PROJECT_DIR"), cwd if isinstance(cwd, str) else None) if d] or [os.getcwd()]
-    if line := next(filter(None, map(worktree_gone, sources)), None):
+    if (line := next(filter(None, map(worktree_gone, sources)), None)) and factory_session(p, tags(p)):
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                  "permissionDecisionReason": line}}))
     return 0

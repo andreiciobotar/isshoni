@@ -109,7 +109,7 @@ def build_start():
 
 def run_print(argv, timeout=420):
     """Run a `claude -p` session in its own process group; its stream-json events and its stderr."""
-    env = {**os.environ, "FACTORY_ROLE": "tech-lead"}
+    env = {**os.environ, "FACTORY_ROLE": "tech-lead", "FACTORY_SESSION": "1"}
     with subprocess.Popen(argv, cwd=REPO, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True) as p:
         try:
             out, err = p.communicate(timeout=timeout)

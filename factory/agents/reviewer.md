@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Strict review of a finished change against its plan. Use after the coder finishes and before reporting done. Give it the plan and tell it to read the actual diff.
+description: Strict review of a finished change against its plan. Use after the coder finishes and before reporting done. Give it the plan and tell it to read the actual diff. Written for a factory task (a spec file, a task worktree); outside one it works the same and the factory records nothing.
 model: opus
 tools: Read, Grep, Glob, Bash, Skill
 skills:

@@ -1799,6 +1799,7 @@ class HookTests(SchedHarness):
         self.hook("UserPromptSubmit")
 
     def test_the_event_is_still_logged(self):
+        register("sid-d")
         self.hook("UserPromptSubmit", prompt="hi")
         [month] = self.store.glob("events-*.jsonl")
         self.assertEqual([json.loads(line)["event"] for line in month.read_text().splitlines()], ["UserPromptSubmit"])

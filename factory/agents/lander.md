@@ -1,6 +1,6 @@
 ---
 name: lander
-description: Lands a reviewed task branch. Brings it up to its base, resolves only mechanical conflicts, regenerates goldens, runs the full tests, pushes, opens or updates the draft pull request. Use for the first landing and for every "your base moved". Decides nothing about behavior, and stops with the exact hunks when a decision is needed.
+description: Lands a reviewed task branch. Brings it up to its base, resolves only mechanical conflicts, regenerates goldens, runs the full tests, pushes, opens or updates the draft pull request. Use for the first landing and for every "your base moved". Decides nothing about behavior, and stops with the exact hunks when a decision is needed. Started by the factory for a task; not meant to be picked by a session outside one.
 model: sonnet
 tools: Bash, Read, Edit, Grep, Glob, SendMessage, ToolSearch
 ---
