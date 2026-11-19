@@ -149,7 +149,7 @@ class MergeCommandTests(World):
                                   extra={("gh", "pr", "list", "--head", "worktree-t1"): merged})
         self.assertEqual(code, 1)
         self.assertIn("#2 stopped: its base was changed to main in this pass: it merges on the next one\n", out)
-        self.assertEqual([c[:2] for c in self.pr_calls()], [["pr", "checks"], ["pr", "edit"]])
+        self.assertEqual([c[:2] for c in self.pr_calls()], [["pr", "edit"], ["pr", "checks"]])
         self.setUp()
         code, out, _ = self.merge("2", prs=[pr(2)])
         self.assertEqual(code, 0)
@@ -265,7 +265,7 @@ class MergeCommandTests(World):
                                          ("git", "merge-base", "--is-ancestor"): (1, "", "")})
         self.assertEqual(code, 1)
         self.assertIn(self.behind(5), out)
-        self.assertEqual(self.gh_mutations(), [])
+        self.assertEqual(self.gh_mutations(), [["pr", "edit", "5", "--base", "main"]])
 
     def test_every_pull_request_gets_a_fresh_fetch(self):
         self.merge("1", "2", prs=[pr(1), pr(2)])
@@ -777,6 +777,19 @@ class ApprovedTests(World):
                 self.setUp()
                 self.approved([pr(1)], reviews={1: reviews})
                 self.assertEqual(self.merges(), ["1"] if merged else [])
+
+    def test_a_bots_lgtm_and_verdicts_neither_approve_nor_withdraw_an_approval(self):
+        comments = [comment(login="rev-bot", type="Bot", at=NOW - 30)]
+        reviews = [review("APPROVED", login="rev-bot", type="Bot", at=NOW - 30), review("CHANGES_REQUESTED", login="rev-bot", type="Bot", at=NOW - 20)]
+        for label, lgtm in (("approved", [comment()]), ("unapproved", [])):
+            with self.subTest(label):
+                self.setUp()
+                without = self.approved([pr(1)], {1: lgtm})
+                merged = self.merges()
+                self.setUp()
+                with_bots = self.approved([pr(1)], {1: lgtm + comments}, reviews={1: reviews})
+                self.assertEqual((with_bots, self.merges()), (without, merged))
+                self.assertEqual(merged, ["1"] if lgtm else [])
 
     def test_lgtm_from_author_false_leaves_the_author_out_only(self):
         (self.store / "settings.toml").write_text('[merging]\nlgtm_from_author = false\n')
