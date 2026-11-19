@@ -65,6 +65,7 @@ The logs written before this change hold records of outside sessions; they are k
 ## Commands
 ```
 factory new <slug> (--brief <text> | --brief-file <path>) [--dispatcher <session-name>] [--base <slug>]
+factory ci [setup [--test '<command>' | --check <name>]]   # the default branch requires a status check? `setup` is the human's, in their own terminal
 factory build <slug> [--note <text>] [--dispatcher <session-name>]      # start the tech lead on the build (run in the task's worktree)
 factory status [--json] [--cached] [--max-age SECONDS]
 factory clean [--dry-run]

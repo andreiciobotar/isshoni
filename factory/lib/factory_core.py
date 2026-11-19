@@ -100,7 +100,7 @@ def command(name, help, options=None):
 
 
 class Fail(Exception):
-    """One line on stderr and an exit code: 2 for a usage or precondition error, 1 for a failed external step."""
+    """A message on stderr (one line; `ci setup` adds lines) and an exit code: 2 for a usage or precondition error, 1 for a failed external step."""
 
     def __init__(self, message, code=2):
         super().__init__(message)
@@ -2021,7 +2021,7 @@ def no_ci_line(repo):
 
 def ci_workflow(default, test):
     """The text of .github/workflows/factory-ci.yml; without `test` the job has no `run` step yet."""
-    step = f"        - run: |\n            {test}\n" if test else "        # the test command goes here as a step: - run: <command>\n"
+    step = f"      - run: |\n          {test}\n" if test else "      # the test command goes here as a step: - run: <command>\n"
     return (f"# Written by `factory ci setup`. The default branch requires the check `{CI_NAME}` (the job below): rename both together.\n"
             f"name: {CI_NAME}\non:\n  pull_request:\n  push:\n    branches: [{default}]\njobs:\n  {CI_NAME}:\n    runs-on: ubuntu-latest\n"
             f"    steps:\n      - uses: actions/checkout@v7\n{step}")
@@ -2033,23 +2033,12 @@ def human_gh(repo, *args, input=None):
     return run(["gh", *args], cwd=repo.root, timeout=GH_TIMEOUT, input=input, env={"GH_TOKEN": "", **os.environ})
 
 
-def reported_checks(repo, sha):
-    """The names of the check runs and commit statuses GitHub reports on `sha`; Fail when it cannot be read."""
-    names = set()
-    for endpoint, field, key in ((f"commits/{sha}/check-runs?per_page=100", "check_runs", "name"),
-                                 (f"commits/{sha}/status?per_page=100", "statuses", "context")):
-        rc, out, err = human_gh(repo, "api", f"repos/{{owner}}/{{repo}}/{endpoint}")
-        try:
-            names |= {item[key] for item in json.loads(out)[field]} if rc == 0 else set()
-        except (ValueError, KeyError, TypeError):
-            rc, err = 1, "gh answered with an unexpected shape"
-        if rc != 0:
-            raise Fail(f"cannot read the checks of {sha}: {(err.strip().splitlines() or ['gh failed'])[0]}", code=1)
-    return names
-
-
 def ci_setup(repo, test, check):
     done = []
+
+    def stop(message):
+        hint = next((h for needle, h in CI_HINTS if needle in message), "")
+        raise Fail(f"{message}\n  done: {', '.join(done) or 'nothing'}; the rest is not done\n  {hint}".rstrip(), code=1)
 
     def gh_or_stop(*args, input=None, absent=False):
         rc, out, err = human_gh(repo, *args, input=input)
@@ -2057,9 +2046,22 @@ def ci_setup(repo, test, check):
             return out
         if absent and "404" in err:
             return None
-        message = err.strip() or out.strip() or "gh failed"
-        hint = next((h for needle, h in CI_HINTS if needle in message), "")
-        raise Fail(f"{message}\n  done: {', '.join(done) or 'nothing'}; the rest is not done\n  {hint}".rstrip(), code=1)
+        stop(err.strip() or out.strip() or "gh failed")
+
+    def read(endpoint, *path):
+        """The JSON of `endpoint` followed down `path`; a failed read or an unexpected shape stops with what is done."""
+        try:
+            value = json.loads(gh_or_stop("api", f"repos/{{owner}}/{{repo}}/{endpoint}"))
+            for key in path:
+                value = value[key]
+            return value
+        except (ValueError, KeyError, IndexError, TypeError):
+            stop(f"gh answered with an unexpected shape for {endpoint}")
+
+    def reported_checks(sha):
+        """The names of the check runs and commit statuses GitHub reports on `sha`."""
+        return ({run_["name"] for run_ in read(f"commits/{sha}/check-runs?per_page=100", "check_runs")}
+                | {status["context"] for status in read(f"commits/{sha}/status?per_page=100", "statuses")})
 
     state, reason = ci_state(repo)
     if state == "unreadable":
@@ -2075,19 +2077,19 @@ def ci_setup(repo, test, check):
             done.append(f"{CI_WORKFLOW} committed on {repo.default}")
         else:
             print(f"{CI_WORKFLOW} is already on {repo.default}: kept")
-    head = json.loads(gh_or_stop("api", f"repos/{{owner}}/{{repo}}/commits/{repo.default}"))["sha"]
+    head = read(f"commits/{repo.default}", "sha")
     if check is None:
         name, deadline = CI_NAME, time.monotonic() + CI_WAIT
-        while name not in reported_checks(repo, head):
+        while name not in reported_checks(head):
             if time.monotonic() >= deadline:
                 raise Fail(f"the workflow is on {repo.default} ({head}) but GitHub reported no check {name} within {CI_WAIT} s "
                            f"(is Actions enabled?): no rule was created; run factory ci setup again", code=1)
             time.sleep(CI_POLL)
     else:
-        name, seen = check, reported_checks(repo, head)
-        latest = json.loads(gh_or_stop("api", "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=1"))
+        name, seen = check, reported_checks(head)
+        latest = read("pulls?state=all&sort=updated&direction=desc&per_page=1")
         if latest:
-            seen |= reported_checks(repo, latest[0]["head"]["sha"])
+            seen |= reported_checks(latest[0]["head"]["sha"])
         if name not in seen:
             raise Fail(f"GitHub reports no check {name} on {repo.default} or on the latest pull request; it reports: "
                        f"{', '.join(sorted(seen)) or 'none'}", code=1)

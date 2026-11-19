@@ -19,6 +19,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
 os.environ.pop("FACTORY_ROLE", None)  # a tech lead session runs `make test`: the tests must not see its role
 BIN = Path(__file__).resolve().parent.parent / "bin" / "factory"
 os.environ.pop("FACTORY_HOME", None)  # the tests make their own homes; an ambient one would move the script's store
@@ -1638,6 +1643,9 @@ class CiTests(unittest.TestCase):
     STATUS = ("gh", "api", "repos/{owner}/{repo}/commits/abc/status?per_page=100")
     PULLS = ("gh", "api", "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=1")
     REPORTED = (0, '{"check_runs": [{"name": "factory-ci"}]}', "")
+    WORKFLOW = ("# Written by `factory ci setup`. The default branch requires the check `factory-ci` (the job below): rename both together.\n"
+                "name: factory-ci\non:\n  pull_request:\n  push:\n    branches: [main]\njobs:\n  factory-ci:\n    runs-on: ubuntu-latest\n"
+                "    steps:\n      - uses: actions/checkout@v7\n")
     SET_UP = [(0, "[]", ""), (0, REQUIRED_RULE, "")]  # the rules before the setup, and after it
 
     def ci(self, argv, answers=None, env=None):
@@ -1700,9 +1708,9 @@ class CiTests(unittest.TestCase):
         put = self.body(fake, self.PUT)
         workflow = base64.b64decode(put["content"]).decode()
         self.assertEqual((put["branch"], put["message"]), ("main", "Add the factory's CI workflow"))
-        self.assertIn("branches: [main]", workflow)
-        self.assertIn("        - run: |\n            make test\n", workflow)
-        self.assertIn("actions/checkout@v7", workflow)
+        self.assertEqual(workflow, self.WORKFLOW + "      - run: |\n          make test\n")
+        if yaml:
+            self.assertEqual(yaml.safe_load(workflow)["jobs"]["factory-ci"]["steps"][1], {"run": "make test\n"})
         post = self.body(fake, self.POST)
         self.assertEqual(post["rules"], [{"type": "required_status_checks", "parameters": {
             "required_status_checks": [{"context": "factory-ci"}], "strict_required_status_checks_policy": False}}])
@@ -1712,14 +1720,36 @@ class CiTests(unittest.TestCase):
         for call, env in zip(fake.calls, fake.envs):  # setup's own calls carry the human's login, never the App token
             if call in human:
                 self.assertEqual(env["GH_TOKEN"], os.environ.get("GH_TOKEN", ""), call)
-        code, out, _, _, _ = self.ci([], {RULESET: (0, self.REQUIRED_RULE, "")})
+        rules = {RULESET: (0, self.REQUIRED_RULE, "")}
+        code, out, _, _, _ = self.ci([], rules)
         self.assertEqual((code, out), (0, ""))
+        answers = repo_answers([], [dict(DISPATCHER, name="d1")], NewTests.OK, {BRANCH_RULE: (0, self.OFF, ""), **rules}, NewTests.NO_PR)
+        code, _, err, fake = invoke(NewTests.ARGS, answers)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(fake.ran("claude", "--bg"))
 
     def test_setup_without_a_test_command_has_no_run_step(self):
         _, _, _, fake, _ = self.ci(["setup"])
         workflow = base64.b64decode(self.body(fake, self.PUT)["content"]).decode()
-        self.assertNotIn("- run:", workflow.replace("as a step: - run:", ""))
-        self.assertIn("the test command goes here", workflow)
+        self.assertEqual(workflow, self.WORKFLOW + "      # the test command goes here as a step: - run: <command>\n")
+        if yaml:
+            self.assertEqual(len(yaml.safe_load(workflow)["jobs"]["factory-ci"]["steps"]), 1)
+
+    def test_a_failed_read_of_the_workflow_file_other_than_404_stops_without_writing(self):
+        code, _, err, fake, _ = self.ci(["setup"], {self.FILE: (1, "", "gh: Server Error (HTTP 500)")})
+        self.assertEqual(code, 1)
+        self.assertIn("HTTP 500", err)
+        self.assertIn("done: nothing", err)
+        self.assertFalse(fake.ran(*self.PUT) or fake.ran(*self.POST))
+
+    def test_a_failed_check_read_or_a_bad_shape_still_says_what_is_done(self):
+        for answers in ({self.RUNS: (1, "", "gh: Bad Gateway (HTTP 502)")}, {self.HEAD: (0, "[]", "")}):
+            with self.subTest(answers):
+                code, _, err, fake = self.ci(["setup", "--test", "x"], answers)[:4]
+                self.assertEqual(code, 1)
+                self.assertNotIn("Traceback", err)
+                self.assertIn("done: .github/workflows/factory-ci.yml committed on main; the rest is not done", err)
+                self.assertFalse(fake.ran(*self.POST))
 
     def test_setup_with_a_check_that_is_reported_writes_no_workflow_and_requires_it(self):
         answers = {self.PULLS: (0, '[{"head": {"sha": "def"}}]', ""), self.RUNS: (0, '{"check_runs": []}', ""),
