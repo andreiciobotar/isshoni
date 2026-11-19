@@ -54,6 +54,9 @@ test-python: modules
 # Tests that run the monitor without --prices must not read the developer's own price file: a config home that never exists.
 NOCONFIG := XDG_CONFIG_HOME=/nonexistent
 
+# The factory suite always runs as if inside a factory session: it clears these itself, so a removed clearing fails here, in CI too.
+INSESSION := FACTORY_SESSION=1 FACTORY_ROLE=tech-lead FACTORY_HOME=/nonexistent CLAUDE_PROJECT_DIR=/nonexistent CLAUDECODE=1
+
 test-go: modules
 	go vet ./...
 	$(NOCONFIG) $(NOLEFT) go test $(GOTESTFLAGS) ./...
@@ -70,7 +73,7 @@ golden:
 	go test ./internal/tui -update
 
 test-factory:
-	$(NOCONFIG) $(NOLEFT) python3 -m unittest discover -s factory/tests
+	$(NOCONFIG) $(INSESSION) $(NOLEFT) python3 -m unittest discover -s factory/tests
 
 # Set everything up (dependencies, dashboard, plugin, settings, cost alerts, gh stack, GitHub App) and rerun to repair, e.g. make wizard ARGS="--yes --owner my-org"
 wizard:
