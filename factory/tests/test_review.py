@@ -252,6 +252,23 @@ class RunTests(Session):
         self.assertEqual((code, r["outcome"], r["reason"], r["posted"], r["held"], r["cost_usd"]), (1, "failed", "reached 20 minutes", [], [], None))
         self.assertEqual([c[1:3] for c in self.gh_calls()], [["issue", "list"]])
 
+    def test_an_error_with_a_report_posts_the_good_proposal_holds_the_bad_one_and_stays_failed(self):
+        self.claude_rc, self.claude = 1, {"is_error": True, "session_id": "sid-r", "total_cost_usd": 1.0}
+        self.files.update({"proposals/1.md": proposal_file(), "proposals/2.md": "not a proposal\n"})
+        code, r, _ = self.run_review(TARGET)
+        self.assertEqual((code, r["outcome"], r["reason"]), (1, "failed", "the session ended with an error"))
+        self.assertEqual(r["posted"], [{"file": "1.md", "issue": 41, "kind": "proposal"}])
+        self.assertEqual([h["file"] for h in r["held"]], ["2.md"])
+        self.assertRegex((Path(r["folder"]) / "report.md").read_text(), r"\n\nScript record: posted 1, held 1; held 2\.md: .*\n$")
+
+    def test_an_error_without_a_report_posts_nothing(self):
+        self.claude_rc, self.claude = 1, {"is_error": True}
+        del self.files["report.md"]
+        self.files["proposals/1.md"] = proposal_file()
+        _, r, _ = self.run_review(TARGET)
+        self.assertEqual((r["outcome"], r["posted"], r["held"]), ("failed", [], []))
+        self.assertEqual([c[1:3] for c in self.gh_calls()], [["issue", "list"]])
+
     def test_the_budget_fails_with_the_reason(self):
         self.claude_rc, self.claude = 1, {"subtype": "error_max_budget_usd", "is_error": True, "total_cost_usd": 3.01}
         self.files["proposals/p.md"] = proposal_file()

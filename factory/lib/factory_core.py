@@ -208,6 +208,18 @@ def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
     return result
 
 
+def short_wake():
+    """None when work can be started, else why not: on macOS a sleeping machine wakes briefly by itself (a dark wake, no
+    `Graphics` in its capabilities) and launchd runs the tick then. An unreadable answer is None: a broken probe never stops the factory."""
+    if sys.platform != "darwin":
+        return None
+    rc, out, _ = run(["pmset", "-g", "systemstate"], timeout=5)
+    line = next((l for l in out.splitlines() if l.startswith("Current System Capabilities are:")), None)
+    if rc == 0 and line is not None and "Graphics" not in line:
+        return "the machine is in a dark wake (asleep, awake for a moment)"
+    return None
+
+
 def spawn(argv, cwd, out_path):
     """Start `argv` detached in its own session, its output appended to `out_path`, and do not wait. Raises OSError."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4666,6 +4678,10 @@ def cmd_watch(args):
     """One scheduled tick at a time per repository: cron starts one every two minutes, whatever the last one still does.
     The lander's loop runs last, while a task is handed over or the human's word stands."""
     repo = Repo()
+    if reason := short_wake():
+        log("ticks", {"ts": now(), "repo": repo.root, "outcome": "not run", "reason": reason})
+        print(f"watch: tick not run: {reason}")
+        return 0
     ops_tick(repo)
     review_tick(repo)
     with repo_lock(repo, "watch") as free:
@@ -8410,6 +8426,11 @@ def build_run(repo, settings, args, spec, handover, learned):
     slug = args.slug
     worktree, branch = repo.worktree_path(slug), f"worktree-{slug}"
     git = lambda *a: repo.git(*a, path=worktree)[1].strip()
+    if reason := short_wake():
+        print(f"build run waits: {reason}", flush=True)
+        while reason:
+            time.sleep(WATCH_INTERVAL)
+            reason = short_wake()
     declare(repo, slug, "tech-lead", "working")
     old_head, before, started, findings = git("rev-parse", "HEAD"), spec_hash(spec), time.monotonic(), pending_findings(repo, slug)
     learned["delivered"] = [f["id"] for f in findings]
@@ -9200,7 +9221,7 @@ def review_run(repo, settings):
                   else f"reached {float(REVIEW_BUDGET):g} USD" if doc.get("subtype") == "error_max_budget_usd"
                   else "the session ended with an error" if rc != 0 or doc.get("is_error")
                   else None if (folder / "report.md").is_file() else "the session wrote no report.md")
-        if not reason and target:
+        if (not reason or reason == "the session ended with an error" and (folder / "report.md").is_file()) and target:
             if blocked:
                 held = [{"file": p.name, "why": blocked} for p in sorted((folder / "proposals").glob("*.md"))]
             else:
