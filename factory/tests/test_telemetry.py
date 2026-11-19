@@ -207,9 +207,11 @@ class OutsideTests(StoreCase):
                 {"hook_event_name": "SubagentStop", "agent_id": "a1", "agent_type": "factory:reviewer", "last_assistant_message": REPORT})
 
     def fire_all(self, project, **kw):
-        with mock.patch.object(factory, "run", side_effect=AssertionError("run called")):
+        calls = []
+        with mock.patch.object(factory, "run", side_effect=lambda *a, **k: calls.append(a) or (0, "", "")):
             for payload in self.PAYLOADS:
                 self.fire({"session_id": SID, **payload}, project=project, **kw)
+        self.assertEqual(calls, [])
 
     def test_a_reviewer_of_a_plain_directory_or_an_undeclared_worktree_leaves_no_file(self):
         for project in ("/plain/dir", f"{REPO}/.claude/worktrees/claude-code-own"):
