@@ -1664,15 +1664,22 @@ class StackMergeTests(World):
         self.assertEqual(self.kinds, [("no-ci", f"stack member #3: {NO_CI}")])
         self.nothing_started()
 
-    def no_checks_behind(self, *argv, behind=True, **kw):
-        """The bottom has no checks, the rules require one, and the bottom is (not) on top of the default branch."""
+    def no_checks_behind(self, *argv, behind=True, checks=None, **kw):
+        """The bottom (or the member `checks` names) has no checks, the rules require one, and the bottom is (not) on
+        top of the default branch."""
         extra = {("git", "merge-base", "--is-ancestor", "origin/main"): (1 if behind else 0, "", ""), **RULES_REQUIRE, **kw.pop("extra", {})}
-        return self.stacked(*argv, checks={1: NO_CHECKS, 2: GREEN, 3: GREEN}, extra=extra, **kw)
+        return self.stacked(*argv, checks=checks or {1: NO_CHECKS, 2: GREEN, 3: GREEN}, extra=extra, **kw)
 
     def test_a_stack_with_no_checks_that_is_behind_is_rebased_to_start_them(self):
         code, out, _ = self.no_checks_behind("1")
         self.assertEqual([self.count(*s) for s in CLONE_STEPS], [1, 1, 1, 1, 1])
         self.assertEqual((self.count(*PUT), self.count("gh", "pr", "checks", "1")), (0, 1))
+        self.assertEqual(self.kinds[0][0], "pending")
+        self.assertIn("(behind)", self.kinds[0][1])
+
+    def test_a_stack_with_no_checks_on_an_upper_member_that_is_behind_is_rebased(self):
+        self.no_checks_behind("1", checks={1: GREEN, 2: NO_CHECKS, 3: GREEN})
+        self.assertEqual([self.count(*s) for s in CLONE_STEPS], [1, 1, 1, 1, 1])
         self.assertEqual(self.kinds[0][0], "pending")
         self.assertIn("(behind)", self.kinds[0][1])
 
