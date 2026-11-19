@@ -32,7 +32,6 @@ import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
-from types import SimpleNamespace
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 PERMISSION_MODES = ("acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan")
@@ -6400,8 +6399,11 @@ def outbox_put(repo, slug, line):
 def take(tag, prompt):
     """The receipt: each `[outbox <id>]` in the `prompt` of the lead session `tag` that is a row of its task not yet
     `delivered` ends `delivered`. The only writer of that end."""
-    repo = SimpleNamespace(root=tag["repo"])
     seen = set(OUTBOX_TAG.findall(prompt))
+    if not seen:
+        return
+    from types import SimpleNamespace
+    repo = SimpleNamespace(root=tag["repo"])
     for r in outbox_rows(repo):
         if r["id"] in seen and r["slug"] == tag["slug"] and r.get("end") != "delivered":
             outbox_log(repo, r["id"], end="delivered", session=tag["session"])
@@ -6437,7 +6439,12 @@ def deliver(repo, sessions, slug, wait=0):
 
 def hand_back(repo, fallback, slug, why, rows):
     """Hand the pending `rows` of `slug` to the dispatcher in one line, else the human; the rows end `dispatcher`. The head
-    follows `why` of `reach_lead`: NOT DELIVERED when the lead has a live session, else LEAD GONE."""
+    follows `why` of `reach_lead`: NOT DELIVERED when the lead has a live session, else LEAD GONE. A row the lead took meanwhile
+    stays `delivered` and is not in the line."""
+    pending = {r["id"] for r in outbox(repo, slug)}
+    rows = [r for r in rows if r["id"] in pending]
+    if not rows:
+        return "lead"
     for r in rows:
         outbox_log(repo, r["id"], end="dispatcher")
     said = f"{slug} ({why}): {len(rows)} line(s) not delivered, oldest first: " + " | ".join(r["line"] for r in rows)
@@ -6481,6 +6488,9 @@ def forward(repo, fallback, slug, head, said, lead=True):
             return "lead" if result == "taken" else "queued"
         if why == CLOSED:
             return hand_back(repo, fallback, slug, why, outbox(repo, slug))
+        if why == NOT_TAKEN:  # an earlier put went unreceipted: the new line waits for the tick, which counts the tries
+            rows = outbox(repo, slug)
+            return hand_back(repo, fallback, slug, why, rows) if max(r["tries"] for r in rows) >= OUTBOX_TRIES else "queued"
         session = lead_session(sessions, repo, slug)
         if session and "pid" not in session:
             return "queued"

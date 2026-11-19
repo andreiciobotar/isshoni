@@ -288,6 +288,23 @@ class TickTests(Outbox):
         self.drain([DISPATCHER_SESSION, LIVE], courier=courier)
         self.assertEqual(self.fake.calls, [])
 
+    def test_a_line_forwarded_while_an_earlier_put_is_unreceipted_queues_and_the_old_row_gets_one_try(self):
+        sessions = [DISPATCHER_SESSION, LIVE]
+        self.assertEqual(self.forward(sessions, said="one"), "queued")  # put in, never taken
+        self.clock += 130
+        self.assertEqual(self.forward(sessions, said="two"), "queued")
+        self.assertEqual([c for c in self.couriers() if c[0] == "dispatcher-repo"], [])
+        self.assertEqual([(r["line"], r["tries"], r.get("why")) for r in factory.outbox(self.repo)],
+                         [("TECH LEAD: x: one", 1, factory.NOT_TAKEN), ("TECH LEAD: x: two", 0, None)])
+
+    def test_a_row_the_lead_took_meanwhile_is_not_handed_back(self):
+        rid = factory.outbox_put(self.repo, "x", "L1")
+        rows = factory.outbox(self.repo)
+        factory.outbox_log(self.repo, rid, end="delivered", session="s")
+        self.assertEqual(self.call(lambda: factory.hand_back(self.repo, None, "x", "its lead is gone: x", rows), [DISPATCHER_SESSION]), "lead")
+        self.assertEqual(self.couriers(), [])
+        self.assertEqual([r["end"] for r in self.records() if "end" in r], ["delivered"])
+
     def test_a_notice_the_dispatcher_cannot_take_is_printed_with_its_name_and_falls_to_the_desktop(self):
         out = io.StringIO()
         with redirect_stdout(out), mock.patch.object(factory, "notify_argv", return_value=None):

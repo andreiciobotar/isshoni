@@ -208,7 +208,8 @@ class Sim:
             tag = re.search(r" \[outbox [0-9a-f]{12}\]$", line)
             self.lines.append(line[:tag.start()] if tag else line)
             if tag:  # a line of the outbox: the lead's session takes it
-                test_health.lead_prompt(line, cwd=f"{WT}/{re.search(r'session named (\S+)\. ', a[-1])[1]}")
+                named = re.search(r"session named (\S+)\. ", a[-1])[1]
+                test_health.lead_prompt(line, cwd=f"{WT}/{named}")
             return 0, json.dumps({"result": "sent"}), ""
         return None
 
