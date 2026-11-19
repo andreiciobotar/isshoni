@@ -30,7 +30,6 @@ class OpsHarness(SchedHarness):
         self.claude_json.write_text(json.dumps({"mcpServers": {"metrics": SERVER}}))
         env = mock.patch.dict(os.environ)
         env.start()
-        os.environ.pop("CLAUDECODE", None)
         patcher = mock.patch.object(factory, "CLAUDE_JSON", self.claude_json)
         patcher.start()
         for undo in (env.stop, patcher.stop):
