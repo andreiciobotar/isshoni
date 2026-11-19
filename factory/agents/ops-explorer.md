@@ -1,6 +1,6 @@
 ---
 name: ops-explorer
-description: Answers a question about a running system (logs, metrics, traces) from the MCP servers it is given. Returns evidence file paths and short excerpts, not conclusions. Read-only. Do NOT use for design judgment or edits.
+description: Answers a question about a running system (logs, metrics, traces) from the MCP servers it is given. Returns evidence file paths and short excerpts, not conclusions. Read-only. Do NOT use for design judgment or edits. Started by the factory for a task; not meant to be picked by a session outside one.
 model: haiku
 tools: Read, Grep, Glob
 ---
