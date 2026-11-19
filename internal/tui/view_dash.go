@@ -98,10 +98,10 @@ func (m *model) dashBody(p paint, w, h int) block {
 	}
 	out = append(out, m.paneHeader(p, sc, w))
 	if l.stripH > 0 {
-		rows, _ := agentUsage(roleUsage(t.byAgent))
-		out = append(out, m.scopeStrip(p, "agents", rows, t.cost, m.th.AgentColor, func(k string) string { return k }, w))
-		rows, _ = sortedUsage(t.byModel)
-		out = append(out, m.scopeStrip(p, "models", rows, t.cost, m.th.ModelColor, shortModel, w))
+		rows, total := agentUsage(roleUsage(t.byAgent))
+		out = append(out, m.scopeStrip(p, "agents", rows, total, m.th.AgentColor, func(k string) string { return k }, w))
+		rows, total = sortedUsage(t.byModel)
+		out = append(out, m.scopeStrip(p, "models", rows, total, m.th.ModelColor, shortModel, w))
 	}
 	nowH := l.nowH
 	if sc.s != nil {
@@ -227,7 +227,7 @@ func (m *model) mixStrip(p paint, label string, rows []kv, total float64, col fu
 	return fit(line, w, p)
 }
 
-// scopeStrip is mixStrip for the dashboard's scope: each legend entry also shows its money, and an entry
+// scopeStrip is mixStrip for the dashboard's scope: each legend entry also shows its amount, and an entry
 // that does not fit is left out whole rather than cut mid-number.
 func (m *model) scopeStrip(p paint, label string, rows []kv, total float64, col func(string) color.Color, name func(string) string, w int) string {
 	var segs []seg
@@ -241,7 +241,7 @@ func (m *model) scopeStrip(p paint, label string, rows []kv, total float64, col 
 		if total > 0 {
 			share = r.v / total * 100
 		}
-		entries = append(entries, p.sp(2)+p.swatch(i, col(r.k))+p.t(" "+name(r.k)+" "+m.money(r.v, r.unpriced)+" "+pct(share), m.th.Muted))
+		entries = append(entries, p.sp(2)+p.swatch(i, col(r.k))+p.t(" "+name(r.k)+" "+m.amount(r)+" "+pct(share), m.th.Muted))
 	}
 	// keep the most entries that fit with the " +N" marker for the rest; the first is always shown
 	k, used := 0, width(line)
@@ -749,23 +749,35 @@ func share(n, d float64) string {
 
 // ---- mix panels -----------------------------------------------------------------------
 
+// kv is one row of a mix: share and order come from v, the amount beside it from cost and unpriced.
 type kv struct {
 	k        string
-	v        float64 // cost
-	unpriced int64   // tokens with no price
+	v        float64 // tokens without cache reads: input + output + cache write
+	cost     float64
+	unpriced int64 // tokens with no price
 }
 
+// amount is the row's dollars; a row with no price at all shows its tokens instead of a zero.
+func (m *model) amount(r kv) string {
+	if r.cost == 0 && r.unpriced > 0 {
+		return Human(r.v)
+	}
+	return m.money(r.cost, r.unpriced)
+}
+
+// usageRows turns a usage map into rows and their total v.
 func usageRows(m map[string]data.Usage) ([]kv, float64) {
 	var out []kv
 	var total float64
 	for k, u := range m {
-		out = append(out, kv{k, u.Cost, u.Unpriced})
-		total += u.Cost
+		v := float64(u.Input + u.Output + u.CacheWrite)
+		out = append(out, kv{k, v, u.Cost, u.Unpriced})
+		total += v
 	}
 	return out, total
 }
 
-// sortedUsage lists a usage map by cost, largest first (models).
+// sortedUsage lists a usage map by usage, largest first (models).
 func sortedUsage(m map[string]data.Usage) ([]kv, float64) {
 	out, total := usageRows(m)
 	sort.Slice(out, func(i, j int) bool {
@@ -806,7 +818,7 @@ func boxTitle(name, label string) string {
 func (m *model) agentMixBox(p paint, label string, t totals, w, h int) block {
 	th := m.th
 	in := p.on(th.Surface)
-	rows, _ := agentUsage(roleUsage(t.byAgent))
+	rows, total := agentUsage(roleUsage(t.byAgent))
 	iw := w - 4
 	nameW := 0
 	for _, r := range rows {
@@ -820,24 +832,23 @@ func (m *model) agentMixBox(p paint, label string, t totals, w, h int) block {
 		}
 		col := th.AgentColor(r.k)
 		share := 0.0
-		if t.cost > 0 {
-			share = r.v / t.cost
+		if total > 0 {
+			share = r.v / total
 		}
 		bw := max(4, iw-2-nameW-1-1-9-5)
 		lines = append(lines, in.t("● ", col)+in.t(cell(r.k, nameW, false), th.Text)+in.sp(1)+
-			in.bar(bw, share, col, false)+in.sp(1)+in.t(cell(m.money(r.v, r.unpriced), 9, true), th.Muted)+in.t(cell(pct(share*100), 5, true), th.Faint))
+			in.bar(bw, share, col, false)+in.sp(1)+in.t(cell(m.amount(r), 9, true), th.Muted)+in.t(cell(pct(share*100), 5, true), th.Faint))
 	}
 	if len(rows) == 0 {
 		lines = []string{in.t("no data yet", th.Faint)}
 	}
-	return p.boxed(boxTitle("Agent mix", label), lines, w, h, th.Yellow)
+	return p.boxed(boxTitle("Agent tokens", label), lines, w, h, th.Yellow)
 }
 
 func (m *model) modelMixBox(p paint, label string, t totals, w, h int) block {
 	th := m.th
 	in := p.on(th.Surface)
-	rows, _ := sortedUsage(t.byModel)
-	total := t.cost
+	rows, total := sortedUsage(t.byModel)
 	iw := w - 4
 	var segs []seg
 	for _, r := range rows {
@@ -849,15 +860,11 @@ func (m *model) modelMixBox(p paint, label string, t totals, w, h int) block {
 		if total > 0 {
 			share = r.v / total * 100
 		}
-		amount := m.money(r.v, 0)
-		if r.unpriced > 0 {
-			amount = "unpriced"
-		}
 		lines = append(lines, in.swatch(i, th.ModelColor(r.k))+in.sp(1)+in.t(cell(shortModel(r.k), max(6, iw-16), false), th.Text)+
-			in.t(cell(amount, 9, true), th.Muted)+in.t(cell(pct(share), 5, true), th.Faint))
+			in.t(cell(m.amount(r), 9, true), th.Muted)+in.t(cell(pct(share), 5, true), th.Faint))
 	}
 	if len(rows) == 0 {
 		lines = []string{in.t("no data yet", th.Faint)}
 	}
-	return p.boxed(boxTitle("Model mix", label), lines, w, h, th.Teal)
+	return p.boxed(boxTitle("Model tokens", label), lines, w, h, th.Teal)
 }

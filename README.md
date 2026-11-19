@@ -99,7 +99,7 @@ On day one, agents reported the same shell friction eleven times and counting. I
 
 `isshoni` reads the transcripts Claude Code already keeps in `~/.claude/projects` and never writes there. Beyond cost and tokens it shows the signs of wasted work: repeated dispatches, review loops, agents on a model other than the one pinned for them. Parsed sessions are cached outside that directory ([cache](docs/isshoni.md#cache)).
 
-Cost is the API list price, from [isshoni/prices.toml](isshoni/prices.toml). `isshoni-tui` is the same data live, plus the factory's tasks and whether it is getting better. One more view, [Hanami (花見)](docs/isshoni.md#hanami-花見-the-work-as-something-to-watch), draws the work as motion: something to leave on a second screen.
+Cost is the API list price, from [isshoni/prices.toml](isshoni/prices.toml) and your own [price file](docs/isshoni.md) for models it lacks. `isshoni-tui` is the same data live, plus the factory's tasks and whether it is getting better. One more view, [Hanami (花見)](docs/isshoni.md#hanami-花見-the-work-as-something-to-watch), draws the work as motion: something to leave on a second screen.
 
 <p align="center">
   <img src="assets/tabs/hanami.webp" alt="Hanami: a day of the factory replayed; blossoms open where agents work, and a merge bursts as a firework that lights the stage">

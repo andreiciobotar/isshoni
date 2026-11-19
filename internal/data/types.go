@@ -51,6 +51,7 @@ type Prices struct {
 	Currency string `json:"currency"`
 	AsOf     string `json:"as_of"`
 	Path     string `json:"path"`
+	UserPath string `json:"user_path"` // the per-user overlay, when it was read
 }
 
 // Recheck is the explorer re-check signal.

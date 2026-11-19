@@ -21,8 +21,8 @@ func plain(m *model) string { return ansi.Strip(m.Render()) }
 func TestMixesAreAlwaysVisible(t *testing.T) {
 	for _, sz := range [][2]int{{60, 16}, {80, 24}, {99, 30}, {100, 30}, {123, 33}, {140, 40}} {
 		out := plain(fakeModel(true, sz[0], sz[1]))
-		agents := strings.Contains(out, "Agent mix") || strings.Contains(out, "agents ")
-		models := strings.Contains(out, "Model mix") || strings.Contains(out, "models ")
+		agents := strings.Contains(out, "Agent tokens") || strings.Contains(out, "agents ")
+		models := strings.Contains(out, "Model tokens") || strings.Contains(out, "models ")
 		if !agents || !models {
 			t.Errorf("%dx%d: agent mix visible=%v, model mix visible=%v\n%s", sz[0], sz[1], agents, models, out)
 		}

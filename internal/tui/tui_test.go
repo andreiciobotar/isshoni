@@ -190,10 +190,13 @@ func TestMoney(t *testing.T) {
 func TestUnpricedIsMarked(t *testing.T) {
 	m := fakeModel(true, 140, 40)
 	out := plain(m)
-	for _, want := range []string{"$12.80*", "no price for nova-9: excluded from cost", "unpriced"} {
+	for _, want := range []string{"$12.80*", "no price for nova-9: excluded from cost"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dashboard lacks %q", want)
 		}
+	}
+	if ln := lineWith(t, out, "nova-9", "%"); strings.Contains(ln, "$0") { // the mix shows its tokens, not a zero cost
+		t.Errorf("the unpriced model's mix row shows a zero cost: %s", ln)
 	}
 	m.sessions = map[string]*data.Session{sidA: m.sessions[sidA]} // nothing unpriced in range
 	if out := plain(m); strings.Contains(out, "no price for") || strings.Contains(out, "*") {
@@ -212,6 +215,15 @@ func TestHelpSaysWherePricesComeFrom(t *testing.T) {
 	m.prices.Path = "/home/someone/a/very/long/path/to/the/project/config/isshoni/prices.toml"
 	if out := plain(m); !strings.Contains(out, "/isshoni/prices.toml (USD, as of 2026-11-14)") || !strings.Contains(out, "Prices: …") {
 		t.Fatalf("a long path is cut from the left and still shown at 80x24:\n%s", out)
+	}
+}
+
+func TestHelpNamesTheUserPriceFile(t *testing.T) {
+	m := fakeModel(true, 140, 40)
+	m.help = true
+	m.prices.UserPath = "/u/isshoni/prices.toml"
+	if out := plain(m); !strings.Contains(out, "Prices: /p/prices.toml + /u/isshoni/prices.toml (USD, as of 2026-11-14)") {
+		t.Fatalf("help lacks the user price file:\n%s", out)
 	}
 }
 

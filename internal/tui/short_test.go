@@ -298,7 +298,7 @@ func TestShortRunsTotalsAndPane(t *testing.T) {
 	if row := lineWith(t, out, "2 short runs ▸"); !strings.Contains(row, "$0.05") {
 		t.Fatalf("COST of the row is the total of its sessions: %s", row)
 	}
-	if !strings.Contains(out, "mix · 2 short runs · ci") || !strings.Contains(paneLine(out), "2 short runs · ci") {
+	if !strings.Contains(out, "tokens · 2 short runs · ci") || !strings.Contains(paneLine(out), "2 short runs · ci") {
 		t.Fatalf("mix and pane header name the row\n%s", out)
 	}
 	if !strings.Contains(out, "totals of all 11 sessions shown") {

@@ -11,7 +11,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from tests.support import AGENTS, PRICES_PATH, PROJECTS, ROOT
+from tests.support import AGENTS, PRICES_PATH, PROJECTS, ROOT, user_prices
 from isshoni import cli, metrics, prices as price_file
 
 BASE = ["--projects-dir", PROJECTS, "--agents-dir", AGENTS, "--prices", PRICES_PATH]
@@ -25,6 +25,50 @@ def run(*argv):
         except SystemExit as e:
             rc = e.code
     return rc, out.getvalue(), err.getvalue()
+
+
+class PriceCommandTests(unittest.TestCase):
+    RATES = ["--input", "1", "--output", "2.5", "--cache-write-5m", "3", "--cache-write-1h", "4", "--cache-read", "0.5"]
+
+    def test_rates_then_the_cost_of_a_custom_id(self):
+        with user_prices() as path:
+            rc, out, err = run("price", "vendor/model-x", *self.RATES)
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(out.count("\n"), 1)
+            for want in (path, "vendor/model-x", "output 2.5", "cache_read 0.5", "USD"):
+                self.assertIn(want, out)
+            self.assertAlmostEqual(price_file.load().cost("vendor/model-x", {"input_tokens": 1000000, "output_tokens": 1000000}), 3.5)
+
+    def test_like_names_what_it_follows(self):
+        with user_prices() as path:
+            rc, out, _ = run("price", "vendor/model-x", "--like", "claude-opus-5-5")
+            self.assertEqual(rc, 0)
+            self.assertIn("(like claude-opus-5-5)", out)
+            self.assertIn("input 4,", out)
+            self.assertEqual(price_file.load().user, path)
+
+    def test_refusals_exit_2_and_write_nothing(self):
+        for argv in (["m"], ["m", "--input", "1"], ["m", "--like", "claude-opus-5-5", "--input", "1"], ["m", "--like", "nothing"],
+                     ["m", *self.RATES[:-1], "-1"], ["m", *self.RATES[:-1], "nan"], ["bad\nid", "--like", "claude-opus-5-5"]):
+            with self.subTest(argv=argv), user_prices() as path:
+                rc, out, err = run("price", *argv)
+                self.assertEqual((rc, out), (2, ""))
+                self.assertNotEqual(err, "")
+                self.assertFalse(os.path.exists(path))
+
+    def test_prices_option_is_refused(self):
+        with user_prices() as path:
+            rc, out, err = run("--prices", PRICES_PATH, "price", "m", "--like", "claude-opus-5-5")
+            self.assertEqual((rc, out), (2, ""))
+            self.assertEqual(err.count("\n"), 1)
+            self.assertIn("--prices does not apply", err)
+            self.assertFalse(os.path.exists(path))
+
+    def test_a_second_command_keeps_the_first_entry(self):
+        with user_prices():
+            run("price", "a", "--like", "claude-opus-5-5")
+            run("price", "b", "--like", "a")
+            self.assertEqual(price_file.load().models["b"], price_file.load().models["claude-opus-5-5"])
 
 
 class CliTests(unittest.TestCase):
@@ -137,6 +181,31 @@ class CliTests(unittest.TestCase):
         rc, _, err = run("sessions", "--projects-dir", PROJECTS, "--prices", "/nonexistent.toml")
         self.assertEqual(rc, 2)
         self.assertIn("/nonexistent.toml", err)
+
+    def test_no_user_file_gives_todays_output(self):
+        with user_prices():
+            rc, out, _ = run("sessions", "--projects-dir", PROJECTS, "--agents-dir", AGENTS)
+            _, js, _ = run("sessions", "--json", "--projects-dir", PROJECTS, "--agents-dir", AGENTS)
+        self.assertIn("prices: USD as of 2026-11-14 (%s)\n" % price_file.DEFAULT_PATH, out)
+        self.assertNotIn("user_path", json.loads(js)["prices"])
+
+    def test_user_file_prices_a_model_and_is_named(self):
+        with user_prices("[models.claude-sonnet-5-5]\nlike = 'claude-opus-5-5'\n") as path:
+            _, flagged, _ = run("sessions", "--json", *BASE)
+            _, js, _ = run("sessions", "--json", "--projects-dir", PROJECTS, "--agents-dir", AGENTS)
+            _, out, _ = run("sessions", "--projects-dir", PROJECTS, "--agents-dir", AGENTS)
+        d = json.loads(js)
+        self.assertEqual(d["prices"]["user_path"], path)
+        self.assertEqual(d["sessions"][0]["cost"]["unpriced_tokens"], 0)  # the fixtures' sonnet is priced now
+        self.assertIn("(%s + %s)" % (price_file.DEFAULT_PATH, path), out)
+        self.assertNotIn("user_path", json.loads(flagged)["prices"])  # --prices reads its file alone
+        self.assertGreater(json.loads(flagged)["sessions"][0]["cost"]["unpriced_tokens"], 0)
+
+    def test_invalid_user_file_exits_2_naming_it(self):
+        with user_prices("currency = 'EUR'\n") as path:
+            rc, _, err = run("sessions", "--projects-dir", PROJECTS)
+        self.assertEqual(rc, 2)
+        self.assertIn(path, err)
 
     def test_money_format(self):
         usd = lambda x, u=0: cli.money(x, "USD", u)  # noqa: E731

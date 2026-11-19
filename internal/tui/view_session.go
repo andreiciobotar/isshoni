@@ -188,7 +188,7 @@ func (m *model) agentBar(p paint, s *data.Session, w int) block {
 		if total > 0 {
 			share = r.v / total * 100
 		}
-		legend = append(legend, p.swatch(i, col)+p.t(" ", th.Text)+p.t(r.k, th.Text)+p.t(" "+pct(share)+" "+m.money(r.v, r.unpriced), th.Muted))
+		legend = append(legend, p.swatch(i, col)+p.t(" ", th.Text)+p.t(r.k, th.Text)+p.t(" "+pct(share)+" "+m.amount(r), th.Muted))
 	}
 	bar := p.sp(1) + p.stack(w-2, segs)
 	leg := p.sp(1)

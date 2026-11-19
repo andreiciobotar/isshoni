@@ -1,8 +1,9 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
-from tests.support import PRICES
+from tests.support import PRICES, PRICES_PATH, user_prices
 from isshoni import prices
 from isshoni.transcript import SessionError
 
@@ -113,6 +114,131 @@ class LoadErrorTests(unittest.TestCase):
         self.fails(self.GOOD + "[models.m.long_prompt]\n" + rates, "long_prompt", "over")
         self.fails(self.GOOD + "[models.m.long_prompt]\nover = 5\n" + rates.replace("output = 1\n", ""),
                    "long_prompt", "output")
+
+
+CUSTOM = "vendor/model-x"
+RATES5 = "input = 1\noutput = 2\ncache_write_5m = 3\ncache_write_1h = 4\ncache_read = 5\n"
+
+
+class UserFileTests(unittest.TestCase):
+    def load(self, text):
+        with user_prices(text):
+            return prices.load()
+
+    def fails(self, text, *needles):
+        with user_prices(text) as path:
+            with self.assertRaises(SessionError) as c:
+                prices.load()
+        for n in (path,) + needles:
+            self.assertIn(n, str(c.exception))
+
+    def test_default_path_follows_xdg_then_home(self):
+        with user_prices() as path:
+            self.assertEqual(path.split(os.sep)[-2:], ["isshoni", "prices.toml"])
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": ""}):
+            self.assertEqual(prices.user_path(), os.path.expanduser("~/.config/isshoni/prices.toml"))
+
+    def test_no_user_file_is_the_builtin_alone(self):
+        with user_prices():
+            p = prices.load()
+        self.assertEqual((p.path, p.user), (prices.DEFAULT_PATH, None))
+        self.assertNotIn("user_path", p.to_dict())
+
+    def test_overlay_adds_and_replaces(self):
+        p = self.load('[models."%s"]\n%s[models.%s]\n%s' % (CUSTOM, RATES5, OPUS, RATES5.replace("= 1", "= 7")))
+        self.assertAlmostEqual(p.cost(CUSTOM, usage(i=1000000)), 1)
+        self.assertAlmostEqual(p.cost(OPUS, usage(i=1000000)), 7)
+        self.assertAlmostEqual(p.cost("claude-sonnet-5-5", usage(i=1000000)), 2)  # untouched built-in
+        self.assertIsNone(p.cost("vendor/other", usage(i=1)))
+        self.assertEqual((p.path, p.to_dict()["user_path"] == p.user), (prices.DEFAULT_PATH, True))
+        self.assertEqual((p.currency, p.as_of), ("USD", "2026-11-14"))
+
+    def test_empty_user_file_is_named_but_changes_nothing(self):
+        with user_prices("") as path:
+            self.assertEqual(prices.load().user, path)
+
+    def test_prices_flag_reads_its_file_alone(self):
+        with user_prices('[models."%s"]\n%s' % (CUSTOM, RATES5)):
+            p = prices.load(PRICES_PATH)
+        self.assertIsNone(p.cost(CUSTOM, usage(i=1)))
+        self.assertIsNone(p.user)
+
+    def test_like_takes_the_whole_table(self):
+        p = self.load('[models."%s"]\nlike = "%s"\n[models.alias]\nlike = "%s"\n' % (CUSTOM, HAIKU, OPUS))
+        for m in (CUSTOM, "alias"):
+            self.assertEqual(p.models[m], p.models[HAIKU if m == CUSTOM else OPUS])
+        self.assertAlmostEqual(p.cost(CUSTOM, usage(i=100001)), 0.5 * 100001 / 1e6)  # the built-in long_prompt came along
+        self.assertAlmostEqual(p.cost(CUSTOM + "-20260101", usage(i=1)), 1e-7)  # a dated id still matches minus its date
+
+    def test_like_follows_a_replaced_model(self):
+        p = self.load('[models.alias]\nlike = "%s"\n[models.%s]\n%s' % (OPUS, OPUS, RATES5))
+        self.assertEqual(p.models["alias"], p.models[OPUS])
+        self.assertEqual(p.models["alias"]["cache_read"], 5)
+
+    def test_like_refusals(self):
+        self.fails('[models.a]\nlike = "nothing"\n', "[models.a]", "nothing")
+        self.fails('[models.a]\nlike = "b"\n[models.b]\nlike = "%s"\n' % OPUS, "[models.a]", "'b'")  # chained
+        self.fails('[models.a]\nlike = "a"\n', "[models.a]")
+        self.fails('[models.a]\nlike = "%s"\ninput = 1\n' % OPUS, "[models.a]", "like")  # mixed with rates
+
+    def test_invalid_entries_name_the_user_file(self):
+        self.fails("[models.m]\ninput = 1\n", "[models.m]", "output")
+        self.fails("[models.m]\n" + RATES5.replace("= 1", "= -1"), "[models.m]", "input")
+        self.fails("[models.m]\n" + RATES5.replace("= 1", "= nan"), "[models.m]", "input")
+        self.fails('currency = "EUR"\n' + "[models.m]\n" + RATES5, "currency")
+        self.fails("[models.m\n", "invalid TOML")
+
+    def test_like_is_valid_in_any_price_file(self):
+        p = prices.Prices("p", {"currency": "USD", "as_of": "x", "source": "x",
+                                "models": {"a": dict.fromkeys(prices.RATES, 1), "b": {"like": "a"}}})
+        self.assertEqual(p.models["b"], p.models["a"])
+
+
+class SetPriceTests(unittest.TestCase):
+    def test_round_trip_with_rates_and_an_id_needing_quotes(self):
+        weird = 'v"endor\\/m x.y'
+        with user_prices() as path:
+            prices.set_price(CUSTOM, dict(zip(prices.RATES, (1, 2.5, 3, 4, 0.5))))
+            prices.set_price(weird, {"like": OPUS})
+            p = prices.load()
+            self.assertAlmostEqual(p.cost(CUSTOM, usage(i=1000000, o=1000000)), 3.5)
+            self.assertEqual(p.models[weird], p.models[OPUS])
+            with open(path) as f:
+                self.assertIn("isshoni price", f.readline())
+            self.assertEqual(os.listdir(os.path.dirname(path)), ["prices.toml"])
+
+    def test_keeps_other_entries_and_long_prompt(self):
+        with user_prices('[models."%s"]\n%s[models."%s".long_prompt]\nover = 9\n%s' % (CUSTOM, RATES5, CUSTOM, RATES5)):
+            prices.set_price("other", {"like": CUSTOM})
+            self.assertEqual(prices.load().models["other"]["long_prompt"]["over"], 9)
+
+    def test_refusals_leave_the_file_untouched(self):
+        text = "[models.a]\n" + RATES5
+        with user_prices(text) as path:
+            for model, table in (("m", {"like": "nothing"}), ("m", {"like": "a", "input": 1}), ("m\nx", {"like": "a"}),
+                                 ("", {"like": "a"}), ("m", dict(zip(prices.RATES, (1, 1, 1, 1, -1)))),
+                                 ("a", {"like": "a"})):
+                with self.assertRaises(SessionError):
+                    prices.set_price(model, table)
+                with open(path) as f:
+                    self.assertEqual(f.read(), text)
+            self.assertEqual(os.listdir(os.path.dirname(path)), ["prices.toml"])
+
+    def test_a_key_toml_cannot_hold_is_refused_and_the_file_kept(self):
+        text = '[models."a\\u007fb"]\n' + RATES5
+        with user_prices(text) as path:
+            with self.assertRaises(SessionError):
+                prices.set_price("m", {"like": OPUS})
+            with open(path) as f:
+                self.assertEqual(f.read(), text)
+            self.assertEqual(os.listdir(os.path.dirname(path)), ["prices.toml"])
+
+    def test_a_broken_user_file_is_not_overwritten(self):
+        with user_prices("[models.a\n") as path:
+            with self.assertRaises(SessionError):
+                prices.set_price("m", {"like": OPUS})
+            with open(path) as f:
+                self.assertEqual(f.read(), "[models.a\n")
 
 
 if __name__ == "__main__":

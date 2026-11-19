@@ -109,7 +109,7 @@ def parse_since(text, now=None):
 
 def footer(prices, models, tokens):
     """The prices line, plus the unpriced line when some tokens had no price."""
-    print("prices: %s as of %s (%s)" % (prices.currency, prices.as_of, prices.path))
+    print("prices: %s as of %s (%s)" % (prices.currency, prices.as_of, prices.path + (" + " + prices.user if prices.user else "")))
     if models:
         print("* no price for: %s (%s tokens); cost excludes them" % (", ".join(models), human(tokens)))
 
@@ -430,6 +430,26 @@ def cmd_events(args):
     return 0
 
 
+def cmd_price(args):
+    if args.prices is not None:
+        raise SessionError("price writes your own price file; --prices does not apply")
+    if args.like is not None:
+        if any(v is not None for v in (args.input, args.output, args.cache_write_5m, args.cache_write_1h, args.cache_read)):
+            raise SessionError("--like excludes the rates")
+        table = {"like": args.like}
+    else:
+        table = {k: getattr(args, k) for k in price_file.RATES}
+        missing = [k.replace("_", "-") for k, v in table.items() if v is None]
+        if missing:
+            raise SessionError("give --like ID or all five rates; missing --%s" % ", --".join(missing))
+    prices = price_file.set_price(args.model, table)
+    rates = prices.models[args.model]
+    print("%s: %s %s%s, per million tokens in %s" % (
+        prices.user, args.model, ", ".join("%s %g" % (k, rates[k]) for k in price_file.RATES),
+        " (like %s)" % args.like if args.like is not None else "", prices.currency))
+    return 0
+
+
 def emit_json(obj):
     json.dump(obj, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
@@ -477,6 +497,12 @@ def build_parser():
     s.add_argument("--factory-dir", default="~/.claude/factory", help="the factory's stores (default ~/.claude/factory)")
     s.add_argument("--no-gh", action="store_true", help="do not ask gh for pull requests")
     s.set_defaults(func=cmd_events)
+    s = sub.add_parser("price", help="set the price of a model in your own price file")
+    s.add_argument("model", help="the model id as the endpoint names it")
+    s.add_argument("--like", metavar="ID", help="take the whole table of this priced model")
+    for k in price_file.RATES:
+        s.add_argument("--" + k.replace("_", "-"), type=float, metavar="N", help="per million tokens (all five, without --like)")
+    s.set_defaults(func=cmd_price)
     host.register(sub)
     return p
 
