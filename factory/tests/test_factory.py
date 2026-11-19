@@ -18,9 +18,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-os.environ.pop("FACTORY_ROLE", None)  # a tech lead session runs `make test`: the tests must not see its role
+# A factory session runs `make test`: the suite must not see its role, session, project or store (the tests make their own
+# homes; an ambient FACTORY_HOME would move the script's store, read when it loads below).
+for name in ("FACTORY_SESSION", "FACTORY_ROLE", "FACTORY_HOME", "CLAUDE_PROJECT_DIR", "CLAUDECODE"):
+    os.environ.pop(name, None)
 BIN = Path(__file__).resolve().parent.parent / "bin" / "factory"
-os.environ.pop("FACTORY_HOME", None)  # the tests make their own homes; an ambient one would move the script's store
 _loader = importlib.machinery.SourceFileLoader("factory_bin", str(BIN))
 entry = importlib.util.module_from_spec(importlib.util.spec_from_loader("factory_bin", _loader))
 _loader.exec_module(entry)
@@ -54,6 +56,9 @@ def _guarded_spawn(argv, cwd, out_path):
 
 
 factory.spawn = _guarded_spawn
+
+real_short_wake = factory.short_wake
+factory.short_wake = lambda: None  # the real probe runs `pmset`: only the tests of `short_wake` itself use the real one
 
 ROOT = "/repo"
 WT = f"{ROOT}/.claude/worktrees"
@@ -1220,7 +1225,6 @@ class OpsAccessTests(unittest.TestCase):
                         mock.patch.dict(os.environ)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        os.environ.pop("CLAUDECODE", None)
         factory.warned.clear()
         self.file = factory.repo_state(ROOT, "ops-access", "json")
 

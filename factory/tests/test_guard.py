@@ -28,7 +28,6 @@ class GuardCase(unittest.TestCase):
         self.env = {**os.environ, "HOME": str(tmp), "FACTORY_HOME": str(self.home), "FACTORY_SESSION": "1", "GIT_AUTHOR_NAME": "t",
                     "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
                     "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
-        self.env.pop("CLAUDE_PROJECT_DIR", None)
         self.root, self.wt = tmp / "repo", tmp / "repo" / ".claude" / "worktrees" / "t1"
         self.git(tmp, "init", "-q", "-b", "main", str(self.root))
         (self.root / "a.txt").write_text("one\n")
