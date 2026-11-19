@@ -119,6 +119,9 @@ def fingerprint():
     return files, sorted((str(p.relative_to(cache)), p.stat().st_mtime_ns) for p in cache.rglob("*")) if cache.is_dir() else []
 
 
+START = fingerprint()  # taken once, before anything runs; the end is compared to it
+
+
 def isolated():
     before = fingerprint()
     code, out, _ = sh(["claude", "plugin", "marketplace", "list", "--json"])
@@ -308,7 +311,7 @@ try:
 finally:
     total = sum(1 for p in TMP.rglob("*") if p.is_file())
     size = sum(p.stat().st_size for p in TMP.rglob("*") if p.is_file())
-    final = isolated() if TMP.exists() else False
+    final = TMP.exists() and isolated() and fingerprint() == START
     check(final, "isolation holds at the end: the real Claude Code config is unchanged")
     if not args.keep:
         shutil.rmtree(TMP, ignore_errors=True)

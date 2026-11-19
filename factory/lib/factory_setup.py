@@ -107,6 +107,12 @@ def plugin_command(verb, entry):
     return argv, entry.get("projectPath") if entry["scope"] == "local" else None
 
 
+def split_gone(entries):
+    """(entries that can run, local entries whose directory is gone): no process starts in a missing directory."""
+    gone = [e for e in entries if e["scope"] == "local" and not Path(e.get("projectPath") or "").is_dir()]
+    return [e for e in entries if e not in gone], gone
+
+
 def hand(command):
     argv, cwd = command
     return f"cd {shlex.quote(cwd)} && {shlex.join(argv)}" if cwd else shlex.join(argv)
@@ -149,8 +155,10 @@ def plugin_act(args, detail):
             raise core.Fail(f"cannot read `claude {name} --json`: nothing was added")
     market, entries = own_market(markets), plugin_entries(plugins)
     if root is None:
-        wanted, stale = None, [e for e in entries if e["scope"] == "local"]
+        wanted, (stale, gone) = None, split_gone([e for e in entries if e["scope"] == "local"])
         install = ["claude", "plugin", "install", PLUGIN], None
+        for e in gone:
+            print(f"  {e['projectPath']} no longer exists: its entry is skipped")
         if stale:
             print(f"  also removes the {len(stale)} repository-scope install(s): the user-scope one covers them")
     else:
@@ -266,7 +274,7 @@ def app_state():
 WIZARD_STEPS = (
     Step("dependencies", "git, gh, claude, openssl, Python 3.11+, and both logins", False, dependencies_state, dependencies_act),
     Step("dashboard", "build the terminal dashboard", True, dashboard_state, dashboard_act),
-    Step("plugin", "install the factory plugin into Claude Code", False, plugin_state, plugin_act),
+    Step("plugin", plugin_purpose(None), False, plugin_state, plugin_act),
     Step("settings", "write the factory's settings file", False, settings_state, settings_act),
     Step("cost criteria", "cost alerts and the daily digest", True, cost_state, cost_act),
     Step("gh stack", "GitHub's stack extension for gh", True, stack_state, stack_act),
@@ -361,12 +369,9 @@ def cmd_reinstall(args):
     before = sorted({short(e, commits) for e in entries})
     for sha in before:
         print(f"before: {sha}")
-    gone = [e for e in entries if e["scope"] == "local" and not Path(e.get("projectPath") or "").is_dir()]
+    kept, gone = split_gone(entries)
     for e in gone:
-        argv, cwd = plugin_command("uninstall", e)
-        removed = core.run(argv, cwd=cwd, timeout=core.NETWORK_TIMEOUT)[0] == 0
-        print(f"{e.get('projectPath')} no longer exists: " + ("its entry is uninstalled" if removed else "its entry is skipped"))
-    kept = [e for e in entries if e not in gone]
+        print(f"{e['projectPath']} no longer exists: its entry is skipped")
     run_commands([(["claude", "plugin", "marketplace", "update", "factory"], None),
                   *(plugin_command("uninstall", e) for e in kept), *(plugin_command("install", e) for e in kept)])
     after, commits = plugin_entries(claude_json("plugin", "list") or []), recorded()
@@ -464,7 +469,10 @@ def uninstall_plugin(args, left):
                         "drops its install record, its enabledPlugins line stays for you to remove")
     if uninstall_step(args, left, f"the marketplace {SOURCE}" + (f" and {PLUGIN} ({', '.join(where(e) for e in entries)})" if installed else ""),
                       "the factory's commands and hooks in Claude Code", "the plugin and its marketplace"):
-        run_commands([*(plugin_command("uninstall", e) for e in entries if e["scope"] == "local"),
+        kept, gone = split_gone(entries)
+        for e in gone:
+            print(f"  {e['projectPath']} no longer exists: its entry is not uninstalled, and removing the marketplace drops its record")
+        run_commands([*(plugin_command("uninstall", e) for e in kept if e["scope"] == "local"),
                       *([(["claude", "plugin", "uninstall", PLUGIN], None)] if any(e["scope"] == "user" for e in entries) else []),
                       (["claude", "plugin", "marketplace", "remove", "factory"], None)])
         print("  removed")
@@ -492,10 +500,11 @@ def uninstall_repository_plugin(args, left):
     if plugins is None:
         raise core.Fail("cannot read `claude plugin list --json`: nothing removed")
     entries = plugin_entries(plugins)
-    # a session in a worktree of the repository makes Claude Code add an entry for the worktree's path
-    mine = [e for e in entries if e["scope"] == "local" and e.get("projectPath") in (root, *args.repository.worktree_paths)]
-    for e in [e for e in mine if not Path(e["projectPath"]).is_dir()]:
-        mine.remove(e)
+    # a session in a task worktree of the repository makes Claude Code add an entry for the worktree's path
+    task_worktrees = os.path.join(root, ".claude", "worktrees") + os.sep
+    mine, gone = split_gone([e for e in entries if e["scope"] == "local"
+                             and (e.get("projectPath") == root or str(e.get("projectPath")).startswith(task_worktrees))])
+    for e in gone:
         print(f"  {e['projectPath']} no longer exists: its entry is skipped")
         left.append(f"{e['projectPath']}: the worktree is gone, its entry of {PLUGIN} stays")
     if mine:
@@ -503,6 +512,8 @@ def uninstall_repository_plugin(args, left):
                           "the factory's commands and hooks in Claude Code for this repository", "the plugin of the repository"):
             run_commands([plugin_command("uninstall", e) for e in mine])
             print("  removed")
+            left.append(f"{root}/.claude/settings.local.json, with an empty enabledPlugins, and its line in the global git ignore file: "
+                        "Claude Code's, the factory does not edit them")
     elif any(e["scope"] == "user" for e in entries):
         print(f"  {PLUGIN} is installed for the whole user: it is not removed for one repository (`factory uninstall` removes it)")
     else:
@@ -592,9 +603,7 @@ def cmd_uninstall(args):
             failed = True
     print("left behind:")
     behind = ((f"the task worktrees of {args.repository.root} (.claude/worktrees/) and its worktree-* branches: "
-               "`factory clean` or `git worktree remove` removes them",
-               f"{args.repository.root}/.claude/settings.local.json, with an empty enabledPlugins, and its line in the global git ignore file: "
-               "Claude Code's, the factory does not edit them")
+               "`factory clean` or `git worktree remove` removes them",)
               if args.repository else
               ("Claude Code's own transcripts and settings (~/.claude/projects)",
                "your repositories, their task worktrees (.claude/worktrees/) and worktree-* branches: "

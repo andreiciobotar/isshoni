@@ -874,6 +874,24 @@ class WizardScope(Scoped):
         self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
         self.assertEqual(self.plugin_calls(), [])
 
+    def test_a_local_entry_of_a_gone_directory_is_skipped_and_the_user_install_still_goes_in(self):
+        gone = str(self.tmp / "gone")
+        self.machine.add("local", gone)
+        self.machine.add("local", self.p)
+        self.assertEqual(self.command("wizard", "--yes"), 0, self.out + self.err)
+        self.assertEqual(self.claude(), [(["claude", "plugin", "install", PLUGIN], None), uninstall("local", self.p)])
+        self.assertIn(f"{gone} no longer exists: its entry is skipped", self.out)
+
+    def test_the_full_uninstall_skips_a_gone_directory_and_removes_the_user_install_and_the_marketplace(self):
+        gone = str(self.tmp / "gone")
+        self.machine.add("local", gone)
+        self.machine.add()
+        self.assertEqual(self.command("uninstall", "--yes"), 0, self.out + self.err)
+        self.assertIn(f"{gone} no longer exists: its entry is not uninstalled, and removing the marketplace drops its record", self.out)
+        self.assertEqual(self.claude(), [(["claude", "plugin", "uninstall", PLUGIN], None),
+                                         (["claude", "plugin", "marketplace", "remove", "factory"], None)])
+        self.assertNotIn("By hand", self.err)
+
     def test_the_flag_installs_for_that_repository_only(self):
         self.assertEqual(self.command("wizard", "--yes", "--repository", self.p), 0, self.out + self.err)
         self.assertEqual(self.claude(), [install("local", self.p)])
@@ -1002,7 +1020,7 @@ class Reinstall(Scoped):
         self.machine.add("local", self.p)
         self.assertEqual(self.command("reinstall"), 0, self.out + self.err)
         self.assertIn(f"{gone} no longer exists: its entry is skipped", self.out)
-        self.assertEqual(self.claude(), [uninstall("local", gone), UPDATE, uninstall("local", self.p), install("local", self.p)])
+        self.assertEqual(self.claude(), [UPDATE, uninstall("local", self.p), install("local", self.p)])
         self.assertEqual(self.machine.installed(), [("local", gone), ("local", self.p)])
 
     def test_every_external_call_has_the_network_timeout(self):
@@ -1055,13 +1073,15 @@ class UninstallRepository(Scoped):
         self.assertNotIn("no installation is left", self.out)
 
     def test_a_worktree_entry_of_the_repository_goes_with_it_and_a_gone_worktree_is_named(self):
-        task, gone = self.repository("p-task"), (self.tmp / "repos" / "p-gone").resolve()
-        self.machine.worktrees[self.p] = [task, str(gone)]
-        self.machine.add("local", task)
-        self.machine.add("local", str(gone))
+        worktrees = Path(self.p) / ".claude" / "worktrees"
+        task, gone = worktrees / "task", worktrees / "gone"  # git lists neither: an entry is P's by its path
+        task.mkdir(parents=True)
+        for path in (task, gone, Path(self.p + "-other")):
+            self.machine.add("local", str(path))
         self.assertEqual(self.command("uninstall", "--yes", "--repository", self.p), 0, self.out + self.err)
-        self.assertEqual(self.claude(), [uninstall("local", self.p), uninstall("local", task)])
-        self.assertEqual(sorted(self.machine.installed()), sorted([("local", self.q), ("local", str(gone))]))
+        self.assertEqual(self.claude(), [uninstall("local", self.p), uninstall("local", str(task))])
+        self.assertEqual(sorted(self.machine.installed()),
+                         sorted([("local", self.q), ("local", str(gone)), ("local", self.p + "-other")]))
         self.assertIn(f"{gone} no longer exists: its entry is skipped", self.out)
 
     def test_the_line_about_what_remains_appears_when_the_last_installation_goes(self):
@@ -1076,6 +1096,7 @@ class UninstallRepository(Scoped):
         self.assertEqual(self.command("uninstall", "--yes", "--repository", self.p), 0, self.out + self.err)
         self.assertEqual(self.plugin_calls(), [])
         self.assertIn("installed for the whole user: it is not removed for one repository", self.out)
+        self.assertNotIn("settings.local.json", self.out)
         self.assertEqual((self.job(self.p), self.records[self.p][0].exists()), (False, False))
         self.assertNotIn("no installation is left", self.out)
 
