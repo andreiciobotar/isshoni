@@ -155,6 +155,105 @@ class HelperTests(GuardCase):
             self.assertEqual(factory.worktree_gone(path), line("w", path, "no repository"))
 
 
+def refusal(what, instead):
+    return f"factory: refused: {what} prints a credential into this session's transcript. Instead: {instead}."
+
+
+TOKEN_LINE = refusal("`gh auth token`", "gh auth status")
+SHOW_LINE = refusal("`gh auth status` with `--show-token`", "gh auth status")
+ENV_LINE = refusal("`factory env`", "factory status (its `acting on GitHub as` line)")
+GIT_LINE = refusal("`git credential fill`", "git config --get-all credential.helper (names the helper)")
+SECURITY_LINE = refusal("a `security` keychain read", "security find-generic-password without -w or -g (names the item)")
+IDENTITY_LINE = refusal("a file under the store's `identity/`", "factory status")
+WHOLE_LINE = refusal("the whole environment", '[ -n "$NAME" ] && echo set')
+SECRET_LINE = refusal("a secret variable", '[ -n "$NAME" ] && echo set')
+
+REFUSED = [
+    ("gh auth token", TOKEN_LINE), ("gh auth token --hostname x", TOKEN_LINE), ("cd x && gh auth token", TOKEN_LINE),
+    ("echo $(gh auth token)", TOKEN_LINE), ("GH_HOST=x gh auth token", TOKEN_LINE),
+    ("gh auth status --show-token", SHOW_LINE), ("gh auth status -t", SHOW_LINE), ("gh auth status -h x -t", SHOW_LINE),
+    ("gh auth status -at", SHOW_LINE),
+    ("factory env", ENV_LINE), ("/opt/x/bin/factory env", ENV_LINE), ('eval "$(factory env)"', ENV_LINE),
+    ("git credential fill", GIT_LINE), ("git credential-osxkeychain get", GIT_LINE), ("git credential osxkeychain get", GIT_LINE),
+    ("security find-generic-password -s x -w", SECURITY_LINE), ("security find-internet-password -g -s x", SECURITY_LINE),
+    ("security dump-keychain", SECURITY_LINE),
+    ("cat $FACTORY_HOME/identity/key.pem", IDENTITY_LINE), ("cat ${FACTORY_HOME}/identity/key.pem", IDENTITY_LINE),
+    ("cat ~/.claude/factory/identity/key.pem", IDENTITY_LINE),
+    ("printenv", WHOLE_LINE), ("env", WHOLE_LINE), ("env | sort", WHOLE_LINE), ("env > f", WHOLE_LINE), ("ls; env", WHOLE_LINE),
+    ("export -p", WHOLE_LINE),
+    ("printenv GH_TOKEN", SECRET_LINE), ("echo $GH_TOKEN", SECRET_LINE), ('echo "${GITHUB_TOKEN}"', SECRET_LINE),
+    ("printf %s $ANTHROPIC_API_KEY", SECRET_LINE), ("echo $GH_ENTERPRISE_TOKEN | cat", SECRET_LINE),
+    ("echo $ANTHROPIC_AUTH_TOKEN", SECRET_LINE), ("echo $CLAUDE_CODE_OAUTH_TOKEN", SECRET_LINE), ("echo $DB_PASSWORD", SECRET_LINE),
+    ("echo $X_SECRET", SECRET_LINE), ("echo $DB_PASSWD", SECRET_LINE),
+]
+PASSES = [
+    "gh pr list", "gh auth status", "gh auth status --hostname github.com", "gh api user --jq .login", "git status",
+    "git push -u origin HEAD", 'git commit -m "refuse gh auth token and factory env"', 'grep -rn "gh auth token" docs',
+    "env FOO=1 make test", "printenv HOME", 'echo "$HOME"', "echo ${#GH_TOKEN}", '[ -n "$GH_TOKEN" ] && echo set',
+    'curl -H "Authorization: Bearer $GH_TOKEN" https://example.invalid', "factory status", "security find-generic-password -s x",
+]
+
+
+class CredentialTests(GuardCase):
+    def bash(self, command, **extra):
+        return self.hook({"cwd": str(self.root), "tool_name": "Bash", "tool_input": {"command": command}, **extra})
+
+    def denied(self, result, want):
+        code, out, err = result
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out), {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                                   "permissionDecisionReason": want}})
+
+    def test_every_printer_is_denied_with_its_line(self):
+        for command, want in REFUSED:
+            with self.subTest(command=command):
+                self.denied(self.bash(command), want)
+
+    def test_a_subagent_is_denied_too(self):
+        for command, want in REFUSED[::7]:
+            with self.subTest(command=command):
+                self.denied(self.bash(command, agent_id="a1", agent_type="coder"), want)
+
+    def test_every_other_call_passes_silently(self):
+        for command in PASSES:
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command), (0, "", ""))
+        self.assertEqual(self.hook({"cwd": str(self.root), "tool_name": "Bash"}), (0, "", ""))
+        self.assertEqual(self.hook({"cwd": str(self.root), "tool_name": "Bash", "tool_input": {"command": 5}}), (0, "", ""))
+
+    def test_a_session_that_is_not_the_factorys_is_not_denied_and_reads_no_store(self):
+        del self.env["FACTORY_SESSION"]
+        self.assertEqual(self.bash("gh auth token"), (0, "", ""))
+        self.assertFalse(self.home.exists())
+
+    def test_the_session_of_a_declared_task_is_denied_without_FACTORY_SESSION(self):
+        del self.env["FACTORY_SESSION"]
+        self.home.mkdir()
+        (self.home / "tasks.jsonl").write_text(json.dumps(
+            {"ts": "2026-11-19T10:00:00Z", "repo": str(self.root), "slug": "t1", "state": "working"}) + "\n")
+        self.denied(self.hook({"cwd": str(self.wt), "tool_name": "Bash", "tool_input": {"command": "gh auth token"}}), TOKEN_LINE)
+
+    def test_an_ordinary_call_starts_no_process_and_reads_no_store(self):
+        payload = json.dumps({"cwd": str(self.root), "tool_name": "Bash", "tool_input": {"command": "gh pr list"}})
+        with mock.patch.object(factory, "read_tasks", side_effect=AssertionError), \
+                mock.patch.object(factory, "read_registration", side_effect=AssertionError):
+            self.assertEqual(self.hook_in_process(payload), (0, ""))
+
+    def test_a_read_of_the_identity_directory_is_denied_and_any_other_read_passes(self):
+        read = lambda path: self.hook({"cwd": str(self.root), "tool_name": "Read", "tool_input": {"file_path": str(path)}})
+        self.denied(read(self.home / "identity" / "key.pem"), IDENTITY_LINE)
+        self.denied(read(self.home / "x" / ".." / "identity" / "key.pem"), IDENTITY_LINE)
+        self.assertEqual(read(self.home / "settings.toml"), (0, "", ""))
+        self.assertEqual(read(self.home / "identityx" / "a"), (0, "", ""))
+        self.assertEqual(self.hook({"cwd": str(self.root), "tool_name": "Read"}), (0, "", ""))
+
+    def test_a_broken_worktree_gives_the_worktree_line(self):
+        self.break_worktree()
+        code, out, err = self.hook({"cwd": str(self.wt), "tool_name": "Bash", "tool_input": {"command": "gh auth token"}})
+        self.assertEqual((code, err), (0, ""))
+        self.assert_denied(out)
+
+
 class RunTests(GuardCase):
     def setUp(self):
         super().setUp()

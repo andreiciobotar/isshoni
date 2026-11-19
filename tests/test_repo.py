@@ -44,6 +44,23 @@ class GitRuleIsOneLine(unittest.TestCase):
         self.assertIn("Exit code N", (ROOT / "factory/agents/lander.md").read_text())
 
 
+class CredentialRuleIsOneSentence(unittest.TestCase):
+    SENTENCE = ("Never print a credential (a token, a key, a password) into the transcript, where it stays on disk: the guard hook refuses "
+                "the commands it recognises (`gh auth token`, `factory env`, a read of `identity/`, an `echo` of `$GH_TOKEN`), and the rule "
+                "holds for the ones it does not. To learn which identity acts, run `gh auth status` (never with `--show-token`) or read the "
+                "`acting on GitHub as` line of `factory status`.")
+
+    def test_eight_files_hold_it_once_as_their_own_line_after_the_git_rule(self):
+        for f in ("factory/agents/coder.md", "factory/agents/explorer.md", "factory/agents/lander.md", "factory/agents/reviewer.md",
+                  "factory/roles/lead.md", ".claude/agents/coder.md", ".claude/agents/explorer.md", ".claude/agents/reviewer.md"):
+            with self.subTest(f=f):
+                text = (ROOT / f).read_text()
+                self.assertEqual(text.count(self.SENTENCE), 1)
+                lines = text.split("\n")
+                at = next(i for i, l in enumerate(lines) if "This session is isolated" in l)
+                self.assertEqual(lines[at + 1], "- " + self.SENTENCE)
+
+
 class ReviewWordsAreInOnePlace(unittest.TestCase):
     SKILLS = ("factory/skills/coding-taste/SKILL.md", ".claude/skills/coding-taste/SKILL.md")
 
