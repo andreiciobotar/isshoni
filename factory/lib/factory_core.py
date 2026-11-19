@@ -2733,16 +2733,16 @@ def cmd_ops_hook(args):
     return 0
 
 
-_CMD = r"(?:^|[;&|(`\n])\s*(?:\w+=\S*\s+)*(?:(?:if|then|do|else|while|until|time|!|\{)\s+)*"  # where a command can start
+_CMD = r"(?:^|[;&|(`\n])[ \t]*(?:\w+=\S*\s+)*(?:(?:if|then|do|else|while|until|time|!|\{)\s+)*"  # where a command can start
 _END = r"(?=[\s;&|)`]|$)"
 _SECRET = r"\w*(?:TOKEN|API_KEY|SECRET|PASSWORD|PASSWD)"
 _STORE_DIR = "|".join(map(re.escape, {str(STORE), str(STORE.expanduser())})) + r"|\.claude/factory|\$\{?FACTORY_HOME\}?"
 CREDENTIAL_PRINTERS = tuple((re.compile(pattern), what, instead) for pattern, what, instead in (
     (_CMD + r"gh(?:\s+-\S+)*\s+auth\s+token" + _END, "`gh auth token`", "gh auth status"),
-    (_CMD + r"gh(?:\s+-\S+)*\s+auth\s+status\b(?:[^;&|\n]*\s)?(?:--show-token|-[a-zA-Z]*t[a-zA-Z]*)" + _END,
+    (_CMD + r"gh(?:\s+-\S+)*\s+auth\s+status\b(?:[^;&|\n]*\s)?(?:--show-token(?:=\S*)?|-[a-zA-Z]*t[a-zA-Z]*)" + _END,
      "`gh auth status` with `--show-token`", "gh auth status"),
     (_CMD + r"(?:\S*/)?factory\s+env" + _END, "`factory env`", "factory status (its `acting on GitHub as` line)"),
-    (_CMD + r"git(?:\s+-c\s+\S+)*\s+(?:credential\s+fill|credential-\S+\s+get|credential\s+\S+\s+get)" + _END,
+    (_CMD + r"git(?:\s+(?:-[Cc]\s+\S+|-\S+))*\s+(?:credential\s+fill|credential-\S+\s+get|credential\s+\S+\s+get)" + _END,
      "`git credential fill`", "git config --get-all credential.helper (names the helper)"),
     (_CMD + r"security\s+(?:find-(?:generic|internet)-password\b[^;&|\n]*\s-[a-zA-Z]*[wg][a-zA-Z]*|dump-keychain)" + _END,
      "a `security` keychain read", "security find-generic-password without -w or -g (names the item)"),
@@ -2782,7 +2782,8 @@ def cmd_guard_hook(args):
     p = p if isinstance(p, dict) else {}
     cwd = p.get("cwd")
     sources = [d for d in (os.environ.get("CLAUDE_PROJECT_DIR"), cwd if isinstance(cwd, str) else None) if d] or [os.getcwd()]
-    if (line := next(filter(None, map(worktree_gone, sources)), None) or credential_refusal(p)) and factory_session(p, tags(p)):
+    gone = [] if p.get("tool_name") == "Read" else sources  # a Read is guarded for credentials only
+    if (line := next(filter(None, map(worktree_gone, gone)), None) or credential_refusal(p)) and factory_session(p, tags(p)):
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                  "permissionDecisionReason": line}}))
     return 0

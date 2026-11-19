@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -55,7 +56,7 @@ class GuardCase(unittest.TestCase):
     def hook_in_process(self, payload):
         """(exit code, stdout), with every way to start a process refused."""
         with mock.patch.object(factory, "run", side_effect=AssertionError), mock.patch("subprocess.Popen", side_effect=AssertionError), \
-                mock.patch("sys.stdin", io.StringIO(payload)), mock.patch.dict(os.environ, self.env), redirect_stdout(io.StringIO()) as out:
+                mock.patch("sys.stdin", io.StringIO(payload)), mock.patch.dict(os.environ, self.env, clear=True), redirect_stdout(io.StringIO()) as out:
             return factory.cmd_guard_hook(None), out.getvalue()
 
     def assert_denied(self, out):
@@ -174,7 +175,8 @@ REFUSED = [
     ("gh auth status --show-token", SHOW_LINE), ("gh auth status -t", SHOW_LINE), ("gh auth status -h x -t", SHOW_LINE),
     ("gh auth status -at", SHOW_LINE),
     ("factory env", ENV_LINE), ("/opt/x/bin/factory env", ENV_LINE), ('eval "$(factory env)"', ENV_LINE),
-    ("git credential fill", GIT_LINE), ("git credential-osxkeychain get", GIT_LINE), ("git credential osxkeychain get", GIT_LINE),
+    ("git credential fill", GIT_LINE), ("git -C /x credential fill", GIT_LINE), ("git -c a=b --no-pager credential fill", GIT_LINE),
+    ("gh auth status --show-token=true", SHOW_LINE), ("git credential-osxkeychain get", GIT_LINE), ("git credential osxkeychain get", GIT_LINE),
     ("security find-generic-password -s x -w", SECURITY_LINE), ("security find-internet-password -g -s x", SECURITY_LINE),
     ("security dump-keychain", SECURITY_LINE),
     ("cat $FACTORY_HOME/identity/key.pem", IDENTITY_LINE), ("cat ${FACTORY_HOME}/identity/key.pem", IDENTITY_LINE),
@@ -235,11 +237,21 @@ class CredentialTests(GuardCase):
 
     def test_an_ordinary_call_starts_no_process_and_reads_no_store(self):
         payload = json.dumps({"cwd": str(self.root), "tool_name": "Bash", "tool_input": {"command": "gh pr list"}})
+        del self.env["FACTORY_SESSION"]
         with mock.patch.object(factory, "read_tasks", side_effect=AssertionError), \
                 mock.patch.object(factory, "read_registration", side_effect=AssertionError):
             self.assertEqual(self.hook_in_process(payload), (0, ""))
 
-    def test_a_read_of_the_identity_directory_is_denied_and_any_other_read_passes(self):
+    def test_blank_lines_are_decided_quickly(self):
+        start = time.monotonic()
+        self.assertEqual(self.bash("ls" + "\n" * 20000 + "ls"), (0, "", ""))
+        self.assertLess(time.monotonic() - start, 1)
+
+    def test_a_read_outside_identity_from_a_broken_worktree_passes(self):
+        self.break_worktree()
+        self.assertEqual(self.hook({"cwd": str(self.wt), "tool_name": "Read", "tool_input": {"file_path": "/etc/hosts"}}), (0, "", ""))
+
+    def test_a_read_of_the_identity_directory_is_denied_and_any_other_read_passes_directory_is_denied_and_any_other_read_passes(self):
         read = lambda path: self.hook({"cwd": str(self.root), "tool_name": "Read", "tool_input": {"file_path": str(path)}})
         self.denied(read(self.home / "identity" / "key.pem"), IDENTITY_LINE)
         self.denied(read(self.home / "x" / ".." / "identity" / "key.pem"), IDENTITY_LINE)
