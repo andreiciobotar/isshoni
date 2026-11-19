@@ -80,7 +80,7 @@ Describe a task. A reviewed pull request comes back.
 | `[models]` | | each role's model |
 | `sessions.lead_permission_mode` | `auto` | leads run unattended |
 | `kaizen.review_hours` | 1 | the review's period; about 2 USD a run; `0` turns it off |
-| `kaizen.issues_repo` | empty | `owner/name` where proposals are filed; empty files nothing |
+| `kaizen.issues_repo` | empty | owner/name where proposals are filed; empty files nothing |
 
 ## Monitor
 
