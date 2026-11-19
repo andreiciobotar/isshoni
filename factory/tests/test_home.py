@@ -29,6 +29,7 @@ class FactoryHome(unittest.TestCase):
     def factory(self, *argv, home="unset", stdin=""):
         env = {k: v for k, v in os.environ.items() if k != "FACTORY_HOME"}
         env["HOME"] = str(self.home)
+        env["FACTORY_SESSION"] = "1"
         if home != "unset":
             env["FACTORY_HOME"] = home
         p = subprocess.run([sys.executable, str(BIN), *argv], cwd=self.repo, env=env, input=stdin,

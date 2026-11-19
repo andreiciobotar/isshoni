@@ -30,7 +30,7 @@ class StoreCase(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
         self.store = self.tmp / ".claude" / "factory"
-        env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_")}
+        env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_") and k != "FACTORY_SESSION"}
         patches = [mock.patch.dict(os.environ, {**env, "HOME": str(self.tmp)}, clear=True),
                    mock.patch.object(factory, "STORE", self.store)]
         for p in patches:
@@ -53,8 +53,10 @@ class StoreCase(unittest.TestCase):
             code = factory.main(argv)
         return code, out.getvalue(), err.getvalue()
 
-    def fire(self, payload, project=TASK):
-        code, out, err = self.run_main(["hook"], json.dumps(payload), {"CLAUDE_PROJECT_DIR": project})
+    def fire(self, payload, project=TASK, session=True):
+        """One hook payload as a session of the factory (`FACTORY_SESSION`) or, with `session=False`, as any other."""
+        env = {"CLAUDE_PROJECT_DIR": project, **({"FACTORY_SESSION": "1"} if session else {})}
+        code, out, err = self.run_main(["hook"], json.dumps(payload), env)
         self.assertEqual((code, out, err), (0, "", ""))
 
 
@@ -175,7 +177,8 @@ class HookTests(StoreCase):
         self.event({"hook_event_name": "Mystery", "tool_name": "x"}, event="Mystery")
 
     def run_subprocess(self, stdin, home):
-        env = {**os.environ, "HOME": str(home), "FACTORY_HOME": str(Path(home) / ".claude" / "factory"), "CLAUDE_PROJECT_DIR": TASK}
+        env = {**os.environ, "HOME": str(home), "FACTORY_HOME": str(Path(home) / ".claude" / "factory"), "CLAUDE_PROJECT_DIR": TASK,
+               "FACTORY_SESSION": "1"}
         return subprocess.run([sys.executable, str(BIN), "hook"], input=stdin, capture_output=True, text=True, env=env)
 
     def test_invalid_json_exits_silently(self):
@@ -193,6 +196,50 @@ class HookTests(StoreCase):
         with mock.patch.object(factory, "run", side_effect=AssertionError("run called")):
             self.fire({"hook_event_name": "Stop", "session_id": SID})
         self.assertEqual(len(self.lines()), 1)
+
+
+class OutsideTests(StoreCase):
+    """A session that is not the factory's leaves nothing in the store (docs/factory.md, "In a session that is not the factory's")."""
+    REPORT = "Done.\n\n## Factory feedback\n- the brief omitted the branch name\n"
+    PAYLOADS = ({"hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "factory:reviewer"},
+                {"hook_event_name": "PostToolUse", "tool_name": "SubagentHandback", "agent_id": "a1", "agent_type": "factory:reviewer",
+                 "tool_input": {"message": REPORT}},
+                {"hook_event_name": "SubagentStop", "agent_id": "a1", "agent_type": "factory:reviewer", "last_assistant_message": REPORT})
+
+    def fire_all(self, project, **kw):
+        with mock.patch.object(factory, "run", side_effect=AssertionError("run called")):
+            for payload in self.PAYLOADS:
+                self.fire({"session_id": SID, **payload}, project=project, **kw)
+
+    def test_a_reviewer_of_a_plain_directory_or_an_undeclared_worktree_leaves_no_file(self):
+        for project in ("/plain/dir", f"{REPO}/.claude/worktrees/claude-code-own"):
+            with self.subTest(project):
+                self.fire_all(project, session=False)
+                self.assertEqual(list(self.store.rglob("*")), [])
+
+    def test_the_same_reviewer_in_a_declared_task_leaves_its_records(self):
+        tf.declare_task(REPO, "my-task")
+        self.fire_all(TASK, session=False)
+        self.assertEqual([e["event"] for e in self.lines()], ["SubagentStart", "PostToolUse", "SubagentStop"])
+        self.assertEqual([(e["role"], e["slug"]) for e in self.lines("feedback")], [("reviewer", "my-task")])
+
+    def test_each_rule_alone_makes_a_session_the_factorys(self):
+        def mine(cwd, session=SID):
+            payload = {"cwd": cwd, "session_id": session}
+            return factory.factory_session(payload, factory.tags(payload))
+        self.assertFalse(mine(TASK))
+        with mock.patch.dict(os.environ, {"FACTORY_SESSION": "1"}):
+            self.assertTrue(mine("/plain/dir"))
+        tf.declare_task(REPO, "my-task")
+        self.assertTrue(mine(TASK))
+        self.assertTrue(mine(f"{TASK}/src"))
+        self.assertFalse(mine(f"{REPO}/.claude/worktrees/other-task"))
+        self.assertFalse(mine("/elsewhere/.claude/worktrees/my-task"))  # the task is of another repository
+        self.assertFalse(mine("/plain/dir"))
+        tf.register_dispatcher(REPO, SID)
+        self.assertTrue(mine(REPO))
+        self.assertFalse(mine(REPO, session="22222222-bbbb"))
+        self.assertFalse(mine("/plain/dir", session=None))
 
 
 class ParseTests(unittest.TestCase):

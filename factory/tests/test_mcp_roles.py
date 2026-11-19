@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 import test_attribution
-from test_factory import DEFAULT_SETTINGS, ROOT, factory, put_access
+from test_factory import DEFAULT_SETTINGS, ROOT, declare_task, factory, put_access
 
 GET, SEARCH, DELETE = "mcp__tracker__get_issue", "mcp__docs__search", "mcp__tracker__delete_issue"
 TRACKER, DOCS = {"type": "http", "url": "https://tracker.example/mcp"}, {"command": "docs-server", "args": ["--token=${DOCS_TOKEN}"]}
@@ -225,6 +225,7 @@ class McpGateTests(InScratchStore):
         self.worktree = str(Path(self.a) / ".claude" / "worktrees" / "task")
         self.git(self.a, "worktree", "add", "-q", self.worktree, "-b", "task")
         self.record = put_mcp(self.a, {"lead": [GET], "tech-lead": [GET, SEARCH]})
+        declare_task(self.a, "task")
 
     def git(self, cwd, *args):
         subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True, capture_output=True)
@@ -247,8 +248,8 @@ class McpGateTests(InScratchStore):
         return code, out.getvalue(), err.getvalue()
 
     def call(self, tool, cwd=None, role=None, **extra):
-        """The decision of the gate on a call of `tool` from a session started in `cwd` (a task worktree: the lead) with FACTORY_ROLE `role`."""
-        env = {"FACTORY_ROLE": role} if role else {}
+        """The decision of the gate on a call of `tool` from a session started in `cwd` (a task worktree: the lead) with FACTORY_ROLE `role` (the tech lead, a session the factory started: it has FACTORY_SESSION)."""
+        env = {"FACTORY_ROLE": role, "FACTORY_SESSION": "1"} if role else {}
         with mock.patch.dict(os.environ, env):
             code, out, err = self.hook({"hook_event_name": "PreToolUse", "tool_name": tool, "session_id": "s1", "cwd": cwd or self.worktree, **extra})
         self.assertEqual((code, err), (0, ""))
@@ -278,6 +279,16 @@ class McpGateTests(InScratchStore):
     def test_a_session_with_no_role_gets_no_output(self):
         self.assertIsNone(self.call(GET, cwd=self.a))
         self.assertIsNone(self.call(GET, cwd=self.a, agent_id="a1", agent_type="factory:coder"))
+
+    def test_a_session_of_no_declared_task_gets_no_output_whatever_its_path_looks_like(self):
+        undeclared = str(Path(self.a) / ".claude" / "worktrees" / "claude-code-own")
+        self.git(self.a, "worktree", "add", "-q", undeclared, "-b", "claude-code-own")
+        for extra in ({}, {"agent_id": "a1", "agent_type": "factory:coder"}):
+            self.assertIsNone(self.call(GET, cwd=undeclared, **extra))
+        with mock.patch.dict(os.environ, {"FACTORY_ROLE": "tech-lead"}):  # a role without FACTORY_SESSION is a name, not a start by the factory
+            self.assertIsNone(self.call(GET, cwd=undeclared))
+        declare_task(self.b, "claude-code-own")  # a task of another repository does not make it one here
+        self.assertIsNone(self.call(GET, cwd=undeclared))
 
     def test_a_repository_with_no_record_gets_no_output(self):
         other = str(Path(self.b) / ".claude" / "worktrees" / "task")

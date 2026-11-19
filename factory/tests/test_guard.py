@@ -24,7 +24,7 @@ class GuardCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         tmp = Path(self.tmp.name).resolve()
         self.home = tmp / "home"  # never created: the hook must not touch it
-        self.env = {**os.environ, "HOME": str(tmp), "FACTORY_HOME": str(self.home), "GIT_AUTHOR_NAME": "t",
+        self.env = {**os.environ, "HOME": str(tmp), "FACTORY_HOME": str(self.home), "FACTORY_SESSION": "1", "GIT_AUTHOR_NAME": "t",
                     "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
                     "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
         self.env.pop("CLAUDE_PROJECT_DIR", None)
@@ -73,6 +73,23 @@ class HookTests(GuardCase):
             self.assert_denied(out)
         self.assertEqual(self.main_state(), self.main_before)
         self.assertFalse(self.home.exists())
+
+    def test_a_session_that_is_not_the_factorys_is_not_denied_and_reads_no_store(self):
+        self.break_worktree()
+        del self.env["FACTORY_SESSION"]
+        self.assertEqual(self.hook({"cwd": str(self.wt), "tool_name": "Bash"}), (0, "", ""))
+        self.assertEqual(self.hook_in_process(json.dumps({"cwd": str(self.wt)})), (0, ""))
+        self.assertFalse(self.home.exists())
+
+    def test_the_session_of_a_declared_task_is_denied_without_FACTORY_SESSION(self):
+        self.break_worktree()
+        del self.env["FACTORY_SESSION"]
+        self.home.mkdir()
+        (self.home / "tasks.jsonl").write_text(json.dumps(
+            {"ts": "2026-11-19T10:00:00Z", "repo": str(self.root), "slug": "t1", "state": "working"}) + "\n")
+        code, out, err = self.hook({"cwd": str(self.wt), "tool_name": "Bash"})
+        self.assertEqual((code, err), (0, ""))
+        self.assert_denied(out)
 
     def test_the_process_directory_may_be_gone(self):
         self.break_worktree()
