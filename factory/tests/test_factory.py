@@ -1743,7 +1743,8 @@ class CiTests(unittest.TestCase):
         self.assertFalse(fake.ran(*self.PUT) or fake.ran(*self.POST))
 
     def test_a_failed_check_read_or_a_bad_shape_still_says_what_is_done(self):
-        for answers in ({self.RUNS: (1, "", "gh: Bad Gateway (HTTP 502)")}, {self.HEAD: (0, "[]", "")}):
+        for answers in ({self.RUNS: (1, "", "gh: Bad Gateway (HTTP 502)")}, {self.HEAD: (0, "[]", "")},
+                        {self.RUNS: (0, '{"check_runs": [{}]}', "")}):
             with self.subTest(answers):
                 code, _, err, fake = self.ci(["setup", "--test", "x"], answers)[:4]
                 self.assertEqual(code, 1)

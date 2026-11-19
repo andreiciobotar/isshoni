@@ -2048,20 +2048,17 @@ def ci_setup(repo, test, check):
             return None
         stop(err.strip() or out.strip() or "gh failed")
 
-    def read(endpoint, *path):
-        """The JSON of `endpoint` followed down `path`; a failed read or an unexpected shape stops with what is done."""
+    def read(endpoint, pick):
+        """`pick` of the JSON of `endpoint`; a failed read or an unexpected shape stops with what is done."""
         try:
-            value = json.loads(gh_or_stop("api", f"repos/{{owner}}/{{repo}}/{endpoint}"))
-            for key in path:
-                value = value[key]
-            return value
+            return pick(json.loads(gh_or_stop("api", f"repos/{{owner}}/{{repo}}/{endpoint}")))
         except (ValueError, KeyError, IndexError, TypeError):
             stop(f"gh answered with an unexpected shape for {endpoint}")
 
     def reported_checks(sha):
         """The names of the check runs and commit statuses GitHub reports on `sha`."""
-        return ({run_["name"] for run_ in read(f"commits/{sha}/check-runs?per_page=100", "check_runs")}
-                | {status["context"] for status in read(f"commits/{sha}/status?per_page=100", "statuses")})
+        return (read(f"commits/{sha}/check-runs?per_page=100", lambda v: {run_["name"] for run_ in v["check_runs"]})
+                | read(f"commits/{sha}/status?per_page=100", lambda v: {status["context"] for status in v["statuses"]}))
 
     state, reason = ci_state(repo)
     if state == "unreadable":
@@ -2077,7 +2074,7 @@ def ci_setup(repo, test, check):
             done.append(f"{CI_WORKFLOW} committed on {repo.default}")
         else:
             print(f"{CI_WORKFLOW} is already on {repo.default}: kept")
-    head = read(f"commits/{repo.default}", "sha")
+    head = read(f"commits/{repo.default}", lambda v: v["sha"])
     if check is None:
         name, deadline = CI_NAME, time.monotonic() + CI_WAIT
         while name not in reported_checks(head):
@@ -2087,9 +2084,9 @@ def ci_setup(repo, test, check):
             time.sleep(CI_POLL)
     else:
         name, seen = check, reported_checks(head)
-        latest = read("pulls?state=all&sort=updated&direction=desc&per_page=1")
+        latest = read("pulls?state=all&sort=updated&direction=desc&per_page=1", lambda v: v[0]["head"]["sha"] if v else None)
         if latest:
-            seen |= reported_checks(latest[0]["head"]["sha"])
+            seen |= reported_checks(latest)
         if name not in seen:
             raise Fail(f"GitHub reports no check {name} on {repo.default} or on the latest pull request; it reports: "
                        f"{', '.join(sorted(seen)) or 'none'}", code=1)
