@@ -63,6 +63,9 @@ def _guarded_spawn(argv, cwd, out_path):
 
 factory.spawn = _guarded_spawn
 
+real_short_wake = factory.short_wake
+factory.short_wake = lambda: None  # the real probe runs `pmset`: only the tests of `short_wake` itself use the real one
+
 ROOT = "/repo"
 WT = f"{ROOT}/.claude/worktrees"
 DAY = 86400

@@ -208,6 +208,18 @@ def run(argv, cwd=None, timeout=None, input=None, env=None, group=False):
     return result
 
 
+def short_wake():
+    """None when work can be started, else why not: on macOS a sleeping machine wakes briefly by itself (a dark wake, no
+    `Graphics` in its capabilities) and launchd runs the tick then. An unreadable answer is None: a broken probe never stops the factory."""
+    if sys.platform != "darwin":
+        return None
+    rc, out, _ = run(["pmset", "-g", "systemstate"], timeout=5)
+    line = next((l for l in out.splitlines() if l.startswith("Current System Capabilities are:")), None)
+    if rc == 0 and line is not None and "Graphics" not in line:
+        return "the machine is in a dark wake (asleep, awake for a moment)"
+    return None
+
+
 def spawn(argv, cwd, out_path):
     """Start `argv` detached in its own session, its output appended to `out_path`, and do not wait. Raises OSError."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1235,6 +1247,16 @@ def ci_state(repo):
         if found:
             return "required", ""
     return "none", ""
+
+
+def default_requires_checks(repo):
+    """(how many status checks the merge rules of the default branch require, None; 0 when branch protection and rulesets
+    both answer 0) or (None, the one-line reason the first endpoint that failed could not)."""
+    for endpoint, count in ((f"branches/{repo.default}", protection_checks), (f"rules/branches/{repo.default}", ruleset_checks)):
+        found, error = required_checks(repo, endpoint, count)
+        if error or found:
+            return found, error
+    return 0, None
 
 
 def needed_branches(repo):
@@ -3111,10 +3133,12 @@ class NoJson(NotEvaluated):
 
 
 def gh_json(repo, kind, *args):
-    """What `gh` prints as JSON: a `kind` (list of objects, or dict), else NotEvaluated."""
+    """What `gh` prints as JSON: a `kind` (list of objects, or dict), else NotEvaluated. A non-zero exit is a failed call."""
     rc, out, err = run(["gh", *args], cwd=repo.root)
     name = " ".join(args[:2])
     try:
+        if rc != 0 and args[:2] != ("pr", "checks"):  # `pr checks` exits non-zero for pending (8) and failed (1) checks, with JSON
+            raise ValueError(out)
         data = json.loads(out)
     except ValueError:
         raise NoJson(f"gh {name} failed: {err.strip() or out.strip() or rc}")
@@ -3813,6 +3837,18 @@ def pending_asks(firings):
     return [f for f in firings if f["criterion"] == "overrun" and f["decision"] is None and not f["cleared"]]
 
 
+def close_moot(repo, ask):
+    """Close an `overrun` ask as moot when its task's newest record says the work is over: suppressed by the watch,
+    cleared, nobody told. Whether it did."""
+    task = read_tasks(repo.root).get(ask["slug"])
+    if not task or not declared_over(task["state"]):
+        return False
+    log_firing(repo, id=ask["id"], decision="suppressed", by="watch",
+               reason=f"{task['state'].replace('-', ' ')} at {task['ts']}, the ask is moot")
+    log_firing(repo, id=ask["id"], cleared=True)
+    return True
+
+
 def log_firing(repo, **fields):
     log("firings", {"ts": now(), "repo": repo.root, **fields})
 
@@ -4275,11 +4311,14 @@ def settle_collisions(p):
 
 def settle_asks(p, send, why):
     """An `overrun` firing is cleared once the tick that sent it is over, so a later ask is a new firing. One the site
-    manager left undecided is decided here, once: escalated to the human, the lead and the dispatcher told."""
+    manager left undecided is decided here, once: closed as moot when its task is over by now, else escalated to the
+    human, the lead and the dispatcher told."""
     repo = p["repo"]
     folded = {f["id"]: f for f in fold(repo_log("firings", repo.root) or [])[0]}
     for f in (f for f in send if f["criterion"] == "overrun"):
         if folded[f["id"]]["decision"] is None:
+            if close_moot(repo, f):
+                continue
             reason = f"the site manager did not decide: {why}"
             log_firing(repo, id=f["id"], decision="escalated", by="watch", to="dispatcher", reason=reason)
             tell_decision(p, f, "escalated", reason)
@@ -4787,6 +4826,10 @@ def cmd_watch(args):
     """One scheduled tick at a time per repository: cron starts one every two minutes, whatever the last one still does.
     The lander's loop runs last, while a task is handed over or the human's word stands."""
     repo = Repo()
+    if reason := short_wake():
+        log("ticks", {"ts": now(), "repo": repo.root, "outcome": "not run", "reason": reason})
+        print(f"watch: tick not run: {reason}")
+        return 0
     ops_tick(repo)
     review_tick(repo)
     with repo_lock(repo, "watch") as free:
@@ -4864,7 +4907,7 @@ def watch_tick(args, repo):
     facts = [{"name": name} for name, (_, always) in FACTS.items() if full or always]
     current, skipped = evaluate(p, facts)
     folded = fold(repo_log("firings", repo.root) or [])[0]
-    asks = pending_asks(folded)  # a lead's ask goes to the site manager on the next tick, not the next full pass
+    asks = [a for a in pending_asks(folded) if not close_moot(repo, a)]  # a lead's ask goes to the site manager on the next tick, not the next full pass
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
     evaluated = {c["name"] for c in [*facts, *(every if full else [])]} - {s["criterion"] for s in skipped}  # a killed digest leaves its firings open
@@ -5653,6 +5696,31 @@ def checks_stop(p, n):
     return None
 
 
+NO_CHECKS = "no checks reported"
+
+
+def checks_gate(p, n):
+    """`checks_stop` for the merge gate: (kind, reason) of what stops pull request `n`, or None; an unreadable read is a `ci`
+    stop. With no check reported, the merge rules of the default branch (read once per pass, kept in `p`) tell whether
+    checks are to come (`ci`: nothing has started them) or never (`no-ci`: the factory does not merge here)."""
+    try:
+        return checks_stop(p, n)
+    except NotEvaluated as e:
+        error = str(e)
+    if not error.startswith(f"gh pr checks failed: {NO_CHECKS}"):
+        return "ci", error
+    repo = p["repo"]
+    if "rules" not in p:
+        p["rules"] = default_requires_checks(repo)
+    found, why = p["rules"]
+    if why:
+        return "ci", f"{error}; the merge rules of {repo.default} could not be read: {why}"
+    if found:
+        return "ci", f"{NO_CHECKS} on its head, and {repo.default} requires a status check: nothing has started them on this head"
+    return "no-ci", (f"no check is reported on it and {repo.default} requires no status check, so the factory does not merge it: "
+                     f"merge it by hand, or add a required check to {repo.default}")
+
+
 def sync_drafts(p, prs):
     """Make the draft flag of each pull request of `prs` (the open ones) that belongs to a task follow its task:
     ready exactly when handed over (as handover_reason says) and either its checks pass or it is held (its red check
@@ -5760,11 +5828,7 @@ def merge_one(p, pr, merged, dry, permission=None):
         return "behind", moved
     if ahead != 0:
         return "pending", "cannot tell whether its base has moved: git merge-base failed"
-    try:
-        stop = checks_stop(p, n)
-    except NotEvaluated as e:
-        return "ci", str(e)
-    if stop:
+    if stop := checks_gate(p, n):
         return stop
     if base != repo.default:
         if dry:
@@ -5814,9 +5878,9 @@ def base_changed(p, m, approved_at):
         return "stale", "its base changed after its approval"
 
 
-def member_stop(p, m, below, perm):
+def member_stop(p, m, below, perm, checks=True):
     """(stop, approved_at) of member `m` of a stack, above `below` (None for the bottom): the gate of `merge_one`, with the
-    base chain, and for an upper member the base-change check. `perm` as `approval` takes it."""
+    base chain, and for an upper member the base-change check. `perm` as `approval` takes it; `checks` False leaves the checks out."""
     repo = p["repo"]
     if m["isCrossRepository"]:
         return FORK, None
@@ -5826,22 +5890,19 @@ def member_stop(p, m, below, perm):
     stop = stop or below and base_changed(p, m, approved_at)
     if not stop and m["baseRefName"] != (below["headRefName"] if below else repo.default):
         stop = "stack", f"its base {m['baseRefName']} is not {below['headRefName'] if below else repo.default}"
-    if not stop:
-        try:
-            stop = checks_stop(p, str(m["number"]))
-        except NotEvaluated as e:
-            stop = "ci", str(e)
+    if not stop and checks:
+        stop = checks_gate(p, str(m["number"]))
     return stop, approved_at
 
 
-def stack_gate(p, pr, prs, permission):
+def stack_gate(p, pr, prs, permission, checks=True):
     """((kind, reason) of the first member of `prs` (bottom to top) that stops the stack, else None; the approval times).
     A member the human's word did not name needs GitHub's own approval. The reason of a member other than `pr`
-    names it, so that nobody blames `pr`'s task for it."""
+    names it, so that nobody blames `pr`'s task for it. `checks` as `member_stop` takes it."""
     times = []
     for i, m in enumerate(prs):
         perm = permission if permission is not None or m["number"] == pr["number"] else {}
-        stop, approved_at = member_stop(p, m, prs[i - 1] if i else None, perm)
+        stop, approved_at = member_stop(p, m, prs[i - 1] if i else None, perm, checks)
         if stop:
             return (stop if m["number"] == pr["number"] else (stop[0], f"stack member #{m['number']}: {stop[1]}")), times
         times.append(approved_at)
@@ -5863,6 +5924,10 @@ def stack_merge(p, pr, numbers, dry, permission):
         return "pending", str(e)
     stop, times = stack_gate(p, pr, prs, permission)
     if stop:
+        if not dry and stop[0] == "ci" and re.match(rf"(stack member #\d+: )?{NO_CHECKS}", stop[1]) and fetched(p, prs[0]) \
+                and repo.git("merge-base", "--is-ancestor", f"{repo.remote}/{repo.default}", prs[0]["headRefOid"])[0] == 1 \
+                and not stack_gate(p, pr, prs, permission, checks=False)[0]:
+            return stack_rebase(p, prs, "behind")  # the rebase starts the checks nobody started
         return stop
     if not fetched(p, prs[0]):
         return "pending", f"git fetch {repo.remote} failed: cannot tell whether its stack is on top of {repo.default}"
@@ -6270,7 +6335,7 @@ def approval(p, pr, permission):
         if same:
             return None, review.get("submitted_at")
     except NotEvaluated as e:
-        return ("pending", str(e)), None
+        return ("pending", f"could not read its approval on GitHub: {e}"), None
     if lgtm:
         return stop, None
     if review:
@@ -7884,7 +7949,7 @@ POLL = 20
 # `refused`: GitHub refused a merge and nothing it shows says why. `settle` keeps the first one of a head in `waiting` (nothing
 # told: the next pass calls merge again), a second at the same head is told once, no tech lead.
 STOP_POLICY = {"pending": (1800, True, "dispatcher"), "handover": (600, False, "dispatcher"), "conflict": (0, False, "lead"),
-               "not-ours": (0, False, "dispatcher"), "refused": (1, False, "dispatcher")}
+               "not-ours": (0, False, "dispatcher"), "refused": (1, False, "dispatcher"), "no-ci": (180, True, "dispatcher")}
 NOT_OURS_HOURS = 24
 NOT_OURS_RUNS = 5
 HOLD_GRACE_MINUTES = 30
@@ -8022,11 +8087,13 @@ def waiting_since(state, n, pr, kind):
 
 
 def held(state, stops):
-    """The numbers of `stops` that are inside their patience and keep the loop polling."""
+    """The numbers of `stops` that are inside their patience and keep the loop polling; one already reported at its head is not."""
     found = set()
     for n, (pr, kind, line) in stops.items():
         patience, polling, _ = stop_policy(kind, line)
-        if polling and time.time() - waiting_since(state, n, pr, kind) < patience:
+        old = state["stopped"].get(str(n)) or {}
+        if polling and (old.get("head"), old.get("kind")) != (pr["headRefOid"], kind) \
+                and time.time() - waiting_since(state, n, pr, kind) < patience:
             found.add(n)
     return found
 
@@ -8531,6 +8598,11 @@ def build_run(repo, settings, args, spec, handover, learned):
     slug = args.slug
     worktree, branch = repo.worktree_path(slug), f"worktree-{slug}"
     git = lambda *a: repo.git(*a, path=worktree)[1].strip()
+    if reason := short_wake():
+        print(f"build run waits: {reason}", flush=True)
+        while reason:
+            time.sleep(WATCH_INTERVAL)
+            reason = short_wake()
     declare(repo, slug, "tech-lead", "working")
     old_head, before, started, findings = git("rev-parse", "HEAD"), spec_hash(spec), time.monotonic(), pending_findings(repo, slug)
     learned["delivered"] = [f["id"] for f in findings]
@@ -8594,7 +8666,8 @@ def report_stop(repo, fallback, pr, kind, line):
     held = {k: v for k, v in getattr(line, "extra", {}).items() if k in ("tests", "checks")}
     log_queue(repo, n, slug, pr["headRefOid"], "sent-back" if sent_back else "stopped", kind=kind, text=line, told=to or "human",
               **files, **held)
-    if kind == "not-ours" and (failed := gh_step(repo, "pr", "comment", str(n), "--body", f"Merge queue: held, not sent back: {line}")):
+    comment = {"not-ours": f"held, not sent back: {line}", "no-ci": str(line)}.get(kind)
+    if comment and (failed := gh_step(repo, "pr", "comment", str(n), "--body", f"Merge queue: {comment}")):
         print(f"#{n} comment not posted: {failed[1]}")
     if to:
         log_firing(repo, id=firing["id"], decision="escalated", by="lander", reason=f"reported by the lander to the {to}")
@@ -8932,10 +9005,7 @@ def wait(p, flight, deadline):
     while time.time() < end:
         time.sleep(min(POLL, end - time.time()))
         for n in flight:
-            try:
-                stop = checks_stop(p, str(n))
-            except NotEvaluated as e:
-                stop = "ci", str(e)
+            stop = checks_gate(p, str(n))
             if not (stop and stop_policy(*stop)[1]):
                 return
 
@@ -9321,7 +9391,7 @@ def review_run(repo, settings):
                   else f"reached {float(REVIEW_BUDGET):g} USD" if doc.get("subtype") == "error_max_budget_usd"
                   else "the session ended with an error" if rc != 0 or doc.get("is_error")
                   else None if (folder / "report.md").is_file() else "the session wrote no report.md")
-        if not reason and target:
+        if (not reason or reason == "the session ended with an error" and (folder / "report.md").is_file()) and target:
             if blocked:
                 held = [{"file": p.name, "why": blocked} for p in sorted((folder / "proposals").glob("*.md"))]
             else:
