@@ -13,8 +13,8 @@ runs against it.
 1. `reported`: a pull request with no checks whose `ci` stop is already in lander.json `stopped` at its head; `factory lander`
    runs bounded at --seconds. At 34f857f3 it never ends (`gh pr checks` every 20 s); now it makes one pass and ends.
    --before PATH runs the same scenario with the factory script of another tree (a worktree of 34f857f3) and shows its count.
-2. `no-ci`: no checks reported, no merge rule requires a status check: the stop line, one comment on the pull request, one
-   line to the dispatcher, nothing on the second run.
+2. `no-ci`: no checks reported, no merge rule requires a status check, past its 180 s of patience (seeded): the stop line, one
+   comment on the pull request, one line to the dispatcher, nothing on the second run.
 3. `no approval read`: the reviews read exits 1 printing `[]` (a `pending` stop already past its 1800 s): the stop line says
    the read failed; it never says `not approved`.
 
@@ -199,7 +199,8 @@ def reported(root, factory, tag, seconds):
 
 def no_ci(root, factory):
     lab = lab_for(root, "no-ci", factory, checks="none", required=0)
-    task(lab)
+    head = task(lab)
+    seed(lab, "waiting", "1", {"head": head, "kind": "no-ci", "since": time.time() - 181})  # its 180 s of patience are over
     code, out = lander(lab)
     stops = [l for l in out.splitlines() if " stopped " in l]
     say(f"  first run: exit {code}")

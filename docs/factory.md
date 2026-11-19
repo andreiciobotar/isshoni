@@ -938,7 +938,7 @@ The lander is a script loop in `factory/lib/factory_core.py` (`drain`), with no 
 |---|---|---|---|
 | `pending` | 1800 s | yes | dispatcher |
 | `ci`, not "failed or cancelled checks" (no checks yet where the default branch requires one, unreadable) | 180 s | yes, until reported (a reported stop at the same head no longer polls) | dispatcher |
-| `no-ci` (no check is reported and the default branch requires none: the factory does not merge there; the pull request also gets the comment `Merge queue: <reason>`) | 0 | no | dispatcher |
+| `no-ci` (no check is reported and the default branch requires none: the factory does not merge there; the pull request also gets the comment `Merge queue: <reason>`; checks that appear inside the 180 s merge it and nothing is told) | 180 s | yes, until reported | dispatcher |
 | `ci`, failed or cancelled checks | 0 | no | lead |
 | `handover` (incl. a busy lead or a dirty worktree at the update) | 600 s | no | dispatcher |
 | `conflict` | 0 | no | lead |

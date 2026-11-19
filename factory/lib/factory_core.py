@@ -7779,7 +7779,7 @@ POLL = 20
 # `refused`: GitHub refused a merge and nothing it shows says why. `settle` keeps the first one of a head in `waiting` (nothing
 # told: the next pass calls merge again), a second at the same head is told once, no tech lead.
 STOP_POLICY = {"pending": (1800, True, "dispatcher"), "handover": (600, False, "dispatcher"), "conflict": (0, False, "lead"),
-               "not-ours": (0, False, "dispatcher"), "refused": (1, False, "dispatcher")}
+               "not-ours": (0, False, "dispatcher"), "refused": (1, False, "dispatcher"), "no-ci": (180, True, "dispatcher")}
 NOT_OURS_HOURS = 24
 NOT_OURS_RUNS = 5
 HOLD_GRACE_MINUTES = 30

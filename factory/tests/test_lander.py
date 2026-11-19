@@ -1014,23 +1014,35 @@ class ReportedStopTests(Loop):
         self.go("lander", at=NOW + 4000)
         self.assertEqual(self.sim.merged, [1])
 
-    def test_no_checks_where_the_rules_require_none_is_told_once_and_commented_and_the_loop_ends(self):
+    def test_no_checks_where_the_rules_require_none_are_waited_for_180_s_and_then_told_once_and_commented(self):
         self.sim.required = 0
         self.sim.add(1, behind=False, checks=[None])
         _, out, _ = self.go("lander")
         self.assertEqual(self.stopped(out), [f"#1 stopped no-ci: {self.NO_CI} (told dispatcher)"])
         self.assertEqual((self.sim.lines, self.sim.comments), ([f"LANDER: #1 stopped no-ci: {self.NO_CI}"], [f"Merge queue: {self.NO_CI}"]))
-        self.assertEqual((self.checks_of(1), self.clock), (1, NOW))  # the first pass reports it at once and does not wait
+        self.assertGreaterEqual(self.clock, NOW + 180)  # nothing was told before the 180 s ran out
+        self.assertGreaterEqual(self.checks_of(1), 3)
+        before = self.checks_of(1)
         with self.bounded():
-            _, out, _ = self.go("lander", at=NOW + 60)
-        self.assertEqual((self.stopped(out), len(self.sim.lines), len(self.sim.comments), self.checks_of(1)), ([], 1, 1, 2))
+            _, out, _ = self.go("lander", at=NOW + 4000)
+        self.assertEqual((self.stopped(out), len(self.sim.lines), len(self.sim.comments), self.checks_of(1) - before), ([], 1, 1, 1))
+        self.assertLess(self.clock, NOW + 4000 + 600)
+
+    def test_checks_that_appear_within_the_180_s_are_merged_with_no_no_ci_told(self):
+        self.sim.required = 0
+        self.sim.add(1, behind=False, checks=[None, None, GREEN])
+        _, out, _ = self.go("lander")
+        self.assertEqual((self.sim.merged, self.stopped(out), self.sim.lines, self.sim.comments), ([1], [], [], []))
+        self.assertLess(self.clock, NOW + 180)
 
     def test_the_rules_are_read_once_per_pass_however_many_pull_requests_have_no_checks(self):
         self.sim.required = 0
         self.sim.add(1, behind=False, checks=[None])
         self.sim.add(2, behind=False, checks=[None])
-        self.go("lander")
-        self.assertEqual(self.sim.rules_reads, ["repos/{owner}/{repo}/branches/main", "repos/{owner}/{repo}/rules/branches/main"])
+        with mock.patch.object(factory, "snapshot", wraps=factory.snapshot) as snap:  # one per pass
+            self.go("lander")
+        self.assertGreater(snap.call_count, 1)
+        self.assertEqual(self.sim.rules_reads, ["repos/{owner}/{repo}/branches/main", "repos/{owner}/{repo}/rules/branches/main"] * snap.call_count)
 
     def test_no_checks_where_the_rules_require_one_is_a_patient_ci_stop_told_once(self):
         self.sim.add(1, behind=False, checks=[None])
