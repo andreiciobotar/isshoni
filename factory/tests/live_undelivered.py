@@ -72,7 +72,7 @@ def load(path, tmp, real_claude):
     factory = getattr(module, "factory_core", module)
     if not factory.other_home() or factory.STORE.expanduser().resolve() == REAL_HOME.resolve():
         sys.exit("refusing to run: the factory's home is the real one")
-    os.makedirs(os.environ["FACTORY_HOME"])
+    os.makedirs(os.environ["FACTORY_HOME"], exist_ok=True)
     return factory
 
 
