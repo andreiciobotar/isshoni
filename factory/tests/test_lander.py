@@ -41,6 +41,8 @@ class Sim:
         self.comments, self.comment_fails, self.model = [], False, None  # `gh pr comment` bodies; what the tech lead's model run does and answers
         self.runs, self.run_list_fails = [], False  # `gh run list`
         self.logs, self.logs1, self.log_reads = {}, {}, []  # `--log-failed` by run id, current attempt and attempt 1; the reads made
+        self.required, self.rules_error, self.rules_reads = 1, None, []  # required status checks the default branch's rules list; a rules read that fails; the rules endpoints read
+        self.reviews_fail = False  # the reviews read exits 1 printing `[]`
         self.bodies, self.changed, self.defines, self.shared = {}, {}, {}, {}  # pull request bodies; files a branch changes; test -> files; head sha -> "independent" | "contains" | None
 
     def add(self, n, behind=True, base="main", approved=True, draft=False, checks=None, after=None, conflicts=(),
@@ -92,6 +94,13 @@ class Sim:
             return 0, json.dumps({"state": "OPEN", "headRefName": f"worktree-t{a[3]}", "baseRefName": "main"}), ""
         if a[:2] == ["gh", "api"] and "check-runs" in a[-1]:
             return 0, json.dumps({"check_runs": []}), ""  # no check is green on the default branch: no re-run
+        if a[:2] == ["gh", "api"] and a[-1].endswith("branches/main"):
+            self.rules_reads.append(a[-1])
+            if self.rules_error:
+                return 1, "", self.rules_error
+            if a[-1].endswith("rules/branches/main"):
+                return 0, json.dumps([{"type": "required_status_checks"}] * self.required), ""
+            return 0, json.dumps({"protection": {"enabled": True, "required_status_checks": {"contexts": ["test"] * self.required, "checks": []}}}), ""
         if a[:2] == ["git", "fetch"]:
             return 0, "", ""
         if a[:3] == ["git", "-c", "core.quotePath=false"]:  # what `failure_facts` reads of the branch
@@ -155,6 +164,8 @@ class Sim:
             m = re.search(r"pulls/(\d+)/reviews$", a[-1])
             if m:
                 n = int(m[1])
+                if self.reviews_fail:
+                    return 1, "[]", "unexpected end of JSON input"
                 return 0, json.dumps([[review(sha=self.prs[n]["head"], n=n)]]), ""
             if "/stacks" in a[-1]:
                 return 0, "[]", ""
@@ -946,6 +957,111 @@ class PatienceTests(Loop):
         self.assertEqual(len(self.stopped(out)), 1)
         self.assertEqual([l for l in self.sim.lines if "stopped handover" in l][0][:34], "LANDER: #1 stopped handover: task ")
         self.assertEqual(self.lander_json()["waiting"], {})
+
+
+class ReportedStopTests(Loop):
+    """A stop already reported at its head does not keep the loop polling (#220); what a stop says: a failed read is no
+    verdict (#229), no checks reported is told as the rules of the default branch make it (#220)."""
+
+    def bounded(self):
+        """`drain` ends at a deadline 600 s on, so a loop that never ends fails instead of hanging."""
+        real = factory.drain
+        return mock.patch.object(factory, "drain", lambda repo, fallback, **kw: real(repo, fallback, deadline=self.clock + 600, **kw))
+
+    def checks_of(self, n):
+        return len([e for e in self.sim.events("checks") if e[1] == n])
+
+    def reported_then_drain(self, checks):
+        self.sim.add(1, behind=False, checks=checks)
+        _, out, _ = self.go("lander")
+        self.assertEqual(len(self.stopped(out)), 1)
+        before = self.checks_of(1)
+        with self.bounded():
+            self.go("lander", at=NOW + 4000)
+        return before
+
+    def test_a_reported_no_checks_stop_ends_the_next_drain_after_one_read(self):
+        before = self.reported_then_drain([None])
+        self.assertEqual(self.checks_of(1) - before, 1)
+        self.assertLess(self.clock, NOW + 4000 + 600)
+
+    def test_a_reported_pending_stop_ends_the_next_drain_after_one_read(self):
+        before = self.reported_then_drain([PENDING])
+        self.assertEqual(self.checks_of(1) - before, 1)
+        self.assertLess(self.clock, NOW + 4000 + 600)
+
+    def test_a_pull_request_behind_is_updated_in_the_pass_after_the_other_one_was_reported(self):
+        self.reported_then_drain([None])
+        self.sim.add(2)
+        with self.bounded():
+            self.go("lander", at=NOW + 4100)
+        self.assertEqual(self.sim.pushes()[0], 2)  # at once, not after the reported one stops polling
+        self.assertLess(self.clock, NOW + 4100 + 600)  # and the drain ended
+
+    NO_CI = ("no check is reported on it and main requires no status check, so the factory does not merge it: "
+             "merge it by hand, or add a required check to main")
+    NO_CHECKS_YET = "no checks reported on its head, and main requires a status check: nothing has started them on this head"
+
+    def test_a_failed_reviews_read_is_a_pending_stop_not_a_verdict_and_the_next_good_read_goes_on(self):
+        self.sim.add(1, behind=False)
+        self.sim.reviews_fail = True
+        _, out, _ = self.go("lander")
+        [line] = self.stopped(out)
+        self.assertTrue(line.startswith("#1 stopped pending: could not read its approval on GitHub: "), line)
+        self.assertIn("unexpected end of JSON input", line)
+        self.assertNotIn("not approved", out)
+        self.sim.reviews_fail = False
+        self.go("lander", at=NOW + 4000)
+        self.assertEqual(self.sim.merged, [1])
+
+    def test_no_checks_where_the_rules_require_none_are_waited_for_180_s_and_then_told_once_and_commented(self):
+        self.sim.required = 0
+        self.sim.add(1, behind=False, checks=[None])
+        _, out, _ = self.go("lander")
+        self.assertEqual(self.stopped(out), [f"#1 stopped no-ci: {self.NO_CI} (told dispatcher)"])
+        self.assertEqual((self.sim.lines, self.sim.comments), ([f"LANDER: #1 stopped no-ci: {self.NO_CI}"], [f"Merge queue: {self.NO_CI}"]))
+        self.assertGreaterEqual(self.clock, NOW + 180)  # nothing was told before the 180 s ran out
+        self.assertGreaterEqual(self.checks_of(1), 3)
+        before = self.checks_of(1)
+        with self.bounded():
+            _, out, _ = self.go("lander", at=NOW + 4000)
+        self.assertEqual((self.stopped(out), len(self.sim.lines), len(self.sim.comments), self.checks_of(1) - before), ([], 1, 1, 1))
+        self.assertLess(self.clock, NOW + 4000 + 600)
+
+    def test_checks_that_appear_within_the_180_s_are_merged_with_no_no_ci_told(self):
+        self.sim.required = 0
+        self.sim.add(1, behind=False, checks=[None, None, GREEN])
+        _, out, _ = self.go("lander")
+        self.assertEqual((self.sim.merged, self.stopped(out), self.sim.lines, self.sim.comments), ([1], [], [], []))
+        self.assertLess(self.clock, NOW + 180)
+
+    def test_the_rules_are_read_once_per_pass_however_many_pull_requests_have_no_checks(self):
+        self.sim.required = 0
+        self.sim.add(1, behind=False, checks=[None])
+        self.sim.add(2, behind=False, checks=[None])
+        with mock.patch.object(factory, "snapshot", wraps=factory.snapshot) as snap:  # one per pass
+            self.go("lander")
+        self.assertGreater(snap.call_count, 1)
+        self.assertEqual(self.sim.rules_reads, ["repos/{owner}/{repo}/branches/main", "repos/{owner}/{repo}/rules/branches/main"] * snap.call_count)
+
+    def test_no_checks_where_the_rules_require_one_is_a_patient_ci_stop_told_once(self):
+        self.sim.add(1, behind=False, checks=[None])
+        _, out, _ = self.go("lander")
+        self.assertEqual(self.stopped(out), [f"#1 stopped ci: {self.NO_CHECKS_YET} (told dispatcher)"])
+        self.assertGreaterEqual(self.checks_of(1), 3)  # polled until its 180 s ran out
+        self.assertEqual(self.sim.comments, [])
+
+    def test_unreadable_rules_leave_it_a_patient_ci_stop_with_both_errors(self):
+        self.sim.rules_error = "HTTP 403"
+        self.sim.add(1, behind=False, checks=[None])
+        _, out, _ = self.go("lander")
+        self.assertEqual(self.stopped(out), ["#1 stopped ci: gh pr checks failed: no checks reported; "
+                                             "the merge rules of main could not be read: HTTP 403 (told dispatcher)"])
+
+    def test_a_pass_that_starts_no_checks_reads_no_rules(self):
+        self.sim.add(1, behind=False)
+        self.go("lander")
+        self.assertEqual((self.sim.merged, self.sim.rules_reads), ([1], []))
 
 
 class NoLeadTests(Loop):
