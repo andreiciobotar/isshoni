@@ -97,6 +97,15 @@ class LaunchTests(BuildCase):
                          (["--worktree", SLUG, "--settings", json.dumps({**NO_ATTRIBUTION, **factory.BASE_REF})], 1, False))
         self.assertEqual(m.cwds[m.calls.index(argv)], self.root)
 
+    def test_a_run_in_a_dark_wake_waits_for_a_full_wake_before_the_session_starts(self):
+        probe = mock.Mock(side_effect=["the machine is asleep", "the machine is asleep", None])
+        asleep = mock.Mock()
+        with mock.patch.object(factory, "short_wake", probe), mock.patch.object(factory.time, "sleep", asleep):
+            code, out, _, m = self.build()
+        self.assertEqual(asleep.call_args_list, [mock.call(factory.WATCH_INTERVAL)] * 2)
+        self.assertEqual(out.count("build run waits: the machine is asleep"), 1)
+        self.assertEqual(len(m.tech_lead_calls()), 1)
+
     def test_the_lock_the_harness_leaves_is_released_when_the_run_fails(self):
         code, *_, m = self.build(claude=(1, "", "boom"))
         self.assertIn(["git", "worktree", "unlock", f"{self.root}/.claude/worktrees/{SLUG}"], m.calls)
