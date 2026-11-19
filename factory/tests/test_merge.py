@@ -10,12 +10,18 @@ from types import SimpleNamespace
 from unittest import mock
 
 import test_factory
-from test_factory import ROOT, FakeTime, WT, FakeRun, factory, invoke, repo_answers, task_entry
+from test_factory import BRANCH_RULE, ROOT, RULESET, FakeTime, WT, FakeRun, factory, invoke, protection, repo_answers, task_entry
 from test_health import DISPATCHER, NOW, Harness, check, iso, pic, row
 
 SHA = "sha-1"
 GREEN = [{"name": "test", "bucket": "pass"}]
 SESSION = "dispatcher-repo"
+NO_CHECKS = (1, "", "no checks reported")
+RULES_REQUIRE = {BRANCH_RULE: (0, protection(contexts=["ci"]), "")}
+RULES_NONE = {BRANCH_RULE: (0, protection(), ""), RULESET: (0, "[]", "")}
+NO_CI = ("no check is reported on it and main requires no status check, so the factory does not merge it: "
+         "merge it by hand, or add a required check to main")
+CHECKS_TO_COME = "no checks reported on its head, and main requires a status check: nothing has started them on this head"
 COMMENTS = "repos/{owner}/{repo}/issues/%d/comments"
 ACTIVITY = "repos/{owner}/{repo}/activity"
 REVIEWS = "repos/{owner}/{repo}/pulls/%d/reviews"
@@ -186,8 +192,11 @@ class MergeCommandTests(World):
             "blocked": (dict(prs=[pr(1)], state="blocked"), "phase blocked (declared blocked)"),
             "local head differs": (dict(prs=[pr(1)], local="other"), "worktree head is not the pull request's head"),
             "no checks": (dict(prs=[pr(1)], checks=[]), "no check passed"),
-            "gh checks printed nothing": (dict(prs=[pr(1)], checks=(1, "", "no checks reported")),
-                                          "no checks reported"),
+            "gh checks printed nothing, a check required": (dict(prs=[pr(1)], checks=NO_CHECKS, extra=RULES_REQUIRE), CHECKS_TO_COME),
+            "gh checks printed nothing, none required": (dict(prs=[pr(1)], checks=NO_CHECKS, extra=RULES_NONE), NO_CI),
+            "gh checks printed nothing, rules unreadable": (dict(prs=[pr(1)], checks=NO_CHECKS, extra={BRANCH_RULE: (1, "", "HTTP 403")}),
+                                                            "gh pr checks failed: no checks reported; "
+                                                            "the merge rules of main could not be read: HTTP 403"),
             "failed": (dict(prs=[pr(1)], checks=checks("pass", "fail")), "failed or cancelled checks: c1"),
             "cancelled": (dict(prs=[pr(1)], checks=checks("pass", "cancel")), "failed or cancelled checks: c1"),
             "only skipped": (dict(prs=[pr(1)], checks=checks("skipping", "skipping")), "no check passed"),
@@ -843,8 +852,19 @@ class ApprovedTests(World):
         code, out, _ = self.approved([pr(1)], {1: [comment()]},
                                      extra={("gh", "api", "--paginate", "--slurp", REVIEWS % 1): (1, "", "boom")})
         self.assertEqual(code, 1)
-        self.assertIn("#1 stopped: gh api --paginate failed: boom", out)
+        self.assertIn("#1 stopped: could not read its approval on GitHub: gh api --paginate failed: boom", out)
         self.assertEqual(self.gh_mutations(), [])
+
+    def test_a_reviews_read_that_exits_1_printing_an_empty_list_is_not_a_verdict(self):
+        for printed in ("[]", "[[]]"):
+            with self.subTest(printed):
+                self.setUp()
+                code, out, _ = self.approved([pr(1)], {1: [comment()]},
+                                             extra={("gh", "api", "--paginate", "--slurp", REVIEWS % 1): (1, printed, "unexpected end of JSON input")})
+                self.assertEqual(code, 1)
+                self.assertIn("#1 stopped: could not read its approval on GitHub: gh api --paginate failed: unexpected end of JSON input", out)
+                self.assertNotIn("not approved", out)
+                self.assertEqual(self.gh_mutations(), [])
 
     def test_a_stack_merges_the_bottom_and_stops_the_next_behind(self):
         code, out, _ = self.approved([pr(2, base="worktree-t1"), pr(1)], {1: [comment()], 2: [comment(n=2)]},
@@ -1235,6 +1255,14 @@ class SyncDraftTests(World):
                 self.assertEqual(self.flips(), flips)
                 self.assertEqual("".join(l + "\n" for l in out.splitlines() if l.startswith("#1 ")), line)
 
+    def test_no_checks_in_a_repository_with_no_rules_change_no_flag_and_read_no_rules(self):
+        for draft in (True, False):
+            with self.subTest(draft=draft):
+                self.setUp()
+                code, out, _ = self.tick(prs=[pr(1, draft=draft)], checks=NO_CHECKS, extra=RULES_NONE)
+                self.assertEqual((self.flips(), self.fake.ran("gh", "api", "repos/{owner}/{repo}/branches/main")), ([], False))
+                self.assertIn("#1 draft flag not changed: gh pr checks failed: no checks reported", out)
+
     def test_a_held_pull_request_with_red_checks_stays_ready(self):
         hold = {"stopped": {"1": {"head": SHA, "kind": "not-ours", "text": "t", "ts": iso(NOW)}}}
         for label, (lander, flips) in {"held": (hold, []), "released": ({**hold, "unblocked": {"1": {}}}, [["pr", "ready", "1", "--undo"]]),
@@ -1624,6 +1652,44 @@ class StackMergeTests(World):
                 self.assertEqual(code, 1)
                 self.assertEqual((self.kinds[0][0], self.kinds[0][1][:len(text)]), (kind, text))
                 self.nothing_started()
+
+    def test_a_failed_reviews_read_of_a_member_is_a_pending_stop_naming_it(self):
+        code, out, _ = self.stacked("1", extra={("gh", "api", "--paginate", "--slurp", REVIEWS % 2): (1, "[]", "unexpected end of JSON input")})
+        self.assertEqual(self.kinds, [("pending", "stack member #2: could not read its approval on GitHub: "
+                                                  "gh api --paginate failed: unexpected end of JSON input")])
+        self.nothing_started()
+
+    def test_no_check_on_a_member_where_the_rules_require_none_stops_no_ci_before_any_call(self):
+        self.stacked("1", checks={1: GREEN, 2: GREEN, 3: NO_CHECKS}, extra=RULES_NONE)
+        self.assertEqual(self.kinds, [("no-ci", f"stack member #3: {NO_CI}")])
+        self.nothing_started()
+
+    def no_checks_behind(self, *argv, behind=True, **kw):
+        """The bottom has no checks, the rules require one, and the bottom is (not) on top of the default branch."""
+        extra = {("git", "merge-base", "--is-ancestor", "origin/main"): (1 if behind else 0, "", ""), **RULES_REQUIRE, **kw.pop("extra", {})}
+        return self.stacked(*argv, checks={1: NO_CHECKS, 2: GREEN, 3: GREEN}, extra=extra, **kw)
+
+    def test_a_stack_with_no_checks_that_is_behind_is_rebased_to_start_them(self):
+        code, out, _ = self.no_checks_behind("1")
+        self.assertEqual([self.count(*s) for s in CLONE_STEPS], [1, 1, 1, 1, 1])
+        self.assertEqual((self.count(*PUT), self.count("gh", "pr", "checks", "1")), (0, 1))
+        self.assertEqual(self.kinds[0][0], "pending")
+        self.assertIn("(behind)", self.kinds[0][1])
+
+    def test_a_stack_with_no_checks_that_is_not_behind_stops_ci_and_is_not_rebased(self):
+        self.no_checks_behind("1", behind=False)
+        self.assertEqual(self.kinds, [("ci", CHECKS_TO_COME)])
+        self.nothing_started()
+
+    def test_a_stack_with_no_checks_and_an_unapproved_member_returns_the_first_stop_without_a_rebase(self):
+        self.no_checks_behind("1", reviews={3: []})
+        self.assertEqual(self.kinds, [("ci", CHECKS_TO_COME)])
+        self.nothing_started()
+
+    def test_a_dry_run_of_a_stack_with_no_checks_returns_the_stop_and_rebases_nothing(self):
+        self.no_checks_behind("1", "--dry-run")
+        self.assertEqual(self.kinds, [("ci", CHECKS_TO_COME)])
+        self.nothing_started()
 
     def test_a_member_the_word_names_with_an_unnamed_unapproved_member_above_stops_unapproved(self):
         code, out, _ = self.stacked("1", reviews={2: []})
