@@ -287,8 +287,17 @@ class CriteriaTests(Home):
                     self.assertRaises(factory.NotEvaluated) as cm:
                 factory.gh_json(repo, kind, "run", "list")
             self.assertNotIsInstance(cm.exception, factory.NoJson)
-        with mock.patch.object(factory, "run", FakeRun({("gh",): (8, '[{"bucket": "fail"}]', "")})):
-            self.assertEqual(factory.gh_json(repo, list, "pr", "checks", "u"), [{"bucket": "fail"}])
+        for rc in (1, 8):
+            with mock.patch.object(factory, "run", FakeRun({("gh",): (rc, '[{"bucket": "fail"}]', "")})):
+                self.assertEqual(factory.gh_json(repo, list, "pr", "checks", "u"), [{"bucket": "fail"}])
+
+    def test_gh_json_treats_a_non_zero_exit_as_a_failed_call_whatever_it_printed(self):
+        repo = SimpleNamespace(root=ROOT)
+        for kind, out in ((list, "[]"), ((list,), "[[]]"), (dict, '{"a": 1}'), (list, '[{"a": 1}]')):
+            with self.subTest(kind=kind, out=out), mock.patch.object(factory, "run", FakeRun({("gh",): (1, out, "boom")})), \
+                    self.assertRaises(factory.NoJson) as cm:
+                factory.gh_json(repo, kind, "api", "--paginate", "x")
+            self.assertEqual(str(cm.exception), "gh api --paginate failed: boom")
 
     def test_a_wrong_shape_from_gh_is_not_evaluated_but_a_pr_without_checks_is_skipped(self):
         repo = SimpleNamespace(root=ROOT, default="main")

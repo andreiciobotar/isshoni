@@ -238,6 +238,65 @@ class BoundTests(Overrun):
         self.assertEqual(len(self.decisions()), 1)
 
 
+class MootTests(Overrun):
+    """An ask whose task is over (handed over or settled) is closed by the script, and nobody is told."""
+
+    def hand_over(self, state="handed-over", ts=NOW + 30):
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": state, "ts": iso(ts)}])
+
+    def assert_moot(self, state="handed-over", ts=NOW + 30):
+        [d] = self.decisions()
+        self.assertEqual((d["decision"], d["by"], d["reason"]), ("suppressed", "watch", f"{state.replace('-', ' ')} at {iso(ts)}, the ask is moot"))
+        self.assertNotIn("to", d)
+        self.assertEqual(self.lines(), [])
+        self.assertNotIn("ESCALATION", self.watch()[1])
+        self.assertEqual(self.runs(), [])
+
+    def test_an_ask_of_a_handed_over_lead_is_closed_as_moot_before_the_look(self):
+        self.ask()
+        self.hand_over()
+        self.assertEqual(self.watch()[0], 0)
+        self.assertEqual(self.runs(), [])  # no look for a moot ask alone
+        self.assertIn({"repo": ROOT, "id": self.records()[0]["id"], "cleared": True, "ts": iso(NOW)}, self.records())
+        self.assert_moot()
+
+    def test_each_settled_state_is_named_in_the_reason(self):
+        for state in ("acknowledged", "dismissed"):
+            with self.subTest(state):
+                self.setUp()
+                self.ask()
+                self.hand_over(state)
+                self.watch()
+                self.assert_moot(state)
+
+    def test_a_lead_that_declared_working_again_has_a_live_ask(self):
+        self.ask()
+        self.hand_over()
+        self.hand_over("working", NOW + 60)
+        self.watch({"decision": "extended", "minutes": 20, "reason": "reopened"})
+        self.assertEqual([d["decision"] for d in self.decisions()], ["extended"])
+        self.assertEqual(len(self.runs()), 1)
+        self.assertEqual(self.lines()[0][0], "x")
+
+    def test_a_live_ask_the_site_manager_leaves_undecided_is_escalated(self):
+        self.ask()
+        self.hand_over()
+        self.hand_over("working", NOW + 60)
+        self.watch()
+        [d] = self.decisions()
+        self.assertEqual((d["decision"], d["by"]), ("escalated", "watch"))
+
+    def test_a_hand_over_during_the_look_closes_the_undecided_ask_as_moot(self):
+        self.ask()
+        def look():
+            self.hand_over()
+            return 1, "", "boom"
+        code, out, _ = self.cli("watch", answers={("claude", "-p"): look})
+        self.assertEqual(len(self.runs()), 1)
+        self.assertNotIn("ESCALATION", out)
+        self.assert_moot()
+
+
 class OutcomeTests(Overrun):
     """On the full pass an extension is kept or overran; the listing and the summary show it."""
 
