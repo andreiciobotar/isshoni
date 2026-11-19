@@ -250,6 +250,7 @@ class MootTests(Overrun):
         self.ask()
         self.hand_over()
         self.assertEqual(self.watch()[0], 0)
+        self.assertEqual(self.runs(), [])  # no look for a moot ask alone
         self.assertIn({"repo": ROOT, "id": self.records()[0]["id"], "cleared": True, "ts": iso(NOW)}, self.records())
         self.assert_moot()
 
