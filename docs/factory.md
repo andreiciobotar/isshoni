@@ -412,6 +412,8 @@ A handed-over pull request that the lander's loop cannot ship (it conflicts with
 - **Observing.** `~/.claude/factory/tech-lead.log` holds the output of every detached run; the `techlead` log (see Logs) has one record per come-back; the pull request carries the note; `events` give the session's role `tech-lead`, not `lead`, through `FACTORY_ROLE`.
 - **Turning it off.** There is no switch. Make `send_back` skip its `tech_lead_start` call, or leave a task without its spec file: it then always goes to its lead.
 
+A check that fails before hand-over is part of the build: nobody is messaged, the pull request stays a draft.
+
 ## Worktree isolation and a worker's Bash call
 A Bash call refused with `This session is isolated in the worktree <path>` is refused by Claude Code's worktree isolation, not by a factory hook (the factory's `PreToolUse` hooks match `mcp__.*` and `Bash|Edit|Write|NotebookEdit`, and the second one only refuses the case below). Its command-shape check cannot be turned off or narrowed by a setting, and it covers every subagent of an isolated session. The owner can report the `$CLAUDE_JOB_DIR` case (rows A20 to A22) through `/feedback`; anything else means not isolating sessions, which the factory relies on.
 
@@ -694,6 +696,8 @@ All of these, and the retro `cause`, start on the day this merges: nothing earli
 A fresh headless session reviews how the factory worked and proposes changes; the human decides. The dispatcher does not run it: it is in the day's work, it is one of the roles under review, and its context is the dearest place to read the records. The session's charter is `factory/roles/kaizen-review.md` (appended whole as its system prompt): the order of questions it asks of a problem (owner, authority, information, judgement, then a mechanism), what counts as evidence, and what it may publish.
 
 It is a script-run session like the site manager's, not a factory task: a task needs a brief from the dispatcher, a worktree slot and a lead, tech lead and reviewer. The cost of that choice: no second model checks the report. Instead every figure in it must come from a script kept beside it (`scripts/`, with the output in `evidence/`), and the human reviews each proposal.
+
+On day one, agents reported the same shell friction eleven times. It became a rule that day ([#8](https://github.com/andreiciobotar/isshoni/pull/8)).
 
 ```
 factory review          # decide, with no model call; when due and active, run in the foreground
