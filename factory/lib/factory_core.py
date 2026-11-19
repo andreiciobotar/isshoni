@@ -3995,7 +3995,7 @@ def tell_decision(p, f, decision, reason, minutes=None, until=None):
     log_firing(repo, id=f["id"], told=to or "nobody")
     heard = {"extended": ("SITE MANAGER", f"{slug}: extended {minutes} min to {clock}, no answer needed: {reason}"),
              "paused": ("PAUSED", f"{slug}: paused by the site manager, for the human: {reason}")}.get(decision)
-    if heard and to == "lead":
+    if heard and to in ("lead", "queued"):
         forward(repo, p["dispatcher"], slug, *heard, lead=False)
 
 
@@ -6559,6 +6559,8 @@ def forward(repo, fallback, slug, head, said, lead=True):
         older = [r for r in outbox(repo, slug) if r["id"] != rid]
         if older:
             hand_back(repo, fallback, slug, why, older)
+        if rid not in {r["id"] for r in outbox(repo, slug)}:  # taken meanwhile: stays delivered
+            return "lead"
         outbox_log(repo, rid, end="dispatcher")
         return forward(repo, fallback, slug, head, f"{slug} ({why}): {said}", lead=False)
     dispatcher, why = find_dispatcher(sessions or [], repo.root, fallback)
@@ -8107,7 +8109,7 @@ def send_back(repo, fallback, pr, slug, evidence):
                 f"#{pr['number']} went back to you: {evidence}. Fix it on your branch (merge {repo.remote}/{repo.default} in), "
                 "re-review what you change, and hand over again: it is then merged by itself.")
         to = tell_lead(repo, fallback, slug, "LANDER", said, f"factory: #{pr['number']} went back to {slug}")
-    told = "Started: a tech lead run." if to == "tech lead" else f"Told: the {to}."
+    told = "Started: a tech lead run." if to == "tech lead" else "Told: the lead (queued)." if to == "queued" else f"Told: the {to}."
     if failed := gh_step(repo, "pr", "comment", str(pr["number"]), "--body", f"Merge queue: back to draft: {evidence}. {told}"):
         print(f"#{pr['number']} comment not posted: {failed[1]}")
     return to

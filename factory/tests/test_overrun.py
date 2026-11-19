@@ -144,6 +144,16 @@ class IdleLeadTests(Overrun):
             ("dispatcher-repo", "PAUSED: x: paused by the site manager, for the human: the human decides")])
         self.assertEqual(self.told(), ["lead"])
 
+    def test_a_line_the_lead_has_not_taken_inside_the_wait_still_sends_the_dispatcher_its_notice(self):
+        f = {"id": "aaa", "slug": "x", "criterion": "overrun"}
+        for decision, head in (("paused", "PAUSED"), ("extended", "SITE MANAGER")):
+            with self.subTest(decision=decision), mock.patch.object(factory, "forward", side_effect=["queued", "dispatcher"]) as forward, \
+                    mock.patch.object(factory, "log_firing"):
+                factory.tell_decision({"repo": SimpleNamespace(root=ROOT), "dispatcher": "dispatcher-repo"}, f, decision, "why",
+                                      minutes=20, until="2026-01-01T10:00:00Z")
+            self.assertEqual([c.args[3] for c in forward.call_args_list], ["SITE MANAGER", head])
+            self.assertIs(forward.call_args_list[1].kwargs["lead"], False)
+
     def retired(self, resume):
         """A watch tick that extends the limit of a lead the harness retired; `resume` is what `claude --bg --resume` answers."""
         self.ask()
@@ -161,9 +171,10 @@ class IdleLeadTests(Overrun):
         self.assertEqual(self.lines(), [("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {until}, no answer needed: landing left")])
         self.assertEqual(self.told(), ["lead"])
 
-    def test_a_retired_lead_that_cannot_be_resumed_is_queued_and_the_dispatcher_hears_nothing_yet(self):
+    def test_a_retired_lead_that_cannot_be_resumed_is_queued_and_the_dispatcher_hears_the_extension(self):
         self.assertEqual(len(self.retired((1, "", "boom"))), 1)
-        self.assertEqual((self.lines(), self.told()), ([], ["queued"]))
+        self.assertEqual((self.lines(), self.told()), (
+            [("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {clock(NOW + 20 * 60)}, no answer needed: landing left")], ["queued"]))
 
     def test_nobody_reached_is_recorded(self):
         self.ask()

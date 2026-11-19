@@ -297,6 +297,16 @@ class TickTests(Outbox):
         self.assertEqual([(r["line"], r["tries"], r.get("why")) for r in factory.outbox(self.repo)],
                          [("TECH LEAD: x: one", 1, factory.NOT_TAKEN), ("TECH LEAD: x: two", 0, None)])
 
+    def test_a_new_row_the_lead_took_after_a_failed_put_stays_delivered_and_forward_says_lead(self):
+        def taken_then_failed(repo, sessions, slug, wait=0):
+            for r in factory.outbox(repo, slug):
+                factory.outbox_log(repo, r["id"], end="delivered", session="s")
+            return "failed", "boom"
+        with mock.patch.object(factory, "deliver", taken_then_failed):
+            self.assertEqual(self.forward([DISPATCHER_SESSION, LIVE]), "lead")
+        self.assertEqual([r["end"] for r in self.records() if "end" in r], ["delivered"])
+        self.assertEqual(self.couriers(), [])
+
     def test_a_row_the_lead_took_meanwhile_is_not_handed_back(self):
         rid = factory.outbox_put(self.repo, "x", "L1")
         rows = factory.outbox(self.repo)

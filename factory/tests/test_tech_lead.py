@@ -186,6 +186,12 @@ class SendBackTests(Case):
                     to, _ = self.send_back(machine=m)
                 self.assertEqual((to, m.comments), (who, [f"Merge queue: back to draft: {CONFLICT}. {expect}"]))
 
+    def test_a_line_put_in_and_not_yet_taken_is_commented_as_queued(self):
+        m = Machine(self.root)
+        with mock.patch.object(factory, "spawn", side_effect=OSError("no fork")), mock.patch.object(factory, "tell_lead", return_value="queued"):
+            to, _ = self.send_back(machine=m)
+        self.assertEqual((to, m.comments), ("queued", [f"Merge queue: back to draft: {CONFLICT}. Told: the lead (queued)."]))
+
     def test_without_a_dispatcher_name_the_run_gets_no_dispatcher_flag(self):
         self.use(Machine(self.root))
         with mock.patch.object(factory, "spawn") as spawn:
