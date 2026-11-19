@@ -2,6 +2,7 @@
 import collections
 import functools
 import json
+import os
 import re
 import shlex
 import shutil
@@ -86,7 +87,7 @@ def dashboard_act(args, detail):
 
 
 def plugin_entries(plugins):
-    """The entries of PLUGIN at user and local scope. A project-scope one is made by hand and no factory command touches it."""
+    """The entries of PLUGIN at user and local scope. A project-scope one is made by hand: no factory command installs or uninstalls it."""
     return [p for p in plugins if isinstance(p, dict) and p.get("id") == PLUGIN and p.get("scope") in ("user", "local")]
 
 
@@ -329,8 +330,17 @@ def cmd_wizard(args):
     return 0 if required and not failed else 1
 
 
-def short(entry):
-    return (entry.get("gitCommitSha") or "unknown")[:12]
+def recorded():
+    """{(scope, projectPath): commit} of PLUGIN from Claude Code's installed_plugins.json: `plugin list --json` carries no commit."""
+    path = Path(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude").expanduser() / "plugins" / "installed_plugins.json"
+    try:
+        return {(e["scope"], e.get("projectPath")): e.get("gitCommitSha") for e in json.loads(path.read_text())["plugins"][PLUGIN]}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
+def short(entry, commits):
+    return (commits.get((entry["scope"], entry.get("projectPath"))) or "unknown")[:12]
 
 
 def where(entry):
@@ -347,7 +357,8 @@ def cmd_reinstall(args):
     entries = plugin_entries(plugins)
     if not entries:
         raise core.Fail(f"{PLUGIN} is not installed: run `factory wizard`")
-    before = sorted({short(e) for e in entries})
+    commits = recorded()
+    before = sorted({short(e, commits) for e in entries})
     for sha in before:
         print(f"before: {sha}")
     gone = [e for e in entries if e["scope"] == "local" and not Path(e.get("projectPath") or "").is_dir()]
@@ -358,10 +369,10 @@ def cmd_reinstall(args):
     kept = [e for e in entries if e not in gone]
     run_commands([(["claude", "plugin", "marketplace", "update", "factory"], None),
                   *(plugin_command("uninstall", e) for e in kept), *(plugin_command("install", e) for e in kept)])
-    after = plugin_entries(claude_json("plugin", "list") or [])
+    after, commits = plugin_entries(claude_json("plugin", "list") or []), recorded()
     for e in after:
-        print(f"after: {short(e)} {where(e)}")
-    if len(before) == 1 and before == sorted({short(e) for e in after}):
+        print(f"after: {short(e, commits)} {where(e)}")
+    if len(before) == 1 and before == sorted({short(e, commits) for e in after}):
         print(f"already at {before[0]}")
     print("Running sessions keep the copy they loaded: restart them, or run /reload-plugins in each.")
     return 0
@@ -449,7 +460,8 @@ def uninstall_plugin(args, left):
         return
     for p in plugins:
         if isinstance(p, dict) and p.get("id") == PLUGIN and p.get("scope") == "project":
-            left.append(f"the plugin {PLUGIN} at project scope ({p.get('projectPath')}): made by hand, no factory command removes it")
+            left.append(f"{p.get('projectPath')}/.claude/settings.json: the project-scope entry of {PLUGIN}, made by hand; removing the marketplace "
+                        "drops its install record, its enabledPlugins line stays for you to remove")
     if uninstall_step(args, left, f"the marketplace {SOURCE}" + (f" and {PLUGIN} ({', '.join(where(e) for e in entries)})" if installed else ""),
                       "the factory's commands and hooks in Claude Code", "the plugin and its marketplace"):
         run_commands([*(plugin_command("uninstall", e) for e in entries if e["scope"] == "local"),
@@ -576,7 +588,8 @@ def cmd_uninstall(args):
     print("left behind:")
     behind = ((f"the task worktrees of {args.repository.root} (.claude/worktrees/) and its worktree-* branches: "
                "`factory clean` or `git worktree remove` removes them",
-               f"{args.repository.root}/.claude/settings.local.json: Claude Code's file, the factory does not edit it")
+               f"{args.repository.root}/.claude/settings.local.json, with an empty enabledPlugins, and its line in the global git ignore file: "
+               "Claude Code's, the factory does not edit them")
               if args.repository else
               ("Claude Code's own transcripts and settings (~/.claude/projects)",
                "your repositories, their task worktrees (.claude/worktrees/) and worktree-* branches: "

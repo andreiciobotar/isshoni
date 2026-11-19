@@ -49,13 +49,16 @@ Factory: `make wizard` in the clone checks the tools, builds the dashboard, inst
 /factory:dispatch
 ```
 
+`make wizard` installs the plugin for every session on this machine.
+`make wizard ARGS="--repository <path>"` installs it for that one repository only.
+
 The factory works on any GitHub repository and runs whatever tests that repository uses ([your own repository](docs/factory.md#using-it-on-your-own-repository)). Describe a task; ask for progress whenever you like. By default leads run unattended on Fable in `auto` permission mode, five tasks at a time per repository, one of them held for emergencies, each against a time limit set by its size (45 min, 90 min or 2 h) ([settings](docs/factory.md#settings)). Each role's model is set under `[models]` in `~/.claude/factory/settings.toml`.
 
 Optional:
 
 - [Always on](docs/container.md): `make wizard-remote` asks for what it needs and runs the factory in a container on a Linux host that has Docker. One SSH address shows the dashboard, and `d` there opens the dispatcher.
 
-`make uninstall` removes what the wizard put on this machine, `make uninstall-remote` a server's install.
+`make reinstall` brings the plugin to the current `main` wherever it is installed, `make uninstall` removes what the wizard put on this machine, `make uninstall-remote` a server's install.
 
 ## The software factory
 

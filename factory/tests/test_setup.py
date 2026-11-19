@@ -43,14 +43,19 @@ class Machine:
         self.tools = {"git", "gh", "claude", "openssl", "go", "make"}
         self.gh_login, self.claude_login = True, True
         self.entries, self.markets, self.fail, self.crontab = [], [], set(), ""  # entries: what `claude plugin list --json` holds
+        self.commits = {}
         self.head, self.next_head = "a" * 40, None  # the marketplace's commit, and the one `marketplace update` moves it to
         self.non_repos, self.main_of = set(), {}  # directories that are no git repository; a task worktree's main checkout
         self.stack, self.gh_version = True, "2.104.0"  # the stack extension is installed unless a test says otherwise
         self.calls = Calls()
 
     def add(self, scope="user", path=None, enabled=True, sha=None):
-        self.entries.append({"id": PLUGIN, "scope": scope, "enabled": enabled, "gitCommitSha": sha or self.head,
-                             **({"projectPath": path} if path else {})})
+        self.entries.append({"id": PLUGIN, "scope": scope, "enabled": enabled, **({"projectPath": path} if path else {})})
+        self.commits[(scope, path)] = sha or self.head
+
+    def recorded(self):
+        """What installed_plugins.json holds: the commit of each entry (`plugin list --json` has none)."""
+        return {key: sha for key, sha in self.commits.items() if key in self.installed()}
 
     def installed(self, scope=None):
         """The (scope, projectPath) of every entry, or of the entries at one scope."""
@@ -158,6 +163,7 @@ class Setup(unittest.TestCase):
                         mock.patch.object(factory, "SETTINGS_PATH", self.store / "settings.toml"),
                         mock.patch.object(factory, "IDENTITY", self.store / "identity"),
                         mock.patch.object(factory, "run", self.machine),
+                        mock.patch.object(factory_setup, "recorded", self.machine.recorded),
                         mock.patch.object(factory.shutil, "which", self.machine.which),
                         mock.patch.object(factory_setup, "clone", lambda: self.root if self.has_clone else None),
                         mock.patch.object(factory, "github_api", lambda *a, **kw: self.github(*a, **kw)),
@@ -701,7 +707,7 @@ class UninstallFlow(Setup):
         self.assertEqual(self.command("uninstall", "--yes"), 0, self.out + self.err)
         self.assertEqual([c for c in self.machine.mutations() if c[0] == "claude"],
                          [["claude", "plugin", "marketplace", "remove", "factory"]])
-        self.assertIn("the plugin factory@factory at project scope (/x): made by hand", self.out)
+        self.assertIn("/x/.claude/settings.json: the project-scope entry of factory@factory, made by hand; removing the marketplace drops its install record", self.out)
 
     def test_a_foreign_file_under_another_factory_home_stops_the_home_step(self):
         scratch = self.tmp / "scratch"
