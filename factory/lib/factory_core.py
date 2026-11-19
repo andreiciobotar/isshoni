@@ -8412,7 +8412,7 @@ def build_run(repo, settings, args, spec, handover, learned):
     worktree, branch = repo.worktree_path(slug), f"worktree-{slug}"
     git = lambda *a: repo.git(*a, path=worktree)[1].strip()
     if reason := short_wake():
-        print(f"build run waits: {reason}")
+        print(f"build run waits: {reason}", flush=True)
         while reason:
             time.sleep(WATCH_INTERVAL)
             reason = short_wake()
