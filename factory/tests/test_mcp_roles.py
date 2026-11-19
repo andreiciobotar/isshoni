@@ -39,8 +39,6 @@ class InScratchStore(unittest.TestCase):
                         mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": ""})):
             patcher.start()
             self.addCleanup(patcher.stop)
-        for name in ("CLAUDECODE", "FACTORY_ROLE"):
-            os.environ.pop(name, None)
         factory.warned.clear()
 
 
