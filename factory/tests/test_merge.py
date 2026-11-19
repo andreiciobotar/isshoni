@@ -286,6 +286,30 @@ class MergeCommandTests(World):
         self.assertNotIn("skipped", out)
         self.assertIn("#1 merged", out)
 
+    def test_an_exited_session_in_the_worktree_does_not_hold_a_handed_over_task(self):
+        answers, sessions, slugs = self.world([pr(1)])
+        exited = {"id": "gone", "name": "scratch-t1", "kind": "background", "state": "failed", "cwd": f"{WT}/t1"}
+        code, out, _ = self.cli("merge", "1", answers=answers, sessions=[*sessions, exited], entries=slugs)
+        self.assertEqual(code, 0)
+        self.assertNotIn("skipped", out)
+        self.assertIn("#1 merged", out)
+
+    def test_a_session_with_a_process_in_the_worktree_holds_a_handed_over_task_and_is_named(self):
+        answers, sessions, slugs = self.world([pr(1)])
+        live = {"id": "live", "name": "scratch-t1", "kind": "background", "state": "working", "status": "busy", "pid": 9,
+                "cwd": f"{WT}/t1"}
+        code, out, _ = self.cli("merge", "1", answers=answers, sessions=[*sessions, live], entries=slugs)
+        self.assertNotIn("#1 merged", out)
+        self.assertIn("task t1 is in phase motion (declared handed-over): background session live is not finished "
+                      "(status busy, state working)", out)
+
+    def test_an_interactive_session_in_the_worktree_holds_a_handed_over_task(self):
+        answers, sessions, slugs = self.world([pr(1)])
+        mine = {"id": "me", "name": "scratch-t1", "kind": "interactive", "cwd": f"{WT}/t1"}
+        code, out, _ = self.cli("merge", "1", answers=answers, sessions=[*sessions, mine], entries=slugs)
+        self.assertNotIn("#1 merged", out)
+        self.assertIn("(declared handed-over): an interactive session is open in it", out)
+
     def test_all_skips_tasks_not_handed_over(self):
         code, out, _ = self.merge("--all", prs=[pr(1), pr(2), pr(3, base="worktree-t2")],
                                   state={"t1": "handed-over", "t2": "working", "t3": "handed-over"},

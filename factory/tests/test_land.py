@@ -492,6 +492,13 @@ class LandTests(unittest.TestCase):
             self.assertEqual(self.last_state(), "handed-over")
         self.assertEqual(self.claude_calls(), [])
 
+    def test_an_exited_session_does_not_stop_a_handed_over_task(self):
+        wt = self.task("t1")
+        self.advance_main(1, "main line", "b.txt")
+        self.sessions([{"id": "s1", "kind": "background", "cwd": str(wt), "state": "failed"}])
+        p = self.land("t1")
+        self.assertEqual((p.returncode, self.result(p)), (0, "`LANDED https://x/pull/t1`"))
+
     def test_a_lead_busy_at_the_second_check_is_not_pushed_over(self):
         wt = self.task("t1")
         self.advance_main(1, "main line", "b.txt")
