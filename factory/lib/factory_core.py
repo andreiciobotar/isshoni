@@ -1109,9 +1109,14 @@ def pull_requests(repo, cached=False, max_age=0):
     return (fetched if fetched is not None else have), as_of, error, fetched is not None
 
 
+def declared_over(state):
+    """Whether the declared state says the lead's work is over: handed over or settled."""
+    return state in ("handed-over", *SETTLED)
+
+
 def over_merged(pr_state, state):
     """Whether a task's work is over by the script's own records: declared handed over or settled, its pull request merged."""
-    return pr_state == "merged" and state in ("handed-over", *SETTLED)
+    return pr_state == "merged" and declared_over(state)
 
 
 def session_block(mine, over=False):
@@ -1136,7 +1141,7 @@ def phase(pr_state, mine, state=None):
     no cwd and could be in any task. `state` is the declared state, None when undeclared."""
     if over_merged(pr_state, state):
         return "merged"
-    if mine is None or session_block(mine) or state == "working":
+    if mine is None or session_block(mine, declared_over(state)) or state == "working":
         return "motion"
     if state is None:
         return {"open": "review", "merged": "merged"}.get(pr_state, "motion")
@@ -1238,6 +1243,7 @@ def collect(repo, sessions, limit_hours, prs=None, deep=False):
         since = epoch(declared.get(slug, {}).get("ts"))
         row["waited"] = None if since is None else max(0, int(now - since))
         row["blocked"] = session_block(mine, over_merged(row["pr_state"], row["state"]))
+        row["held_by"] = session_block(mine, declared_over(row["state"])) if placed else None
         row["phase"] = phase(row["pr_state"], mine if placed else None, row["state"])
         decided = [f for f in firings if f["slug"] == slug and not f["cleared"] and f["decision"] in ("suppressed", "escalated")
                    and f["criterion"] in ("ended-undeclared", "merged-not-cleaned")]
@@ -3604,7 +3610,7 @@ def look_row(p, r, folded, skip, queued):
         ("extended_minutes", sum(e["minutes"] for e in r["extensions"]) or None),
         ("last_commit", r["last_commit"] and age(r["last_commit"], now)),
         ("last_activity", (t := last_activity(p, r, session)) and age(t, now)),
-        ("dirty", r["dirty"]), ("ahead", r["ahead"]), ("behind", r["behind"]),
+        ("dirty", r["dirty"]), ("held_by", r["held_by"] if r["state"] == "handed-over" else None), ("ahead", r["ahead"]), ("behind", r["behind"]),
         ("pr_url", r["pr_url"]), ("pr_state", r["pr_state"]), ("pr_draft", r["pr_draft"]), ("merged", merged_ago(p, r)),
         ("reviews", sum(e.get("event") == "SubagentStart" and e.get("role") == "reviewer" for e in mine)),
         ("runs", run_rows(p, slug)),
@@ -5073,7 +5079,8 @@ def handover_reason(p, pr):
                     f"(opened by {(pr.get('author') or {}).get('login') or 'unknown'})")
         return "no task worktree has its head branch"
     if row["phase"] != "review":
-        return f"task {row['slug']} is in phase {row['phase']} (declared {row['state'] or 'none'})"
+        held = f": {row['held_by']}" if row["held_by"] else ""
+        return f"task {row['slug']} is in phase {row['phase']} (declared {row['state'] or 'none'}){held}"
     if row["head"] != pr["headRefOid"]:
         return f"task {row['slug']}'s worktree head is not the pull request's head"
     return None
@@ -6865,7 +6872,8 @@ def land_busy(repo, path):
     sessions = list_sessions()
     if sessions is None:
         return "sessions cannot be listed with `claude agents --json --all`"
-    return unplaced_block(sessions) or session_block(sessions_in(sessions, repo.root, path))
+    state = read_tasks(repo.root).get(os.path.basename(path), {}).get("state")
+    return unplaced_block(sessions) or session_block(sessions_in(sessions, repo.root, path), declared_over(state))
 
 
 def has_test_rule(path):

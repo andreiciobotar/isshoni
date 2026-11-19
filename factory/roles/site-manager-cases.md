@@ -40,11 +40,14 @@ How to use a look: you are given facts and what changed since the last look. Mos
 **Score (to 2026-11-15):** fired 0; escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 0; missed 0.
 
 ## busy-after-handover
-**What:** A lead declared a hand-over and its session is still not finished (`session`, `children` in its row: up to five child processes with their ages), or a merge was refused as busy.
+**What:** A lead declared a hand-over and its session is still not finished (`session`, `children` in its row: up to five child processes with their ages), or a merge was refused as busy. `held_by` names any session in the worktree that holds the task, not only the lead.
 **Why it matters:** A leftover process keeps the worktree and the session; a call for a test just started costs a read.
 **What it has looked like:** The script used to fire this at 6 minutes after the hand-over, on every tick. It fired 2 times in two days: one went to the lead (no outcome), one was suppressed.
-**A good call:** `pgrep -P <task.pid>` then `ps` shows more than `children`. A child running a test or build the transcript shows was just started is working, suppress. A background command that outlived its purpose is a leftover: name pid, age, command. A subagent waiting without a process is not in the process list: read the `transcripts` of the subagents before calling a quiet session a leftover. When sessions cannot be listed the rows hold only the worktree: `factory status` has the rest. A tech lead run is neither (see `ended-undeclared`).
+**A good call:** `pgrep -P <task.pid>` then `ps` shows more than `children`. A child running a test or build the transcript shows was just started is working, suppress. A background command that outlived its purpose is a leftover: name pid, age, command. A subagent waiting without a process is not in the process list: read the `transcripts` of the subagents before calling a quiet session a leftover. When sessions cannot be listed the rows hold only the worktree: `factory status` has the rest. A tech lead run is neither (see `ended-undeclared`). An exited session no longer holds a handed-over task, so `held_by` names a live or interactive session; never run `claude rm` or `claude stop` (the first can delete the task's worktree): escalate to the dispatcher with the session id and the reason.
 **Score (to 2026-11-15):** fired 2; escalated 1 (acted 0, ignored 0, no outcome 1); suppressed 1; missed 0.
+
+### Cases
+1. `mcp-servers-per-role` (#219, approved, handed over 2026-11-18T16:38Z): an exited scratch session in its worktree with state `failed` kept it in motion about 17 hours and stopped its landing; no firing named it. Good call now: nothing, the script does not read an exited session of a handed-over task.
 
 ## review-loops
 **What:** A task has had many reviewer dispatches since it started (`reviews` in its row).

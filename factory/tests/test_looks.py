@@ -218,6 +218,17 @@ class Picture(Harness):
         self.assertEqual((tasks["m"]["merged"], tasks["m"]["extended_minutes"]), ("3h", 20))
         self.assertNotIn("children", tasks["a"])
 
+    def test_a_handed_over_task_shows_what_holds_it(self):
+        why = "background session s9 is not finished (status busy, state working)"
+        seen = dict(session="none", extensions=[], dirty=None, ahead=None, behind=None, pr_draft=False)
+        held = row("x", state="handed-over", phase="motion", held_by=why, **seen)
+        free = row("y", state="handed-over", phase="review", **seen)
+        working = row("w", state="working", held_by=why, **seen)
+        tasks = {t["slug"]: t for t in factory.look_picture(pic(rows=[held, free, working]), None, [], [])["tasks"]}
+        self.assertEqual(tasks["x"]["held_by"], why)
+        self.assertNotIn("held_by", tasks["y"])
+        self.assertNotIn("held_by", tasks["w"])
+
     def test_messages_are_the_queued_or_returned_rows_since_the_declared_time(self):
         def put(rid, ago, **fields):
             return [{"ts": iso(NOW - ago), "repo": ROOT, "id": rid, "slug": "x", **fields}]

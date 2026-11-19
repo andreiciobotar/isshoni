@@ -15,6 +15,7 @@ import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 os.environ.pop("FACTORY_ROLE", None)  # a tech lead session runs `make test`: the tests must not see its role
@@ -302,6 +303,47 @@ class PhaseTests(unittest.TestCase):
             self.assertIsNone(factory.session_block(exited, over=True))
         for mine in (BUSY, [EXITED | {"pid": 7}], [EXITED | {"status": "busy"}], [{"kind": "interactive"}]):
             self.assertTrue(factory.session_block(mine, over=True))
+
+    def test_an_exited_session_does_not_hold_a_handed_over_or_settled_task(self):
+        for state in ("failed", "blocked"):
+            exited = [EXITED | {"state": state, "cwd": f"{WT}/x"}]
+            with self.subTest(state=state):
+                self.assertEqual(factory.phase("open", exited, "handed-over"), "review")
+                self.assertEqual(factory.phase("open", exited, "acknowledged"), "settled")
+                self.assertEqual(factory.phase("open", exited, "dismissed"), "settled")
+                self.assertEqual(factory.phase("open", exited, "blocked"), "motion")
+                self.assertEqual(factory.phase("open", exited, "working"), "motion")
+                self.assertEqual(factory.phase("none", exited, None), "motion")
+
+    def test_a_session_with_a_process_or_a_status_or_an_interactive_one_still_holds_a_handed_over_task(self):
+        exited = EXITED | {"state": "failed", "cwd": f"{WT}/x"}
+        for name, mine in {"pid and busy": [exited | {"pid": 7, "status": "busy"}], "busy, no pid": [exited | {"status": "busy"}],
+                           "interactive": [{"kind": "interactive"}]}.items():
+            with self.subTest(name):
+                self.assertEqual(factory.phase("open", mine, "handed-over"), "motion")
+
+    def test_the_lander_is_stopped_by_an_exited_session_only_of_a_task_not_handed_over(self):
+        gone = EXITED | {"state": "failed", "cwd": f"{WT}/x"}
+        cases = {("handed-over", "exited"): (gone, False), ("acknowledged", "exited"): (gone, False),
+                 ("working", "exited"): (gone, True), ("blocked", "exited"): (gone, True), (None, "exited"): (gone, True),
+                 ("handed-over", "busy"): (BUSY[0], True)}
+        for (state, name), (session, stops) in cases.items():
+            with self.subTest(state=state, session=name), \
+                    mock.patch.object(factory, "list_sessions", return_value=[session]), \
+                    mock.patch.object(factory, "read_tasks", return_value={"x": {"state": state}}):
+                self.assertEqual(bool(factory.land_busy(SimpleNamespace(root=ROOT), f"{WT}/x")), stops)
+
+    def test_a_row_names_what_holds_it(self):
+        probe = {"id": "p9", "name": "probe", "kind": "background", "status": "busy", "state": "working", "cwd": f"{WT}/alpha"}
+        gone = EXITED | {"state": "failed", "cwd": f"{WT}/alpha"}
+        held = "background session p9 is not finished (status busy, state working)"
+        cases = {"handed-over": ([probe], held), "working": ([gone], "background session ex1 is not finished (status missing, state failed)"),
+                 "dismissed": ([gone], None)}
+        for state, (sessions, expected) in cases.items():
+            with self.subTest(state):
+                answers = repo_answers([task_entry("alpha")], sessions, git_task_answers("x", time.time()))
+                _, out, _, _ = invoke(["status", "--json"], answers, tasks=[task_rec("alpha", state)])
+                self.assertEqual(json.loads(out)["rows"][0]["held_by"], expected)
 
     def test_a_finished_session_lets_go(self):
         done = [{"kind": "background", "status": "idle", "state": "done"}]

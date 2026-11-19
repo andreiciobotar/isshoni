@@ -31,7 +31,7 @@ def register(sid):
 def row(slug, **kw):
     return {"slug": slug, "branch": f"worktree-{slug}", "path": f"{WT}/{slug}", "base": "main", "phase": "motion",
             "overtime": False, "nearing": False, "size": None, "limit": 2 * HOUR, "elapsed": None, "last_commit": None, "pr_url": "", "pr_state": "none", "state": None,
-            "deliverable": None, "waits_on": None, "paused": None, **kw}
+            "deliverable": None, "waits_on": None, "paused": None, "held_by": None, **kw}
 
 
 def lead(slug, sid=SID, **kw):
