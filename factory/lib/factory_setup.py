@@ -471,7 +471,7 @@ def uninstall_plugin(args, left):
                       "the factory's commands and hooks in Claude Code", "the plugin and its marketplace"):
         kept, gone = split_gone(entries)
         for e in gone:
-            print(f"  {e['projectPath']} no longer exists: its entry is not uninstalled, and removing the marketplace drops its record")
+            print(f"  {e['projectPath']} no longer exists: its entry is skipped")
         run_commands([*(plugin_command("uninstall", e) for e in kept if e["scope"] == "local"),
                       *([(["claude", "plugin", "uninstall", PLUGIN], None)] if any(e["scope"] == "user" for e in entries) else []),
                       (["claude", "plugin", "marketplace", "remove", "factory"], None)])
@@ -512,8 +512,8 @@ def uninstall_repository_plugin(args, left):
                           "the factory's commands and hooks in Claude Code for this repository", "the plugin of the repository"):
             run_commands([plugin_command("uninstall", e) for e in mine])
             print("  removed")
-            left.append(f"{root}/.claude/settings.local.json, with an empty enabledPlugins, and its line in the global git ignore file: "
-                        "Claude Code's, the factory does not edit them")
+            left.extend(f"{e['projectPath']}/.claude/settings.local.json, with an empty enabledPlugins, and its line in the global git ignore file: "
+                        "Claude Code's, the factory does not edit them" for e in mine)
     elif any(e["scope"] == "user" for e in entries):
         print(f"  {PLUGIN} is installed for the whole user: it is not removed for one repository (`factory uninstall` removes it)")
     else:

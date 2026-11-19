@@ -887,7 +887,7 @@ class WizardScope(Scoped):
         self.machine.add("local", gone)
         self.machine.add()
         self.assertEqual(self.command("uninstall", "--yes"), 0, self.out + self.err)
-        self.assertIn(f"{gone} no longer exists: its entry is not uninstalled, and removing the marketplace drops its record", self.out)
+        self.assertIn(f"{gone} no longer exists: its entry is skipped", self.out)
         self.assertEqual(self.claude(), [(["claude", "plugin", "uninstall", PLUGIN], None),
                                          (["claude", "plugin", "marketplace", "remove", "factory"], None)])
         self.assertNotIn("By hand", self.err)
