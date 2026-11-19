@@ -492,11 +492,16 @@ def uninstall_repository_plugin(args, left):
     if plugins is None:
         raise core.Fail("cannot read `claude plugin list --json`: nothing removed")
     entries = plugin_entries(plugins)
-    mine = next((e for e in entries if e["scope"] == "local" and e.get("projectPath") == root), None)
+    # a session in a worktree of the repository makes Claude Code add an entry for the worktree's path
+    mine = [e for e in entries if e["scope"] == "local" and e.get("projectPath") in (root, *args.repository.worktree_paths)]
+    for e in [e for e in mine if not Path(e["projectPath"]).is_dir()]:
+        mine.remove(e)
+        print(f"  {e['projectPath']} no longer exists: its entry is skipped")
+        left.append(f"{e['projectPath']}: the worktree is gone, its entry of {PLUGIN} stays")
     if mine:
-        if uninstall_step(args, left, f"{PLUGIN} installed for {root}", "the factory's commands and hooks in Claude Code for this repository",
-                          "the plugin of the repository"):
-            run_commands([plugin_command("uninstall", mine)])
+        if uninstall_step(args, left, f"{PLUGIN} installed for {', '.join(e['projectPath'] for e in mine)}",
+                          "the factory's commands and hooks in Claude Code for this repository", "the plugin of the repository"):
+            run_commands([plugin_command("uninstall", e) for e in mine])
             print("  removed")
     elif any(e["scope"] == "user" for e in entries):
         print(f"  {PLUGIN} is installed for the whole user: it is not removed for one repository (`factory uninstall` removes it)")

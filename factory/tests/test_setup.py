@@ -46,6 +46,7 @@ class Machine:
         self.commits = {}
         self.head, self.next_head = "a" * 40, None  # the marketplace's commit, and the one `marketplace update` moves it to
         self.non_repos, self.main_of = set(), {}  # directories that are no git repository; a task worktree's main checkout
+        self.worktrees = {}  # a main checkout's other worktrees
         self.stack, self.gh_version = True, "2.104.0"  # the stack extension is installed unless a test says otherwise
         self.calls = Calls()
 
@@ -72,7 +73,7 @@ class Machine:
             if cwd in self.non_repos or not Path(cwd).is_dir():
                 return 128, "", "fatal: not a git repository"
             main = self.main_of.get(cwd, cwd)
-            return 0, f"worktree {main}\n\n" + (f"worktree {cwd}\n" if main != cwd else ""), ""
+            return 0, f"worktree {main}\n\n" + "".join(f"worktree {w}\n\n" for w in self.worktrees.get(main, [])) + (f"worktree {cwd}\n" if main != cwd else ""), ""
         if a[:3] in (["git", "config", "--get-regexp"], ["git", "symbolic-ref", "refs/remotes/origin/HEAD"]):
             return 1, "", ""
         if a[:3] == ["gh", "auth", "status"]:
@@ -1052,6 +1053,16 @@ class UninstallRepository(Scoped):
         self.assertIn("left behind:", self.out)
         self.assertIn(f"{self.p}/.claude/settings.local.json", self.out)
         self.assertNotIn("no installation is left", self.out)
+
+    def test_a_worktree_entry_of_the_repository_goes_with_it_and_a_gone_worktree_is_named(self):
+        task, gone = self.repository("p-task"), (self.tmp / "repos" / "p-gone").resolve()
+        self.machine.worktrees[self.p] = [task, str(gone)]
+        self.machine.add("local", task)
+        self.machine.add("local", str(gone))
+        self.assertEqual(self.command("uninstall", "--yes", "--repository", self.p), 0, self.out + self.err)
+        self.assertEqual(self.claude(), [uninstall("local", self.p), uninstall("local", task)])
+        self.assertEqual(sorted(self.machine.installed()), sorted([("local", self.q), ("local", str(gone))]))
+        self.assertIn(f"{gone} no longer exists: its entry is skipped", self.out)
 
     def test_the_line_about_what_remains_appears_when_the_last_installation_goes(self):
         self.assertEqual(self.command("uninstall", "--yes", "--repository", self.p), 0, self.out + self.err)
