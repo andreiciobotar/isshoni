@@ -98,7 +98,7 @@ How to use a look: you are given facts and what changed since the last look. Mos
 ## overrun
 **What:** A lead over its limit, or not converging, asks for time with `factory overrun`. The firing's `detail` is its ask; `runs`, `extended_minutes`, `extension_left_minutes` and `limit_left_minutes` (negative when the limit is past) are the evidence.
 **Why it matters:** An ask held back stops a lead that is nearly done; time given for nothing costs a build run.
-**What it has looked like:** The script fires it on every tick, with no threshold. It fired 2 times in two days, both extended. `pulse-band-visual` is case 4 below.
+**What it has looked like:** The script fires it on every tick, with no threshold. It fired 2 times in two days, both extended. `pulse-band-visual` is case 4 below. An ask whose task is handed over or settled when the script reads it never reaches you: the script closes it as moot (`suppressed`, `by: watch`). An ask you are given is from a lead still at work, or reopened; one you leave undecided the script escalates to the human.
 **A good call:** Decide by the principles and cases below: `extended` with `minutes`, `paused` with `waits_on` `["human"]`, or `escalated` to the dispatcher. The script tells the lead and the dispatcher about `extended` and `paused`; you message nobody for them.
 - Time is given to finish, not to start. What is left decides, not how far over the task is: proven work with review, landing, assessment or hand-over left is finishing; a design still moving is not.
 - Money spent with nothing to show is the signal. Runs that end without a hand-over spend without progress: find why before giving more time.
