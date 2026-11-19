@@ -61,7 +61,6 @@ class CopyBehindTests(unittest.TestCase):
                       mock.patch.object(factory, "follow_dispatcher"), mock.patch.object(factory, "list_sessions", return_value=[])):
             patch.start()
             self.addCleanup(patch.stop)
-        os.environ.pop("FACTORY_HOME", None)
 
     def git(self, cwd, *args):
         return subprocess.run(["git", *args], cwd=cwd, env=self.env, check=True, capture_output=True, text=True).stdout.strip()
