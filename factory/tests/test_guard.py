@@ -243,15 +243,16 @@ class CredentialTests(GuardCase):
             self.assertEqual(self.hook_in_process(payload), (0, ""))
 
     def test_blank_lines_are_decided_quickly(self):
-        start = time.monotonic()
-        self.assertEqual(self.bash("ls" + "\n" * 20000 + "ls"), (0, "", ""))
-        self.assertLess(time.monotonic() - start, 1)
+        for text in ("ls" + "\n" * 20000 + "ls", "a=b\n" * 5000, "if\n" * 10000):
+            start = time.monotonic()
+            self.assertEqual(self.bash(text), (0, "", ""))
+            self.assertLess(time.monotonic() - start, 1)
 
     def test_a_read_outside_identity_from_a_broken_worktree_passes(self):
         self.break_worktree()
         self.assertEqual(self.hook({"cwd": str(self.wt), "tool_name": "Read", "tool_input": {"file_path": "/etc/hosts"}}), (0, "", ""))
 
-    def test_a_read_of_the_identity_directory_is_denied_and_any_other_read_passes_directory_is_denied_and_any_other_read_passes(self):
+    def test_a_read_of_the_identity_directory_is_denied_and_any_other_read_passes(self):
         read = lambda path: self.hook({"cwd": str(self.root), "tool_name": "Read", "tool_input": {"file_path": str(path)}})
         self.denied(read(self.home / "identity" / "key.pem"), IDENTITY_LINE)
         self.denied(read(self.home / "x" / ".." / "identity" / "key.pem"), IDENTITY_LINE)

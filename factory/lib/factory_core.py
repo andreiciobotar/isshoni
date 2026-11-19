@@ -2733,7 +2733,7 @@ def cmd_ops_hook(args):
     return 0
 
 
-_CMD = r"(?:^|[;&|(`\n])[ \t]*(?:\w+=\S*\s+)*(?:(?:if|then|do|else|while|until|time|!|\{)\s+)*"  # where a command can start
+_CMD = r"(?:^|[;&|(`\n])[ \t]*(?:\w+=\S*[ \t]+)*(?:(?:if|then|do|else|while|until|time|!|\{)[ \t]+)*"  # where a command can start
 _END = r"(?=[\s;&|)`]|$)"
 _SECRET = r"\w*(?:TOKEN|API_KEY|SECRET|PASSWORD|PASSWD)"
 _STORE_DIR = "|".join(map(re.escape, {str(STORE), str(STORE.expanduser())})) + r"|\.claude/factory|\$\{?FACTORY_HOME\}?"
