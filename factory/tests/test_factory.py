@@ -250,6 +250,18 @@ def put_access(root, state="granted", tools=("mcp__metrics__query", "mcp__logs__
     return path
 
 
+def declare_task(root, slug, state="working"):
+    """Declare the task `slug` of the repository at `root` in the store, as `factory new` does."""
+    factory.log("tasks", {**factory.record(root, slug, "dispatcher", None, None), "state": state})
+
+
+def register_dispatcher(root, session):
+    """Register `session` as the dispatcher of the repository at `root`, as the dispatch skill does."""
+    path = factory.repo_state(root, "dispatcher", "json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"root": root, "session": session}))
+
+
 class SlugTests(unittest.TestCase):
     def test_valid(self):
         for slug in ("abc", "tui-now-running", "a1b", "x" * 40, "a-b-c"):
@@ -1296,7 +1308,7 @@ class OpsHookTests(InStore):
     def setUp(self):
         super().setUp()
         for patcher in (mock.patch.object(factory, "STORE", self.dir),
-                        mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": ""})):
+                        mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": "", "FACTORY_SESSION": "1"})):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.a, self.b = self.repository("a"), self.repository("b")
@@ -1459,6 +1471,36 @@ class OpsHookTests(InStore):
             self.assertEqual(self.hook(self.pre("mcp__metrics__query"))[0:2], (2, ""))
             self.assertEqual(self.hook(self.post())[0:2], (2, ""))
             self.assertEqual(self.hook({**self.pre("mcp__x__y"), "agent_type": "factory:coder"}), (0, "", ""))
+
+    def not_ours(self):
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        del os.environ["FACTORY_SESSION"]
+
+    def test_the_ops_explorer_of_a_session_that_is_not_the_factorys_is_refused_whatever_the_record_says(self):
+        self.not_ours()
+        put_access(self.a)
+        for cwd in (self.a, f"{self.a}/.claude/worktrees/task", str(self.plain)):
+            with self.subTest(cwd=cwd):
+                self.assertEqual(self.decision("mcp__metrics__query", cwd=cwd), {
+                    "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": factory.OPS_NOT_OURS})
+                self.assertEqual(self.hook(self.post(cwd=cwd)), (0, "", ""))
+        self.assertFalse((self.dir / "deliverables").exists())
+
+    def test_the_ops_explorer_of_each_kind_of_session_of_the_factory_is_allowed_and_leaves_evidence(self):
+        put_access(self.a)
+        task = f"{self.a}/.claude/worktrees/task"
+        declare_task(self.a, "task")
+        register_dispatcher(self.a, "s1")
+        for n, (what, home, cwd, folder) in enumerate((("FACTORY_SESSION", {"FACTORY_SESSION": "1"}, self.a, "session-s1"),
+                                        ("a declared task", {}, task, "task"), ("the registered dispatcher", {}, self.a, "session-s1"))):
+            with self.subTest(what), mock.patch.dict(os.environ, home):
+                if not home:
+                    del os.environ["FACTORY_SESSION"]
+                self.assertEqual(self.decision("mcp__metrics__query", cwd=cwd)["permissionDecision"], "allow")
+                _, out, _ = self.hook(self.post(cwd=cwd, tool_use_id=f"toolu_{n:08d}"))
+                self.assertEqual(Path(self.saved(out)[0]).parent, self.dir / "deliverables" / folder / "evidence")
 
     def test_a_task_worktree_names_the_folder_by_its_slug(self):
         _, out, _ = self.hook(self.post(cwd="/repo/.claude/worktrees/demo-task"))
@@ -2056,9 +2098,34 @@ class NewTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("cannot record the size", err)
 
-    def test_a_failed_launch_declares_nothing(self):
-        _, _, _, fake = invoke(self.ARGS, self.answers([], (), {("claude", "--bg"): (1, "", "boom")}))
-        self.assertEqual(fake.tasks, [])
+    def test_the_task_is_declared_before_the_lead_is_launched(self):
+        seen = []
+
+        def launch():
+            seen.extend(written())
+            return self.OK[("claude", "--bg")]
+        code, _, err, fake = invoke(self.ARGS, self.answers([], (), {("claude", "--bg"): launch}))
+        self.assertEqual(code, 0, err)
+        self.assertEqual([(r["slug"], r["role"], r["state"]) for r in seen], [("demo-task", "dispatcher", "working")])
+        self.assertEqual([r["state"] for r in fake.tasks], ["working"])
+
+    def test_a_launch_that_definitely_failed_leaves_the_task_closed(self):
+        code, _, _, fake = invoke(self.ARGS, self.answers([], (), {("claude", "--bg"): (1, "", "boom")}))
+        self.assertEqual(code, 1)
+        self.assertEqual([r["state"] for r in fake.tasks], ["working", "closed"])
+        self.assertEqual(fake.tasks[-1]["reason"], "claude did not start the session")
+
+    def test_a_launch_that_may_be_running_leaves_the_task_working(self):
+        code, _, _, fake = invoke(self.ARGS, self.answers([], (), {("claude", "--bg"): (0, "no line", "")}))
+        self.assertEqual(code, 1)
+        self.assertEqual([r["state"] for r in fake.tasks], ["working"])
+
+    def test_a_declare_that_fails_does_not_stop_the_launch_and_says_so(self):
+        with mock.patch.object(factory, "declare", side_effect=OSError("disk full")):
+            code, out, err, fake = invoke(self.ARGS, self.answers([], (), self.OK))
+        self.assertEqual(code, 0, err)
+        self.assertIn("cannot declare demo-task (disk full)", err)
+        self.assertTrue(fake.ran("claude", "--bg"))
 
     def test_a_reused_slug_starts_clean(self):
         code, _, _, fake = invoke(self.ARGS, self.answers([], (), self.OK), tasks=[task_rec("demo-task", "acknowledged")])

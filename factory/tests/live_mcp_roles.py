@@ -126,7 +126,7 @@ def record(root, *tools):
 
 def run_print(argv, cwd, role=None, timeout=300):
     """Run a `claude -p` session in its own process group; its stream-json events and its stderr."""
-    env = {**os.environ, **({"FACTORY_ROLE": role} if role else {})}
+    env = {**os.environ, "FACTORY_SESSION": "1", **({"FACTORY_ROLE": role} if role else {})}
     with subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True) as p:
         try:
             out, err = p.communicate(timeout=timeout)

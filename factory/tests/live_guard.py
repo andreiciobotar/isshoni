@@ -33,7 +33,7 @@ def main():
     if not shutil.which("claude"):
         sys.exit("needs `claude` on PATH")
     tmp = Path(tempfile.mkdtemp(prefix="live-guard-")).resolve()
-    env = {**os.environ, "FACTORY_HOME": str(tmp / "home"), "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+    env = {**os.environ, "FACTORY_HOME": str(tmp / "home"), "FACTORY_SESSION": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
     main_dir, wt = tmp / "repo", tmp / "repo" / ".claude" / "worktrees" / "t1"
     try:

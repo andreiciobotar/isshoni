@@ -330,6 +330,9 @@ class HookTests(Identity):
         super().setUp()
         self.env_file = self.home / "claude-env.sh"
 
+    def declare(self, slug="my-task"):
+        factory.log("tasks", {**factory.record(ROOT, slug, "dispatcher", None, None), "state": "working"})
+
     def hook(self, event="SessionStart", project=TASK, env_file=True, **payload):
         env = {"CLAUDE_PROJECT_DIR": project, **({"CLAUDE_ENV_FILE": str(self.env_file)} if env_file else {})}
         stdin = io.StringIO(json.dumps({"hook_event_name": event, "session_id": "s1", "cwd": project, **payload}))
@@ -340,12 +343,22 @@ class HookTests(Identity):
         self.assertEqual((rc, out.getvalue(), err.getvalue()), (0, "", ""))
 
     def test_a_lead_gets_the_line_once_and_keeps_other_content(self):
+        self.declare()
         self.env_file.write_text("export OTHER=1")
         self.hook(source="startup")
         self.hook(source="resume")
         self.assertEqual(self.env_file.read_text(), f"export OTHER=1\n{self.LINE}\n")
 
+    def test_a_worktree_no_task_declares_gets_no_line(self):
+        self.declare("another-task")
+        self.hook()
+        self.assertFalse(self.env_file.exists())
+        with mock.patch.dict(os.environ, {"FACTORY_SESSION": "1"}):
+            self.hook()
+        self.assertEqual(self.env_file.read_text(), self.LINE + "\n")
+
     def test_the_line_does_not_need_an_identity_or_a_file(self):
+        self.declare()
         self.hook()
         self.assertEqual(self.env_file.read_text(), self.LINE + "\n")
 
@@ -393,14 +406,14 @@ class RunTests(Identity):
     def test_a_claude_child_gets_no_anthropic_log_and_others_keep_the_environment(self):
         with mock.patch.dict(os.environ, {"ANTHROPIC_LOG": "debug"}):
             env = self.run_with(["claude", "-p"])[1]
-            self.assertEqual(env, {k: v for k, v in os.environ.items() if k != "ANTHROPIC_LOG"})
+            self.assertEqual(env, {**{k: v for k, v in os.environ.items() if k != "ANTHROPIC_LOG"}, "FACTORY_SESSION": "1"})
             self.assertIsNone(self.run_with(["git", "status"])[1])
             explicit = {"A": "1", "ANTHROPIC_LOG": "debug"}
             self.started = []
             with mock.patch.object(factory.subprocess, "Popen", self.spawn):
                 factory.run(["claude", "-p"], env=explicit)
                 factory.run(["git", "status"], env=explicit)
-            self.assertEqual([e for _, e in self.started], [{"A": "1"}, explicit])
+            self.assertEqual([e for _, e in self.started], [{"A": "1", "FACTORY_SESSION": "1"}, explicit])
 
     def test_gh_outside_a_repository_of_the_apps_owner_gets_no_token(self):
         self.installed()

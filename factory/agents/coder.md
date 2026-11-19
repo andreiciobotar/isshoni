@@ -1,6 +1,6 @@
 ---
 name: coder
-description: Implements a well-scoped, already-planned change. Use when the plan names the files and the expected behavior. Not for open-ended design.
+description: Implements a well-scoped, already-planned change. Use when the plan names the files and the expected behavior. Not for open-ended design. Written for a factory task (a spec file, a task worktree); outside one it works the same and the factory records nothing.
 model: sonnet
 skills:
   - coding-taste

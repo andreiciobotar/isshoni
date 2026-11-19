@@ -58,7 +58,7 @@ class CopyBehindTests(unittest.TestCase):
         self.git(self.repo, "init", "-q", "-b", "main")
         for patch in (mock.patch.object(factory, "PLUGIN_ROOT", self.root), mock.patch.object(factory, "STORE", self.store),
                       mock.patch.object(factory, "CACHE", self.store / "cache"),
-                      mock.patch.dict(os.environ, {"HOME": str(self.home)}),
+                      mock.patch.dict(os.environ, {"HOME": str(self.home), "FACTORY_SESSION": "1"}),
                       mock.patch.object(factory, "follow_dispatcher"), mock.patch.object(factory, "list_sessions", return_value=[])):
             patch.start()
             self.addCleanup(patch.stop)
@@ -108,6 +108,11 @@ class CopyBehindTests(unittest.TestCase):
     def test_the_hook_prints_one_json_object_for_the_main_checkout(self):
         rc, out = self.hook()
         self.assertEqual((rc, json.loads(out)), (0, {"systemMessage": LINE.format(n=2)}))
+
+    def test_a_session_that_is_not_the_factorys_gets_no_notice_and_no_fetch(self):
+        del os.environ["FACTORY_SESSION"]
+        self.assertEqual(self.hook(), (0, ""))
+        self.assertFalse((self.store / "cache" / "copy-behind.json").exists())
 
     def test_the_hook_prints_nothing_in_a_task_worktree_or_for_a_subagent(self):
         self.assertEqual(self.hook(cwd=TASK), (0, ""))

@@ -1,6 +1,6 @@
 ---
 name: explorer
-description: Fast read-only codebase search. Use to locate files, symbols, call sites, config, or data formats. Returns evidence (paths, line numbers, short excerpts), not conclusions. Do NOT use for design judgment or edits.
+description: Fast read-only codebase search. Use to locate files, symbols, call sites, config, or data formats. Returns evidence (paths, line numbers, short excerpts), not conclusions. Do NOT use for design judgment or edits. Written for a factory task (a spec file, a task worktree); outside one it works the same and the factory records nothing.
 model: haiku
 tools: Read, Grep, Glob, Bash
 ---
