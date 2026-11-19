@@ -1,14 +1,13 @@
 """A lead the harness retired is brought back, with the lines it missed, by the factory's script."""
 import io
 import json
-import re
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import DISPATCHER, ROOT, WT, FakeRun, factory
-from test_health import NOW, Harness, ev, iso, lead
+from test_health import COURIER_LINE, NOW, Harness, ev, iso, lead, lead_prompt
 
 # A retired lead as `claude agents --json --all` lists it: no pid, no status, the main checkout as its cwd.
 GONE = {"id": "5e55a1d0", "cwd": ROOT, "kind": "background", "startedAt": 1794800000000,
@@ -18,7 +17,6 @@ DISPATCHER_SESSION = DISPATCHER | {"name": "dispatcher-repo", "pid": 9}
 BACKGROUNDED = (0, "note: woke session 5e55a1d0 with its saved options (-n, --agents)\nbackgrounded · 5e55a1d0 · x\n", "")
 SENT = (0, json.dumps({"result": "sent"}), "")
 RESUME = ["claude", "--bg", "--resume", GONE["sessionId"]]
-COURIER_LINE = re.compile(r"\n---8<---\n(.*)\n---8<---$", re.S)
 
 
 class Outbox(Harness):
@@ -48,6 +46,18 @@ class Outbox(Harness):
     def drain(self, sessions, **stage):
         return self.call(lambda: factory.drain_outbox(self.repo, None), sessions, **stage)
 
+    def tagged(self, line):
+        """`line` as it is put in: the row's id after it."""
+        return f"{line} [outbox {next(r['id'] for r in factory.outbox_rows(self.repo) if r['line'] == line)}]"
+
+    def tick_at(self, seconds, sessions, **stage):
+        """The tick `seconds` from now: what it prints."""
+        self.clock += seconds
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.drain(sessions, **stage)
+        return out.getvalue()
+
     def resumes(self):
         return [c for c in self.fake.calls if c[:3] == RESUME[:3]]
 
@@ -66,16 +76,16 @@ class ForwardTests(Outbox):
         return ends
 
     def test_an_exited_lead_is_resumed_once_by_id_in_its_worktree_and_the_row_is_delivered(self):
-        to = self.forward([DISPATCHER_SESSION, GONE])
+        to = self.forward([DISPATCHER_SESSION, GONE], resume=self.takes(BACKGROUNDED))
         self.assertEqual(to, "lead")
-        self.assertEqual(self.resumes(), [[*RESUME, "TECH LEAD: x: built"]])
+        self.assertEqual(self.resumes(), [[*RESUME, self.tagged("TECH LEAD: x: built")]])
         self.assertIn((RESUME[:3], f"{WT}/x"), self.cwds)
         self.assertEqual(self.couriers(), [])
         self.assertEqual(self.ends(), {"TECH LEAD: x: built": "delivered"})
 
     def test_the_resume_argv_is_exactly_flag_free(self):
-        self.forward([GONE], said="a")
-        self.assertEqual(self.resumes(), [["claude", "--bg", "--resume", "5e55a1d0-7c2b-4e0f-9a64-3b1d8f20c7aa", "TECH LEAD: x: a"]])
+        self.assertEqual(self.forward([GONE], said="a"), "queued")
+        self.assertEqual(self.resumes(), [["claude", "--bg", "--resume", "5e55a1d0-7c2b-4e0f-9a64-3b1d8f20c7aa", self.tagged("TECH LEAD: x: a")]])
 
     def test_a_resume_that_fails_leaves_the_row_pending_and_tells_the_dispatcher_nothing(self):
         for label, answer in (("non-zero", (1, "", "boom\nmore")), ("no backgrounded line", (0, "ok", "")),
@@ -104,8 +114,8 @@ class ForwardTests(Outbox):
         run.assert_not_called()
 
     def test_a_live_lead_gets_a_courier_by_name_and_no_resume(self):
-        self.assertEqual(self.forward([DISPATCHER_SESSION, LIVE]), "lead")
-        self.assertEqual((self.couriers(), self.resumes()), ([("x", "TECH LEAD: x: built")], []))
+        self.assertEqual(self.forward([DISPATCHER_SESSION, LIVE], courier=self.takes(SENT)), "lead")
+        self.assertEqual((self.couriers(), self.resumes()), ([("x", self.tagged("TECH LEAD: x: built"))], []))
         self.assertEqual(self.ends(), {"TECH LEAD: x: built": "delivered"})
 
     def test_a_courier_that_fails_says_why_in_the_dispatchers_line(self):
@@ -123,17 +133,122 @@ class ForwardTests(Outbox):
 
     def test_a_lead_is_resumed_with_everything_it_missed_oldest_first(self):
         self.assertEqual(self.forward([GONE], said="one", resume=(1, "", "boom")), "queued")
-        self.assertEqual(self.forward([GONE], said="two"), "lead")
-        self.assertEqual(self.resumes(), [[*RESUME, "TECH LEAD: x: one\nTECH LEAD: x: two"]])
+        self.assertEqual(self.forward([GONE], said="two", resume=self.takes(BACKGROUNDED)), "lead")
+        self.assertEqual(self.resumes(), [[*RESUME, self.tagged("TECH LEAD: x: one") + "\n" + self.tagged("TECH LEAD: x: two")]])
         self.assertEqual(set(self.ends().values()), {"delivered"})
+
+
+class ReceiptTests(Outbox):
+    """A row ends `delivered` only when the receiving session's hook sees its id in a prompt."""
+    LINE = "TECH LEAD: x: built"
+
+    def records(self):
+        return list(factory.read_log("outbox"))
+
+    def ended(self):
+        return [(r["end"], r.get("session")) for r in self.records() if "end" in r]
+
+    def drain_printed(self, sessions, **stage):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.drain(sessions, **stage)
+        return out.getvalue()
+
+    def test_a_courier_that_says_sent_and_sends_nothing_does_not_end_the_row(self):
+        """The incident of a2914341eb8c: the courier replied `sent` without calling SendMessage."""
+        sessions = [DISPATCHER_SESSION, LIVE]
+        self.assertEqual(self.forward(sessions), "queued")
+        self.assertEqual((self.ended(), [r["line"] for r in factory.outbox(self.repo)]), ([], [self.LINE]))
+        self.assertIn("sent", factory.outbox(self.repo)[0])
+        reason = "not delivered to its lead: put in, not taken"
+        self.assertEqual(self.tick_at(60, sessions), "")  # awaiting its receipt: not put in again, nothing printed
+        self.assertEqual(self.couriers(), [])
+        self.assertEqual(self.tick_at(60, sessions), f"outbox: x: try 1 failed: {reason}\n")  # over 120 s after the put
+        self.assertEqual(self.couriers(), [])
+        for n in (2, 3):
+            self.tick_at(0, sessions)  # put in again
+            self.assertEqual([name for name, _ in self.couriers()], ["x"])
+            self.assertEqual(self.tick_at(121, sessions), f"outbox: x: try {n} failed: {reason}\n")
+        self.assertEqual(self.couriers()[-1], ("dispatcher-repo", f"NOT DELIVERED: x ({reason}): 1 line(s) not delivered, oldest first: {self.LINE}"))
+        self.assertEqual(self.ended(), [("dispatcher", None)])
+        self.tick_at(500, sessions)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_a_line_the_hook_sees_is_delivered_with_the_session_and_forward_says_lead(self):
+        self.assertEqual(self.forward([DISPATCHER_SESSION, LIVE], courier=self.takes(SENT)), "lead")
+        self.assertEqual(self.ended(), [("delivered", "lead-sid")])
+        self.assertEqual(factory.outbox(self.repo), [])
+
+    def test_a_receipt_before_the_put_is_recorded_leaves_the_row_ended(self):
+        self.forward([DISPATCHER_SESSION, LIVE], courier=self.takes(SENT))
+        kinds = [next(k for k in ("end", "sent") if k in r) for r in self.records() if "end" in r or "sent" in r]
+        self.assertEqual(kinds, ["end", "sent"])
+        self.assertEqual(self.tick_at(500, [DISPATCHER_SESSION, LIVE]), "")
+        self.assertEqual(self.fake.calls, [])
+
+    def test_a_receipt_that_arrives_inside_the_wait_is_taken(self):
+        real = factory.time.sleep
+        def sleep(seconds):
+            real(seconds)
+            if not self.ended():
+                lead_prompt(self.tagged(self.LINE))
+        with mock.patch.object(factory.time, "sleep", sleep):
+            self.assertEqual(self.forward([DISPATCHER_SESSION, LIVE]), "lead")
+        self.assertEqual(self.ended(), [("delivered", "lead-sid")])
+
+    def test_a_second_copy_of_a_taken_line_and_prompts_that_are_not_the_leads_write_nothing(self):
+        self.forward([DISPATCHER_SESSION, LIVE], courier=self.takes(SENT))
+        lead_prompt(self.tagged(self.LINE), session="b")
+        self.assertEqual(self.ended(), [("delivered", "lead-sid")])
+        self.forward([DISPATCHER_SESSION, LIVE], said="more")
+        more = self.tagged("TECH LEAD: x: more")
+        for label, kw in (("a subagent", {"agent_id": "a1"}), ("another task's lead", {"cwd": f"{WT}/y"}), ("another role", {"role": "site-manager"})):
+            with self.subTest(label):
+                lead_prompt(more, **kw)
+                self.assertEqual(len(self.ended()), 1)
+        lead_prompt(f"no tag here, and [outbox {'0' * 12}] is no row")
+        self.assertEqual(len(self.ended()), 1)
+
+    def test_an_exited_lead_is_put_in_then_its_prompt_carries_the_tags_and_the_hook_delivers(self):
+        for line in ("L1", "L2"):
+            factory.outbox_put(self.repo, "x", line)
+        self.drain([GONE])
+        self.assertEqual([k for r in self.records() for k in ("sent", "end") if k in r], ["sent", "sent"])
+        self.assertEqual(len(factory.outbox(self.repo)), 2)
+        lead_prompt(self.resumes()[0][-1])
+        self.assertEqual(self.ended(), [("delivered", "lead-sid")] * 2)
+        self.assertEqual(factory.outbox(self.repo), [])
+
+    def test_a_delivery_that_finds_another_in_flight_puts_nothing_in(self):
+        factory.outbox_put(self.repo, "x", "L1")
+        with factory.repo_lock(self.repo, "outbox-x"):
+            self.assertEqual(self.call(lambda: factory.deliver(self.repo, [LIVE], "x"), [LIVE]), ("waiting", None))
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(factory.outbox(self.repo)[0]["tries"], 0)
+        self.assertNotIn("sent", factory.outbox(self.repo)[0])
+
+    def test_a_row_handed_back_and_then_taken_ends_delivered(self):
+        factory.outbox_put(self.repo, "x", "L1")
+        tagged = self.tagged("L1")
+        self.call(lambda: factory.hand_back(self.repo, None, "x", "why", factory.outbox(self.repo)), [DISPATCHER_SESSION])
+        self.assertEqual(self.ended(), [("dispatcher", None)])
+        lead_prompt(tagged)
+        self.assertEqual(self.ended(), [("dispatcher", None), ("delivered", "lead-sid")])
+
+    def test_the_hook_exits_0_and_logs_the_event_when_the_outbox_step_raises(self):
+        factory.outbox_put(self.repo, "x", "L1")
+        with mock.patch.object(factory, "take", side_effect=OSError("disk")):
+            lead_prompt(self.tagged("L1"))
+        self.assertEqual([e["event"] for e in factory.read_log("events")], ["UserPromptSubmit"])
+        self.assertEqual(self.ended(), [])
 
 
 class TickTests(Outbox):
     def test_pending_rows_are_delivered_in_one_resume_oldest_first_newline_joined(self):
         for line in ("L1", "L2"):
             factory.outbox_put(self.repo, "x", line)
-        self.drain([GONE])
-        self.assertEqual(self.resumes(), [[*RESUME, "L1\nL2"]])
+        self.drain([GONE], resume=self.takes(BACKGROUNDED))
+        self.assertEqual(self.resumes(), [[*RESUME, self.tagged("L1") + "\n" + self.tagged("L2")]])
         self.assertEqual(factory.outbox(self.repo), [])
 
     def test_after_the_third_failure_the_dispatcher_gets_one_lead_gone_line_and_a_fourth_tick_sends_nothing(self):
@@ -196,6 +311,7 @@ class TickTests(Outbox):
         self.assertEqual((marker, said, last), ("---8<---", line, "---8<---"))
         self.assertIn("addressed to the other session", before)
         self.assertEqual(self.couriers(), [("x", line)])
+        self.assertEqual(self.fake.calls[0][:4], ["claude", "-p", "-n", "factory-courier"])  # pins the courier's argv
 
     def tick(self, sessions=(), drain=None):
         """`watch_tick` as far as its drain: it stops where the tick's own work would begin. The listing is staged."""
@@ -218,7 +334,7 @@ class TickTests(Outbox):
     def test_the_tick_delivers_the_outbox_before_and_apart_from_the_site_manager(self):
         factory.outbox_put(self.repo, "x", "L1")
         self.tick([DISPATCHER_SESSION, LIVE])
-        self.assertEqual(self.couriers(), [("x", "L1")])
+        self.assertEqual(self.couriers(), [("x", self.tagged("L1"))])
 
     def test_a_tick_the_lander_loop_runs_delivers_the_outbox_too(self):
         factory.outbox_put(self.repo, "x", "L1")
@@ -239,7 +355,7 @@ class TickTests(Outbox):
             self.assertEqual(self.couriers(), [])
             with self.assertRaises(Stop):
                 loop[0]()
-        self.assertEqual(self.couriers(), [("x", "L1")])
+        self.assertEqual(self.couriers(), [("x", self.tagged("L1"))])
 
 
 class Stop(Exception):
@@ -295,12 +411,12 @@ class LeadCommandTests(Outbox):
         code, out, _ = self.lead_command("x")
         self.assertEqual((code, out), (0, "queued for x: the next tick delivers it\n"))
         self.assertEqual([c for c in self.fake.calls if c[0] == "claude" and c[1] != "plugin"], [])
-        self.assertEqual([r["line"] for r in factory.outbox(self.repo)], ["start the build"])
+        self.assertEqual([r["line"] for r in factory.outbox(self.repo)], ["DISPATCHER: x: start the build"])
 
     def test_log_outbox_prints_the_rows(self):
         self.lead_command("x", "one")
         code, out, _ = self.cli("log", "outbox")
-        self.assertEqual((code, [json.loads(l)["line"] for l in out.splitlines()]), (0, ["one"]))
+        self.assertEqual((code, [json.loads(l)["line"] for l in out.splitlines()]), (0, ["DISPATCHER: x: one"]))
 
     def test_a_slug_that_is_not_a_task_is_refused(self):
         code, out, err = self.lead_command("nope")
@@ -309,11 +425,11 @@ class LeadCommandTests(Outbox):
 
     def test_the_next_tick_delivers_it_live_by_courier_and_retired_by_resume(self):
         self.lead_command("x", "one")
-        self.drain([DISPATCHER_SESSION, LIVE])
-        self.assertEqual((self.couriers(), self.resumes()), ([("x", "one")], []))
+        self.drain([DISPATCHER_SESSION, LIVE], courier=self.takes(SENT))
+        self.assertEqual((self.couriers(), self.resumes()), ([("x", self.tagged("DISPATCHER: x: one"))], []))
         self.lead_command("x", "two")
         self.drain([DISPATCHER_SESSION, GONE])
-        self.assertEqual((self.couriers(), self.resumes()), ([], [[*RESUME, "two"]]))
+        self.assertEqual((self.couriers(), self.resumes()), ([], [[*RESUME, self.tagged("DISPATCHER: x: two")]]))
 
 
 class SiteManagerTests(Outbox):

@@ -1,12 +1,13 @@
 """The site manager decides on overruns and on build runs that keep ending `stopped`, on record."""
 import json
 import os
+import re
 import unittest
 from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import DISPATCHER, ROOT, WT, factory
-from test_health import HOUR, NOW, SID, Harness, choice, ev, fired, iso, lead, pic, reply, row
+from test_health import COURIER_LINE, HOUR, NOW, SID, Harness, choice, ev, fired, iso, lead, lead_prompt, pic, reply, row
 
 DISPATCHER_NAME = DISPATCHER | {"name": "dispatcher-repo"}
 STARTED = NOW - 130 * 60  # the lead is 10 minutes past its 2 h limit
@@ -39,7 +40,11 @@ class Overrun(Harness):
         def answer():
             call = self.fake.calls[-1]
             if "--json-schema" not in call:
-                return (1, "", "no such session") if any(f"session named {n}. " in call[-1] for n in deaf) else (0, json.dumps({"result": "sent"}), "")
+                if any(f"session named {n}. " in call[-1] for n in deaf):
+                    return 1, "", "no such session"
+                if "session named x. " in call[-1]:  # the lead's session takes what it is sent
+                    lead_prompt(COURIER_LINE.search(call[-1])[1])
+                return 0, json.dumps({"result": "sent"}), ""
             return (1, "", "boom") if fail else reply([{"looked": ["factory status"], **d, "id": self.pending()} for d in decisions], sent)
         return {("claude", "-p"): answer}
 
@@ -54,7 +59,7 @@ class Overrun(Harness):
 
     def lines(self):
         """(name, line) of each message a courier was asked to send."""
-        return [(c[-1].split("session named ")[1].split(". ")[0], c[-1].split("---8<---\n")[1].rsplit("\n---8<---", 1)[0])
+        return [(c[-1].split("session named ")[1].split(". ")[0], re.sub(r" \[outbox [0-9a-f]{12}\]$", "", COURIER_LINE.search(c[-1])[1]))
                 for c in self.claude_runs() if "--json-schema" not in c]
 
     def decisions(self):
@@ -145,13 +150,14 @@ class IdleLeadTests(Overrun):
         gone = {k: v for k, v in self.idle_lead().items() if k not in ("pid", "status")} | {"cwd": ROOT, "id": "ab"}
         self.sessions = [DISPATCHER_NAME, gone]
         self.cli("watch", answers={**self.decide({"decision": "extended", "minutes": 20, "reason": "landing left"}),
-                                   ("claude", "--bg", "--resume"): resume})
+                                   ("claude", "--bg", "--resume"): self.takes(resume) if resume[0] == 0 else resume})
         return [c for c in self.fake.calls if c[:3] == ["claude", "--bg", "--resume"]]
 
     def test_a_retired_lead_is_resumed_with_the_line_and_the_dispatcher_hears_the_extension(self):
         until = clock(NOW + 20 * 60)
         [resume] = self.retired((0, "backgrounded · ab · x\n", ""))
-        self.assertEqual(resume, ["claude", "--bg", "--resume", SID, f"SITE MANAGER: x: extended 20 min, limit now {until}: landing left"])
+        self.assertEqual(resume[:4], ["claude", "--bg", "--resume", SID])
+        self.assertRegex(resume[4], rf"^SITE MANAGER: x: extended 20 min, limit now {until}: landing left \[outbox [0-9a-f]{{12}}\]$")
         self.assertEqual(self.lines(), [("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {until}, no answer needed: landing left")])
         self.assertEqual(self.told(), ["lead"])
 
@@ -484,7 +490,7 @@ class RunStoppedTests(Overrun):
         self.assertEqual([(r["outcome"], r["minutes"]) for r in f["runs"]], [("stopped", 5)] * 2)
         [mine] = [t for t in factory.read_log("tasks") if t.get("role") == "site-manager"]
         self.assertEqual((mine["state"], mine["paused"], mine["waits_on"], mine["slug"]), ("blocked", True, ["human"], "x"))
-        self.assertEqual([e["event"] for e in factory.read_log("events") if e["slug"] == "x"], ["TaskPaused"])
+        self.assertEqual([e["event"] for e in factory.read_log("events") if e["slug"] == "x" and e["event"] != "UserPromptSubmit"], ["TaskPaused"])
         self.assertEqual(self.lines(), [
             ("x", "SITE MANAGER: x: paused: start no build run and end your turn; the human decides. two runs, nothing handed over"),
             ("dispatcher-repo", "PAUSED: x: paused by the site manager, for the human: two runs, nothing handed over")])

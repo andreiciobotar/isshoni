@@ -204,7 +204,11 @@ class Sim:
         if a[:2] == ["claude", "-p"] and "--json-schema" in a:  # a site manager run: it decides nothing
             return test_health.reply()
         if a[:2] == ["claude", "-p"]:
-            self.lines.append(COURIER_LINE.search(a[-1])[1])
+            line = COURIER_LINE.search(a[-1])[1]
+            tag = re.search(r" \[outbox [0-9a-f]{12}\]$", line)
+            self.lines.append(line[:tag.start()] if tag else line)
+            if tag:  # a line of the outbox: the lead's session takes it
+                test_health.lead_prompt(line, cwd=f"{WT}/{re.search(r'session named (\S+)\. ', a[-1])[1]}")
             return 0, json.dumps({"result": "sent"}), ""
         return None
 

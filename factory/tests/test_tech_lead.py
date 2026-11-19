@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from test_factory import BIN, LEAN_SETTINGS, NO_ATTRIBUTION, FakeRun, factory, porcelain
+from test_health import lead_prompt
 
 SLUG, N, DEFAULT = "task1", 7, "main"
 OLD, NEW, DEFAULT_REF = "a" * 40, "b" * 40, "c" * 40
@@ -64,7 +65,9 @@ class Machine(FakeRun):
             self.state.update(self.after() if callable(self.after) else self.after)
             return self.claude
         if a[:2] == ["claude", "-p"]:
-            self.lines.append(COURIER_LINE.search(a[-1])[1])
+            line = COURIER_LINE.search(a[-1])[1]
+            self.lines.append(re.sub(r" \[outbox [0-9a-f]{12}\]$", "", line))
+            lead_prompt(line, cwd=f"{self.root}/.claude/worktrees/{SLUG}")  # the lead's session takes it
             return 0, json.dumps({"result": "sent"}), ""
         if a[:3] == ["gh", "pr", "view"]:
             return 0, json.dumps({"number": N, "url": URL, "headRefName": s["branch"], "headRefOid": s["pr_head"],
