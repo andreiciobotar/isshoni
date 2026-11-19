@@ -1826,8 +1826,7 @@ def copy_behind():
     try:
         behind = count_plugin_commits(copy)
         line = behind and (f"the installed factory is {behind} plugin commit{'s' * (behind != 1)} behind main (installed {copy['date']}): refresh with "
-                           f"claude plugin marketplace update {copy['marketplace']} && claude plugin uninstall {copy['plugin']}@{copy['marketplace']} --keep-data "
-                           f"&& claude plugin install {copy['plugin']}@{copy['marketplace']}")
+                           "factory reinstall (from a clone: make reinstall)")
     except Exception as e:
         line = f"the installed factory could not be compared with main: {(why(e).splitlines() or [''])[0]}"
     try:
