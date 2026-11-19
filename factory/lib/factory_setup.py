@@ -1,5 +1,6 @@
-"""`factory wizard` and `factory uninstall`: set the factory up on this machine, and take it away."""
+"""`factory wizard`, `factory reinstall` and `factory uninstall`: set the factory up on this machine, bring its plugin to the marketplace's main, and take it away."""
 import collections
+import functools
 import json
 import re
 import shlex
@@ -24,9 +25,9 @@ def clone():
     return root if (root / "bin" / "isshoni").is_file() and (root / "go.mod").is_file() else None
 
 
-def claude_json(*args):
-    """The list `claude <args> --json` prints, or None."""
-    rc, out, _ = core.run(["claude", *args, "--json"])
+def claude_json(*args, cwd=None):
+    """The list `claude <args> --json` prints (run in `cwd`: a local-scope entry is enabled only there), or None."""
+    rc, out, _ = core.run(["claude", *args, "--json"], cwd=cwd)
     try:
         data = json.loads(out) if rc == 0 else None
     except ValueError:
@@ -84,38 +85,82 @@ def dashboard_act(args, detail):
     return "built the dashboard (make build)"
 
 
-def user_plugin(plugins):
-    return next((p for p in plugins if isinstance(p, dict) and p.get("id") == PLUGIN and p.get("scope") == "user"), None)
+def plugin_entries(plugins):
+    """The entries of PLUGIN at user and local scope. A project-scope one is made by hand and no factory command touches it."""
+    return [p for p in plugins if isinstance(p, dict) and p.get("id") == PLUGIN and p.get("scope") in ("user", "local")]
 
 
-def plugin_state():
-    plugins = claude_json("plugin", "list")
+def own_market(markets):
+    """The marketplace named factory, or None; a Fail when it is not from SOURCE."""
+    market = next((m for m in markets if isinstance(m, dict) and m.get("name") == "factory"), None)
+    if market and market.get("repo") != SOURCE:
+        raise core.Fail(f"a marketplace named factory exists from {market.get('repo') or market.get('path') or market.get('source')}, "
+                        f"not {SOURCE}: remove it (`claude plugin marketplace remove factory`) if it is not yours to keep, "
+                        f"then run the wizard again")
+    return market
+
+
+def plugin_command(verb, entry):
+    """(argv, cwd) of `claude plugin install|uninstall` for one entry, at its scope and, for a local one, in its repository."""
+    argv = ["claude", "plugin", verb, PLUGIN, "--scope", entry["scope"], *(["--keep-data"] if verb == "uninstall" else [])]
+    return argv, entry.get("projectPath") if entry["scope"] == "local" else None
+
+
+def hand(command):
+    argv, cwd = command
+    return f"cd {shlex.quote(cwd)} && {shlex.join(argv)}" if cwd else shlex.join(argv)
+
+
+def run_commands(commands):
+    """Run each (argv, cwd); the first failure is a Fail that names it and lists, one per line, what still has to run."""
+    for i, (argv, cwd) in enumerate(commands):
+        rc, out, err = core.run(argv, cwd=cwd, timeout=core.NETWORK_TIMEOUT)
+        if rc != 0:
+            raise core.Fail(f"`{shlex.join(argv)}` failed: {(err or out).strip()}\n    By hand:\n      "
+                            + "\n      ".join(hand(c) for c in commands[i:]), 1)
+
+
+def plugin_purpose(root):
+    return ("install the factory plugin into Claude Code for the whole user (for one repository only: `factory wizard --repository <path>`)"
+            if root is None else f"install the factory plugin into Claude Code for {root} only (for the whole user: `factory wizard`)")
+
+
+def plugin_state(root=None):
+    plugins = claude_json("plugin", "list", cwd=root)
     if plugins is None:
         return False, "cannot read `claude plugin list --json`"
-    found = user_plugin(plugins)
-    if found and found.get("enabled") is False:
-        return False, f"{PLUGIN} is installed but disabled: run `claude plugin enable {PLUGIN}`"
-    return bool(found), PLUGIN
+    entries = plugin_entries(plugins)
+    user = next((e for e in entries if e["scope"] == "user"), None)
+    local = next((e for e in entries if e["scope"] == "local" and e.get("projectPath") == root), None)
+    wanted = user if root is None else local
+    if wanted and wanted.get("enabled") is False:
+        return False, f"{PLUGIN} is installed but disabled: run `claude plugin enable {PLUGIN} --scope {wanted['scope']}`"
+    return bool(wanted) and not (root and user), PLUGIN
 
 
 def plugin_act(args, detail):
     if "disabled" in detail:
         raise core.Fail(detail)
-    markets = claude_json("plugin", "marketplace", "list")
-    if markets is None:
-        raise core.Fail("cannot read `claude plugin marketplace list --json`: nothing was added")
-    market = next((m for m in markets if isinstance(m, dict) and m.get("name") == "factory"), None)
-    if market and market.get("repo") != SOURCE:
-        raise core.Fail(f"a marketplace named factory exists from {market.get('repo') or market.get('path') or market.get('source')}, "
-                   f"not {SOURCE}: remove it (`claude plugin marketplace remove factory`) if it is not yours to keep, "
-                   f"then run the wizard again")
-    commands = [*([] if market else [["claude", "plugin", "marketplace", "add", SOURCE]]), ["claude", "plugin", "install", PLUGIN]]
-    for argv in commands:
-        rc, out, err = core.run(argv, timeout=core.NETWORK_TIMEOUT)
-        if rc != 0:
-            raise core.Fail(f"`{shlex.join(argv)}` failed: {(err or out).strip()}\n    By hand: "
-                       + "; ".join(shlex.join(c) for c in commands))
-    return f"installed {PLUGIN}"
+    root = args.repository
+    plugins, markets = claude_json("plugin", "list", cwd=root), claude_json("plugin", "marketplace", "list")
+    for name, found in (("plugin list", plugins), ("plugin marketplace list", markets)):
+        if found is None:
+            raise core.Fail(f"cannot read `claude {name} --json`: nothing was added")
+    market, entries = own_market(markets), plugin_entries(plugins)
+    if root is None:
+        wanted, stale = None, [e for e in entries if e["scope"] == "local"]
+        install = ["claude", "plugin", "install", PLUGIN], None
+        if stale:
+            print(f"  also removes the {len(stale)} repository-scope install(s): the user-scope one covers them")
+    else:
+        wanted = next((e for e in entries if e["scope"] == "local" and e.get("projectPath") == root), None)
+        stale = [e for e in entries if e["scope"] == "user"]
+        install = ["claude", "plugin", "install", PLUGIN, "--scope", "local"], root
+        if stale:
+            print("  also removes the user-scope install: every session would still load it")
+    run_commands([*([] if market else [(["claude", "plugin", "marketplace", "add", SOURCE], None)]),
+                  *([] if wanted else [install]), *(plugin_command("uninstall", e) for e in stale)])
+    return f"installed {PLUGIN}" + (f" for {root}" if root else "")
 
 
 def settings_state():
@@ -233,14 +278,18 @@ def args_wizard(parser):
     parser.add_argument("--list", action="store_true", help="show each step and its state; change nothing")
     parser.add_argument("--owner", help="the account or organization to create the App under (default: your own GitHub account)")
     parser.add_argument("--name", help="the new App's name, 34 characters at most (default: isshoni-lander-<owner>)")
+    parser.add_argument("--repository", help="install the plugin for this repository only (default: for the whole user)")
 
 
 @core.command("wizard", "set everything up, step by step; rerun to repair or finish", args_wizard)
 def cmd_wizard(args):
     if args.name and len(args.name) > core.APP_NAME_MAX:
         raise core.Fail(f"--name is {len(args.name)} characters: an App name is {core.APP_NAME_MAX} at most", 2)
+    args.repository = core.Repo(args.repository).root if args.repository else None
+    steps = [step._replace(purpose=plugin_purpose(args.repository), state=functools.partial(plugin_state, args.repository))
+             if step.act is plugin_act else step for step in WIZARD_STEPS]
     did = failed = False
-    for step in () if args.list else WIZARD_STEPS:
+    for step in () if args.list else steps:
         done, detail = step.state()
         print(f"{step.name}: {step.purpose}")
         if done is None:
@@ -261,7 +310,7 @@ def cmd_wizard(args):
             else:
                 print(f"  did: {text}" if text else f"  done: {detail}")
                 did = did or bool(text)
-    states = [(step, *step.state()) for step in WIZARD_STEPS]
+    states = [(step, *step.state()) for step in steps]
     print("Summary:")
     for step, done, detail in states:
         print(f"  {step.name}: {'n/a' if done is None else 'done' if done else 'not done'} ({detail})")
@@ -278,6 +327,44 @@ def cmd_wizard(args):
         print("A server: `make wizard-remote` (docs/container.md)." if clone()
               else "A server: needs a clone of the repository, then `make wizard-remote` there (docs/container.md).")
     return 0 if required and not failed else 1
+
+
+def short(entry):
+    return (entry.get("gitCommitSha") or "unknown")[:12]
+
+
+def where(entry):
+    return "user" if entry["scope"] == "user" else f"repository {entry.get('projectPath')}"
+
+
+@core.command("reinstall", "bring every installation of the plugin to the marketplace's current main, at the scopes it has")
+def cmd_reinstall(args):
+    plugins, markets = claude_json("plugin", "list"), claude_json("plugin", "marketplace", "list")
+    if plugins is None or markets is None:
+        raise core.Fail("cannot read `claude plugin list --json` or `claude plugin marketplace list --json`: nothing changed")
+    if own_market(markets) is None:
+        raise core.Fail("the marketplace factory is not added: run `factory wizard`")
+    entries = plugin_entries(plugins)
+    if not entries:
+        raise core.Fail(f"{PLUGIN} is not installed: run `factory wizard`")
+    before = sorted({short(e) for e in entries})
+    for sha in before:
+        print(f"before: {sha}")
+    gone = [e for e in entries if e["scope"] == "local" and not Path(e.get("projectPath") or "").is_dir()]
+    for e in gone:
+        argv, cwd = plugin_command("uninstall", e)
+        removed = core.run(argv, cwd=cwd, timeout=core.NETWORK_TIMEOUT)[0] == 0
+        print(f"{e.get('projectPath')} no longer exists: " + ("its entry is uninstalled" if removed else "its entry is skipped"))
+    kept = [e for e in entries if e not in gone]
+    run_commands([(["claude", "plugin", "marketplace", "update", "factory"], None),
+                  *(plugin_command("uninstall", e) for e in kept), *(plugin_command("install", e) for e in kept)])
+    after = plugin_entries(claude_json("plugin", "list") or [])
+    for e in after:
+        print(f"after: {short(e)} {where(e)}")
+    if len(before) == 1 and before == sorted({short(e) for e in after}):
+        print(f"already at {before[0]}")
+    print("Running sessions keep the copy they loaded: restart them, or run /reload-plugins in each.")
+    return 0
 
 
 def uninstall_step(args, left, found, lost, kept):
@@ -346,7 +433,8 @@ def uninstall_plugin(args, left):
     plugins, markets = claude_json("plugin", "list"), claude_json("plugin", "marketplace", "list")
     if plugins is None or markets is None:
         raise core.Fail("cannot read `claude plugin list --json` or `claude plugin marketplace list --json`: nothing removed")
-    installed = user_plugin(plugins)
+    entries = plugin_entries(plugins)
+    installed = bool(entries)
     market = next((m for m in markets if isinstance(m, dict) and m.get("name") == "factory"), None)
     if market and market.get("repo") != SOURCE:
         print(f"  a marketplace named factory from {market.get('repo') or market.get('path') or market.get('source')}, "
@@ -359,14 +447,62 @@ def uninstall_plugin(args, left):
         else:
             print("  nothing to remove")
         return
-    if uninstall_step(args, left, f"the marketplace {SOURCE}" + (f" and {PLUGIN}" if installed else ""),
+    for p in plugins:
+        if isinstance(p, dict) and p.get("id") == PLUGIN and p.get("scope") == "project":
+            left.append(f"the plugin {PLUGIN} at project scope ({p.get('projectPath')}): made by hand, no factory command removes it")
+    if uninstall_step(args, left, f"the marketplace {SOURCE}" + (f" and {PLUGIN} ({', '.join(where(e) for e in entries)})" if installed else ""),
                       "the factory's commands and hooks in Claude Code", "the plugin and its marketplace"):
-        for argv in ([*([["claude", "plugin", "uninstall", PLUGIN]] if installed else []),
-                      ["claude", "plugin", "marketplace", "remove", "factory"]]):
-            rc, out, err = core.run(argv)
-            if rc != 0:
-                raise core.Fail(f"`{shlex.join(argv)}` failed: {(err or out).strip()}")
+        run_commands([*(plugin_command("uninstall", e) for e in entries if e["scope"] == "local"),
+                      *([(["claude", "plugin", "uninstall", PLUGIN], None)] if any(e["scope"] == "user" for e in entries) else []),
+                      (["claude", "plugin", "marketplace", "remove", "factory"], None)])
         print("  removed")
+
+
+def uninstall_repository_schedule(args, left):
+    repo = args.repository
+    try:
+        backend = core.scheduler()
+    except core.Fail as e:
+        return print(f"  {e}: nothing to remove")
+    label = core.job_label(repo.root)
+    if not backend.status(label)[0]:
+        return print("  nothing to remove")
+    if uninstall_step(args, left, f"the watch job {label}", "the half-hourly watch of this repository", "the watch job of the repository"):
+        core.schedule_remove(repo, backend)
+        print("  removed")
+
+
+def uninstall_repository_plugin(args, left):
+    root = args.repository.root
+    if not shutil.which("claude"):
+        return print("  claude is not on PATH: nothing to remove")
+    plugins = claude_json("plugin", "list", cwd=root)
+    if plugins is None:
+        raise core.Fail("cannot read `claude plugin list --json`: nothing removed")
+    entries = plugin_entries(plugins)
+    mine = next((e for e in entries if e["scope"] == "local" and e.get("projectPath") == root), None)
+    if mine:
+        if uninstall_step(args, left, f"{PLUGIN} installed for {root}", "the factory's commands and hooks in Claude Code for this repository",
+                          "the plugin of the repository"):
+            run_commands([plugin_command("uninstall", mine)])
+            print("  removed")
+    elif any(e["scope"] == "user" for e in entries):
+        print(f"  {PLUGIN} is installed for the whole user: it is not removed for one repository (`factory uninstall` removes it)")
+    else:
+        print("  nothing to remove")
+
+
+def uninstall_repository_records(args, left):
+    home = core.STORE.expanduser()
+    tag = core.repo_state(args.repository.root, "", "").name  # what every record of the repository has in its name
+    mine = sorted(p for p in home.iterdir() if p.is_file() and tag in p.name) if home.is_dir() else []
+    if not mine:
+        return print("  nothing to remove")
+    if uninstall_step(args, left, "in " + str(home) + "\n    " + "\n    ".join(p.name for p in mine), "this repository's records, for good",
+                      "the records of the repository"):
+        for p in mine:
+            p.unlink()
+        print(f"  removed {len(mine)} file(s)")
 
 
 def count_files(path):
@@ -416,15 +552,21 @@ UNINSTALL_STEPS = (("schedules", uninstall_schedules), ("GitHub App", uninstall_
                    ("home", uninstall_home), ("dashboard binary", uninstall_dashboard))
 
 
+REPOSITORY_UNINSTALL_STEPS = (("schedule", uninstall_repository_schedule), ("plugin", uninstall_repository_plugin),
+                              ("records", uninstall_repository_records))
+
+
 def args_uninstall(parser):
     parser.add_argument("--yes", action="store_true", help="confirm every removal without asking")
     parser.add_argument("--list", action="store_true", help="show what each step would remove; change nothing")
+    parser.add_argument("--repository", help="take the factory off this repository only (default: remove everything)")
 
 
 @core.command("uninstall", "remove what the wizard and the factory put on this machine", args_uninstall)
 def cmd_uninstall(args):
+    args.repository = core.Repo(args.repository) if args.repository else None
     left, failed = [], False
-    for name, step in UNINSTALL_STEPS:
+    for name, step in REPOSITORY_UNINSTALL_STEPS if args.repository else UNINSTALL_STEPS:
         print(f"{name}:")
         try:
             step(args, left)
@@ -432,12 +574,21 @@ def cmd_uninstall(args):
             print(f"  failed: {e}")
             failed = True
     print("left behind:")
-    for line in ("Claude Code's own transcripts and settings (~/.claude/projects)",
-                 "your repositories, their task worktrees (.claude/worktrees/) and worktree-* branches: "
-                 "`factory clean` or `git worktree remove` removes them, before the plugin is uninstalled",
-                 *([f"this clone ({clone()})"] if clone() else []), "git, gh and its stack extension (gh extension remove stack), Go, Claude Code", *left):
+    behind = ((f"the task worktrees of {args.repository.root} (.claude/worktrees/) and its worktree-* branches: "
+               "`factory clean` or `git worktree remove` removes them",
+               f"{args.repository.root}/.claude/settings.local.json: Claude Code's file, the factory does not edit it")
+              if args.repository else
+              ("Claude Code's own transcripts and settings (~/.claude/projects)",
+               "your repositories, their task worktrees (.claude/worktrees/) and worktree-* branches: "
+               "`factory clean` or `git worktree remove` removes them, before the plugin is uninstalled",
+               *([f"this clone ({clone()})"] if clone() else []), "git, gh and its stack extension (gh extension remove stack), Go, Claude Code"))
+    for line in (*behind, *left):
         print(f"  {line}")
-    if args.list:
+    if args.repository:
+        plugins = claude_json("plugin", "list")
+        if plugins is not None and not any(isinstance(p, dict) and p.get("id") == PLUGIN for p in plugins):
+            print("no installation is left; factory uninstall removes the rest (the store, the App's installation, the marketplace)")
+    elif args.list:
         try:
             core.print_hosts()
         except core.Fail as e:
