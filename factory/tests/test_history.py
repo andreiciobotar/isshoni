@@ -7,6 +7,7 @@ from test_decisions import Decisions
 from test_factory import ROOT, WT, factory
 from test_health import HOUR, NOW, Harness, decided, fired, iso
 from test_lander import Loop
+from test_overrun import Card
 
 URL = "https://github.com/example/demo/pull/12"
 DAY = 24 * HOUR
@@ -40,7 +41,7 @@ class HistoryTests(History):
     def test_the_site_managers_extension_pause_and_close_are_entries_and_other_decisions_are_not(self):
         self.seed("firings", [
             fired("a", subject="demo-task"), {**decided("a", "extended", ts=NOW - 3 * HOUR, reason="landing left"), "minutes": 20, "until": iso(NOW + 1200)},
-            fired("b", criterion="overrun", subject="demo-other"), decided("b", "paused", ts=NOW - 2 * HOUR, reason="the human decides"),
+            fired("b", criterion="churning", subject="demo-other"), decided("b", "paused", ts=NOW - 2 * HOUR, reason="the human decides"),
             fired("c", criterion="ended-undeclared", subject="demo-gone"), decided("c", "closed", ts=NOW - HOUR, reason="replaced"),
             fired("d", subject="demo-quiet"), decided("d", "suppressed"),
             fired("e", subject="demo-up"), decided("e", "escalated")])
@@ -58,6 +59,36 @@ class HistoryTests(History):
                             for n in range(1, 102)])
         history = self.history()
         self.assertEqual((len(history), history[0]["text"], history[-1]["text"]), (100, "handed over: d1", "handed over: d100"))
+
+
+class StopHistoryTests(Card):
+    """The history after an overrun is decided: what the records say happened, through the real commands and tick."""
+
+    def entries(self):
+        return [(e["slug"], e["by"], e["text"]) for e in json.loads(self.cli("status", "--json", "--cached")[1])["history"]]
+
+    def test_a_stop_recommendation_is_recommended_not_paused(self):
+        self.stop()
+        self.assertEqual(self.entries(), [("x", "site-manager", "stop recommended: not converging")])
+
+    def test_the_scripts_later_pause_is_one_entry_by_the_script(self):
+        self.stop()
+        self.tick(30)
+        self.tick(31)
+        self.assertEqual(self.entries(), [("x", "script", "paused: the human has not answered the stop recommended"),
+                                          ("x", "site-manager", "stop recommended: not converging")])
+
+    def test_the_site_managers_pause_on_a_stopped_run_is_one_entry_by_it(self):
+        self.stopped_runs(2)
+        self.watch({"decision": "paused", "waits_on": ["human"], "reason": "nothing handed over"})
+        self.assertEqual(self.state()["state"], "blocked")
+        self.assertEqual(self.entries(), [("x", "site-manager", "paused: nothing handed over")])
+
+    def test_a_continue_is_one_entry_the_humans_answer(self):
+        [d] = self.post(minutes=45)
+        self.assertEqual(self.answer(d["id"], 1)[0], 0)
+        self.assertEqual(len(self.human_extensions()), 1)  # the firing exists, and the history leaves it out
+        self.assertEqual(self.entries(), [("x", "human", f"overrun: picked 1: {d['options'][0]}")])
 
 
 class ApproveTests(Loop):
