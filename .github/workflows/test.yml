@@ -148,7 +148,7 @@ jobs:
           timeout 30 sh -c 'until docker logs isshoni-factory 2>&1 | grep -q "serving ssh on"; do sleep 1; done'
           ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -o BatchMode=yes -p 2222"
           (sleep 3; printf q) | timeout 20 ssh -tt $ssh_opts -i "$RUNNER_TEMP/viewer" 127.0.0.1 > "$RUNNER_TEMP/dashboard.txt"
-          grep -aq Sessions "$RUNNER_TEMP/dashboard.txt"
+          grep -aq Inbox "$RUNNER_TEMP/dashboard.txt"
           if (sleep 1; printf q) | timeout 20 ssh -tt $ssh_opts -i "$RUNNER_TEMP/stranger" 127.0.0.1 > /dev/null 2> "$RUNNER_TEMP/stranger.err"; then
             echo "a key that is not listed got in"; exit 1
           fi

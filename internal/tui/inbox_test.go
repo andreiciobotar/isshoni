@@ -151,7 +151,7 @@ func TestGoldenInbox(t *testing.T) {
 func TestInboxShowsTheCardsOverTheFactoryLines(t *testing.T) {
 	out := plain(inboxModel(140, 40))
 	for _, want := range []string{
-		"> ? needs-an-answer", "  ▲ stuck-on-keys", "TASK", "AGE", "│",
+		"> ? needs-an-answer", "  ▲ stuck-on-keys", "REPO", "TASK", "AGE", "│",
 		"needs-an-answer · question · asked 45m ago", "Should the export keep the legacy column order",
 		"1  Keep the legacy order  (recommended)", "2  Switch now and update both readers",
 		"worktree cap", "delta-docs", "SLUG",
@@ -248,12 +248,12 @@ func TestInboxIsAFactoryPage(t *testing.T) {
 	}
 	m = inboxModel(80, 24)
 	send(m, "j", "j", "j", "j", "j", "j")
-	if m.inbox.cursor != 1 || m.inbox.top == 0 {
-		t.Fatalf("j walks the cards, then scrolls the page: cursor %d, top %d", m.inbox.cursor, m.inbox.top)
+	if m.inbox.tbl.Cursor() != 1 || m.inbox.top == 0 {
+		t.Fatalf("j walks the cards, then scrolls the page: cursor %d, top %d", m.inbox.tbl.Cursor(), m.inbox.top)
 	}
 	send(m, "k", "k", "k", "k", "k", "k", "k", "k", "k", "k", "k", "k")
-	if m.inbox.cursor != 0 || m.inbox.top != 0 {
-		t.Fatalf("k comes back: cursor %d, top %d", m.inbox.cursor, m.inbox.top)
+	if m.inbox.tbl.Cursor() != 0 || m.inbox.top != 0 {
+		t.Fatalf("k comes back: cursor %d, top %d", m.inbox.tbl.Cursor(), m.inbox.top)
 	}
 	send(m, "G")
 	if m.inbox.top == 0 || m.fac.top != 0 {
@@ -334,13 +334,16 @@ func TestInboxRejectAnswersNothing(t *testing.T) {
 func TestInboxConfirmIgnoresEveryOtherKey(t *testing.T) {
 	m, _, _ := answerModel(t)
 	send(m, "2")
-	before := m.inbox
+	state := func() string {
+		return fmt.Sprint(m.inbox.pick, m.inbox.id, m.inbox.reject, m.inbox.sending, m.inbox.tbl.Cursor(), m.inbox.top)
+	}
+	before := state()
 	for _, k := range []string{"x", "j", "k", "q", "?", "c", "d", "r", "4", "7", "pgdown", "G", "/"} { // 4: the card has three options
 		if cmd := upd(m, press(k)); len(cmd) != 0 {
 			t.Fatalf("%q ran something", k)
 		}
-		if m.inbox != before || m.view != viewInbox || m.help || m.fac.editing {
-			t.Fatalf("%q changed the confirm: %+v view %v", k, m.inbox, m.view)
+		if state() != before || m.view != viewInbox || m.help || m.fac.editing {
+			t.Fatalf("%q changed the confirm: %s view %v", k, state(), m.view)
 		}
 	}
 	send(m, "3")
@@ -491,10 +494,13 @@ func noticeModel(w, h int) *model {
 
 // onApprove puts the cursor on the approval of that pull request number.
 func onApprove(m *model, number int) {
-	i := slices.IndexFunc(m.messages(), func(r inboxRow) bool { return r.app != nil && r.app.Number == number })
-	m.inbox.cursor, m.inbox.at = i, m.messages()[i].key()
-	m.showCard()
+	i := slices.IndexFunc(m.cards(), func(c inboxCard) bool { return c.app != nil && c.app.Number == number })
+	m.inbox.at = m.cards()[i].key()
+	m.syncInbox()
 }
+
+// cursorRow is the message under the cursor.
+func cursorRow(m *model) inboxCard { return m.cards()[m.inbox.tbl.Cursor()] }
 
 func TestInboxApprovalsAreRowsOfTheirRepositorysGroup(t *testing.T) {
 	out := plain(noticeModel(140, 60))
@@ -541,7 +547,7 @@ func TestInboxApprovalURLWrapsInAPaneNarrowerThanIt(t *testing.T) {
 	m := noticeModel(60, 60)
 	onApprove(m, 9)
 	var lines []string
-	for _, l := range m.approveMessage(m.th.on(m.th.Bg), m.messages()[m.inbox.cursor], 20) {
+	for _, l := range m.approveMessage(m.th.on(m.th.Bg), cursorRow(m), 20) {
 		lines = append(lines, strings.TrimSpace(ansi.Strip(l)))
 	}
 	if got := strings.Join(lines, ""); !strings.Contains(got, url) {
@@ -572,7 +578,7 @@ func TestInboxNoKeyActsOnAnApprovalRow(t *testing.T) {
 		{Slug: "demo-export", Number: 12, URL: "https://github.com/example/demo/pull/12", Why: "new", Since: fakeNow.Add(-time.Hour)}}}
 	onApprove(m, 12)
 	send(m, "enter")
-	if m.view != viewInbox || m.inbox.pick != 0 || m.messages()[m.inbox.cursor].app == nil {
+	if m.view != viewInbox || m.inbox.pick != 0 || cursorRow(m).app == nil {
 		t.Errorf("enter did something: view %v, pick %d", m.view, m.inbox.pick)
 	}
 	send(m, "2")
@@ -587,16 +593,16 @@ func TestInboxNoKeyActsOnAnApprovalRow(t *testing.T) {
 func TestInboxCursorStaysOnItsPullRequestThroughARefreshThatReordersRows(t *testing.T) {
 	m := noticeModel(140, 60)
 	onApprove(m, 12)
-	before := m.inbox.cursor
+	before := m.inbox.tbl.Cursor()
 	st := m.fac.repos[0].st
 	st.Approvals.Items = slices.Insert(st.Approvals.Items, 0, data.FactoryApproval{Slug: "demo-old", Number: 3, URL: "u", Why: "new", Since: fakeNow.Add(-5 * time.Hour)})
 	m.syncInbox()
-	if r := m.messages()[m.inbox.cursor]; r.app == nil || r.app.Number != 12 || m.inbox.cursor != before+1 {
-		t.Errorf("the cursor left pull request 12: row %d (was %d) %+v", m.inbox.cursor, before, r.app)
+	if r := cursorRow(m); r.app == nil || r.app.Number != 12 || m.inbox.tbl.Cursor() != before+1 {
+		t.Errorf("the cursor left pull request 12: row %d (was %d) %+v", m.inbox.tbl.Cursor(), before, r.app)
 	}
 	st.Approvals.Items = nil
 	m.syncInbox()
-	if len(m.messages()) > 0 && m.messages()[m.inbox.cursor].app != nil {
+	if len(m.cards()) > 0 && cursorRow(m).app != nil {
 		t.Error("with its pull request gone the cursor is on a row that is there")
 	}
 }
@@ -621,7 +627,7 @@ func TestInboxHistoryIsOneTableUnderThePanes(t *testing.T) {
 	if !(at("stuck-on-keys") < at("History") && at("History") < at("TIME") && at("TIME") < at("… 3 older · H shows them") && at("… 3 older · H shows them") < at("worktree cap")) {
 		t.Errorf("History sits under the panes, above the Needs-you band:\n%s", out)
 	}
-	if strings.Contains(out, "REPO") || strings.Contains(out, "extended 30 min to 09:45Z") {
+	if strings.Contains(out, "TIME   REPO") || strings.Contains(out, "extended 30 min to 09:45Z") {
 		t.Errorf("one repository has entries, and 8 show by default:\n%s", out)
 	}
 	if strings.Count(out, "\n   History")+strings.Count(out, "TIME") != 1 {
@@ -636,7 +642,7 @@ func TestInboxHistoryDefaultsCountAcrossRepositories(t *testing.T) {
 		last.History = append(last.History, data.FactoryHistory{TS: fakeNow.Add(-time.Duration(i+1) * time.Minute), Slug: "demo-docs", By: "human", Text: "question: picked 1: Ship"})
 	}
 	out := plain(m)
-	if !strings.Contains(out, "REPO") || !strings.Contains(out, "demo-docs") {
+	if !strings.Contains(out, "TIME   REPO") || !strings.Contains(out, "demo-docs") {
 		t.Errorf("with two repositories having entries the table names them:\n%s", out)
 	}
 	if !strings.Contains(out, "… 6 older · H shows them") {
@@ -693,9 +699,12 @@ func TestInboxRepositoryWithOnlyApprovalsStillHasItsGroup(t *testing.T) {
 	m := noticeModel(140, 60)
 	m.fac.repos[0].st.Decisions = nil
 	out := plain(m)
-	head, item := strings.Index(out, "\n alpha "), strings.Index(out, "◆ demo-export")
-	if head < 0 || head > item {
-		t.Errorf("alpha keeps its group row for its approvals:\n%s", out)
+	named := false
+	for _, l := range strings.Split(out, "\n") {
+		named = named || strings.HasPrefix(strings.TrimSpace(strings.SplitN(l, "│", 2)[0]), "alpha") && strings.Contains(l, "◆ demo-import")
+	}
+	if !named {
+		t.Errorf("alpha is named on the first of its approval rows:\n%s", out)
 	}
 }
 
@@ -743,16 +752,16 @@ func TestInboxGroupsCardsByRepository(t *testing.T) {
 		if !strings.Contains(l, "│") {
 			continue
 		}
-		f := strings.Fields(strings.TrimPrefix(strings.TrimSpace(strings.SplitN(l, "│", 2)[0]), ">"))
-		switch {
-		case len(f) == 1 && (f[0] == "alpha" || f[0] == "delta-docs"):
-			seen = append(seen, f[0])
-		case len(f) > 1 && (f[0] == "?" || f[0] == "▲"):
+		f := slices.DeleteFunc(strings.Fields(strings.SplitN(l, "│", 2)[0]), func(s string) bool { return s == ">" })
+		if len(f) > 0 && (f[0] == "alpha" || f[0] == "delta-docs") { // the repository, on its first row only
+			seen, f = append(seen, f[0]), f[1:]
+		}
+		if len(f) > 1 && (f[0] == "?" || f[0] == "▲") {
 			seen = append(seen, f[1])
 		}
 	}
 	if got := strings.Join(seen, " "); got != "alpha needs-an-answer second-of-alpha delta-docs stuck-on-keys" {
-		t.Errorf("one heading per repository over its cards: %s", got)
+		t.Errorf("the repository on the first row of its group: %s", got)
 	}
 	send(m, "j", "j")
 	if c, _ := m.cursorCard(); c.d.Slug != "stuck-on-keys" {
@@ -803,8 +812,8 @@ func TestInboxCursorFollowsItsDecisionThroughARefresh(t *testing.T) {
 	setInbox(m, reposWithAnExtra()...)
 	send(m, "j") // second-of-alpha, the second card
 	setInbox(m, withOlderInAlpha(reposWithAnExtra())...)
-	if c, _ := m.cursorCard(); c.d.ID != "aa11" || m.inbox.cursor != 2 {
-		t.Errorf("the cursor stays on its decision at its new place: %s at %d", c.d.ID, m.inbox.cursor)
+	if c, _ := m.cursorCard(); c.d.ID != "aa11" || m.inbox.tbl.Cursor() != 2 {
+		t.Errorf("the cursor stays on its decision at its new place: %s at %d", c.d.ID, m.inbox.tbl.Cursor())
 	}
 	repos := reposWithAnExtra()
 	repos[0].st.Decisions = nil // its decision goes: the nearest card
@@ -818,7 +827,7 @@ func TestInboxPendingPickFollowsItsDecisionAndClosesWhenItIsGone(t *testing.T) {
 	m := inboxModel(100, 30)
 	send(m, "2")
 	setInbox(m, withOlderInAlpha(inboxRepos())...)
-	if c, _ := m.cursorCard(); c.d.ID != idQuestion || m.inbox.cursor != 1 || m.inbox.pick != 2 {
+	if c, _ := m.cursorCard(); c.d.ID != idQuestion || m.inbox.tbl.Cursor() != 1 || m.inbox.pick != 2 {
 		t.Fatalf("the pick stays on its decision at its new place: %s, %+v", c.d.ID, m.inbox)
 	}
 	repos := withOlderInAlpha(inboxRepos())
@@ -839,5 +848,95 @@ func TestInboxLateAnswerKeepsThePickOfAnotherCard(t *testing.T) {
 	m.Update(late)
 	if m.inbox.pick != 1 || m.inbox.id != idBlocked {
 		t.Errorf("the answer of another card leaves the pick: %+v", m.inbox)
+	}
+}
+
+func TestInboxElevenDecisionsScrollTheListNotThePage(t *testing.T) {
+	repos := inboxRepos()
+	repos[0].st.Decisions = nil
+	repos[len(repos)-1].st.Decisions = nil
+	for i := 1; i <= 11; i++ {
+		repos[0].st.Decisions = append(repos[0].st.Decisions, data.FactoryDecision{
+			ID: fmt.Sprintf("id%02d", i), Slug: fmt.Sprintf("task-%02d", i), Kind: "question", TS: fakeNow.Add(time.Duration(i-12) * time.Minute),
+			Ask: fmt.Sprintf("Ask number %d?", i), Options: []string{fmt.Sprintf("First of %d", i), "Second"},
+		})
+	}
+	m := fakeModel(true, 140, 40)
+	setInbox(m, repos...)
+	listed := func() (n int) {
+		for _, l := range strings.Split(plain(m), "\n") {
+			if left, _, ok := strings.Cut(l, "│"); ok && strings.Contains(left, "task-") {
+				n++
+			}
+		}
+		return n
+	}
+	if out := plain(m); listed() != 8 || !strings.Contains(out, "Ask number 1?") || !strings.Contains(out, "1  First of 1") {
+		t.Fatalf("the list shows eight rows beside the first message:\n%s", out)
+	}
+	send(m, "f", "d", "u", "b") // the table's own paging keys are not bound here
+	if m.inbox.tbl.Cursor() != 0 {
+		t.Fatalf("the table's paging keys moved the cursor to %d", m.inbox.tbl.Cursor())
+	}
+	for range 10 {
+		send(m, "j")
+	}
+	out := plain(m)
+	if m.inbox.tbl.Cursor() != 10 || m.inbox.top != 0 || listed() != 8 {
+		t.Fatalf("cursor %d, page top %d, %d rows listed:\n%s", m.inbox.tbl.Cursor(), m.inbox.top, listed(), out)
+	}
+	for _, want := range []string{"> ? task-11", "task-11 · question", "Ask number 11?", "1  First of 11", "worktree cap"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("at the last row the page lacks %q:\n%s", want, out)
+		}
+	}
+	send(m, "j")
+	if m.inbox.top == 0 {
+		t.Error("past the last row j scrolls the page")
+	}
+}
+
+func TestInboxListShowsTheCursorRowAfterARefreshMovesItFar(t *testing.T) {
+	build := func(newest string) []factoryRepo {
+		repos := inboxRepos()
+		repos[0].st.Decisions = nil
+		repos[len(repos)-1].st.Decisions = nil
+		for i := 1; i <= 11; i++ {
+			id := fmt.Sprintf("id%02d", i)
+			age := time.Duration(12-i) * time.Minute
+			if id == newest {
+				age = 0 // the decision that becomes the newest, the last row
+			}
+			repos[0].st.Decisions = append(repos[0].st.Decisions, data.FactoryDecision{
+				ID: id, Slug: "task-" + id[2:], Kind: "question", TS: fakeNow.Add(-age),
+				Ask: "Ask of " + id + "?", Options: []string{"First", "Second"},
+			})
+		}
+		return repos
+	}
+	for _, tc := range []struct {
+		name         string
+		from, to     int
+		before, then []factoryRepo
+	}{
+		{"row 0 to row 10", 0, 10, build(""), build("id01")},
+		{"row 10 to row 0", 10, 0, build("id01"), build("")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := fakeModel(true, 140, 40)
+			setInbox(m, tc.before...)
+			for range tc.from {
+				send(m, "j")
+			}
+			c, _ := m.cursorCard()
+			setInbox(m, tc.then...)
+			if got, _ := m.cursorCard(); got.d.ID != c.d.ID || m.inbox.tbl.Cursor() != tc.to {
+				t.Fatalf("the cursor is on %s at %d, want %s at %d", got.d.ID, m.inbox.tbl.Cursor(), c.d.ID, tc.to)
+			}
+			out := plain(m)
+			if !strings.Contains(out, "> ? task-"+c.d.ID[2:]) || !strings.Contains(out, "Ask of "+c.d.ID+"?") {
+				t.Errorf("the list lacks the selected row of %s:\n%s", c.d.ID, out)
+			}
+		})
 	}
 }

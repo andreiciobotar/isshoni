@@ -99,7 +99,7 @@ func (m *model) footerKeys() []key.Binding {
 		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept}
 	case m.view == viewInbox:
 		bs := []key.Binding{keys.Down, keys.CapEdit, keys.History, keys.Next, keys.Help, keys.Quit}
-		if rows := m.messages(); m.inbox.cursor >= len(rows) || rows[m.inbox.cursor].app == nil { // an approval has nothing to pick
+		if cs, i := m.cards(), m.inbox.tbl.Cursor(); i < 0 || i >= len(cs) || cs[i].app == nil { // an approval has nothing to pick
 			bs = slices.Insert(bs, 1, m.pickHint())
 		}
 		return bs

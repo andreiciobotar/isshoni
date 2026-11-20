@@ -20,7 +20,7 @@ const (
 )
 
 // approveMessage is the right pane on a pull request waiting for the human's approval, which is given on GitHub.
-func (m *model) approveMessage(p paint, r inboxRow, w int) block {
+func (m *model) approveMessage(p paint, r inboxCard, w int) block {
 	th, a := m.th, r.app
 	dot := p.t(" · ", th.Faint)
 	when, text := "handed over "+ago(m.now().Sub(a.Since))+" ago", a.Text

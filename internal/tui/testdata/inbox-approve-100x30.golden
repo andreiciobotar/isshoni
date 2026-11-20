@@ -1,12 +1,12 @@
  Isshoni [1 ✉ ▲7] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
  Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                   
-    TASK            ASK              AGE │ demo-import · approve · approval stale 2h ago            
- alpha                                   │ alpha                                                    
-  ? needs-an-answer Should the expo… 45m │                                                          
-> ◆ demo-import     stale #9          2h │ its head changed after the approval; a fresh approval is 
-  ◆ demo-export     new #12          25m │ needed (the lander stopped it at 8c1f2a9)                
- delta-docs                              │                                                          
-  ▲ stuck-on-keys   git push is ref…  1m │ https://github.com/example/demo/pull/9                   
+REPO          TASK            ASK    AGE │ demo-import · approve · approval stale 2h ago            
+alpha       ? needs-an-answer Shou…  45m │ alpha                                                    
+          > ◆ demo-import     stale      │                                                          
+            ◆ demo-export     new        │ its head changed after the approval; a fresh approval is 
+delta-do…   ▲ stuck-on-keys   git …   1m │ needed (the lander stopped it at 8c1f2a9)                
+                                         │                                                          
+                                         │ https://github.com/example/demo/pull/9                   
                                          │                                                          
                                          │ Approve on GitHub: an approving review, or a comment     
                                          │ reading lgtm.                                            
