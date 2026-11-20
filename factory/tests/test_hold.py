@@ -109,8 +109,24 @@ class GateTests(Hold):
                              "ts": iso(NOW)}])
         self.assertIn("paused:", self.build()[1])
 
-    def test_a_base_merged_into_the_default_branch_or_gone_holds_nothing(self):
+    def test_a_base_that_handed_over_and_merged_holds_nothing_when_it_works_again(self):
+        self.move("alp", "handed-over")
         self.merged = {"alp"}
+        self.move("alp", "working")
+        self.assertEqual(self.build()[0], 0)
+
+    def test_a_working_base_with_no_commit_of_its_own_holds(self):
+        self.merged = {"alp"}  # its branch is at the default branch's tip
+        code, err, spawned = self.build()
+        self.assertEqual((code, spawned), (1, []))
+        self.assertIn("held: base alp is working", err)
+        self.tick()
+        self.assertEqual([c["slug"] for c in self.cards()], ["bet"])
+
+    def test_a_base_merged_into_the_default_branch_or_gone_holds_nothing(self):
+        self.move("alp", "handed-over")
+        self.merged = {"alp"}
+        self.move("alp", "working")
         self.assertEqual(self.build()[0], 0)
         self.merged, self.entries = set(), ["bet"]
         self.assertEqual(self.build()[0], 0)
@@ -148,6 +164,22 @@ class CardTests(Hold):
         self.assertEqual((factory.open_decisions(ROOT), self.released(), self.lines()), ([], ["bet is handed-over"], []))
 
 
+class DelegationTests(Hold):
+    """A `choice` that is not an integer delegates the question; it is not a pick and releases nothing."""
+
+    def test_a_string_choice_on_a_hold_card_keeps_the_task_held_and_the_card_open(self):
+        for n, who in enumerate(("lead", "site-manager"), 1):
+            self.tick()
+            card = self.cards()[-1]
+            self.seed("decisions", [{"ts": iso(self.clock), "repo": ROOT, "id": card["id"], "slug": "bet", "choice": who}])
+            self.tick()
+            self.assertEqual(self.build()[0], 1, who)
+            self.assertEqual([d["id"] for d in factory.open_decisions(ROOT)], [card["id"]], who)
+            self.assertEqual((len(self.cards()), self.released()), (n, ["x"] * (n - 1)), who)
+            self.assertEqual(self.lines(), [], who)
+            self.seed("decisions", [{"ts": iso(self.clock), "repo": ROOT, "id": card["id"], "slug": "bet", "released": "x"}])
+
+
 class ReleaseTests(Hold):
     def test_a_base_that_hands_over_releases_the_card_and_tells_the_lead_once(self):
         self.tick()
@@ -161,7 +193,9 @@ class ReleaseTests(Hold):
 
     def test_a_base_merged_or_gone_releases_the_card(self):
         self.tick()
+        self.move("alp", "handed-over")
         self.merged = {"alp"}
+        self.move("alp", "working")
         self.tick()
         self.assertEqual(self.released(), ["base alp merged"])
         self.assertEqual(len(self.lines()), 1)
