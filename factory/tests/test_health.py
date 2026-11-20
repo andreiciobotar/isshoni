@@ -3,6 +3,7 @@ import io
 import json
 import os
 import plistlib
+import re
 import subprocess
 import tempfile
 import time
@@ -67,6 +68,18 @@ def ev(slug, event, **kw):
     return {"repo": ROOT, "slug": slug, "event": event, **kw}
 
 
+COURIER_LINE = re.compile(r"\n---8<---\n(.*)\n---8<---$", re.S)
+
+
+def lead_prompt(prompt, session="lead-sid", cwd=f"{WT}/x", role="lead", **payload):
+    """The receiving session's own `UserPromptSubmit` hook, run on `prompt`: how a line of the outbox put in is taken."""
+    stdin = json.dumps({"hook_event_name": "UserPromptSubmit", "session_id": session, "cwd": cwd, "prompt": prompt, **payload})
+    with mock.patch.dict(os.environ, {"FACTORY_SESSION": "1", "FACTORY_ROLE": role}), mock.patch.object(factory.sys, "stdin", io.StringIO(stdin)), \
+            redirect_stdout(io.StringIO()):
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        assert factory.main(["hook"]) == 0
+
+
 class Home(unittest.TestCase):
     """A temporary HOME for the tests that read or write the store or ~/.claude/projects."""
 
@@ -81,6 +94,14 @@ class Home(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.store = self.home / ".claude" / "factory"
         self.store.mkdir(parents=True)
+
+    def takes(self, answer, cwd=f"{WT}/x"):
+        """A runner answer that is `answer` and, as the session put into would, submits what was put in to its hook."""
+        def run():
+            argv = self.fake.calls[-1]
+            lead_prompt(argv[-1] if argv[1] == "--bg" else COURIER_LINE.search(argv[-1])[1], cwd=cwd)
+            return answer
+        return run
 
     def transcript(self, name, mtime, sid=SID):
         path = self.home / ".claude" / "projects" / "proj" / name.format(sid=sid)

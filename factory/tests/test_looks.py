@@ -247,6 +247,15 @@ class Picture(Harness):
         [task] = factory.look_picture(p, None, [], [])["tasks"]
         self.assertEqual(len(task["messages"]), 3)
 
+    def test_a_row_put_in_and_not_taken_shows_for_how_long(self):
+        put = {"repo": ROOT, "id": "a", "slug": "x"}
+        self.seed("outbox", [{**put, "ts": iso(NOW - 600), "line": "L1"}, {**put, "ts": iso(NOW - 300), "sent": iso(NOW - 300)},
+                             {**put, "id": "b", "ts": iso(NOW - 100), "line": "L2"}])
+        base = row("x", session="none", extensions=[], dirty=None, ahead=None, behind=None, pr_draft=False)
+        p = pic(rows=[base], declared={}, repo=SimpleNamespace(root=ROOT, default="main", tasks=[], worktree_path=lambda s: f"{WT}/{s}"))
+        [task] = factory.look_picture(p, None, [], [])["tasks"]
+        self.assertEqual(task["messages"], [{"queued": "10m", "put in": "5m", "tries": 0}, {"queued": "1m", "tries": 0}])
+
     def test_calls_are_the_ten_newest_of_the_day_newest_first_and_a_lead_call_among_them_still_refuses(self):
         self.seed("firings", [r for i in range(12) for r in (
             fired(f"f{i}", criterion="review-loops" if i == 11 else f"c{i}", subject="x", ts=NOW - 2000 + i), {**decided(f"f{i}", "escalated", ts=NOW - 1000 + i), "to": "lead"})])

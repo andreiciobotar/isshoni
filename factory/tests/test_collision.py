@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import BATCH, DISPATCHER, FakeRun, factory, repo_answers
-from test_health import NOW, Harness, iso, reply
+from test_health import COURIER_LINE, NOW, Harness, iso, lead_prompt, reply
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from isshoni import kaizen  # noqa: E402
@@ -139,13 +139,18 @@ class Scratch(Harness):
             return 0, json.dumps({"result": "sent"}), ""
         self.answer = answer
 
+    def taken(self, slug):
+        """The courier's reply when the lead's session of `slug` took the line it was sent."""
+        lead_prompt(COURIER_LINE.search(self.fake.calls[-1][-1])[1], cwd=f"{self.root}/.claude/worktrees/{slug}")
+        return 0, json.dumps({"result": "sent"}), ""
+
     def build(self, slug, findings=(), outcome="built"):
         """One build run of `slug`, whose faked answer reports `findings`."""
         def answer():
             if self.fake.calls[-1][-1].startswith("Task slug:"):
                 doc = {"outcome": outcome, "handover": "### Result\ndone", "findings": list(findings)}
                 return 0, json.dumps({"subtype": "success", "session_id": "sid-b", "total_cost_usd": 1.0, "structured_output": doc}), ""
-            return 0, json.dumps({"result": "sent"}), ""
+            return self.taken(slug)
         self.answer = answer
         self.spec(slug)
         return self.cli("build", slug, "--run", "--dispatcher", "dispatcher-repo")
@@ -432,7 +437,7 @@ class OutcomeTests(Scratch):
             if call[-1].startswith("Task slug:"):
                 self.told_firing("late", "alpha")
                 return 0, json.dumps({"subtype": "success", "structured_output": {"outcome": "built", "handover": "ok"}}), ""
-            return 0, json.dumps({"result": "sent"}), ""
+            return self.taken("alpha")
         self.answer = arrives
         self.cli("build", "alpha", "--run", "--dispatcher", "dispatcher-repo")
         wake = [c[-1] for c in self.claude_runs() if "build run 2 built" in c[-1]]

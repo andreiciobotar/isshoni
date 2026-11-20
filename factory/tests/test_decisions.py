@@ -1,6 +1,7 @@
 """A lead posts a decision for the human to the inbox; the human's pick reaches the lead through the outbox."""
 import json
 import os
+from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import ROOT, WT, factory
@@ -99,6 +100,15 @@ class AnswerTests(Decisions):
         [row] = [r for r in self.records("outbox") if "line" in r]
         self.assertEqual(row["slug"], "demo-task")
         self.assertEqual(json.loads(self.as_human("decision", "list", "--json")[1]), [])
+
+    def test_the_answer_reaches_the_lead_with_its_outbox_id(self):
+        rid = self.posted()
+        self.as_human("decision", "answer", rid, "2")
+        [row] = [r for r in self.records("outbox") if "line" in r]
+        put = []
+        with mock.patch.object(factory, "reach_lead", lambda repo, sessions, slug, lines: put.extend(lines) or (True, None)):
+            factory.deliver(SimpleNamespace(root=ROOT), None, "demo-task")
+        self.assertEqual(put, [f"INBOX: demo-task: decision {rid}: the human picked 2: Add retry now [outbox {row['id']}]"])
 
     def test_a_second_answer_and_a_pick_out_of_range_fail(self):
         rid = self.posted()
