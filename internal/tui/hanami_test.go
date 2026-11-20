@@ -670,7 +670,7 @@ func TestHanamiCostsNothingWhenHidden(t *testing.T) {
 	}
 
 	m.Update(press("esc"))
-	if m.view != viewDashboard || m.hn.following || m.hn.scene != nil || m.hn.gen == gen {
+	if m.view != viewInbox || m.hn.following || m.hn.scene != nil || m.hn.gen == gen {
 		t.Fatal("leaving the tab keeps the stream or the scene")
 	}
 	m.Update(hanamiEventsMsg{gen: gen, evs: []data.Event{ev("tool", 0, nil)}}) // a late message of the old stream

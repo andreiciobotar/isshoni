@@ -40,8 +40,8 @@ func TestKaizenViewKeys(t *testing.T) {
 		t.Fatalf("shift+tab goes back, past hanami and ops, to kaizen: %v", m.view)
 	}
 	send(m, "esc")
-	if m.view != viewDashboard {
-		t.Fatal("esc goes back to the dashboard")
+	if m.view != viewInbox {
+		t.Fatal("esc goes back to the inbox")
 	}
 }
 
