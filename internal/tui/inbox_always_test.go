@@ -227,6 +227,16 @@ func TestInboxPickedCardsAreNotCountedInTheBadge(t *testing.T) {
 	}
 }
 
+func TestInboxServerPickedOptionIsMarkedWithoutAConfirm(t *testing.T) {
+	m, _ := splitModel(t)
+	m.fac.repos[0].st.Decisions[1].Picked = 1
+	send(m, "j")
+	out := plain(m)
+	if !strings.Contains(out, "[1] Start demo-retry") || strings.Contains(out, "Accept") {
+		t.Fatalf("a picked decision marks its option and offers no confirm:\n%s", out)
+	}
+}
+
 func TestInboxCardDrawsTheNoteUnderTheAskInFaint(t *testing.T) {
 	m, _ := splitModel(t)
 	m.fac.repos[0].st.Decisions[1].Note = "starts by itself when it can: at the cap of 6 tasks in motion: a, b (always: start it)"
