@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"slices"
 
 	"charm.land/bubbles/v2/key"
@@ -95,7 +96,7 @@ func (m *model) footerKeys() []key.Binding {
 	case m.view == viewInbox && m.inbox.pick != 0:
 		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept}
 	case m.view == viewInbox:
-		return []key.Binding{keys.Down, keys.Pick, keys.CapEdit, keys.Next, keys.Help, keys.Quit}
+		return []key.Binding{keys.Down, m.pickHint(), keys.CapEdit, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewFactory:
 		return []key.Binding{keys.Down, keys.CapEdit, keys.Range, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewHanami:
@@ -129,4 +130,13 @@ func (m *model) helpGroups() [][]key.Binding {
 		groups = slices.Insert(groups, 2, []key.Binding{keys.Pick, keys.Confirm, keys.Mark, keys.Accept})
 	}
 	return groups
+}
+
+// pickHint is the Pick binding with the option range of the card under the cursor.
+func (m *model) pickHint() key.Binding {
+	c, ok := m.cursorCard()
+	if !ok || len(c.d.Options) == 0 {
+		return keys.Pick
+	}
+	return key.NewBinding(key.WithKeys(keys.Pick.Keys()...), key.WithHelp(fmt.Sprintf("1–%d", min(len(c.d.Options), 9)), "pick an option"))
 }
