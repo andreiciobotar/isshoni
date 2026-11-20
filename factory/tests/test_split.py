@@ -9,12 +9,8 @@ from test_health import HOUR, NOW, iso
 ASK = "The importer's retry is separable: it needs the queue change first."
 BRIEF = "Add retry to the importer.\nExpected size: Small"
 LAUNCH = {("claude", "--bg"): (0, "backgrounded · 96dc4869 · demo-retry\n", ""), ("git", "ls-remote"): (2, "", "")}
+FAILING = {**LAUNCH, ("claude", "--bg"): (1, "", "no luck")}
 OTHER = "/other"
-
-
-def overrun(n, ts=NOW, repo=ROOT):
-    return {"ts": iso(ts), "repo": repo, "id": f"o{n:02}", "slug": "demo-task", "kind": "overrun",
-            "ask": "demo-task is over its limit.", "options": ["Continue: 30 more minutes", "Stop it"]}
 
 
 class Splits(Decisions):
@@ -38,10 +34,10 @@ class Splits(Decisions):
         self.assertEqual((code, err), (0, ""))
         return out.strip()
 
-    def tick(self, settings=None):
+    def tick(self, settings=None, answers=LAUNCH):
         if settings is not None:
             (self.store / "settings.toml").write_text(settings)
-        return self.cli("watch", entries=["demo-task"], answers=LAUNCH)
+        return self.cli("watch", entries=["demo-task"], answers=answers)
 
     def listed(self):
         return json.loads(self.as_human("decision", "list", "--json")[1])
@@ -57,9 +53,6 @@ class Splits(Decisions):
 
     def always_records(self):
         return [(r["kind"], r["always"], r["by"]) for r in self.records("decisions") if "always" in r]
-
-    def overruns(self, count, first=0):
-        self.seed("decisions", [overrun(n, NOW + n) for n in range(first, first + count)])
 
 
 class SplitCommandTests(Splits):
@@ -221,6 +214,38 @@ class TickTests(Splits):
     def history(self):
         return json.loads(self.as_human("status", "--json", "--cached")[1])["history"]
 
+    def failed_start(self):
+        patcher = mock.patch.object(factory, "start_task", wraps=factory.start_task)
+        self.attempts = patcher.start()
+        self.addCleanup(patcher.stop)
+        rid = self.posted_split()
+        for _ in range(3):
+            self.tick(answers=FAILING)
+        return rid
+
+    def test_a_failed_start_is_tried_once_logged_and_the_card_is_open_again_with_the_reason(self):
+        rid = self.failed_start()
+        self.assertEqual(self.attempts.call_count, 1)
+        [failed] = [r for r in self.records("decisions") if "failed" in r]
+        self.assertEqual((failed["id"], failed["slug"], failed["failed"]), (rid, "demo-task", "claude did not start the session"))
+        [d] = self.listed()
+        self.assertEqual((d["id"], "picked" in d, d["note"]),
+                         (rid, False, "the start failed: claude did not start the session; pick Start to try again"))
+        self.assertEqual((self.started(), self.outbox()), ([], []))
+        self.assertIn(("demo-retry", "script", "start from a split of demo-task failed: claude did not start the session"),
+                      [(e["slug"], e["by"], e["text"]) for e in self.history()])
+
+    def test_the_humans_answer_after_a_failed_start_gives_exactly_one_more_attempt(self):
+        rid = self.failed_start()
+        self.assertEqual(self.as_human("decision", "answer", rid, "1")[0], 0)
+        for _ in range(3):
+            self.tick(answers=FAILING)
+        self.assertEqual(self.attempts.call_count, 2)
+        self.assertEqual(len([r for r in self.records("decisions") if "failed" in r]), 2)
+        self.assertEqual(self.as_human("decision", "answer", rid, "1")[0], 0)
+        self.tick()
+        self.assertEqual((self.attempts.call_count, self.started()), (3, ["demo-retry"]))
+
     def test_no_dispatcher_is_a_wait(self):
         rid = self.posted_split()
         self.as_human("decision", "answer", rid, "1")
@@ -239,52 +264,6 @@ class TickTests(Splits):
         self.assertEqual(json.loads(factory.repo_state(ROOT, "splits", "json").read_text())["waits"], {first: "at the cap"})
 
 
-class OverrunTests(Splits):
-    """Asks of kind `overrun`, written by the test with the task blocked on the human, as the sibling task posts them."""
-
-    def test_always_then_ten_standing_answers_then_the_lapse_and_the_reset(self):
-        self.overruns(12)
-        code, _, err = self.as_human("decision", "answer", "o00", "1", "--always")
-        self.assertEqual((code, err), (0, ""))
-        self.assertEqual(self.standing()["overrun"], {"kind": "overrun", "label": "continue", "on": True, "uses": 0, "limit": 10, "lapsed": False})
-        self.tick()
-        # o00 was the human's own answer and is no use; o01..o10 are the ten standing ones; o11 is left to the human.
-        by = {r["id"]: r.get("by") for r in self.records("decisions") if "choice" in r}
-        self.assertEqual(by, {"o00": None, **{f"o{n:02}": "standing" for n in range(1, 11)}})
-        self.assertEqual(self.always_records(), [("overrun", True, "human"), ("overrun", False, "script")])
-        [d] = self.listed()
-        self.assertEqual((d["id"], d["note"]), ("o11", "always continue ran 10 times and switched itself off: this one is yours"))
-        self.assertEqual(self.standing()["overrun"], {"kind": "overrun", "label": "continue", "on": False, "uses": 10, "limit": 10, "lapsed": True})
-        self.tick()
-        self.assertEqual(self.always_records().count(("overrun", False, "script")), 1)
-        self.assertEqual(self.as_human("decision", "always", "overrun", "on")[1], "overrun: always continue\n")
-        self.assertEqual(self.standing()["overrun"], {"kind": "overrun", "label": "continue", "on": True, "uses": 0, "limit": 10, "lapsed": False})
-        self.assertNotIn("note", self.listed()[0])
-        self.tick()
-        self.assertEqual((self.listed(), self.outbox()[-1]), ([], "INBOX: demo-task: decision o11: the human picked 1: Continue: 30 more minutes"))
-
-    def test_uses_count_across_repositories(self):
-        self.seed("decisions", [{**overrun(90, repo=OTHER), "slug": "demo-far"},
-                                {"ts": iso(NOW), "repo": OTHER, "id": "o90", "slug": "demo-far", "choice": 1, "by": "standing"},
-                                {"ts": iso(NOW - 1), "repo": OTHER, "kind": "overrun", "always": True, "by": "human"}])
-        self.assertEqual(self.standing()["overrun"]["uses"], 1)
-        self.assertTrue(self.standing()["overrun"]["on"])
-
-    def test_off_by_the_humans_hand_is_not_lapsed_and_the_tick_leaves_the_card(self):
-        self.overruns(1)
-        self.as_human("decision", "always", "overrun", "on")
-        self.as_human("decision", "always", "overrun", "off")
-        self.tick()
-        self.assertEqual((len(self.listed()), self.standing()["overrun"]["lapsed"]), (1, False))
-        self.assertNotIn("note", self.listed()[0])
-
-    def test_an_overrun_is_not_answered_without_a_record_the_default_is_off(self):
-        self.overruns(1)
-        self.tick()
-        [d] = self.listed()
-        self.assertEqual((d["always"], "picked" in d), (1, False))
-
-
 class AlwaysTests(Splits):
     def test_always_is_refused_for_a_question_and_for_a_splits_second_option(self):
         rid = self.posted()
@@ -300,6 +279,12 @@ class AlwaysTests(Splits):
         self.assertEqual(self.as_human("decision", "answer", sid, "1", "--always")[0], 0)
         self.assertEqual(self.always_records(), [("split", True, "human")])
 
+    def test_uses_count_across_repositories(self):
+        self.seed("decisions", [{"ts": iso(NOW - 1), "repo": OTHER, "id": "s90", "slug": "demo-far", "kind": "split", "ask": ASK,
+                                 "options": ["Start x", "Do not start it"], "new": "x", "brief": BRIEF},
+                                {"ts": iso(NOW), "repo": OTHER, "id": "s90", "slug": "demo-far", "choice": 1, "by": "standing"}])
+        self.assertEqual(self.standing()["split"]["uses"], 1)
+
     def test_always_is_refused_in_a_task_worktree_and_for_a_kind_without_one(self):
         code, _, err = self.as_lead("always", "split", "off")
         self.assertEqual((code, "only the human" in err, self.always_records()), (2, True, []))
@@ -307,10 +292,8 @@ class AlwaysTests(Splits):
         self.assertEqual((code, "no standing answer" in err), (2, True))
 
     def test_status_carries_the_standing_list_in_table_order(self):
-        self.assertEqual(list(self.standing().values()), [
-            {"kind": "split", "label": "start it", "on": True, "uses": 0, "limit": None, "lapsed": False},
-            {"kind": "overrun", "label": "continue", "on": False, "uses": 0, "limit": 10, "lapsed": False}])
-        self.assertEqual([s["kind"] for s in json.loads(self.as_human("status", "--json")[1])["standing"]], ["split", "overrun"])
+        self.assertEqual(list(self.standing().values()), [{"kind": "split", "label": "start it", "on": True, "uses": 0}])
+        self.assertEqual([s["kind"] for s in json.loads(self.as_human("status", "--json")[1])["standing"]], ["split"])
 
 
 class HistoryTests(Splits):
@@ -328,16 +311,11 @@ class HistoryTests(Splits):
         self.as_human("decision", "answer", rid, "2")
         self.assertEqual(self.entries(), [("demo-task", "human", "split: picked 2: Do not start it")])
 
-    def test_a_standing_overrun_answer_is_by_standing_and_the_always_records_are_entries(self):
-        self.overruns(1)
-        self.as_human("decision", "always", "overrun", "on")
-        self.tick()
-        self.assertEqual(self.entries()[0], ("demo-task", "standing", "overrun: picked 1: Continue: 30 more minutes"))
-        self.assertIn(("", "human", "always continue on overrun"), self.entries())
-        self.as_human("decision", "always", "overrun", "off")
-        self.assertIn(("", "human", "asks again on overrun"), self.entries())
-        self.seed("decisions", [{"ts": iso(NOW + 9), "repo": ROOT, "kind": "overrun", "always": False, "by": "script"}])
-        self.assertIn(("", "script", "always continue on overrun switched off after 10 uses"), self.entries())
+    def test_the_always_records_are_entries(self):
+        self.as_human("decision", "always", "split", "on")
+        self.assertEqual(self.entries(), [("", "human", "always start it on split")])
+        self.as_human("decision", "always", "split", "off")
+        self.assertIn(("", "human", "asks again on split"), self.entries())
 
     def test_an_answer_that_is_not_a_number_is_no_entry_and_no_crash(self):
         rid = self.posted()
