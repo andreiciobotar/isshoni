@@ -1,0 +1,40 @@
+ Isshoni 一緒に [1 Inbox ▲6] 2 Sessions  3 Agents  4 Factory  5 Kaizen  6 Ops  7 Hanami                          24h [7d] 30d  all   ○ idle 
+ Inbox  18 in motion (8 blocked) · 3 waiting for review · 2 merged, not cleaned · 1 settled  · as of 11:00:00                               
+    TASK            ASK                              AGE │ wide-ask · question · asked 30m ago                                              
+ alpha                                                   │ delta-docs · blocked 2h00m · base main                                           
+  ? needs-an-answer Should the export keep the lega… 45m │                                                                                  
+ delta-docs                                              │ Which environment's database credentials should the import use?                  
+> … wide-ask        Which environment's database cr… 30m │                                                                                  
+  ? slow-import     The import ran 3h of its 2h. Sp… 20m │ With the site manager since 10:50                                                
+  ▲ stuck-on-keys   git push is refused: the deploy…  1m │                                                                                  
+                                                                                                                                            
+ ▲ Needs you  3                                                                                                                             
+ ◆ alpha       api-rate-limits  review PR         3h00m  #42 https://github.com/o/alpha/pull/42                                             
+ ◆ delta-docs  video-cut        see deliverable  30m00s  https://example.com/cut/v2                                                         
+ ◆ delta-docs  design-review    see deliverable       -  /r/delta/docs/design.md                                                            
+                                                                                                                                            
+ worktree cap  5  per repo, 1 in reserve   c edit                                                           ~/.claude/factory/settings.toml 
+                                                                                                                                            
+ alpha                                                                            in motion ▲●●●●●● 7/4+1   review 1   merged 2   settled 1 
+  SLUG               PHASE                                           ELAPSED  SIZE    PR                      BASE          FLAGS           
+  needs-an-answer    ▲ blocked, needs you                             10m40s  -       example.com/design/doc  main                          
+  login-flow         ⠋ in motion                               2h15m / 1h30m  medium  -                       main          [overtime]      
+  lost-its-lead      ● in motion                                    9h / 45m  -       -                       main          [held]          
+                     held 9h · ended-undeclared · its replacement redo-plumbing is in review: this one is closed when that lands            
+  quiet-refactor     ⠋ in motion                                    4m / 45m  small   -                       main                          
+  rate-limit-docs    ● in motion                                           -  -       #40 closed              main          [stale]         
+  slow-export        ⠋ in motion                                   41m / 45m  small   -                       main                          
+  stacked-on-login   ● in motion                                     1m / 2h  -       ?                       ↳ login-flow                  
+  api-rate-limits    ◆ waiting for review                              1h30m  -       #42                     main                          
+  old-experiment     ✓ merged, not cleaned                             1m01s  -       #31                     main                          
+  old-plumbing       ✓ merged, not cleaned                             2h00m  -       #9                      main          [kept]          
+                     kept: uncommitted changes                                                                                              
+  release-notes      · settled, not cleaned                           50m00s  -       release-notes.md        main                          
+                                                                                                                                            
+ beta-é日本語                                                                                       in motion ●●● 3/2   review 0   merged 0 
+  SLUG               PHASE                                           ELAPSED  SIZE    PR                      BASE          FLAGS           
+  task-00            ⠋ in motion                                       1m00s  -       -                       main                          
+  task-01            ⠋ in motion                                       2m00s  -       -                       main                          
+  task-02            ⠋ in motion                                       3m00s  -       -                       main                          
+ +18 more lines · ↓ to scroll                                                                                                               
+ ↑↓/jk move  ·  1–2 pick an option  ·  c edit cap  ·  L S leave it to lead · site manager  ·  tab next view  ·  ? help  ·  q quit           

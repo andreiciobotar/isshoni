@@ -120,6 +120,8 @@ func TestGoldenInbox(t *testing.T) {
 		{"inbox-100x30", 100, 30, func(m *model) { setInbox(m, inboxRepos()...) }},
 		{"inbox-80x24", 80, 24, func(m *model) { setInbox(m, inboxRepos()...) }},
 		{"inbox-confirm-100x30", 100, 30, func(m *model) { setInbox(m, inboxRepos()...); send(m, "2") }},
+		{"inbox-parked-140x40", 140, 40, func(m *model) { setInbox(m, inboxRepos()...); send(m, "j") }},
+		{"inbox-handed-back-140x40", 140, 40, func(m *model) { setInbox(m, inboxRepos()...); send(m, "j", "j") }},
 		{"inbox-confirm-lead-100x30", 100, 30, func(m *model) { setInbox(m, inboxRepos()...); send(m, "L") }},
 		{"inbox-empty-80x24", 80, 24, func(m *model) { setInbox(m, fakeFactoryRepos()...) }},
 	} {
@@ -135,16 +137,40 @@ func TestGoldenInbox(t *testing.T) {
 func TestInboxShowsTheCardsOverTheFactoryLines(t *testing.T) {
 	out := plain(inboxModel(140, 60))
 	for _, want := range []string{
-		"▸ needs-an-answer · question · 45m", "Should the export keep the legacy column order",
+		"> ? needs-an-answer", "  ▲ stuck-on-keys", "TASK", "AGE", "│",
+		"needs-an-answer · question · asked 45m ago", "Should the export keep the legacy column order",
 		"1  Keep the legacy order  (recommended)", "2  Switch now and update both readers",
-		"  stuck-on-keys · blocked · 1m", "1  Done, carry on", "worktree cap", "delta-docs", "SLUG",
+		"worktree cap", "delta-docs", "SLUG",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("inbox lacks %q:\n%s", want, out)
 		}
 	}
-	if strings.Index(out, "needs-an-answer · question") > strings.Index(out, "worktree cap") {
-		t.Error("the cards come first")
+	if strings.Index(out, "TASK") > strings.Index(out, "worktree cap") {
+		t.Error("the panes come first")
+	}
+}
+
+func TestInboxMessagePaneFollowsTheCursor(t *testing.T) {
+	calls, _ := answerScript(t)
+	m, _, delta := answerModel(t)
+	send(m, "j", "j", "j") // past the parked and the handed-back message
+	out := plain(m)
+	for _, want := range []string{"stuck-on-keys · blocked · asked 1m ago", "git push is refused", "1  Done, carry on", "2  Stop the task"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("after j the message lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Should the export keep") {
+		t.Errorf("after j the first decision's ask is gone:\n%s", out)
+	}
+	send(m, "1")
+	msgs := upd(m, press("y"))
+	if got := only[answerMsg](msgs); len(got) != 1 || got[0].err != nil {
+		t.Fatalf("%v", msgs)
+	}
+	if want := fmt.Sprintf("%s decision answer %s 1\n", delta, idBlocked); readCalls(calls) != want {
+		t.Errorf("script ran as %q, want %q", readCalls(calls), want)
 	}
 }
 
@@ -448,7 +474,7 @@ func TestSnapshotInboxAndDashboard(t *testing.T) {
 		}
 		return out
 	}
-	if out := snap("inbox"); !strings.Contains(out, "[1 Inbox]") || !strings.Contains(out, "▸ demo-task · question") || !strings.Contains(out, "2  Add retry now  (recommended)") {
+	if out := snap("inbox"); !strings.Contains(out, "[1 Inbox]") || !strings.Contains(out, "> ? demo-task") || !strings.Contains(out, "demo-task · question · asked") || !strings.Contains(out, "2  Add retry now  (recommended)") {
 		t.Errorf("inbox snapshot:\n%s", out)
 	}
 	if out := snap("dashboard"); !strings.Contains(out, "[2 Sessions]") || strings.Contains(out, "demo-task") {
@@ -488,19 +514,31 @@ func TestInboxLeaveKeysOpenTheDelegationConfirm(t *testing.T) {
 		if m.inbox.id != idQuestion || !strings.Contains(out, want) || !strings.Contains(out, "[Accept]") || !strings.Contains(out, " Reject ") {
 			t.Errorf("%s: choice %q:\n%s", key, m.inbox.choice, out)
 		}
-		if got := strings.Count(out, "L leave it to the lead"); got != 2 {
-			t.Errorf("%s: the hint stays on the cards without a choice only: %d", key, got)
+		if strings.Contains(out, "L leave it to the lead") {
+			t.Errorf("%s: the confirm takes the place of the hint:\n%s", key, out)
 		}
 	}
 }
 
-func TestInboxHintOnACardAndNotOnAParkedOne(t *testing.T) {
-	out := plain(inboxModel(140, 40))
-	if got := strings.Count(out, "L leave it to the lead · S to the site manager"); got != 3 {
-		t.Errorf("the hint is on the three cards that are the human's: %d\n%s", got, out)
+func TestInboxHintOnTheSelectedMessageOnly(t *testing.T) {
+	const hint = "L leave it to the lead · S to the site manager"
+	m := inboxModel(140, 40)
+	out := plain(m)
+	if got := strings.Count(out, hint); got != 1 {
+		t.Errorf("the hint is on the selected message only: %d\n%s", got, out)
 	}
-	if !strings.Contains(out, "With the site manager since 10:50") || !strings.Contains(out, "The site manager handed it back: it turns on whether") {
-		t.Errorf("parked and handed-back lines:\n%s", out)
+	if !strings.Contains(out, "  … wide-ask") {
+		t.Errorf("the parked message's row is marked in the icon column:\n%s", out)
+	}
+	send(m, "j") // the parked message
+	out = plain(m)
+	if !strings.Contains(out, "With the site manager since 10:50") || strings.Contains(out, hint) || strings.Contains(out, "The production ones") {
+		t.Errorf("parked: its line, no hint, no options:\n%s", out)
+	}
+	send(m, "j") // the handed-back message: its reason and the options and the hint of a normal one
+	out = plain(m)
+	if !strings.Contains(out, "The site manager handed it back: it turns on whether") || !strings.Contains(out, hint) || !strings.Contains(out, "2  Split it in two") {
+		t.Errorf("handed back:\n%s", out)
 	}
 }
 
@@ -546,16 +584,20 @@ func TestInboxGroupsCardsByRepository(t *testing.T) {
 	if got := strings.Join(order, " "); got != "needs-an-answer second-of-alpha wide-ask slow-import stuck-on-keys" {
 		t.Fatalf("cards %s", got)
 	}
-	var seen []string // the headings and cards in the order shown
-	for _, l := range strings.Split(plain(m), "\n") {
-		switch l = strings.TrimSpace(l); {
-		case l == "alpha" || l == "delta-docs":
-			seen = append(seen, l)
-		case strings.HasPrefix(l, "▸ needs-an-answer"), strings.HasPrefix(l, "second-of-alpha"), strings.HasPrefix(l, "stuck-on-keys"):
-			seen = append(seen, strings.Fields(strings.TrimPrefix(l, "▸"))[0])
+	var seen []string                                 // the headings and cards in the order shown
+	for _, l := range strings.Split(plain(m), "\n") { // the list is what is left of the rule; the lines below have none
+		if !strings.Contains(l, "│") {
+			continue
+		}
+		f := strings.Fields(strings.TrimPrefix(strings.TrimSpace(strings.SplitN(l, "│", 2)[0]), ">"))
+		switch {
+		case len(f) == 1 && (f[0] == "alpha" || f[0] == "delta-docs"):
+			seen = append(seen, f[0])
+		case len(f) > 1 && (f[0] == "?" || f[0] == "▲" || f[0] == "…"):
+			seen = append(seen, f[1])
 		}
 	}
-	if got := strings.Join(seen, " "); got != "alpha needs-an-answer second-of-alpha delta-docs stuck-on-keys" {
+	if got := strings.Join(seen, " "); got != "alpha needs-an-answer second-of-alpha delta-docs wide-ask slow-import stuck-on-keys" {
 		t.Errorf("one heading per repository over its cards: %s", got)
 	}
 	send(m, "j", "j", "j", "j")
