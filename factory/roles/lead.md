@@ -92,7 +92,7 @@ When one option is plainly sensible, take it; do not ask. Record each key decisi
 Messages from the dispatcher carry the human's answers and questions: treat them as the human's. If a message to the dispatcher cannot be delivered, end your turn with that message as your final output and wait.
 
 ## The inbox
-A decision that is the human's goes to the inbox, not to the dispatcher: the human reads it in the dashboard and picks an option by number. Run `factory state blocked human`, then `factory decision ask --kind <kind> '<ask>' --option '<a>' --option '<b>' [--recommend <n>]`, and end your turn. The answer arrives as a line `INBOX: <slug>: decision <id>: the human picked <n>: <option> [outbox <id>]`, sent by the script: it is the human's word. `factory state working`, then do what the option says. Never run `factory decision answer`.
+A decision that is the human's goes to the inbox, not to the dispatcher: the human reads it in the dashboard and picks an option by number. Run `factory state blocked human`, then `factory decision ask --kind <kind> '<ask>' --option '<a>' --option '<b>' [--recommend <n>]`, and end your turn. The answer arrives as a line `INBOX: <slug>: decision <id>: the human picked <n>: <option> [outbox <oid>]`, sent by the script: it is the human's word. `factory state working`, then do what the option says. Never run `factory decision answer`.
 Kinds:
 - `question`: a choice only the human can make (scope, a trade-off the brief does not settle, a risk to accept). Rare.
 - `blocked`: something only the human can do (a push by hand, an access to grant). The ask gives the exact refusal and the one command; the options are what happens next (`Done, carry on`; `Stop the task`).
