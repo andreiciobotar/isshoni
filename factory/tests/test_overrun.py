@@ -160,14 +160,21 @@ class IdleLeadTests(Overrun):
         self.assertEqual([d["decision"] for d in self.decisions()], ["paused"])
 
     def test_a_line_the_lead_has_not_taken_inside_the_wait_still_sends_the_dispatcher_its_notice(self):
-        f = {"id": "aaa", "slug": "x", "criterion": "overrun"}
-        for decision, head in (("paused", "PAUSED"), ("extended", "SITE MANAGER")):
-            with self.subTest(decision=decision), mock.patch.object(factory, "forward", side_effect=["queued", "dispatcher"]) as forward, \
+        for criterion, decision, heads in (("overrun", "extended", ["SITE MANAGER", "SITE MANAGER"]),
+                                           ("run-stopped", "paused", ["SITE MANAGER", "PAUSED"])):
+            f = {"id": "aaa", "slug": "x", "criterion": criterion}
+            with self.subTest(criterion=criterion), mock.patch.object(factory, "forward", side_effect=["queued", "dispatcher"]) as forward, \
                     mock.patch.object(factory, "log_firing"):
                 factory.tell_decision({"repo": SimpleNamespace(root=ROOT), "dispatcher": "dispatcher-repo"}, f, decision, "why",
                                       minutes=20, until="2026-01-01T10:00:00Z")
-            self.assertEqual([c.args[3] for c in forward.call_args_list], ["SITE MANAGER", head])
+            self.assertEqual([c.args[3] for c in forward.call_args_list], heads)
             self.assertIs(forward.call_args_list[1].kwargs["lead"], False)
+
+    def test_a_pause_on_an_overrun_the_lead_has_not_taken_sends_the_dispatcher_nothing(self):
+        f = {"id": "aaa", "slug": "x", "criterion": "overrun"}
+        with mock.patch.object(factory, "forward", return_value="queued") as forward, mock.patch.object(factory, "log_firing"):
+            factory.tell_decision({"repo": SimpleNamespace(root=ROOT), "dispatcher": "dispatcher-repo"}, f, "paused", "why")
+        self.assertEqual([c.args[3] for c in forward.call_args_list], ["SITE MANAGER"])
 
     def retired(self, resume):
         """A watch tick that extends the limit of a lead the harness retired; `resume` is what `claude --bg --resume` answers."""
