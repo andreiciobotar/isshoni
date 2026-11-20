@@ -15,48 +15,17 @@ const (
 	historyDefault = 8                // and at most this many
 )
 
-// approveItem and historyItem carry the short name of the repository they come from.
-type approveItem struct {
-	repo string
-	data.FactoryApproval
+// notices are a repository's Approve and History sections, under its cards: the pull requests waiting for
+// the human's approval (given on GitHub), oldest first, and what was decided, newest first.
+func (m *model) notices(p paint, w int, r factoryRepo) block {
+	apps := slices.Clone(r.st.Approvals.Items)
+	hist := slices.Clone(r.st.History)
+	slices.SortStableFunc(apps, func(a, b data.FactoryApproval) int { return a.Since.Compare(b.Since) })
+	slices.SortStableFunc(hist, func(a, b data.FactoryHistory) int { return b.TS.Compare(a.TS) })
+	return append(m.approveSection(p, w, apps, r.st.Approvals.AsOf), m.historySection(p, w, hist)...)
 }
 
-type historyItem struct {
-	repo string
-	data.FactoryHistory
-}
-
-// notices are the Approve and History sections under the cards: the pull requests waiting for the
-// human's approval (given on GitHub), oldest first, and what was decided, newest first.
-func (m *model) notices(p paint, w int) block {
-	var apps []approveItem
-	var hist []historyItem
-	var asOf time.Time
-	for _, r := range m.fac.repos {
-		if r.st == nil {
-			continue
-		}
-		for _, it := range r.st.Approvals.Items {
-			apps = append(apps, approveItem{r.name, it})
-			if asOf.IsZero() || r.st.Approvals.AsOf.Before(asOf) {
-				asOf = r.st.Approvals.AsOf
-			}
-		}
-		for _, h := range r.st.History {
-			hist = append(hist, historyItem{r.name, h})
-		}
-	}
-	slices.SortStableFunc(apps, func(a, b approveItem) int { return a.Since.Compare(b.Since) })
-	slices.SortStableFunc(hist, func(a, b historyItem) int { return b.TS.Compare(a.TS) })
-	return append(m.approveSection(p, w, apps, asOf), m.historySection(p, w, hist)...)
-}
-
-// manyRepos says whether the items come from more than one repository: then a column names it.
-func manyRepos[T any](items []T, repo func(T) string) bool {
-	return slices.ContainsFunc(items, func(it T) bool { return repo(it) != repo(items[0]) })
-}
-
-func (m *model) approveSection(p paint, w int, items []approveItem, asOf time.Time) block {
+func (m *model) approveSection(p paint, w int, items []data.FactoryApproval, asOf time.Time) block {
 	if len(items) == 0 {
 		return nil
 	}
@@ -66,19 +35,14 @@ func (m *model) approveSection(p paint, w int, items []approveItem, asOf time.Ti
 		label += " · as of " + ago(age)
 	}
 	lines := block{fit(p.sp(1)+p.t(label, th.Faint), w, p)}
-	many := manyRepos(items, func(it approveItem) string { return it.repo })
-	repoW, headW, urlW := 0, 0, 0
+	headW, urlW := 0, 0
 	ages := make([]string, len(items))
 	for i, it := range items {
 		ages[i] = ago(m.now().Sub(it.Since))
-		repoW = max(repoW, min(nameLeast, width(it.repo)))
 		headW = max(headW, width(it.Slug+" · "+it.Why+" · "+ages[i]))
 		urlW = max(urlW, width(it.URL))
 	}
-	lead := 1
-	if many {
-		lead += repoW + 2
-	}
+	const lead = 1
 	inline := lead+headW+3+urlW <= w // the URL is never cut: when it does not fit it moves under the entry
 	for i, it := range items {
 		why := th.Orange
@@ -87,9 +51,6 @@ func (m *model) approveSection(p paint, w int, items []approveItem, asOf time.Ti
 		}
 		dot := p.t(" · ", th.Faint)
 		row := p.sp(1)
-		if many {
-			row += p.t(cell(it.repo, repoW, false), th.Muted) + p.sp(2)
-		}
 		row += p.b(it.Slug, th.Text) + dot + p.t(it.Why, why) + dot + p.t(ages[i], th.Muted)
 		under := lead + 2
 		if inline {
@@ -110,7 +71,7 @@ func (m *model) approveSection(p paint, w int, items []approveItem, asOf time.Ti
 	return append(lines, p.sp(w))
 }
 
-func (m *model) historySection(p paint, w int, items []historyItem) block {
+func (m *model) historySection(p paint, w int, items []data.FactoryHistory) block {
 	if len(items) == 0 {
 		return nil
 	}
@@ -123,24 +84,17 @@ func (m *model) historySection(p paint, w int, items []historyItem) block {
 		}
 		shown = items[:n]
 	}
-	many := manyRepos(items, func(it historyItem) string { return it.repo })
-	repoW, whenW, slugW, byW := 0, 0, 0, 0
+	whenW, slugW, byW := 0, 0, 0
 	whens, bys := make([]string, len(shown)), make([]string, len(shown))
 	for i, it := range shown {
 		whens[i], bys[i] = m.when(it.TS), strings.ReplaceAll(it.By, "-", " ")
-		repoW, whenW = max(repoW, min(nameLeast, width(it.repo))), max(whenW, width(whens[i]))
+		whenW = max(whenW, width(whens[i]))
 		slugW, byW = max(slugW, width(it.Slug)), max(byW, width(bys[i]))
 	}
 	textCol := 1 + whenW + 2 + slugW + 2 + byW + 2
-	if many {
-		textCol += repoW + 2
-	}
 	lines := block{fit(p.sp(1)+p.t("History", th.Faint), w, p)}
 	for i, it := range shown {
 		row := p.sp(1)
-		if many {
-			row += p.t(cell(it.repo, repoW, false), th.Muted) + p.sp(2)
-		}
 		row += p.t(cell(whens[i], whenW, false), th.Muted) + p.sp(2) + p.b(cell(it.Slug, slugW, false), th.Text) + p.sp(2) +
 			p.t(cell(bys[i], byW, false), th.Blue) + p.sp(2)
 		text := strings.Join(strings.Fields(it.Text), " ")

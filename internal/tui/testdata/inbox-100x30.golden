@@ -8,13 +8,6 @@
    2  Switch now and update both readers                                                            
    3  Keep legacy now, switch next release                                                          
                                                                                                     
- delta-docs                                                                                         
-   stuck-on-keys · blocked · 1m                                                                     
-   git push is refused: the deploy key is read-only. Run `git push origin worktree-stuck-on-keys`   
-   by hand.                                                                                         
-   1  Done, carry on                                                                                
-   2  Stop the task                                                                                 
-                                                                                                    
  Approve                                                                                            
  demo-import · stale · 2h   https://github.com/example/demo/pull/9                                  
                             its head changed after the approval; a fresh approval is needed (the    
@@ -26,5 +19,12 @@
  10:48  demo-export  lead          handed over: https://github.com/example/demo/pull/12             
  10:30  demo-import  human         question: picked 2: Add retry now                                
  10:23  demo-import  lead          Retry lives in the importer, not the queue. Why: one owner       
+ 10:10  demo-sync    site manager  closed: its pull request merged and the worktree is clean        
+ 09:00  demo-sync    lead          handed over: https://github.com/example/demo/pull/7              
+ 08:00  demo-docs    site manager  paused: waits on demo-sync                                       
+ 06:00  demo-docs    lead          Docs stay in one file until a second reader asks for more. Long… 
+ … 3 older · H shows them                                                                           
+                                                                                                    
+ delta-docs                                                                                         
  +54 more lines · ↓ to scroll                                                                       
  ↑↓/jk move  ·  1–3 pick an option  ·  H all history  ·  c edit cap  ·  ? help  ·  q quit           

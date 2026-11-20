@@ -462,10 +462,10 @@ func noticeModel(w, h int) *model {
 	return m
 }
 
-func TestInboxApproveAndHistoryComeAfterTheCardsAndBeforeTheFactoryLines(t *testing.T) {
+func TestInboxApproveAndHistorySitInTheirRepositorysGroup(t *testing.T) {
 	out := plain(noticeModel(140, 60))
 	at := func(s string) int { return strings.Index(out, s) }
-	order := []string{"stuck-on-keys · blocked", "\n Approve", "demo-export · new · 25m", "\n History", "… 3 older · H shows them", "worktree cap"}
+	order := []string{"needs-an-answer · question", "\n Approve", "demo-export · new · 25m", "\n History", "… 3 older · H shows them", "stuck-on-keys · blocked", "worktree cap"}
 	for i, s := range order {
 		if at(s) < 0 || (i > 0 && at(s) < at(order[i-1])) {
 			t.Fatalf("%q out of order:\n%s", s, out)
@@ -537,16 +537,26 @@ func TestInboxApproveKeepsTheURLWholeWhenNarrow(t *testing.T) {
 	}
 }
 
-func TestInboxNoticesNameTheRepositoryOnlyWhenSeveralHaveEntries(t *testing.T) {
+func TestInboxEachRepositorysNoticesSitUnderItsOwnHeading(t *testing.T) {
 	m := noticeModel(140, 60)
-	last := m.fac.repos[len(m.fac.repos)-1].st
-	last.History = []data.FactoryHistory{{TS: fakeNow.Add(-time.Minute), Slug: "demo-docs", By: "human", Text: "question: picked 1: Ship"}}
+	last := &m.fac.repos[len(m.fac.repos)-1]
+	last.st.History = []data.FactoryHistory{{TS: fakeNow.Add(-time.Minute), Slug: "demo-docs", By: "human", Text: "question: picked 1: Ship"}}
 	out := plain(m)
-	if !strings.Contains(out, "delta-docs  10:59") || !strings.Contains(out, "alpha       10:55") {
-		t.Errorf("history entries of two repositories carry a repository column:\n%s", out)
+	at := func(s string) int { return strings.Index(out, s) }
+	if hist := strings.LastIndex(out, "\n History"); !(at("stuck-on-keys · blocked") < hist && hist < at("demo-docs  human") && at("demo-docs  human") < at("worktree cap")) {
+		t.Errorf("delta-docs' history follows its card:\n%s", out)
 	}
-	if strings.Contains(out, "alpha       demo-import") {
-		t.Errorf("the approve items are all of one repository:\n%s", out)
+	if strings.Contains(out, "delta-docs  10:59") || strings.Contains(out, "alpha       10:55") {
+		t.Errorf("no repository column:\n%s", out)
+	}
+}
+
+func TestInboxRepositoryWithoutCardsStillHasItsGroup(t *testing.T) {
+	m := noticeModel(140, 60)
+	m.fac.repos[0].st.Decisions = nil
+	out := plain(m)
+	if !strings.Contains(out, "\n alpha ") || !strings.Contains(out, "demo-export · new · 25m") {
+		t.Errorf("alpha keeps a group for its approvals and history:\n%s", out)
 	}
 }
 

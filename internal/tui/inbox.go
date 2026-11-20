@@ -73,6 +73,23 @@ func (m *model) cards() []inboxCard {
 	return cs
 }
 
+// inboxRepos are the repositories with a group: those with cards in the order of the cards, then those with
+// only approvals or history.
+func (m *model) inboxRepos(cs []inboxCard) []factoryRepo {
+	var out []factoryRepo
+	for _, c := range cs {
+		if len(out) == 0 || out[len(out)-1].path != c.path {
+			out = append(out, m.fac.repos[slices.IndexFunc(m.fac.repos, func(r factoryRepo) bool { return r.path == c.path })])
+		}
+	}
+	for _, r := range m.fac.repos {
+		if r.st != nil && (len(r.st.Approvals.Items) > 0 || len(r.st.History) > 0) && !slices.ContainsFunc(out, func(o factoryRepo) bool { return o.path == r.path }) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func (m *model) cursorCard() (inboxCard, bool) {
 	cs := m.cards()
 	if m.inbox.cursor >= len(cs) {
@@ -200,23 +217,24 @@ func (m *model) answered(msg answerMsg) tea.Cmd {
 	return m.refreshFactory(0)
 }
 
-// inboxPage is the Inbox: the decision cards, the Approve and History sections, then the factory's lines. spans holds the lines each card takes.
+// inboxPage is the Inbox: a group per repository with its decision cards, Approve and History, then the factory's lines. spans holds the lines each card takes.
 // A task with a card is not repeated in the band.
 func (m *model) inboxPage(p paint, w, h int) (lines block, spans [][2]int) {
 	cs := m.cards()
-	switch {
-	case m.fac.doneAt.IsZero():
-	case len(cs) == 0:
-		lines = block{fit(p.sp(1)+p.t("Nothing to decide.", m.th.Faint), w, p), p.sp(w)}
-	default:
-		for i, c := range cs {
-			start := len(lines)
-			if i == 0 || c.path != cs[i-1].path {
-				lines = append(lines, fit(p.sp(1)+p.b(c.name, m.th.Text), w, p))
+	if !m.fac.doneAt.IsZero() {
+		if len(cs) == 0 {
+			lines = block{fit(p.sp(1)+p.t("Nothing to decide.", m.th.Faint), w, p), p.sp(w)}
+		}
+		i := 0
+		for _, r := range m.inboxRepos(cs) {
+			lines = append(lines, fit(p.sp(1)+p.b(r.name, m.th.Text), w, p))
+			for ; i < len(cs) && cs[i].path == r.path; i++ {
+				start := len(lines)
+				lines = append(lines, m.card(p, cs[i], i == m.inbox.cursor, w)...)
+				spans = append(spans, [2]int{start, len(lines)})
+				lines = append(lines, p.sp(w))
 			}
-			lines = append(lines, m.card(p, c, i == m.inbox.cursor, w)...)
-			spans = append(spans, [2]int{start, len(lines)})
-			lines = append(lines, p.sp(w))
+			lines = append(lines, m.notices(p, w, r)...)
 		}
 	}
 	items := slices.DeleteFunc(m.waiting(), func(it waitItem) bool {
@@ -226,7 +244,6 @@ func (m *model) inboxPage(p paint, w, h int) (lines block, spans [][2]int) {
 	if len(items) > 0 || len(cs) == 0 {
 		band = m.needsYou(p, w, items)
 	}
-	lines = append(lines, m.notices(p, w)...)
 	return append(lines, m.floor(p, w, h-len(lines), band)...), spans
 }
 

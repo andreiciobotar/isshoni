@@ -7,12 +7,6 @@
    2  Switch now and update both readers                                                                                                    
    3  Keep legacy now, switch next release                                                                                                  
                                                                                                                                             
- delta-docs                                                                                                                                 
-   stuck-on-keys · blocked · 1m                                                                                                             
-   git push is refused: the deploy key is read-only. Run `git push origin worktree-stuck-on-keys` by hand.                                  
-   1  Done, carry on                                                                                                                        
-   2  Stop the task                                                                                                                         
-                                                                                                                                            
  Approve                                                                                                                                    
  demo-import · stale · 2h   https://github.com/example/demo/pull/9                                                                          
                             its head changed after the approval; a fresh approval is needed (the lander stopped it at 8c1f2a9)              
@@ -28,6 +22,12 @@
  08:00  demo-docs    site manager  paused: waits on demo-sync                                                                               
  06:00  demo-docs    lead          Docs stay in one file until a second reader asks for more. Long text is cut at the width of the window.… 
  … 3 older · H shows them                                                                                                                   
+                                                                                                                                            
+ delta-docs                                                                                                                                 
+   stuck-on-keys · blocked · 1m                                                                                                             
+   git push is refused: the deploy key is read-only. Run `git push origin worktree-stuck-on-keys` by hand.                                  
+   1  Done, carry on                                                                                                                        
+   2  Stop the task                                                                                                                         
                                                                                                                                             
  ▲ Needs you  5                                                                                                                             
  ◆ alpha       api-rate-limits  review PR          3h00m  #42 https://github.com/o/alpha/pull/42                                            
