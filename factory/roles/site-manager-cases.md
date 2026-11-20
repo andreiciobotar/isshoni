@@ -60,7 +60,7 @@ How to use a look: you are given facts and what changed since the last look. Mos
 **What:** A task's stack, counting the task itself, is deep (`stack`, `base` in its row).
 **Why it matters:** Stacks land bottom-up; a stalled base holds everything above it.
 **What it has looked like:** The script used to fire this above 3 tasks deep. It never fired.
-**A good call:** Look at `stack` and the state of each task below. A chain whose lower tasks are moving: suppress. A stalled base holding the ones above: escalate, naming it.
+**A good call:** Look at `stack` and the state of each task below. A chain whose lower tasks are moving: suppress. A stalled base holding the ones above: escalate, naming it. The script holds a task stacked on a base that has not handed over (`stack_hold` in its row): a held task that is quiet is waiting as designed and is not escalated for that; a base that stalls while others are held on it is the thing to escalate, naming it.
 **Score (to 2026-11-15):** fired 0; escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 0; missed 0.
 
 ## merged-not-cleaned

@@ -987,13 +987,19 @@ def task_limit(size, limit_hours):
     return int(min(SIZE_LIMIT_MINUTES[size] * 60, ceiling) if size in SIZE_LIMIT_MINUTES else ceiling)
 
 
-def extended_limit(size, limit_hours, start, granted):
+def extended_limit(size, limit_hours, start, granted, spans):
     """A task's time limit in seconds from its `start`, the one deadline: the size's, then each of its `granted` extensions
-    oldest first, an old-rule one (no `from`) adding its minutes, one with `from` setting the limit to its `until`."""
-    limit = task_limit(size, limit_hours)
+    oldest first, an old-rule one (no `from`) adding its minutes, one with `from` setting the limit to its `until`; plus the
+    seconds the task was held (`spans`, see `hold_spans`) since its start, or since the `decided` time of its last extension
+    with a `from` (that `until` came from a deadline that already held the credit up to then)."""
+    limit, since = task_limit(size, limit_hours), start or 0
     for e in granted:
-        limit = epoch(e["until"]) - start if e["from"] and start is not None else limit + e["minutes"] * 60
-    return int(limit)
+        if e["from"] and start is not None:
+            limit, since = epoch(e["until"]) - start, epoch(e["decided"]) or 0
+        else:
+            limit += e["minutes"] * 60
+    ended = time.time()
+    return int(limit + sum(max(0, min(epoch(end) if end else ended, ended) - max(epoch(begin), since)) for begin, end in spans))
 
 
 def span(secs):
@@ -1411,6 +1417,13 @@ def extensions(granted, slug, started):
             for f in granted if f["slug"] == slug and (started is None or (epoch(f["decided"]) or 0) >= started)]
 
 
+def hold_spans(records, slug):
+    """[(begin, end)] of the `hold` cards of `slug` in the decisions `records`: the card's `ts` to the `ts` of its `choice` or
+    `released` record, None while it is unclosed."""
+    ended = {r["id"]: r["ts"] for r in records if "choice" in r or "released" in r}
+    return [(r["ts"], ended.get(r["id"])) for r in records if r.get("kind") == "hold" and r["slug"] == slug and "ask" in r]
+
+
 def task_start(events, slug, session):
     """When the task `slug` started, in epoch seconds: the `ts` of its last TaskStarted event, whether or not a session is
     listed; without one its session's `startedAt` (a resume resets that), None without a session."""
@@ -1434,6 +1447,7 @@ def collect(repo, sessions, limit_hours, prs=None, deep=False):
         prs = (ask_pull_requests(repo, needed)[0] if needed else {}) or {b: UNKNOWN_PR for b in needed}
     prioritized = read_lander(repo)["prioritized"]
     granted = extended(repo)
+    holds = repo_log("decisions", repo.root) or []
     firings = fold(repo_log("firings", repo.root) or [])[0]
     events = repo_log("events", repo.root) or []
     rows = []
@@ -1454,7 +1468,10 @@ def collect(repo, sessions, limit_hours, prs=None, deep=False):
         row["elapsed"] = int(now - started) if started else None
         row["size"] = task_size(repo, branch)
         row["extensions"] = extensions(granted, slug, started)
-        row["limit"] = extended_limit(row["size"], limit_hours, started, row["extensions"])
+        spans = hold_spans(holds, slug)
+        row["limit"] = extended_limit(row["size"], limit_hours, started, row["extensions"], spans)
+        base_held = held_on(repo, slug, recorded)
+        row["stack_hold"] = {"base": base_held, "since": next((begin for begin, end in spans if end is None), None)} if base_held else None
         row["state"] = declared.get(slug, {}).get("state")
         rc, out, _ = repo.git("status", "--porcelain", path=path)
         row["dirty"] = bool(out.strip()) if rc == 0 else None
@@ -2018,6 +2035,8 @@ def cmd_new(args):
         what = "without a `backgrounded` line" if not match else "after printing a `backgrounded` line"
         raise Fail(f"claude exited {rc} {what}; the session may be running, nothing was removed", code=1)
     print(f"started {match.group(2).strip()} (session {match.group(1)})")
+    if args.base and (held := held_on(repo, args.slug, base)):
+        print(f"held from the start: base {held} is {read_tasks(repo.root)[held]['state']}; its lead writes the spec, a build run starts when {held} hands over")
     if size:
         rc, _, err = repo.git("config", f"branch.{branch}.factorySize", size)
         if rc != 0:
@@ -2234,6 +2253,7 @@ def cmd_status(args):
         flags = " ".join(f for f in ("overtime" if r["overtime"] else "", "nearing" if r["nearing"] else "", "stale" if r["stale"] else "",
                                           f"paused {age(epoch(r['paused']['since']), now)}: waits {', '.join(r['paused']['waits_on'])}" if r["paused"] else "",
                                           f"kept: {r['kept']}" if r["kept"] else "",
+                                          f"held on {r['stack_hold']['base']}" + (f" {age(epoch(r['stack_hold']['since']), now)}" if r["stack_hold"]["since"] else "") if r["stack_hold"] else "",
                                           f"held {age(epoch(r['held']['since']), now)}: {r['held']['criterion']} {r['held']['decision']}" if r["held"] else "",
                                           f"prioritized {age(epoch(r['prioritized']['since']), now)}" if r["prioritized"] else "") if f)
         more = f" (+{sum(e['minutes'] for e in r['extensions'])}m {r['extensions'][-1]['by']})" if r["extensions"] else ""
@@ -4156,7 +4176,7 @@ def grant(p, slug, minutes):
         return None
     branch = next((t["branch"] for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
     deadline = started + extended_limit(task_size(repo, branch), load_settings()["task_time_limit_hours"], started,
-                                        extensions(extended(repo), slug, started))
+                                        extensions(extended(repo), slug, started), hold_spans(repo_log("decisions", repo.root) or [], slug))
     begins = max(int(time.time()), deadline)
     return iso(begins), iso(begins + minutes * 60)
 
@@ -4928,14 +4948,16 @@ def open_decisions(root):
     """The open decisions of the repo at `root`, oldest first: an ask with no answer. Of a `question` or `blocked` ask,
     whose task's last state is `blocked` on the human and not later than the ask, so any state the lead declares after
     asking closes it. Of an `overrun` ask, the latest of its task, whose last state is `working` or `blocked`: it never
-    holds the task, and a hand-over closes it."""
+    holds the task, and a hand-over closes it. Of a `hold` ask (`settle_holds`), whose task's last state is `working` or `blocked`.
+    A `choice` or a `released` record answers an ask."""
     records = repo_log("decisions", root) or []
-    answered = {r["id"] for r in records if "choice" in r}
+    answered = {r["id"] for r in records if "choice" in r or "released" in r}
     latest = {r["slug"]: r["id"] for r in records if r.get("kind") == "overrun"}
     tasks = read_tasks(root)
     return [{k: r[k] for k in DECISION_KEYS if k in r} for r in records
             if "ask" in r and r["id"] not in answered and (t := tasks.get(r["slug"]))
             and ((t["state"] in ("working", "blocked") and latest[r["slug"]] == r["id"]) if r["kind"] == "overrun"
+                 else t["state"] in ("working", "blocked") if r["kind"] == "hold"
                  else t["state"] == "blocked" and t.get("waits_on") in BLOCKED_ON_HUMAN and stamp(t) <= stamp(r))]
 
 
@@ -5163,6 +5185,7 @@ def watch_tick(args, repo):
         if p["dispatcher"]:
             p = {**gather(repo, args.dispatcher, p["sessions"]), "snap": snap}
     pause_unanswered_stops(p, repo)
+    settle_holds(p, repo)
     orphaned = str(p["dispatcher_why"]).startswith("no dispatcher session")  # not a shared or missing name
     failure, undecided = None, "its decision was missing or not valid"
     if not woken:
@@ -8788,6 +8811,9 @@ def cmd_build(args):
         raise Fail(missing)
     if (row := paused_rows(repo).get(slug)) and not args.run:
         raise Fail(f"paused: {row.get('role')} waits on {', '.join(row.get('waits_on') or [])}; factory state working once it is lifted", code=1)
+    if not args.run and (base := held_on(repo, slug)):
+        raise Fail(f"held: base {base} is {read_tasks(repo.root)[base]['state']}; a build run starts once it hands over, or the human releases {slug} "
+                   f"in the inbox. Write the spec, end your turn: the release arrives as SITE MANAGER: {slug} or INBOX: {slug}", code=1)
     with repo_lock(repo, f"tech-lead-{slug}") as free:
         if not free:
             raise Fail(f"a tech lead run is already going for {slug}")
@@ -9029,6 +9055,51 @@ def paused_rows(repo):
     """{slug: its row} of the tasks whose worktree is there and whose last declaration is a pause."""
     here = {os.path.basename(t["path"]) for t in repo.tasks}
     return {s: r for s, r in read_tasks(repo.root).items() if s in here and r["state"] == "blocked" and r.get("paused") is True}
+
+
+def held_on(repo, slug, recorded=None):
+    """The slug of the task that `slug` is stacked on while it holds the build back, else None: the recorded base (`recorded`,
+    the `factoryBase` of its branch, read when None) is a task of this repository whose last state is `working` or `blocked`,
+    not yet merged into the default branch, and the human has not picked on a `hold` card of `slug` since that task last
+    handed over."""
+    branches = {os.path.basename(t["path"]): t["branch"] for t in repo.tasks}
+    if recorded is None:
+        recorded = repo.git("config", "--get", f"branch.{branches[slug]}.factoryBase")[1].strip() if branches.get(slug) else ""
+    base = next((s for s, b in branches.items() if recorded and b == recorded), None)
+    if base is None or read_tasks(repo.root).get(base, {}).get("state") not in ("working", "blocked") \
+            or repo.git("merge-base", "--is-ancestor", recorded, f"{repo.remote}/{repo.default}")[0] == 0:
+        return None
+    handed = max((stamp(r) for r in read_log("tasks") if r.get("repo") == repo.root and r.get("slug") == base
+                  and r.get("state") == "handed-over"), default="")
+    records = repo_log("decisions", repo.root) or []
+    cards = {r["id"] for r in records if r.get("kind") == "hold" and r["slug"] == slug and "ask" in r}
+    return None if any("choice" in r and r["id"] in cards and stamp(r) > handed for r in records) else base
+
+
+def settle_holds(p, repo):
+    """Mirror `held_on` in the inbox. Post a `hold` card for each working task that is held and has none unclosed. Close
+    each unclosed card whose task is no longer held or no longer working or blocked, with a `released` record; the lead
+    of a working task is told once, by that record."""
+    records, declared = repo_log("decisions", repo.root) or [], read_tasks(repo.root)
+    closed = {r["id"] for r in records if "choice" in r or "released" in r}
+    cards = {r["slug"]: r for r in records if r.get("kind") == "hold" and "ask" in r and r["id"] not in closed}
+    here = {os.path.basename(t["path"]) for t in repo.tasks}
+    for slug in here:
+        if declared.get(slug, {}).get("state") == "working" and slug not in cards and (base := held_on(repo, slug)):
+            post_decision(repo, slug, "site-manager", "hold",
+                          f"{slug} is held: its base {base} is {declared[base]['state']}, so no build run starts. It is released when {base} hands over.",
+                          [f"Release: build now on {base} as it stands"], base=base)
+    for slug, card in cards.items():
+        state, base = declared.get(slug, {}).get("state"), card["base"]
+        if state in ("working", "blocked") and slug in here and held_on(repo, slug):
+            continue
+        why = (f"{slug} is gone" if slug not in here else f"{slug} is {state}" if state not in ("working", "blocked")
+               else f"base {base} handed over" if declared.get(base, {}).get("state") == "handed-over"
+               else f"base {base} is gone" if base not in here else f"base {base} merged")
+        log("decisions", {"ts": now(), "repo": repo.root, "id": card["id"], "slug": slug, "released": why})
+        if state == "working" and slug in here:
+            forward(repo, p["dispatcher"], slug, "SITE MANAGER",
+                    f"released: {why} after {int((p['now'] - (epoch(card['ts']) or p['now'])) // 60)} minutes held; your limit moved by them. Run factory build {slug}.")
 
 
 def end_priority(repo, slug, reason):
