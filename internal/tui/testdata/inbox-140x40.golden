@@ -1,14 +1,16 @@
- Isshoni 一緒に [1 Inbox ▲7] 2 Sessions  3 Agents  4 Factory  5 Kaizen  6 Ops  7 Hanami                          24h [7d] 30d  all   ○ idle 
+ Isshoni 一緒に [1 Inbox ▲6] 2 Sessions  3 Agents  4 Factory  5 Kaizen  6 Ops  7 Hanami                          24h [7d] 30d  all   ○ idle 
  Inbox  18 in motion (8 blocked) · 3 waiting for review · 2 merged, not cleaned · 1 settled  · as of 11:00:00                               
 REPO           TASK            ASK                   AGE │ needs-an-answer · question · asked 45m ago                                       
 alpha      > ? needs-an-answer Should the export k…  45m │ alpha · blocked 45m00s · PR example.com/design/doc · base main                   
              ◆ demo-import     stale #9               2h │                                                                                  
              ◆ demo-export     new #12               25m │ Should the export keep the legacy column order, or switch to the new one now?    
-delta-docs   ▲ stuck-on-keys   git push is refused…   1m │ Switching breaks two downstream readers.                                         
-                                                         │                                                                                  
-                                                         │ 1  Keep the legacy order  (recommended)                                          
+delta-docs   … wide-ask        Which environment's…  30m │ Switching breaks two downstream readers.                                         
+             ? slow-import     The import ran 3h o…  20m │                                                                                  
+             ▲ stuck-on-keys   git push is refused…   1m │ 1  Keep the legacy order  (recommended)                                          
                                                          │ 2  Switch now and update both readers                                            
                                                          │ 3  Keep legacy now, switch next release                                          
+                                                         │                                                                                  
+                                                         │ L leave it to the lead · S to the site manager                                   
                                                                                                                                             
  History                                                                                                                                    
  TIME   TASK         BY            WHAT                                                                                                     
@@ -22,12 +24,10 @@ delta-docs   ▲ stuck-on-keys   git push is refused…   1m │ Switching break
  06:00  demo-docs    lead          Docs stay in one file until a second reader asks for more. Long text is cut at the width of the window.… 
  … 3 older · H shows them                                                                                                                   
                                                                                                                                             
- ▲ Needs you  5                                                                                                                             
- ◆ alpha       api-rate-limits  review PR          3h00m  #42 https://github.com/o/alpha/pull/42                                            
- ▲ delta-docs  wide-ask         unblock            2h00m  データベースの接続情報が見つかりません。どの環境のものを使えばよいですか？ 本番…  
- ◆ delta-docs  video-cut        see deliverable   30m00s  https://example.com/cut/v2                                                        
- ▲ delta-docs  slow-import      decide: overtime   5m00s  ran 3h of 2h: split it?                                                           
- ◆ delta-docs  design-review    see deliverable        -  /r/delta/docs/design.md                                                           
+ ▲ Needs you  3                                                                                                                             
+ ◆ alpha       api-rate-limits  review PR         3h00m  #42 https://github.com/o/alpha/pull/42                                             
+ ◆ delta-docs  video-cut        see deliverable  30m00s  https://example.com/cut/v2                                                         
+ ◆ delta-docs  design-review    see deliverable       -  /r/delta/docs/design.md                                                            
                                                                                                                                             
  worktree cap  5  per repo, 1 in reserve   c edit                                                           ~/.claude/factory/settings.toml 
                                                                                                                                             
@@ -37,4 +37,4 @@ delta-docs   ▲ stuck-on-keys   git push is refused…   1m │ Switching break
   login-flow         ⠋ in motion                               2h15m / 1h30m  medium  -                       main          [overtime]      
   lost-its-lead      ● in motion                                    9h / 45m  -       -                       main          [held]          
  +34 more lines · ↓ to scroll                                                                                                               
- ↑↓/jk move  ·  1–3 pick an option  ·  c edit cap  ·  H all history  ·  tab next view  ·  ? help  ·  q quit                                 
+ ↑↓/jk move  ·  1–3 pick an option  ·  c edit cap  ·  L S leave it to lead · site manager  ·  H all history  ·  ? help  ·  q quit           

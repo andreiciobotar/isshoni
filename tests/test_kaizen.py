@@ -564,7 +564,7 @@ class SiteManagerTests(Store):
         self.assertEqual(p.returncode, 0, p.stderr)
         theirs = json.loads(p.stdout)["summary"]
         self.assertEqual((theirs["escalated"], theirs["missed"]), (4, 2))
-        theirs = {k: v for k, v in theirs.items() if not k.startswith("told") and k not in ("entries", "closed", "stood", "reopened", "old_rule")}  # the dashboard counts neither `told`, `closed`, the old-rule extensions nor the score per entry
+        theirs = {k: v for k, v in theirs.items() if not k.startswith("told") and k not in ("entries", "closed", "picked", "returned", "stood", "reopened", "old_rule")}  # the dashboard counts neither `told`, `closed`, `picked`, `returned`, the old-rule extensions nor the score per entry
         theirs.update({k: round(theirs[k], 6) for k in ("precision", "recall")})
         self.assertEqual(self.record(), theirs)
 

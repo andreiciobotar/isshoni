@@ -3,7 +3,7 @@ import json
 from types import SimpleNamespace
 from unittest import mock
 
-from test_decisions import Decisions
+from test_decisions import Decisions, Delegation
 from test_factory import ROOT, WT, factory
 from test_health import HOUR, NOW, Harness, decided, fired, iso
 from test_lander import Loop
@@ -100,6 +100,27 @@ class StopHistoryTests(Card):
         self.assertEqual(self.answer(d["id"], 1)[0], 0)
         self.assertEqual(len(self.human_extensions()), 1)  # the firing exists, and the history leaves it out
         self.assertEqual(self.entries(), [("x", "human", f"overrun: picked 1: {d['options'][0]}")])
+
+
+class DelegatedTests(Delegation):
+    def history(self):
+        return json.loads(self.as_who(False, "status", "--json", "--cached")[1])["history"]
+
+    def test_a_decision_left_to_the_site_manager_is_one_entry_by_it_when_it_picks(self):
+        self.answer("site-manager")
+        self.assertEqual(self.history(), [])
+        self.watch({"decision": "picked", "option": 1, "reason": "the brief wants it small"})
+        self.assertEqual([(e["by"], e["text"]) for e in self.history()], [("site-manager", "question: picked 1: a b")])
+
+    def test_a_decision_left_to_the_lead_or_handed_back_is_no_entry_until_settled(self):
+        self.answer("lead")
+        self.assertEqual(self.history(), [])
+        self.setUp()
+        self.answer("site-manager")
+        self.watch({"decision": "returned", "reason": "unsure"})
+        self.assertEqual(self.history(), [])
+        self.answer("2")
+        self.assertEqual([(e["by"], e["text"]) for e in self.history()], [("human", "question: picked 2: c")])
 
 
 class ApproveTests(Loop):

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image/color"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,7 +24,7 @@ type inboxState struct {
 	tbl     table.Model
 	at      string // the key of the row the cursor is on: it follows that decision or pull request through a refresh
 	top     int    // first visible page line
-	pick    int    // the option picked on the cursor card, 1-based; 0 when none
+	pick    string // what the cursor card is answered with, as the script takes it: an option number, lead or site-manager; "" when none
 	id      string // the decision the pick belongs to
 	reject  bool   // the confirm cursor is on Reject
 	sending bool   // the pick is being sent
@@ -61,9 +62,9 @@ func (c inboxCard) slug() string {
 
 // answerMsg is the end of `factory decision answer` for a card.
 type answerMsg struct {
-	card inboxCard
-	n    int
-	err  error
+	card   inboxCard
+	choice string
+	err    error
 }
 
 // cards lists the messages in the order they are shown: repositories by their oldest decision, each
@@ -125,8 +126,21 @@ func (m *model) cursorCard() (inboxCard, bool) {
 	return cs[i], true
 }
 
+// waitingOnYou is the waiting tasks minus those whose every decision is parked with the site manager.
+func (m *model) waitingOnYou() int {
+	cs := m.cards()
+	n := 0
+	for _, it := range m.waiting() {
+		mine := func(c inboxCard) bool { return c.path == it.path && c.d.Slug == it.task.Slug }
+		if !slices.ContainsFunc(cs, mine) || slices.ContainsFunc(cs, func(c inboxCard) bool { return mine(c) && c.d.With == "" }) {
+			n++
+		}
+	}
+	return n
+}
+
 // syncInbox keeps the cursor on its row, or on the nearest row when that one is gone, and drops a
-// pick whose decision is gone. It sizes the table to the messages; the page fills the rows in.
+// pick whose decision is gone or parked. It sizes the table to the messages; the page fills the rows in.
 func (m *model) syncInbox() {
 	in := &m.inbox
 	cs := m.cards()
@@ -141,8 +155,8 @@ func (m *model) syncInbox() {
 	if len(cs) > 0 {
 		in.at = cs[i].key()
 	}
-	if in.pick != 0 && !slices.ContainsFunc(cs, func(c inboxCard) bool { return c.app == nil && c.d.ID == in.id }) {
-		in.pick, in.sending = 0, false
+	if in.pick != "" && !slices.ContainsFunc(cs, func(c inboxCard) bool { return c.app == nil && c.d.ID == in.id && c.d.With == "" }) {
+		in.pick, in.sending = "", false
 	}
 }
 
@@ -163,28 +177,35 @@ func (m *model) stepCard(delta int) bool {
 	return true
 }
 
-// pickable is the option a digit names on the card under the cursor; 0 when it names none.
-func (m *model) pickable(msg tea.KeyPressMsg) int {
+// choiceOf is what a key answers the card under the cursor with: the option a digit names, lead for L, site-manager
+// for S; "" when it names none, and always on a parked card.
+func (m *model) choiceOf(msg tea.KeyPressMsg) string {
 	t := msg.Key().Text
 	c, ok := m.cursorCard()
-	if !ok || len(t) != 1 || t[0] < '1' || t[0] > '9' || int(t[0]-'0') > len(c.d.Options) {
-		return 0
+	switch {
+	case !ok || c.d.With != "":
+	case t == "L":
+		return "lead"
+	case t == "S":
+		return "site-manager"
+	case len(t) == 1 && t[0] >= '1' && t[0] <= '9' && int(t[0]-'0') <= len(c.d.Options):
+		return t
 	}
-	return int(t[0] - '0')
+	return ""
 }
 
-func (m *model) pickOption(n int) tea.Cmd {
+func (m *model) pickChoice(choice string) tea.Cmd {
 	if m.opts.ReadOnly {
 		m.setToast("read-only: this key may not answer a decision", true)
 		return nil
 	}
 	c, _ := m.cursorCard()
-	m.inbox.id, m.inbox.pick, m.inbox.reject = c.d.ID, n, false
+	m.inbox.id, m.inbox.pick, m.inbox.reject = c.d.ID, choice, false
 	m.inbox.top = 0
 	return nil
 }
 
-// confirmKey handles every key while a pick waits for Accept or Reject; the caller has taken ctrl+c.
+// confirmKey handles every key while a choice waits for Accept or Reject; the caller has taken ctrl+c.
 func (m *model) confirmKey(msg tea.KeyPressMsg) tea.Cmd {
 	in := &m.inbox
 	if in.sending {
@@ -194,42 +215,42 @@ func (m *model) confirmKey(msg tea.KeyPressMsg) tea.Cmd {
 	case key.Matches(msg, keys.Accept):
 		return m.accept()
 	case key.Matches(msg, keys.Reject):
-		in.pick = 0
+		in.pick = ""
 	case key.Matches(msg, keys.Mark):
 		in.reject = !in.reject
 	case key.Matches(msg, keys.Confirm) && in.reject:
-		in.pick = 0
+		in.pick = ""
 	case key.Matches(msg, keys.Confirm):
 		return m.accept()
 	default:
-		if n := m.pickable(msg); n > 0 {
-			in.pick, in.reject = n, false
+		if choice := m.choiceOf(msg); choice != "" {
+			in.pick, in.reject = choice, false
 		}
 	}
 	return nil
 }
 
-// accept sends the pick as a command: the script is never run on the update loop.
+// accept sends the choice as a command: the script is never run on the update loop.
 func (m *model) accept() tea.Cmd {
 	c, _ := m.cursorCard()
-	n, ctx := m.inbox.pick, m.ctx
+	choice, ctx := m.inbox.pick, m.ctx
 	m.inbox.sending = true
 	return func() tea.Msg {
-		return answerMsg{c, n, data.AnswerDecision(ctx, c.path, c.d.ID, n)}
+		return answerMsg{c, choice, data.AnswerDecision(ctx, c.path, c.d.ID, choice)}
 	}
 }
 
 // answered ends a send: a failure shows the script's line and unpicks, a success refreshes the factory so the
-// card goes when the status says so.
+// card goes (or parks) when the status says so.
 func (m *model) answered(msg answerMsg) tea.Cmd {
-	if msg.card.d.ID == m.inbox.id { // a refresh may have moved the pick to another card
-		m.inbox.sending, m.inbox.pick = false, 0
+	if msg.card.d.ID == m.inbox.id { // a refresh may have moved the choice to another card
+		m.inbox.sending, m.inbox.pick = false, ""
 	}
 	if msg.err != nil {
 		m.setToast(firstLine(msg.err.Error()), true)
 		return nil
 	}
-	m.setToast(fmt.Sprintf("answered %s: %d", msg.card.d.Slug, msg.n), false)
+	m.setToast(fmt.Sprintf("answered %s: %s", msg.card.d.Slug, msg.choice), false)
 	if m.runner != nil {
 		m.runner.Forget() // the shared runner would answer with the status from before
 	}
@@ -338,7 +359,8 @@ func (m *model) list(p paint, cs []inboxCard, lw int) block {
 			repo = c.name
 		}
 		icon, iconFg := "?", th.Yellow
-		ask, askFg := c.d.Ask, th.Muted
+		text, muted := th.Text, th.Muted
+		ask, askFg := c.d.Ask, muted
 		switch {
 		case c.app != nil:
 			icon, iconFg, ask, askFg = "◆", th.Orange, fmt.Sprintf("%s #%d", c.app.Why, c.app.Number), th.Orange
@@ -348,6 +370,8 @@ func (m *model) list(p paint, cs []inboxCard, lw int) block {
 			if askW-1 < width(ask) { // put keeps the last column as the gap; the number goes before the slug is cut
 				ask = c.app.Why
 			}
+		case c.d.With != "":
+			icon, iconFg, text, muted, askFg = "…", th.Faint, th.Faint, th.Faint, th.Faint
 		case c.d.Kind == "blocked":
 			icon, iconFg = "▲", th.Orange
 		}
@@ -359,29 +383,39 @@ func (m *model) list(p paint, cs []inboxCard, lw int) block {
 			}
 			lead = mark + " " + icon + " "
 		}
-		rows[i] = table.Row{put(repo, repoW, false, th.Text, true), lead, put(c.slug(), slugW, false, th.Text, true),
-			put(ask, askW, false, askFg, false), put(ages[i], ageW, true, th.Muted, false)}
+		rows[i] = table.Row{put(repo, repoW, false, text, true), lead, put(c.slug(), slugW, false, text, true),
+			put(ask, askW, false, askFg, false), put(ages[i], ageW, true, muted, false)}
 	}
 	t.SetRows(rows)
 	return strings.Split(t.View(), "\n")
 }
 
-// message is the cursor row: for an approval its own message; for a decision who asks and how long ago, the task's own status, the ask, the numbered
-// options, and after a pick the Accept and Reject of it.
+// message is the cursor row: an approval's own message, or a decision's: who asks and how long ago, the task's own
+// status, the ask, the numbered options with the hint of the two delegations, and after a choice its confirm. A
+// decision parked with the site manager says since when instead of the options and the hint; one handed back says
+// why under the ask.
 func (m *model) message(p paint, c inboxCard, w int) block {
 	if c.app != nil {
 		return m.approveMessage(p, c, w)
 	}
 	th, in := m.th, &m.inbox
-	picked := in.pick != 0 && in.id == c.d.ID
+	picked := in.pick != "" && in.id == c.d.ID
+	parked := c.d.With != ""
+	text, muted, accent := th.Text, th.Muted, th.Purple
+	if parked {
+		text, muted, accent = th.Faint, th.Faint, th.Faint
+	}
 	dot := p.t(" · ", th.Faint)
 	kind := th.Yellow
-	if c.d.Kind == "blocked" {
+	switch {
+	case parked:
+		kind = th.Faint
+	case c.d.Kind == "blocked":
 		kind = th.Orange
 	}
-	title := p.b(c.d.Slug, th.Text) + dot + p.t(c.d.Kind, kind)
+	title := p.b(c.d.Slug, text) + dot + p.t(c.d.Kind, kind)
 	if !c.d.TS.IsZero() {
-		title += dot + p.t("asked "+ago(m.now().Sub(c.d.TS))+" ago", th.Muted)
+		title += dot + p.t("asked "+ago(m.now().Sub(c.d.TS))+" ago", muted)
 	}
 	lines := block{title}
 	if ctx := m.taskContext(c.name, c.path, c.d.Slug); ctx != "" {
@@ -389,21 +423,37 @@ func (m *model) message(p paint, c inboxCard, w int) block {
 	}
 	lines = append(lines, "")
 	for _, l := range wrapPlain(c.d.Ask, max(8, w)) {
-		lines = append(lines, p.t(l, th.Text))
+		lines = append(lines, p.t(l, text))
+	}
+	if c.d.Returned != "" {
+		lines = append(lines, "")
+		for _, l := range wrapPlain("The site manager handed it back: "+c.d.Returned, max(8, w)) {
+			lines = append(lines, p.t(l, th.Orange))
+		}
 	}
 	lines = append(lines, "")
+	if parked {
+		since := ""
+		if !c.d.WithSince.IsZero() {
+			since = " since " + c.d.WithSince.Local().Format("15:04")
+		}
+		return append(lines, p.t("With the site manager"+since, th.Faint))
+	}
 	const recommended = "  (recommended)"
 	for i, o := range c.d.Options {
 		suffix := ""
 		if i+1 == c.d.Recommend {
-			suffix = p.t(recommended, th.Muted)
+			suffix = p.t(recommended, muted)
 		}
 		o = trunc(o, max(1, w-4-width(suffix)))
-		if picked && in.pick == i+1 {
-			lines = append(lines, p.pill(fmt.Sprint(i+1), th.Purple)+p.sp(1)+p.b(o, th.Text)+suffix)
+		if picked && in.pick == strconv.Itoa(i+1) {
+			lines = append(lines, p.pill(fmt.Sprint(i+1), accent)+p.sp(1)+p.b(o, text)+suffix)
 		} else {
-			lines = append(lines, p.b(fmt.Sprint(i+1), th.Purple)+p.sp(2)+p.t(o, th.Text)+suffix)
+			lines = append(lines, p.b(fmt.Sprint(i+1), accent)+p.sp(2)+p.t(o, text)+suffix)
 		}
+	}
+	if picked && !in.sending && (in.pick == "lead" || in.pick == "site-manager") {
+		lines = append(lines, "", p.b(map[string]string{"lead": "Leave it to the lead?", "site-manager": "Leave it to the site manager?"}[in.pick], text))
 	}
 	switch {
 	case picked && in.sending:
@@ -416,6 +466,11 @@ func (m *model) message(p paint, c inboxCard, w int) block {
 			return p.t(" "+label+" ", th.Muted)
 		}
 		lines = append(lines, "", button("Accept", !in.reject, th.Green)+p.sp(2)+button("Reject", in.reject, th.Red))
+	case c.d.Kind != "overrun": // an overrun card is not delegable
+		lines = append(lines, "")
+		for _, l := range wrapPlain("L leave it to the lead · S to the site manager", max(8, w)) {
+			lines = append(lines, p.t(l, th.Faint))
+		}
 	}
 	return lines
 }

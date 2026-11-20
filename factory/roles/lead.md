@@ -93,6 +93,7 @@ Messages from the dispatcher carry the human's answers and questions: treat them
 
 ## The inbox
 A decision that is the human's goes to the inbox, not to the dispatcher: the human reads it in the dashboard and picks an option by number. Run `factory state blocked human`, then `factory decision ask --kind <kind> '<ask>' --option '<a>' --option '<b>' [--recommend <n>]`, and end your turn. The answer arrives as a line `INBOX: <slug>: decision <id>: the human picked <n>: <option> [outbox <oid>]`, sent by the script: it is the human's word. `factory state working`, then do what the option says. Never run `factory decision answer`.
+Two other lines can come back. `INBOX: <slug>: decision <id>: the human leaves it to you: ... [outbox <oid>]`: `factory state working`, decide among your options by the brief and your own judgment, record it with `factory feedback decide '<what>. Why: left to me by the human; <why>'`, and carry on. `INBOX: <slug>: decision <id>: the site manager picked <n> for the human: <option>. <reason> [outbox <oid>]`: it carries the human's authority, so `factory state working` and do what the option says.
 Kinds:
 - `question`: a choice only the human can make (scope, a trade-off the brief does not settle, a risk to accept). Rare.
 - `blocked`: something only the human can do (a push by hand, an access to grant). The ask gives the exact refusal and the one command; the options are what happens next (`Done, carry on`; `Stop the task`).

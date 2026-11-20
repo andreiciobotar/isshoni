@@ -1,12 +1,12 @@
- Isshoni [1 ✉ ▲7] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
+ Isshoni [1 ✉ ▲6] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
  Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                   
 REPO          TASK            ASK    AGE │ demo-import · approve · approval stale 2h ago            
 alpha       ? needs-an-answer Shou…  45m │ alpha                                                    
           > ◆ demo-import     stale   2h │                                                          
             ◆ demo-export     new    25m │ its head changed after the approval; a fresh approval is 
-delta-do…   ▲ stuck-on-keys   git …   1m │ needed (the lander stopped it at 8c1f2a9)                
-                                         │                                                          
-                                         │ https://github.com/example/demo/pull/9                   
+delta-do…   … wide-ask        Whic…  30m │ needed (the lander stopped it at 8c1f2a9)                
+            ? slow-import     The …  20m │                                                          
+            ▲ stuck-on-keys   git …   1m │ https://github.com/example/demo/pull/9                   
                                          │                                                          
                                          │ Approve on GitHub: an approving review, or a comment     
                                          │ reading lgtm.                                            
@@ -23,8 +23,8 @@ delta-do…   ▲ stuck-on-keys   git …   1m │ needed (the lander stopped it
  06:00  demo-docs    lead          Docs stay in one file until a second reader asks for more. Long… 
  … 3 older · H shows them                                                                           
                                                                                                     
- ▲ Needs you  5                                                                                     
- ◆ alpha       api-rate-limits  review PR          3h00m  #42 https://github.com/o/alpha/pull/42    
- ▲ delta-docs  wide-ask         unblock            2h00m  データベースの接続情報が見つかりません。… 
- +45 more lines · ↓ to scroll                                                                       
+ ▲ Needs you  3                                                                                     
+ ◆ alpha       api-rate-limits  review PR         3h00m  #42 https://github.com/o/alpha/pull/42     
+ ◆ delta-docs  video-cut        see deliverable  30m00s  https://example.com/cut/v2                 
+ +43 more lines · ↓ to scroll                                                                       
  ↑↓/jk move  ·  c edit cap  ·  H all history  ·  tab next view  ·  ? help  ·  q quit                

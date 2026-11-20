@@ -1308,7 +1308,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.capKey(msg)
 	case m.pick != nil:
 		return m.pickKey(msg)
-	case m.view == viewInbox && m.inbox.pick != 0 && !m.help:
+	case m.view == viewInbox && m.inbox.pick != "" && !m.help:
 		return m.confirmKey(msg)
 	case m.help:
 		if key.Matches(msg, keys.Help, keys.Back, keys.Open, keys.Quit) {
@@ -1332,8 +1332,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.switchView(m.cycle(1))
 	case key.Matches(msg, keys.Prev):
 		return m.switchView(m.cycle(-1))
-	case m.view == viewInbox && m.pickable(msg) > 0:
-		return m.pickOption(m.pickable(msg))
+	case m.view == viewInbox && m.choiceOf(msg) != "":
+		return m.pickChoice(m.choiceOf(msg))
 	case m.view == viewInbox && key.Matches(msg, keys.History):
 		m.inbox.history = !m.inbox.history
 	case key.Matches(msg, keys.Inbox):
@@ -1489,7 +1489,7 @@ func (m *model) filterKey(msg tea.KeyPressMsg) tea.Cmd {
 func (m *model) switchView(v viewID) tea.Cmd {
 	m.view, m.zoom, m.detailOnly = v, false, false
 	m.fixScroll()
-	m.inbox.pick = 0
+	m.inbox.pick = ""
 	switch v {
 	case viewFactory, viewInbox:
 		return m.refreshFactory(factoryFresh)
