@@ -148,16 +148,40 @@ func TestGoldenInbox(t *testing.T) {
 func TestInboxShowsTheCardsOverTheFactoryLines(t *testing.T) {
 	out := plain(inboxModel(140, 40))
 	for _, want := range []string{
-		"▸ needs-an-answer · question · 45m", "Should the export keep the legacy column order",
+		"> ? needs-an-answer", "  ▲ stuck-on-keys", "TASK", "AGE", "│",
+		"needs-an-answer · question · asked 45m ago", "Should the export keep the legacy column order",
 		"1  Keep the legacy order  (recommended)", "2  Switch now and update both readers",
-		"  stuck-on-keys · blocked · 1m", "1  Done, carry on", "worktree cap", "delta-docs", "SLUG",
+		"worktree cap", "delta-docs", "SLUG",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("inbox lacks %q:\n%s", want, out)
 		}
 	}
-	if strings.Index(out, "needs-an-answer · question") > strings.Index(out, "worktree cap") {
-		t.Error("the cards come first")
+	if strings.Index(out, "TASK") > strings.Index(out, "worktree cap") {
+		t.Error("the panes come first")
+	}
+}
+
+func TestInboxMessagePaneFollowsTheCursor(t *testing.T) {
+	calls, _ := answerScript(t)
+	m, _, delta := answerModel(t)
+	send(m, "j")
+	out := plain(m)
+	for _, want := range []string{"stuck-on-keys · blocked · asked 1m ago", "git push is refused", "1  Done, carry on", "2  Stop the task"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("after j the message lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Should the export keep") {
+		t.Errorf("after j the first decision's ask is gone:\n%s", out)
+	}
+	send(m, "1")
+	msgs := upd(m, press("y"))
+	if got := only[answerMsg](msgs); len(got) != 1 || got[0].err != nil {
+		t.Fatalf("%v", msgs)
+	}
+	if want := fmt.Sprintf("%s decision answer %s 1\n", delta, idBlocked); readCalls(calls) != want {
+		t.Errorf("script ran as %q, want %q", readCalls(calls), want)
 	}
 }
 
@@ -424,7 +448,7 @@ func TestSnapshotInboxAndDashboard(t *testing.T) {
 		}
 		return out
 	}
-	if out := snap("inbox"); !strings.Contains(out, "[1 Inbox]") || !strings.Contains(out, "▸ demo-task · question") || !strings.Contains(out, "2  Add retry now  (recommended)") {
+	if out := snap("inbox"); !strings.Contains(out, "[1 Inbox]") || !strings.Contains(out, "> ? demo-task") || !strings.Contains(out, "demo-task · question · asked") || !strings.Contains(out, "2  Add retry now  (recommended)") {
 		t.Errorf("inbox snapshot:\n%s", out)
 	}
 	if out := snap("dashboard"); !strings.Contains(out, "[2 Sessions]") || strings.Contains(out, "demo-task") {
@@ -462,102 +486,10 @@ func noticeModel(w, h int) *model {
 	return m
 }
 
-func TestInboxApproveAndHistorySitInTheirRepositorysGroup(t *testing.T) {
-	out := plain(noticeModel(140, 60))
-	at := func(s string) int { return strings.Index(out, s) }
-	order := []string{"needs-an-answer · question", "\n   Approve", "demo-export · new · 25m", "\n   History", "… 3 older · H shows them", "stuck-on-keys · blocked", "worktree cap"}
-	for i, s := range order {
-		if at(s) < 0 || (i > 0 && at(s) < at(order[i-1])) {
-			t.Fatalf("%q out of order:\n%s", s, out)
-		}
-	}
-	if !strings.Contains(out, "demo-import · stale · 2h") || !strings.Contains(out, "its head changed after the approval") {
-		t.Errorf("a stale item shows its text:\n%s", out)
-	}
-	if strings.Contains(out, "extended 30 min to 09:45Z") || strings.Contains(out, "Nov 12") {
-		t.Errorf("only 8 entries show by default:\n%s", out)
-	}
-}
-
 func TestInboxWithoutApprovalsOrHistoryHasNoSections(t *testing.T) {
 	out := plain(inboxModel(140, 60))
 	if strings.Contains(out, "Approve") || strings.Contains(out, "History") {
 		t.Errorf("sections without entries:\n%s", out)
-	}
-}
-
-func TestInboxHTogglesTheWholeHistory(t *testing.T) {
-	m := noticeModel(140, 60)
-	send(m, "H")
-	out := plain(m)
-	for _, want := range []string{"extended 30 min to 09:45Z", "Nov 12 05:00", "demo-task    lead "} {
-		if !strings.Contains(out, want) {
-			t.Errorf("after H lacks %q:\n%s", want, out)
-		}
-	}
-	if strings.Contains(out, "older · H shows them") {
-		t.Error("nothing is older once all show")
-	}
-	if send(m, "H"); strings.Contains(plain(m), "Nov 12 05:00") {
-		t.Error("H again goes back to the day's entries")
-	}
-}
-
-func TestInboxHistoryTakesEntriesOfTheLastDayOnly(t *testing.T) {
-	m := noticeModel(140, 60)
-	m.fac.repos[0].st.History = m.fac.repos[0].st.History[8:] // 9h, 20h, 30h old
-	if out := plain(m); !strings.Contains(out, "blocked: picked 1") || strings.Contains(out, "09:45Z") || !strings.Contains(out, "… 1 older") {
-		t.Errorf("the entry of 30h ago is counted, not shown:\n%s", out)
-	}
-}
-
-func TestInboxApproveLabelsOldDataOnlyPastTenMinutes(t *testing.T) {
-	m := noticeModel(140, 60)
-	if out := plain(m); !strings.Contains(out, "\n   Approve  ") || strings.Contains(out, "Approve ·") {
-		t.Errorf("fresh data is not labelled:\n%s", out)
-	}
-	m.fac.repos[0].st.Approvals.AsOf = fakeNow.Add(-14 * time.Minute)
-	if out := plain(m); !strings.Contains(out, "Approve · as of 14m") {
-		t.Errorf("old data is labelled:\n%s", out)
-	}
-}
-
-func TestInboxApproveKeepsTheURLWholeWhenNarrow(t *testing.T) {
-	for _, w := range []int{80, 60} {
-		m := noticeModel(w, 60)
-		out := plain(m)
-		for _, url := range []string{"https://github.com/example/demo/pull/12", "https://github.com/example/demo/pull/9"} {
-			if !strings.Contains(out, url) {
-				t.Errorf("width %d cuts %s:\n%s", w, url, out)
-			}
-		}
-	}
-	if out := plain(noticeModel(60, 60)); strings.Contains(out, "demo-import · stale · 2h   https") {
-		t.Errorf("at 60 columns the URL is under the entry:\n%s", out)
-	}
-}
-
-func TestInboxEachRepositorysNoticesSitUnderItsOwnHeading(t *testing.T) {
-	m := noticeModel(140, 60)
-	last := &m.fac.repos[len(m.fac.repos)-1]
-	last.st.History = []data.FactoryHistory{{TS: fakeNow.Add(-time.Minute), Slug: "demo-docs", By: "human", Text: "question: picked 1: Ship"}}
-	out := plain(m)
-	at := func(s string) int { return strings.Index(out, s) }
-	if hist := strings.LastIndex(out, "\n   History"); !(at("stuck-on-keys · blocked") < hist && hist < at("demo-docs  human") && at("demo-docs  human") < at("worktree cap")) {
-		t.Errorf("delta-docs' history follows its card:\n%s", out)
-	}
-	if !strings.Contains(out, "\n   10:59  ") {
-		t.Errorf("history rows begin with the time, after the indent, with no repository column:\n%s", out)
-	}
-}
-
-func TestInboxRepositoryWithoutCardsStillHasItsGroup(t *testing.T) {
-	m := noticeModel(140, 60)
-	m.fac.repos[0].st.Decisions = nil
-	out := plain(m)
-	head, next, item := strings.Index(out, "\n alpha "), strings.Index(out, "\n ▲ Needs you"), strings.Index(out, "demo-export · new · 25m")
-	if head < 0 || !(head < item && item < next) {
-		t.Errorf("alpha keeps a group for its approvals and history:\n%s", out)
 	}
 }
 
@@ -593,13 +525,17 @@ func TestInboxGroupsCardsByRepository(t *testing.T) {
 	if got := strings.Join(order, " "); got != "needs-an-answer second-of-alpha stuck-on-keys" {
 		t.Fatalf("cards %s", got)
 	}
-	var seen []string // the headings and cards in the order shown
-	for _, l := range strings.Split(plain(m), "\n") {
-		switch l = strings.TrimSpace(l); {
-		case l == "alpha" || l == "delta-docs":
-			seen = append(seen, l)
-		case strings.HasPrefix(l, "▸ needs-an-answer"), strings.HasPrefix(l, "second-of-alpha"), strings.HasPrefix(l, "stuck-on-keys"):
-			seen = append(seen, strings.Fields(strings.TrimPrefix(l, "▸"))[0])
+	var seen []string                                 // the headings and cards in the order shown
+	for _, l := range strings.Split(plain(m), "\n") { // the list is what is left of the rule; the lines below have none
+		if !strings.Contains(l, "│") {
+			continue
+		}
+		f := strings.Fields(strings.TrimPrefix(strings.TrimSpace(strings.SplitN(l, "│", 2)[0]), ">"))
+		switch {
+		case len(f) == 1 && (f[0] == "alpha" || f[0] == "delta-docs"):
+			seen = append(seen, f[0])
+		case len(f) > 1 && (f[0] == "?" || f[0] == "▲"):
+			seen = append(seen, f[1])
 		}
 	}
 	if got := strings.Join(seen, " "); got != "alpha needs-an-answer second-of-alpha delta-docs stuck-on-keys" {

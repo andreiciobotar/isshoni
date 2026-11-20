@@ -5,14 +5,18 @@ import (
 	"fmt"
 	"image/color"
 	"slices"
+	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
 
 	"isshoni/internal/data"
 )
 
-// inboxState is the Inbox's cursor over the decision cards, its own scroll, and the pick on the
+// inboxState is the Inbox's cursor over the decisions, its own scroll, and the pick on the
 // card under the cursor.
 type inboxState struct {
 	cursor  int    // index of the card at, in the displayed order
@@ -73,23 +77,6 @@ func (m *model) cards() []inboxCard {
 	return cs
 }
 
-// inboxRepos are the repositories with a group: those with cards in the order of the cards, then those with
-// only approvals or history.
-func (m *model) inboxRepos(cs []inboxCard) []factoryRepo {
-	var out []factoryRepo
-	for _, c := range cs {
-		if len(out) == 0 || out[len(out)-1].path != c.path {
-			out = append(out, m.fac.repos[slices.IndexFunc(m.fac.repos, func(r factoryRepo) bool { return r.path == c.path })])
-		}
-	}
-	for _, r := range m.fac.repos {
-		if r.st != nil && (len(r.st.Approvals.Items) > 0 || len(r.st.History) > 0) && !slices.ContainsFunc(out, func(o factoryRepo) bool { return o.path == r.path }) {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
 func (m *model) cursorCard() (inboxCard, bool) {
 	cs := m.cards()
 	if m.inbox.cursor >= len(cs) {
@@ -130,18 +117,15 @@ func (m *model) stepCard(delta int) bool {
 	return false
 }
 
-// showCard scrolls the page to the cursor card, leaving the last row to the "more lines" note.
+// showCard scrolls the page to the cursor's row of the list, leaving the last line to the "more lines" note.
 func (m *model) showCard() {
 	h := m.h - 3
-	_, spans := m.inboxPage(m.th.on(m.th.Bg), m.w, h)
-	if m.inbox.cursor >= len(spans) {
-		return
+	_, cur := m.inboxPage(m.th.on(m.th.Bg), m.w, h)
+	top := &m.inbox.top
+	if cur+1 > *top+h-1 {
+		*top = cur + 2 - h
 	}
-	s, top := spans[m.inbox.cursor], &m.inbox.top
-	if s[1] > *top+h-1 {
-		*top = s[1] - h + 1
-	}
-	*top = max(0, min(*top, s[0]))
+	*top = max(0, min(*top, max(0, cur-2))) // two lines up keep the repository row in view
 }
 
 // pickable is the option a digit names on the card under the cursor; 0 when it names none.
@@ -217,25 +201,17 @@ func (m *model) answered(msg answerMsg) tea.Cmd {
 	return m.refreshFactory(0)
 }
 
-// inboxPage is the Inbox: a group per repository with its decision cards, Approve and History, then the factory's lines. spans holds the lines each card takes.
-// A task with a card is not repeated in the band.
-func (m *model) inboxPage(p paint, w, h int) (lines block, spans [][2]int) {
+// inboxPage is the Inbox: the list of open decisions beside the cursor's message, then the factory's lines.
+// cur is the page line of the cursor's row in the list. A task with a decision is not repeated in the band.
+func (m *model) inboxPage(p paint, w, h int) (lines block, cur int) {
 	cs := m.cards()
-	if !m.fac.doneAt.IsZero() {
-		if len(cs) == 0 {
-			lines = block{fit(p.sp(1)+p.t("Nothing to decide.", m.th.Faint), w, p), p.sp(w)}
-		}
-		i := 0
-		for _, r := range m.inboxRepos(cs) {
-			lines = append(lines, fit(p.sp(1)+p.b(r.name, m.th.Text), w, p))
-			for ; i < len(cs) && cs[i].path == r.path; i++ {
-				start := len(lines)
-				lines = append(lines, m.card(p, cs[i], i == m.inbox.cursor, w)...)
-				spans = append(spans, [2]int{start, len(lines)})
-				lines = append(lines, p.sp(w))
-			}
-			lines = append(lines, m.notices(p, w, r)...)
-		}
+	switch {
+	case m.fac.doneAt.IsZero():
+	case len(cs) == 0:
+		lines = block{fit(p.sp(1)+p.t("Nothing to decide.", m.th.Faint), w, p), p.sp(w)}
+	default:
+		lines, cur = m.panes(p, cs, w)
+		lines = append(lines, p.sp(w))
 	}
 	items := slices.DeleteFunc(m.waiting(), func(it waitItem) bool {
 		return slices.ContainsFunc(cs, func(c inboxCard) bool { return c.path == it.path && c.d.Slug == it.task.Slug })
@@ -244,46 +220,147 @@ func (m *model) inboxPage(p paint, w, h int) (lines block, spans [][2]int) {
 	if len(items) > 0 || len(cs) == 0 {
 		band = m.needsYou(p, w, items)
 	}
-	return append(lines, m.floor(p, w, h-len(lines), band)...), spans
+	return append(lines, m.floor(p, w, h-len(lines), band)...), cur
 }
 
-// card is one decision: who asks and how long ago, the ask, the numbered options, and under the
-// card under the cursor the Accept and Reject of its pick.
-func (m *model) card(p paint, c inboxCard, cur bool, w int) block {
-	th, in := m.th, &m.inbox
-	picked := cur && in.pick != 0 && in.id == c.d.ID
-	mark, dot := p.sp(1), p.t(" · ", th.Faint)
-	if cur {
-		mark = p.b("▸", th.Purple)
+// panes is the list of decisions (about 40% of the width, at least 30 columns), a rule, and the cursor
+// decision's message, as one table row.
+func (m *model) panes(p paint, cs []inboxCard, w int) (block, int) {
+	lw := min(max(30, w*2/5), w/2)
+	rw := w - lw - 4 // the list's and the message's gap, the rule, one column free on the right
+	list, cur := m.list(p, cs, lw)
+	msg := m.message(p, cs[m.inbox.cursor], rw)
+	cellOf := func(b block, cw int) string {
+		for i := range b {
+			b[i] = fit(b[i], cw, p)
+		}
+		return strings.Join(b, "\n")
 	}
+	t := table.New().
+		Border(lipgloss.NormalBorder()).BorderStyle(p.style(m.th.Border, false)).
+		BorderTop(false).BorderBottom(false).BorderLeft(false).BorderRight(false).BorderHeader(false).
+		Wrap(true).
+		StyleFunc(func(_, c int) lipgloss.Style {
+			s := p.style(m.th.Text, false)
+			if c == 0 {
+				return s.PaddingRight(1)
+			}
+			return s.PaddingLeft(1)
+		}).
+		Row(cellOf(list, lw), cellOf(msg, rw))
+	return strings.Split(t.String(), "\n"), cur
+}
+
+// list is the table of open decisions: repository rows, then one row per decision with the cursor row marked. cur
+// is the line of the cursor row, the header being line 0.
+func (m *model) list(p paint, cs []inboxCard, lw int) (block, int) {
+	th := m.th
+	slugW, ageW := 5, 0 // the marker, a space, the icon, a space; a space follows the slug
+	var ages []string
+	for _, c := range cs {
+		age := ""
+		if !c.d.TS.IsZero() {
+			age = ago(m.now().Sub(c.d.TS))
+		}
+		ages = append(ages, age)
+		slugW, ageW = max(slugW, 5+width(c.d.Slug)), max(ageW, 1+width(age))
+	}
+	slugW = min(slugW, lw-ageW)
+	askW := lw - slugW - ageW
+	showAsk := askW >= 4
+	if !showAsk {
+		askW = 0
+		slugW = lw - ageW
+	}
+	var rowBg []color.Color
+	t := table.New().Border(lipgloss.NormalBorder()).
+		BorderTop(false).BorderBottom(false).BorderLeft(false).BorderRight(false).BorderHeader(false).BorderColumn(false).
+		Wrap(true)
+	add := func(bg color.Color, a, ask, age string) {
+		row := []string{a}
+		if showAsk {
+			row = append(row, ask)
+		}
+		t.Row(append(row, age)...)
+		rowBg = append(rowBg, bg)
+	}
+	base := p.on(th.Bg)
+	head := []string{base.t(cell("    TASK", slugW, false), th.Faint)}
+	if showAsk {
+		head = append(head, base.t(cell("ASK", askW, false), th.Faint))
+	}
+	t.Headers(append(head, base.t(cell("AGE", ageW, true), th.Faint))...)
+	cur := 0
+	for i, c := range cs {
+		if i == 0 || c.path != cs[i-1].path {
+			name := trunc(c.name, slugW-1)
+			add(th.Bg, base.sp(1)+base.b(name, th.Text)+base.sp(slugW-1-width(name)), base.sp(askW), base.sp(ageW))
+		}
+		bg := th.Bg
+		marker, icon, iconFg := base.sp(1), "?", th.Yellow
+		if c.d.Kind == "blocked" {
+			icon, iconFg = "▲", th.Orange
+		}
+		if i == m.inbox.cursor {
+			bg, cur = th.Raised, len(rowBg)+1
+			marker = base.on(bg).b("▌", th.Purple)
+			if th.NoColor {
+				marker = ">"
+			}
+		}
+		q := p.on(bg)
+		slug := trunc(c.d.Slug, slugW-5)
+		add(bg, marker+q.sp(1)+q.b(icon, iconFg)+q.sp(1)+q.b(slug, th.Text)+q.sp(slugW-4-width(slug)),
+			q.t(cell(c.d.Ask, askW, false), th.Muted), q.t(cell(" "+ages[i], ageW, true), th.Muted))
+	}
+	t.StyleFunc(func(row, _ int) lipgloss.Style {
+		if row == table.HeaderRow {
+			return p.style(th.Faint, false)
+		}
+		return p.on(rowBg[row]).style(th.Text, false)
+	})
+	return strings.Split(t.String(), "\n"), cur
+}
+
+// message is the cursor decision: who asks and how long ago, the task's own status, the ask, the numbered
+// options, and after a pick the Accept and Reject of it.
+func (m *model) message(p paint, c inboxCard, w int) block {
+	th, in := m.th, &m.inbox
+	picked := in.pick != 0 && in.id == c.d.ID
+	dot := p.t(" · ", th.Faint)
 	kind := th.Yellow
 	if c.d.Kind == "blocked" {
 		kind = th.Orange
 	}
-	head := p.sp(1) + mark + p.sp(1) + p.b(c.d.Slug, th.Text) + dot + p.t(c.d.Kind, kind)
+	title := p.b(c.d.Slug, th.Text) + dot + p.t(c.d.Kind, kind)
 	if !c.d.TS.IsZero() {
-		head += dot + p.t(ago(m.now().Sub(c.d.TS)), th.Muted)
+		title += dot + p.t("asked "+ago(m.now().Sub(c.d.TS))+" ago", th.Muted)
 	}
-	lines := block{fit(head, w, p)}
-	for _, l := range wrapPlain(c.d.Ask, max(8, w-5)) {
-		lines = append(lines, fit(p.sp(3)+p.t(l, th.Text), w, p))
+	lines := block{title}
+	if ctx := m.taskContext(c); ctx != "" {
+		lines = append(lines, p.t(ctx, th.Faint))
 	}
+	lines = append(lines, "")
+	for _, l := range wrapPlain(c.d.Ask, max(8, w)) {
+		lines = append(lines, p.t(l, th.Text))
+	}
+	lines = append(lines, "")
 	const recommended = "  (recommended)"
 	for i, o := range c.d.Options {
 		suffix := ""
 		if i+1 == c.d.Recommend {
 			suffix = p.t(recommended, th.Muted)
 		}
-		o = trunc(o, max(1, w-6-width(suffix)))
+		o = trunc(o, max(1, w-4-width(suffix)))
 		if picked && in.pick == i+1 {
-			lines = append(lines, fit(p.sp(2)+p.pill(fmt.Sprint(i+1), th.Purple)+p.sp(1)+p.b(o, th.Text)+suffix, w, p))
+			lines = append(lines, p.pill(fmt.Sprint(i+1), th.Purple)+p.sp(1)+p.b(o, th.Text)+suffix)
 		} else {
-			lines = append(lines, fit(p.sp(3)+p.b(fmt.Sprint(i+1), th.Purple)+p.sp(2)+p.t(o, th.Text)+suffix, w, p))
+			lines = append(lines, p.b(fmt.Sprint(i+1), th.Purple)+p.sp(2)+p.t(o, th.Text)+suffix)
 		}
 	}
 	switch {
 	case picked && in.sending:
-		lines = append(lines, fit(p.sp(3)+p.t(spin(m.spinFrame())+" sending…", th.Blue), w, p))
+		lines = append(lines, "", p.t(spin(m.spinFrame())+" sending…", th.Blue))
 	case picked:
 		button := func(label string, on bool, col color.Color) string {
 			if on {
@@ -291,7 +368,37 @@ func (m *model) card(p paint, c inboxCard, cur bool, w int) block {
 			}
 			return p.t(" "+label+" ", th.Muted)
 		}
-		lines = append(lines, fit(p.sp(3)+button("Accept", !in.reject, th.Green)+p.sp(2)+button("Reject", in.reject, th.Red), w, p))
+		lines = append(lines, "", button("Accept", !in.reject, th.Green)+p.sp(2)+button("Reject", in.reject, th.Red))
 	}
 	return lines
+}
+
+// taskContext is the decision's repository and whatever the task's own status row has: how long it has been
+// blocked or running, its pull request and its base.
+func (m *model) taskContext(c inboxCard) string {
+	parts := []string{c.name}
+	for _, r := range m.fac.repos {
+		if r.path != c.path || r.st == nil {
+			continue
+		}
+		for _, t := range r.st.Rows {
+			if t.Slug != c.d.Slug {
+				continue
+			}
+			switch {
+			case t.StopKind != "" && t.Waited != nil:
+				parts = append(parts, "blocked "+FmtDuration(time.Duration(*t.Waited)*time.Second))
+			case t.Elapsed != nil:
+				parts = append(parts, "running "+FmtDuration(time.Duration(*t.Elapsed)*time.Second))
+			}
+			if pr := prText(t); pr != "-" {
+				parts = append(parts, "PR "+pr)
+			}
+			if t.Base != "" {
+				b, _ := baseText(t.Base)
+				parts = append(parts, "base "+b)
+			}
+		}
+	}
+	return strings.Join(parts, " · ")
 }
