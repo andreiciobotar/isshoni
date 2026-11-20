@@ -1,4 +1,4 @@
-# Records assets/tabs/factory.gif: the Factory floor over invented repositories, cubes moving, then the `/` filter.
+# Records assets/tabs/factory.gif: the Factory floor over invented repositories, crates moving between lanes, then the `/` filter.
 # Run it through tools/floor.sh from the repository root: that sets BIN, FLOOR_REPOS and ISSHONI_ROOT.
 Output assets/tabs/factory.gif
 Set Shell bash

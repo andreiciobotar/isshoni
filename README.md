@@ -66,7 +66,7 @@ Describe a task. A reviewed pull request comes back.
 - **Production.** Tasks can read logs and metrics through read-only MCP tools you grant ([reading](docs/factory.md#reading-production-the-ops-explorer)); an ops watch checks a running system on a schedule ([watching](docs/factory.md#watching-production-the-ops-watch)).
 
 <p align="center">
-  <img src="assets/tabs/factory.gif" alt="The Factory view: an isometric factory floor in thin grey lines, one wireframe cube per task riding a winding conveyor through BUILD, REVIEW, MERGE and SHIPPED, blocked tasks on a pad off a short spur">
+  <img src="assets/tabs/factory.gif" alt="The Factory view: a top view of a factory floor in lanes, one crate per task moving through junction blocks for BUILD, REVIEW, MERGE and SHIPPED, blocked tasks on their own lane">
 </p>
 
 ## Settings
