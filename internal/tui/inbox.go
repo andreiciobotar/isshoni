@@ -111,7 +111,6 @@ func (m *model) cards() []inboxCard {
 		for i := range r.st.Approvals.Items {
 			as = append(as, inboxCard{name: r.name, path: r.path, app: &r.st.Approvals.Items[i]})
 		}
-		slices.SortStableFunc(as, func(a, b inboxCard) int { return a.app.Since.Compare(b.app.Since) })
 		cs = slices.Insert(cs, at, as...)
 	}
 	return cs
@@ -299,12 +298,16 @@ func (m *model) list(p paint, cs []inboxCard, lw int) block {
 	var ages []string
 	repoW, slugW, ageW := 0, 0, 0
 	for _, c := range cs {
+		ts := c.d.TS
+		if c.app != nil {
+			ts = c.app.Since
+		}
 		age := ""
-		if !c.d.TS.IsZero() {
-			age = ago(m.now().Sub(c.d.TS))
+		if !ts.IsZero() {
+			age = ago(m.now().Sub(ts))
 		}
 		ages = append(ages, age)
-		repoW, slugW, ageW = max(repoW, 1+width(c.name)), max(slugW, 1+width(c.d.Slug)), max(ageW, 1+width(age))
+		repoW, slugW, ageW = max(repoW, 1+width(c.name)), max(slugW, 1+width(c.slug())), max(ageW, 1+width(age))
 	}
 	repoW = min(repoW, max(6, lw/4))
 	rest := lw - repoW - iconW - ageW
@@ -342,7 +345,7 @@ func (m *model) list(p paint, cs []inboxCard, lw int) block {
 			if c.app.Why == "stale" {
 				askFg = th.Yellow
 			}
-			if askW < width(ask) { // the number goes before the slug is cut
+			if askW-1 < width(ask) { // put keeps the last column as the gap; the number goes before the slug is cut
 				ask = c.app.Why
 			}
 		case c.d.Kind == "blocked":

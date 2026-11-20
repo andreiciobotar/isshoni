@@ -2,8 +2,8 @@
  Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                   
 REPO          TASK            ASK    AGE │ demo-import · approve · approval stale 2h ago            
 alpha       ? needs-an-answer Shou…  45m │ alpha                                                    
-          > ◆ demo-import     stale      │                                                          
-            ◆ demo-export     new        │ its head changed after the approval; a fresh approval is 
+          > ◆ demo-import     stale   2h │                                                          
+            ◆ demo-export     new    25m │ its head changed after the approval; a fresh approval is 
 delta-do…   ▲ stuck-on-keys   git …   1m │ needed (the lander stopped it at 8c1f2a9)                
                                          │                                                          
                                          │ https://github.com/example/demo/pull/9                   

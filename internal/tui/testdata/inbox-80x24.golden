@@ -2,8 +2,8 @@
  Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · 11:00:00     
 REPO        TASK             AGE │ needs-an-answer · question · asked 45m ago   
 alpha   > ? needs-an-answer  45m │ alpha · blocked 45m00s · PR example.com/des… 
-          ◆ demo-import          │                                              
-          ◆ demo-export          │ Should the export keep the legacy column     
+          ◆ demo-import       2h │                                              
+          ◆ demo-export      25m │ Should the export keep the legacy column     
 delta-…   ▲ stuck-on-keys     1m │ order, or switch to the new one now?         
                                  │ Switching breaks two downstream readers.     
                                  │                                              
