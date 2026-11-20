@@ -1126,7 +1126,7 @@ func TestHeaderKeepsTheActiveRangeChipAtSixtyColumns(t *testing.T) {
 }
 
 func TestFactoryHelpAndFooter(t *testing.T) {
-	m := factoryModel(true, 120, 40, alpha())
+	m := factoryModel(true, 140, 40, alpha())
 	foot := plain(m)
 	for _, want := range []string{"↑↓/jk move", "c edit cap", "tab next view", "? help", "q quit"} {
 		if !strings.Contains(foot, want) {

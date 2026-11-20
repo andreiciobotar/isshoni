@@ -13,7 +13,7 @@ ENTRIES = ["overrun", "collision", "review-loops", "unlisted"]
 DISPATCH = DISPATCHER | {"name": "dispatcher-repo"}
 SHIPPED_ENTRIES = (
     "nearing-limit past-limit quiet blocked-unanswered handover-unacknowledged busy-after-handover review-loops deep-stack "
-    "merged-not-cleaned cost-outlier lead-heavy wrong-model overrun run-stopped collision new-spec churning base-merged "
+    "merged-not-cleaned cost-outlier lead-heavy wrong-model overrun decision run-stopped collision new-spec churning base-merged "
     "ci-red-default ci-red-handover red-waiting ended-undeclared unlisted").split()
 LABELS = ["**What:**", "**Why it matters:**", "**What it has looked like:**", "**A good call:**", "**Score (to 2026-11-15):**"]
 
@@ -382,7 +382,7 @@ class Scores(Harness):
         entries = json.loads(self.cli("firings", "--json")[1])["summary"]["entries"]
         self.assertEqual(sorted(entries), sorted(ENTRIES))
         self.assertEqual(entries["review-loops"], {"fired": 1, "to_lead": 0, "escalated": 0, "acted": 0, "ignored": 0, "no_outcome": 0,
-                                                   "suppressed": 1, "told": 0, "extended": 0, "paused": 0, "closed": 0, "missed": 0, "precision": None})
+                                                   "suppressed": 1, "told": 0, "extended": 0, "paused": 0, "closed": 0, "picked": 0, "returned": 0, "missed": 0, "precision": None})
 
 
 class ReferenceFile(Home):
