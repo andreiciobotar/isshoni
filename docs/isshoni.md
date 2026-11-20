@@ -447,7 +447,7 @@ The pictures here and in the README are recordings of this repository's own fact
 
 <img src="../assets/tabs/agents.webp" alt="View 3, Agents: per agent type the dispatches, tokens, cost and duration at the median and the 90th percentile, as the range goes from 24 hours to all time">
 
-<img src="../assets/tabs/factory.gif" alt="View 4, Factory: a top view of a factory floor in lanes with right-angle turns, junction blocks for the stations BUILD, REVIEW, MERGE and SHIPPED, one crate per task, blocked tasks on their own lane, and a crate moving to its next lane when its phase changes">
+<img src="../assets/tabs/factory.gif" alt="View 4, Factory: a top view of a factory floor in lanes with right-angle turns, the stations BUILD, REVIEW, MERGE and SHIPPED named on coloured head tiles and joined by junction blocks, one crate per task, blocked tasks on their own lane, a crate moving to its next lane when its phase changes, then the / filter narrowing it to one repository">
 
 <img src="../assets/tabs/kaizen.webp" alt="View 5, Kaizen, its four pages in turn: Pulse, Flow, Anatomy, Board">
 
