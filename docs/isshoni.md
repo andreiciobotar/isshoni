@@ -579,7 +579,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   request in review, or a task blocked on the human), heavy side edges that it is past
   its time. Each cube has a label: the slug (with the repository name before it when
   several repositories have tasks) and the elapsed time where there is room. The belt's
-  tread turns only while a task in motion has a working session; otherwise it stands
+  tread turns only while a shown task in motion has a working session; otherwise it stands
   still. A place with more tasks than room has a sign that shows the full count and `· N more` for the tasks without a slot; SHIPPED stacks its cubes on a pallet, 3 high, before the next slot; a larger terminal shows more cubes and longer labels. When a
   refresh changes a task's phase, its cube travels along the line to its new place over
   about a second; a new task comes in at the intake, a task that is gone leaves from
