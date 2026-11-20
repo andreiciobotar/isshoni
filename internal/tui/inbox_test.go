@@ -396,6 +396,17 @@ func TestInboxPickIsDroppedWhenItsCardIsGone(t *testing.T) {
 	}
 }
 
+func TestInboxPickIsDroppedWhenItsCardIsParked(t *testing.T) {
+	m := inboxModel(100, 30)
+	send(m, "2")
+	repos := inboxRepos()
+	repos[0].st.Decisions[0].With = "site-manager"
+	m.applyFactory(factoryMsg{repos: repos})
+	if m.inbox.choice != "" || m.inbox.sending {
+		t.Fatalf("the status says the card is with the site manager: %+v", m.inbox)
+	}
+}
+
 func TestInboxFooterAndHelpNameThePickKeys(t *testing.T) {
 	m := inboxModel(120, 30)
 	if foot := plain(m); !strings.Contains(foot, "1–3 pick an option") || !strings.Contains(foot, "L S leave it to lead") {
