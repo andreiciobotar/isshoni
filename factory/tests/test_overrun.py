@@ -18,10 +18,27 @@ def clock(ts):
     return iso(ts)[11:16] + "Z"
 
 
-def inbox_line(reason):
-    """The line the script sends the lead whose overrun ask went to the human's inbox."""
-    return (f"SITE MANAGER: x: paused: the human decides in the inbox. Start no build run, declare no state and end your turn; "
-            f"the answer arrives as INBOX: x. {reason}")
+def stop_line(reason, wait=30):
+    """The line the script sends the lead when the site manager recommends stopping."""
+    return (f"SITE MANAGER: x: stop recommended: the human decides in the inbox; carry on meanwhile. Unanswered in {wait} minutes, "
+            f"the script pauses the task. {reason}")
+
+
+def undecided_line(reason):
+    """The line the script sends the lead when nothing could be extended."""
+    return f"SITE MANAGER: x: undecided: carry on; your ask is in the human's inbox. {reason}"
+
+
+PAUSE_LINE = ("SITE MANAGER: x: paused: the human has not answered the stop recommended in the inbox. "
+              "Start no build run and end your turn; the answer arrives as INBOX: x.")
+CONTINUE = "Continue: 60 more minutes, then hand over or ask again"
+OTHER_OPTIONS = ["Cut: hand over what works now, list what is left in the pull request",
+                 "Split: hand over the finished part, the rest becomes new tasks",
+                 "Abandon: stop work; the dispatcher closes the task"]
+
+
+def already(minutes):
+    return f"Continue: keep going, the limit is already extended by {minutes} minutes"
 
 
 class Overrun(Harness):
@@ -71,14 +88,27 @@ class Overrun(Harness):
     def decisions(self):
         return [r for r in self.records() if "decision" in r]
 
-    def assert_card(self, ask, minutes=60):
-        """The task is blocked on the human, paused, and the inbox holds one overrun card whose ask is `ask`."""
-        last = factory.read_tasks(ROOT)["x"]
-        self.assertEqual((last["state"], last["paused"], last["waits_on"]), ("blocked", True, ["human"]))
+    def assert_card(self, ask, recommend=None, option=CONTINUE, minutes=60):
+        """The task is still working, and the inbox holds one overrun card: its ask is `ask`, its first option `option`, and the
+        record keeps `minutes` (None: no such key) for a pick of 1 to extend by."""
+        self.assertEqual(factory.read_tasks(ROOT)["x"]["state"], "working")
         [d] = factory.open_decisions(ROOT)
-        self.assertEqual((d["kind"], d["slug"], d["ask"], "recommend" in d), ("overrun", "x", ask, False))
-        self.assertEqual(d["options"][0], f"Continue: {minutes} more minutes, then hand over or ask again")
-        self.assertEqual(len(d["options"]), 4)
+        self.assertEqual((d["kind"], d["slug"], d["ask"], d.get("recommend")), ("overrun", "x", ask, recommend))
+        self.assertEqual(d["options"], [option, *OTHER_OPTIONS])
+        [record] = [r for r in self.records("decisions") if r["id"] == d["id"] and "ask" in r]
+        self.assertEqual(record.get("minutes"), minutes)
+        self.assertEqual("minutes" in record, minutes is not None)
+
+    def answer(self, rid, n, **kw):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            return self.cli("decision", "answer", rid, str(n), cwd=ROOT, **kw)
+
+    def human_extensions(self):
+        return [f for f in factory.extended(SimpleNamespace(root=ROOT)) if f["by"] == "human"]
+
+    def inbox_lines(self):
+        return [r["line"] for r in self.records("outbox") if r.get("line", "").startswith("INBOX:")]
 
     def stopped_runs(self, n, reason=None):
         self.seed("techlead", [{"ts": iso(STARTED + 120 * i), "repo": ROOT, "slug": "x", "kind": "build", "outcome": "stopped",
@@ -99,16 +129,14 @@ class AskTests(Overrun):
         self.assertEqual(code, 0, out)
         [run] = self.runs()
         [sent] = json.loads(run[-1].partition("\n\n")[2])["firings"]
-        self.assertEqual((sent["criterion"], sent["detail"], sent["extension_left_minutes"], sent["extended_minutes"], sent["runs"]),
-                         ("overrun", ASK, 60, 0, []))
+        self.assertEqual((sent["criterion"], sent["detail"], sent["extended_minutes"], sent["runs"]), ("overrun", ASK, 0, []))
+        self.assertNotIn("extension_left_minutes", sent)
         self.assertEqual(sent["limit_left_minutes"], -10)
         until = NOW + 20 * 60
         [d] = self.decisions()
         self.assertEqual((d["id"], d["decision"], d["minutes"], d["from"], d["until"], d["by"], d["reason"], d["looked"]),
                          (ask["id"], "extended", 20, iso(NOW), iso(until), "site-manager", "landing left", ["factory status"]))
-        self.assertEqual(self.lines(), [
-            ("x", f"SITE MANAGER: x: extended 20 min, limit now {clock(until)}: landing left"),
-            ("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {clock(until)}, no answer needed: landing left")])
+        self.assertEqual(self.lines(), [("x", f"SITE MANAGER: x: extended 20 min, limit now {clock(until)}: landing left")])
         self.assertIn({"repo": ROOT, "id": ask["id"], "cleared": True, "ts": iso(NOW)}, self.records())
         after = json.loads(self.cli("status", "--json")[1])["rows"][0]
         self.assertEqual((after["limit"], after["overtime"]), (until - STARTED, False))
@@ -145,36 +173,29 @@ class IdleLeadTests(Overrun):
         self.sessions = [DISPATCHER_NAME, self.idle_lead()]
         self.watch({"decision": "extended", "minutes": 20, "reason": "landing left"})
         until = clock(NOW + 20 * 60)
-        self.assertEqual(self.lines(), [
-            ("x", f"SITE MANAGER: x: extended 20 min, limit now {until}: landing left"),
-            ("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {until}, no answer needed: landing left")])
+        self.assertEqual(self.lines(), [("x", f"SITE MANAGER: x: extended 20 min, limit now {until}: landing left")])
         self.assertEqual(self.told(), ["lead"])
 
-    def test_a_pause_on_an_overrun_puts_a_card_in_the_inbox_and_tells_only_the_lead(self):
+    def test_a_stop_recommendation_reaches_an_idle_lead_and_tells_only_it(self):
         self.ask()
         self.sessions = [DISPATCHER_NAME, self.idle_lead()]
         self.watch({"decision": "paused", "waits_on": ["human"], "reason": "the human decides"})
-        self.assertEqual(self.lines(), [("x", inbox_line("the human decides"))])
+        self.assertEqual(self.lines(), [("x", stop_line("the human decides"))])
         self.assertEqual(self.told(), ["lead"])
-        self.assert_card("the human decides")
+        self.assert_card("the human decides", recommend=2)
         self.assertEqual([d["decision"] for d in self.decisions()], ["paused"])
 
-    def test_a_line_the_lead_has_not_taken_inside_the_wait_still_sends_the_dispatcher_its_notice(self):
-        for criterion, decision, heads in (("overrun", "extended", ["SITE MANAGER", "SITE MANAGER"]),
-                                           ("run-stopped", "paused", ["SITE MANAGER", "PAUSED"])):
+    def test_a_line_the_lead_has_not_taken_sends_the_dispatcher_a_later_notice_for_a_stopped_run_only(self):
+        for criterion, decision, heads in (("overrun", "extended", ["SITE MANAGER"]), ("overrun", "paused", ["SITE MANAGER"]),
+                                           ("overrun", "escalated", ["SITE MANAGER"]), ("run-stopped", "paused", ["SITE MANAGER", "PAUSED"])):
             f = {"id": "aaa", "slug": "x", "criterion": criterion}
-            with self.subTest(criterion=criterion), mock.patch.object(factory, "forward", side_effect=["queued", "dispatcher"]) as forward, \
-                    mock.patch.object(factory, "log_firing"):
+            with self.subTest(criterion=criterion, decision=decision), \
+                    mock.patch.object(factory, "forward", side_effect=["queued", "dispatcher"]) as forward, mock.patch.object(factory, "log_firing"):
                 factory.tell_decision({"repo": SimpleNamespace(root=ROOT), "dispatcher": "dispatcher-repo"}, f, decision, "why",
                                       minutes=20, until="2026-01-01T10:00:00Z")
             self.assertEqual([c.args[3] for c in forward.call_args_list], heads)
-            self.assertIs(forward.call_args_list[1].kwargs["lead"], False)
-
-    def test_a_pause_on_an_overrun_the_lead_has_not_taken_sends_the_dispatcher_nothing(self):
-        f = {"id": "aaa", "slug": "x", "criterion": "overrun"}
-        with mock.patch.object(factory, "forward", return_value="queued") as forward, mock.patch.object(factory, "log_firing"):
-            factory.tell_decision({"repo": SimpleNamespace(root=ROOT), "dispatcher": "dispatcher-repo"}, f, "paused", "why")
-        self.assertEqual([c.args[3] for c in forward.call_args_list], ["SITE MANAGER"])
+            if len(heads) > 1:
+                self.assertIs(forward.call_args_list[1].kwargs["lead"], False)
 
     def retired(self, resume):
         """A watch tick that extends the limit of a lead the harness retired; `resume` is what `claude --bg --resume` answers."""
@@ -185,18 +206,17 @@ class IdleLeadTests(Overrun):
                                    ("claude", "--bg", "--resume"): self.takes(resume) if resume[0] == 0 else resume})
         return [c for c in self.fake.calls if c[:3] == ["claude", "--bg", "--resume"]]
 
-    def test_a_retired_lead_is_resumed_with_the_line_and_the_dispatcher_hears_the_extension(self):
+    def test_a_retired_lead_is_resumed_with_the_line_and_the_dispatcher_hears_nothing(self):
         until = clock(NOW + 20 * 60)
         [resume] = self.retired((0, "backgrounded · ab · x\n", ""))
         self.assertEqual(resume[:4], ["claude", "--bg", "--resume", SID])
         self.assertRegex(resume[4], rf"^SITE MANAGER: x: extended 20 min, limit now {until}: landing left \[outbox [0-9a-f]{{12}}\]$")
-        self.assertEqual(self.lines(), [("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {until}, no answer needed: landing left")])
+        self.assertEqual(self.lines(), [])
         self.assertEqual(self.told(), ["lead"])
 
-    def test_a_retired_lead_that_cannot_be_resumed_is_queued_and_the_dispatcher_hears_the_extension(self):
+    def test_a_retired_lead_that_cannot_be_resumed_is_queued_and_the_dispatcher_hears_nothing(self):
         self.assertEqual(len(self.retired((1, "", "boom"))), 1)
-        self.assertEqual((self.lines(), self.told()), (
-            [("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {clock(NOW + 20 * 60)}, no answer needed: landing left")], ["queued"]))
+        self.assertEqual((self.lines(), self.told()), ([], ["queued"]))
 
     def test_nobody_reached_is_recorded(self):
         self.ask()
@@ -217,35 +237,41 @@ class IdleLeadTests(Overrun):
 
 
 class BoundTests(Overrun):
-    def test_an_extension_beyond_the_ceiling_is_decided_escalated_by_the_watch(self):
+    """An ask the site manager does not decide is extended by the script, by `limits.extension_minutes`."""
+
+    def assert_undecided(self, why=None):
+        """The one decision is `extended` by the watch for 60 minutes; the card has no recommendation, the lead's text, and
+        the lead is told."""
+        [d] = self.decisions()
+        self.assertEqual((d["decision"], d["by"], d["minutes"], "to" in d), ("extended", "watch", 60, False))
+        self.assertEqual(d["reason"][:len("the site manager did not decide: ")], "the site manager did not decide: ")
+        self.assertIn(why or "", d["reason"])
+        self.assertEqual(self.lines(), [("x", f"SITE MANAGER: x: extended 60 min, limit now {clock(NOW + 60 * 60)}: {d['reason']}")])
+        self.assert_card(ASK, option=already(60), minutes=None)
+        return d
+
+    def test_an_extension_over_the_setting_is_decided_extended_by_the_watch_by_the_setting(self):
         self.ask()
         self.watch({"decision": "extended", "minutes": 61, "reason": "too long"})
-        [d] = self.decisions()
-        self.assertEqual((d["decision"], d["by"], "to" in d), ("escalated", "watch", False))
-        self.assertIn("the site manager did not decide", d["reason"])
-        self.assertEqual(self.lines(), [("x", inbox_line(d["reason"]))])
-        self.assert_card(ASK)
+        self.assert_undecided()
         self.watch()
         self.assertEqual(self.runs(), [])
 
     def test_an_escalated_overrun_from_the_site_manager_is_not_recorded_and_the_ask_is_decided_undecided(self):
         self.ask()
         self.watch({"decision": "escalated", "to": "dispatcher", "reason": "the human should see this"})
-        [d] = self.decisions()
-        self.assertEqual((d["decision"], d["by"], "to" in d), ("escalated", "watch", False))
-        self.assertIn("the site manager did not decide", d["reason"])
-        self.assertEqual(self.lines(), [("x", inbox_line(d["reason"]))])
-        self.assert_card(ASK)
+        self.assert_undecided()
 
-    def test_the_ceiling_counts_what_was_granted_before(self):
+    def test_a_second_extension_is_given_though_the_first_used_up_the_setting(self):
         self.seed("firings", [fired("e1", criterion="overrun", ts=STARTED + 600),
                               {"ts": iso(STARTED + 660), "repo": ROOT, "id": "e1", "decision": "extended", "reason": "r", "by": "site-manager",
-                               "minutes": 40, "until": "u"},
+                               "minutes": 60, "until": "u"},
                               {"repo": ROOT, "id": "e1", "cleared": True}])
         self.ask()
         self.watch({"decision": "extended", "minutes": 30, "reason": "more"})
-        self.assertEqual([d["decision"] for d in self.decisions() if d["id"] != "e1"], ["escalated"])
-        self.assertEqual(json.loads(self.cli("status", "--json")[1])["rows"][0]["limit"], 160 * 60)
+        [d] = [d for d in self.decisions() if d["id"] != "e1"]
+        self.assertEqual((d["decision"], d["by"], d["minutes"]), ("extended", "site-manager", 30))
+        self.assertEqual((d["from"], d["until"]), (iso(NOW + 50 * 60), iso(NOW + 80 * 60)))  # the first one's 60 minutes ran to NOW + 50 min
 
     def test_an_extension_before_this_session_does_not_count(self):
         self.seed("firings", [fired("e1", criterion="overrun", ts=STARTED - 600),
@@ -259,12 +285,21 @@ class BoundTests(Overrun):
         self.assertEqual(code, 1)
         self.assertIn("the site manager run failed", err)
         [d] = self.decisions()
-        self.assertEqual((d["decision"], d["by"]), ("escalated", "watch"))
+        self.assertEqual((d["decision"], d["by"]), ("extended", "watch"))
         self.assertIn("the site manager run failed", d["reason"])
-        self.assertEqual(self.lines(), [("x", inbox_line(d["reason"]))])
-        self.assert_card(ASK)
+        self.assertEqual(self.lines(), [("x", f"SITE MANAGER: x: extended 60 min, limit now {clock(NOW + 60 * 60)}: {d['reason']}")])
+        self.assert_card(ASK, option=already(60), minutes=None)
         self.watch()
         self.assertEqual(self.runs(), [])
+
+    def test_with_no_task_start_the_ask_is_escalated_by_the_watch_and_a_continue_tries_again(self):
+        self.ask()
+        self.sessions = [DISPATCHER_NAME, lead("x", pid=4242, startedAt=None)]
+        self.watch()
+        [d] = self.decisions()
+        self.assertEqual((d["decision"], d["by"], "minutes" in d), ("escalated", "watch", False))
+        self.assertEqual(self.lines(), [("x", undecided_line(d["reason"]))])
+        self.assert_card(ASK)
 
     def test_with_no_dispatcher_the_human_is_told_on_this_machine(self):
         self.ask()
@@ -273,11 +308,11 @@ class BoundTests(Overrun):
         self.assertEqual(code, 0)
         self.assertEqual(self.runs(), [])
         [d] = self.decisions()
-        self.assertEqual((d["decision"], d["by"]), ("escalated", "watch"))
+        self.assertEqual((d["decision"], d["by"]), ("extended", "watch"))
         self.assertNotIn("notify", out)
         self.assertNotIn("ESCALATION", out)
-        self.assertEqual(self.lines(), [("x", inbox_line(d["reason"]))])
-        self.assert_card(ASK)
+        self.assertEqual(self.lines(), [("x", f"SITE MANAGER: x: extended 60 min, limit now {clock(NOW + 60 * 60)}: {d['reason']}")])
+        self.assert_card(ASK, option=already(60), minutes=None)
         self.watch()
         self.assertEqual(len(self.decisions()), 1)
 
@@ -293,7 +328,7 @@ class MootTests(Overrun):
         self.assertEqual((d["decision"], d["by"], d["reason"]), ("suppressed", "watch", f"{state.replace('-', ' ')} at {iso(ts)}, the ask is moot"))
         self.assertNotIn("to", d)
         self.assertEqual(self.lines(), [])
-        self.assertEqual(factory.open_decisions(ROOT), [])
+        self.assertEqual((factory.open_decisions(ROOT), self.records("decisions")), ([], []))
         self.assertNotIn("ESCALATION", self.watch()[1])
         self.assertEqual(self.runs(), [])
 
@@ -329,8 +364,8 @@ class MootTests(Overrun):
         self.hand_over("working", NOW + 60)
         self.watch()
         [d] = self.decisions()
-        self.assertEqual((d["decision"], d["by"]), ("escalated", "watch"))
-        self.assertEqual([r["kind"] for r in self.records("decisions")], ["overrun"])  # the seeded `working` is stamped after the pause
+        self.assertEqual((d["decision"], d["by"]), ("extended", "watch"))
+        self.assertEqual([r["kind"] for r in self.records("decisions")], ["overrun"])
 
     def test_a_hand_over_during_the_look_closes_the_undecided_ask_as_moot(self):
         self.ask()
@@ -421,7 +456,7 @@ class ResumeTests(Overrun):
 
     def test_with_no_session_listed_the_start_and_the_total_are_still_the_events(self):
         p = {"repo": SimpleNamespace(root=ROOT)}
-        self.assertEqual(factory.extension_state(p, "x", None), (STARTED, 20, 40))
+        self.assertEqual(factory.extension_state(p, "x", None), (STARTED, 20))
 
 
 class GrantTests(Overrun):
@@ -471,14 +506,14 @@ class GrantTests(Overrun):
         [d] = self.decisions()
         self.assertEqual((d["from"], d["until"]), (iso(NOW + 10 * 60), iso(NOW + 25 * 60)))
 
-    def test_a_second_extension_counts_from_the_first_ones_until_and_the_ceiling_falls_by_both(self):
+    def test_a_second_extension_counts_from_the_first_ones_until_and_both_are_summed(self):
         started = self.started(140)
         self.previous(NOW - 600, 15)  # from NOW-10m, until NOW+5m
         self.ask()
         self.watch({"decision": "extended", "minutes": 10, "reason": "more"})
         [d] = [d for d in self.decisions() if d["id"] != "e1"]
         self.assertEqual((d["from"], d["until"]), (iso(NOW + 5 * 60), iso(NOW + 15 * 60)))
-        self.assertEqual(factory.extension_state({"repo": SimpleNamespace(root=ROOT)}, "x", None)[1:], (25, 35))
+        self.assertEqual(factory.extension_state({"repo": SimpleNamespace(root=ROOT)}, "x", None)[1:], (25,))
         self.assertEqual(started + self.status_row()["limit"], NOW + 15 * 60)
 
     def test_an_old_rule_extension_keeps_its_arithmetic_and_a_new_one_follows_it(self):
@@ -678,43 +713,62 @@ class RunStoppedTests(Overrun):
         return pic(repo=repo, declared={"x": {"state": state}})
 
 
-class InboxCardTests(Overrun):
-    """An overrun the human decides is a card in the inbox, and the human's `Continue` extends the limit."""
+class Card(Overrun):
+    """The task started at STARTED, by its event; the card is posted by the helper or by a watch tick."""
 
     def setUp(self):
         super().setUp()
         self.seed("events", [ev("x", "TaskStarted", ts=iso(STARTED))])
         self.repo = SimpleNamespace(root=ROOT)
 
-    def post(self, ask=ASK, minutes=45):
+    def post(self, ask=ASK, minutes=45, slug="x", **kw):
         load = factory.load_settings
         with mock.patch.object(factory, "load_settings", lambda: {**load(), "extension_minutes": minutes}):
-            factory.overrun_to_human(self.repo, "x", ask)
+            factory.post_overrun_card(self.repo, slug, ask, **kw)
         return factory.open_decisions(ROOT)
 
-    def answer(self, rid, n):
-        with mock.patch.dict(os.environ):
-            os.environ.pop("CLAUDE_PROJECT_DIR", None)
-            return self.cli("decision", "answer", rid, str(n), cwd=ROOT)
+    def stop(self, recommend=2, reason="not converging"):
+        """The lead asks and the site manager recommends stopping, at NOW; the card is posted."""
+        self.ask()
+        self.watch({"decision": "paused", "waits_on": ["human"], "reason": reason, "recommend": recommend})
+        return factory.open_decisions(ROOT)[0]
 
-    def human_extensions(self):
-        return [f for f in factory.extended(self.repo) if f["by"] == "human"]
+    def tick(self, minutes):
+        """A watch tick `minutes` after the card, in between two full passes: it runs no site manager."""
+        factory.write_lander(self.repo, {"health": NOW + minutes * 60})
+        return self.cli("watch", at=NOW + minutes * 60, answers=self.decide())
 
-    def inbox_lines(self):
-        return [r["line"] for r in self.records("outbox") if "line" in r]
+    def state(self):
+        return {k: factory.read_tasks(ROOT)["x"].get(k) for k in ("state", "paused", "waits_on")}
 
-    def test_the_helper_blocks_the_task_on_the_human_and_posts_the_card(self):
+    def build(self):
+        spawned = []
+        with mock.patch.object(factory, "tech_lead_missing", lambda repo, slug: None), mock.patch.object(factory, "validate_slug"), \
+                mock.patch.object(factory, "spawn", lambda argv, *a: spawned.append(argv)):
+            code, _, err = self.cli("build", "x", entries=["x"])
+        return code, err, spawned
+
+    def paused_events(self):
+        return [e for e in factory.read_log("events") if e["slug"] == "x" and e["event"] == "TaskPaused"]
+
+
+class InboxCardTests(Card):
+    """An overrun the human decides is a card in the inbox, and the human's `Continue` extends the limit."""
+
+    def test_the_helper_posts_the_card_and_leaves_the_task_working(self):
         [d] = self.post()
-        last = factory.read_tasks(ROOT)["x"]
-        self.assertEqual((last["state"], last["paused"], last["waits_on"], last["role"]), ("blocked", True, ["human"], "site-manager"))
-        self.assertEqual([e["event"] for e in factory.read_log("events") if e["slug"] == "x"], ["TaskStarted", "TaskPaused"])
+        self.assertEqual(self.state(), {"state": "working", "paused": None, "waits_on": None})
+        self.assertEqual([e["event"] for e in factory.read_log("events") if e["slug"] == "x"], ["TaskStarted"])
         self.assertEqual((d["kind"], d["ask"], "recommend" in d), ("overrun", ASK, False))
-        self.assertEqual(d["options"], ["Continue: 45 more minutes, then hand over or ask again",
-                                        "Cut: hand over what works now, list what is left in the pull request",
-                                        "Split: hand over the finished part, the rest becomes new tasks",
-                                        "Abandon: stop work; the dispatcher closes the task"])
+        self.assertEqual(d["options"], ["Continue: 45 more minutes, then hand over or ask again", *OTHER_OPTIONS])
         [ask] = [r for r in self.records("decisions") if "ask" in r]
         self.assertEqual(ask["minutes"], 45)
+
+    def test_a_card_for_a_limit_already_extended_names_the_minutes_and_keeps_none(self):
+        [d] = self.post(recommend=1, granted=20)
+        self.assertEqual((d["options"], d["recommend"]), ([already(20), *OTHER_OPTIONS], 1))
+        [ask] = [r for r in self.records("decisions") if "ask" in r]
+        self.assertNotIn("minutes", ask)
 
     def test_an_ask_of_70_words_is_cut_to_60_ending_in_an_ellipsis_and_one_of_60_is_whole(self):
         words = [f"w{i}" for i in range(70)]
@@ -737,14 +791,14 @@ class InboxCardTests(Overrun):
         self.assertEqual((f["from"], f["until"]), (iso(NOW), iso(NOW + 45 * 60)))  # 10 minutes past the limit: from now
         self.assertEqual(f["detail"], f"the human picked continue: decision {d['id']}")
         self.assertEqual(STARTED + json.loads(self.cli("status", "--json")[1])["rows"][0]["limit"], NOW + 45 * 60)
-        self.assertEqual(factory.extension_state({"repo": self.repo}, "x", None)[1:], (50, 10))
+        self.assertEqual(factory.extension_state({"repo": self.repo}, "x", None)[1:], (50,))
         self.assertEqual(self.inbox_lines(), [f"INBOX: x: decision {d['id']}: the human picked 1: {d['options'][0]}"])
 
-    def test_continue_is_granted_though_the_earlier_extensions_used_up_the_allowance(self):
+    def test_continue_is_granted_though_the_earlier_extensions_were_large(self):
         self.seed("firings", [fired("e1", criterion="overrun", ts=NOW - 3600),
                               {"ts": iso(NOW - 3500), "repo": ROOT, "id": "e1", "decision": "extended", "reason": "r", "by": "site-manager",
                                "minutes": 55, "from": iso(NOW - 3500), "until": iso(NOW - 200)}])
-        [d] = self.post(minutes=45)  # 5 minutes of the 60 are left
+        [d] = self.post(minutes=45)
         self.assertEqual(self.answer(d["id"], 1)[0], 0)
         [f] = self.human_extensions()
         self.assertEqual((f["minutes"], f["until"]), (45, iso(NOW + 45 * 60)))
@@ -772,25 +826,171 @@ class InboxCardTests(Overrun):
             self.assertEqual(self.inbox_lines()[-1], f"INBOX: x: decision {d['id']}: the human picked {n}: {d['options'][n - 1]}")
         self.assertEqual((self.human_extensions(), len(self.inbox_lines())), ([], 3))
 
-    def test_after_the_answer_the_leads_working_lets_the_build_start(self):
-        self.seed("tasks", [{"repo": ROOT, "slug": "xyz", "state": "working", "ts": iso(NOW - HOUR)}])
-        factory.overrun_to_human(self.repo, "xyz", ASK)
-        [d] = factory.open_decisions(ROOT)
-        self.answer(d["id"], 2)
-        spawned = []
-        with mock.patch.object(factory, "tech_lead_missing", lambda repo, slug: None), \
-                mock.patch.object(factory, "spawn", lambda argv, *a: spawned.append(argv)):
-            self.assertEqual((self.cli("build", "xyz", entries=["xyz"])[0], spawned), (1, []))
-            self.assertEqual(self.cli("state", "working", entries=["xyz"], cwd=f"{WT}/xyz")[0], 0)
-            self.assertEqual(self.cli("build", "xyz", entries=["xyz"])[0], 0)
-        self.assertEqual(len(spawned), 1)
-
     def test_a_lead_cannot_post_an_overrun_card(self):
         with self.assertRaises(SystemExit) as refused:
             self.cli("decision", "ask", "--kind", "overrun", "a?", "--option", "b", "--option", "c")
         self.assertEqual(refused.exception.code, 2)
         self.assertEqual(self.records("decisions"), [])
 
+
+class RunOnTests(Card):
+    """An overrun never holds the task: whatever the site manager says, it keeps working."""
+
+    def test_an_extension_is_a_continue_card_and_the_pick_extends_nothing_again(self):
+        self.ask()
+        self.watch({"decision": "extended", "minutes": 20, "reason": "landing left"})
+        self.assertEqual(self.state()["state"], "working")
+        self.assert_card("landing left", recommend=1, option=already(20), minutes=None)
+        self.assertEqual(self.lines(), [("x", f"SITE MANAGER: x: extended 20 min, limit now {clock(NOW + 20 * 60)}: landing left")])
+        [d] = factory.open_decisions(ROOT)
+        limit = json.loads(self.cli("status", "--json")[1])["rows"][0]["limit"]
+        self.assertEqual(self.answer(d["id"], 1)[0], 0)
+        self.assertEqual((self.human_extensions(), len(self.decisions())), ([], 1))
+        self.assertEqual(json.loads(self.cli("status", "--json")[1])["rows"][0]["limit"], limit)
+        self.assertEqual(self.inbox_lines(), [f"INBOX: x: decision {d['id']}: the human picked 1: {already(20)}"])
+
+    def test_a_stop_recommendation_is_a_card_with_its_pick_and_the_lead_carries_on(self):
+        self.ask()
+        self.watch({"decision": "paused", "waits_on": ["human"], "reason": "not converging", "recommend": 3})
+        self.assertEqual(self.state(), {"state": "working", "paused": None, "waits_on": None})
+        self.assert_card("not converging", recommend=3)
+        self.assertEqual(self.lines(), [("x", stop_line("not converging"))])
+        [d] = self.decisions()
+        self.assertEqual((d["decision"], d["waits_on"], d["by"]), ("paused", ["human"], "site-manager"))
+        self.assertEqual(self.paused_events(), [])
+
+    def test_a_stop_card_says_option_2_without_a_valid_recommendation(self):
+        for recommend in (None, 1, 7):
+            with self.subTest(recommend=recommend):
+                self.ask()
+                self.watch({"decision": "paused", "waits_on": ["human"], "reason": "slow", **({"recommend": recommend} if recommend else {})})
+                self.assertEqual(factory.open_decisions(ROOT)[0]["recommend"], 2)
+
+    def test_a_stop_card_unanswered_for_the_wait_pauses_the_task_once(self):
+        self.stop()
+        code, out, _ = self.tick(29)
+        self.assertEqual((code, self.state()["state"], self.lines(), self.runs(), self.paused_events()), (0, "working", [], [], []))
+        self.assertEqual(self.tick(30)[0], 0)
+        self.assertEqual(self.state(), {"state": "blocked", "paused": True, "waits_on": ["human"]})
+        self.assertEqual((self.lines(), self.runs(), len(self.paused_events())), ([("x", PAUSE_LINE)], [], 1))
+        code, err, spawned = self.build()
+        self.assertEqual((code, spawned), (1, []))
+        self.assertIn("paused: site-manager waits on human", err)
+        [d] = factory.open_decisions(ROOT)
+        self.assertEqual((d["kind"], d["recommend"]), ("overrun", 2))
+        self.tick(31)
+        self.assertEqual((self.lines(), len(self.paused_events()), len(self.decisions())), ([], 1, 1))
+
+    def test_the_pause_comes_on_a_tick_that_runs_the_site_manager_too(self):
+        self.stop()
+        self.stopped_runs(1)
+        self.watch({"decision": "suppressed", "reason": "first such run"}, at=NOW + 31 * 60)
+        self.assertEqual(len(self.runs()), 1)
+        self.assertEqual(self.state()["state"], "blocked")
+        self.assertEqual([n for n, line in self.lines() if line == PAUSE_LINE], ["x"])
+
+    def test_the_wait_is_the_setting(self):
+        (self.store / "settings.toml").write_text("[limits]\noverrun_stop_wait_minutes = 5\n")
+        self.stop()
+        self.assertEqual(self.lines(), [("x", stop_line("not converging", wait=5))])
+        self.tick(4)
+        self.assertEqual(self.state()["state"], "working")
+        self.tick(5)
+        self.assertEqual(self.state()["state"], "blocked")
+
+    def test_an_answered_stop_card_is_never_paused(self):
+        d = self.stop()
+        self.assertEqual(self.answer(d["id"], 3)[0], 0)
+        self.tick(40)
+        self.assertEqual((self.state()["state"], self.lines(), self.paused_events()),
+                         ("working", [("x", f"INBOX: x: decision {d['id']}: the human picked 3: {d['options'][2]}")], []))
+
+    def test_a_stop_card_whose_task_handed_over_is_never_paused(self):
+        self.stop()
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "handed-over", "ts": iso(NOW + 60)}])
+        self.tick(40)
+        self.assertEqual((self.state()["state"], self.lines(), self.paused_events(), factory.open_decisions(ROOT)), ("handed-over", [], [], []))
+
+    def test_continue_after_the_pause_extends_by_the_human_and_the_leads_working_lets_the_build_start(self):
+        d = self.stop()
+        self.tick(31)
+        self.assertEqual(self.state()["state"], "blocked")
+        self.assertEqual(self.answer(d["id"], 1, at=NOW + 32 * 60)[0], 0)
+        [f] = self.human_extensions()
+        self.assertEqual((f["minutes"], f["by"]), (60, "human"))
+        self.assertEqual(self.inbox_lines(), [f"INBOX: x: decision {d['id']}: the human picked 1: {d['options'][0]}"])
+        self.assertEqual(self.build()[0], 1)
+        self.assertEqual(self.cli("state", "working")[0], 0)
+        code, _, spawned = self.build()
+        self.assertEqual((code, len(spawned)), (0, 1))
+        self.tick(60)
+        self.assertEqual((self.state()["state"], self.paused_events()[1:]), ("working", []))
+
+    def test_continue_before_the_pause_extends_the_same_way_and_no_pause_follows(self):
+        d = self.stop()
+        self.assertEqual(self.answer(d["id"], 1, at=NOW + 10 * 60)[0], 0)
+        [f] = self.human_extensions()
+        self.assertEqual((f["minutes"], f["by"]), (60, "human"))
+        self.tick(40)
+        self.assertEqual((self.state()["state"], self.lines(), self.paused_events()),
+                         ("working", [("x", f"INBOX: x: decision {d['id']}: the human picked 1: {d['options'][0]}")], []))
+
+    def test_a_lead_that_declares_working_without_an_answer_is_paused_again(self):
+        self.stop()
+        self.tick(31)
+        self.assertEqual(self.cli("state", "working")[0], 0)
+        self.tick(32)
+        self.assertEqual((self.state()["state"], len(self.paused_events())), ("blocked", 2))
+
+
+class OpenRuleTests(Card):
+    """An overrun card is open while its task works or waits, until it is answered, replaced or the task hands over."""
+
+    def test_a_second_card_for_the_task_closes_the_first(self):
+        first = self.post("one")[0]["id"]
+        [d] = self.post("two")
+        self.assertNotEqual(d["id"], first)
+        self.assertEqual([d["ask"]], ["two"])
+
+    def test_a_card_is_open_while_working_and_after_a_block_and_closed_by_a_hand_over(self):
+        self.assertEqual([d["ask"] for d in self.post()], [ASK])
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "blocked", "waits_on": ["dispatcher"], "ts": iso(NOW + 60)}])
+        self.assertEqual([d["ask"] for d in factory.open_decisions(ROOT)], [ASK])
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "handed-over", "ts": iso(NOW + 120)}])
+        self.assertEqual(factory.open_decisions(ROOT), [])
+
+    def test_a_question_card_is_still_closed_by_a_task_that_works(self):
+        factory.post_decision(self.repo, "x", "lead", "question", "which?", ["a", "b"])
+        self.assertEqual(factory.open_decisions(ROOT), [])
+
+
+class FlagTests(Card):
+    """From the 10th overrun card in a row that no pick has followed, the ask says so, counted over the repository."""
+
+    FLAG = "overruns in a row unanswered: limits or sizing look structurally wrong. "
+
+    def cards(self, n):
+        return [self.post(f"ask {i}", slug="xy"[i % 2])[-1]["id"] for i in range(n)]
+
+    def test_the_tenth_card_across_two_tasks_says_so_and_the_ninth_does_not(self):
+        self.seed("tasks", [{"repo": ROOT, "slug": "y", "state": "working", "ts": iso(NOW - 60)}])
+        self.cards(8)
+        self.assertEqual(self.post("ask 8", slug="y")[-1]["ask"], "ask 8")
+        tenth = self.post("ask 9", slug="x")[-1]
+        self.assertEqual(tenth["ask"], f"10 {self.FLAG}ask 9")
+        self.assertEqual(self.post("ask 10", slug="y")[-1]["ask"], f"11 {self.FLAG}ask 10")
+
+    def test_a_pick_on_an_overrun_card_restarts_the_count(self):
+        self.seed("tasks", [{"repo": ROOT, "slug": "y", "state": "working", "ts": iso(NOW - 60)}])
+        ids = self.cards(11)
+        factory.log("decisions", {"repo": ROOT, "id": ids[-1], "slug": "y", "choice": 2, "ts": iso(NOW)})
+        self.assertEqual(self.post("after")[-1]["ask"], "after")
+
+    def test_a_flagged_ask_is_still_cut_to_60_words(self):
+        self.cards(9)
+        [d] = self.post(" ".join(f"w{i}" for i in range(70)))[-1:]
+        words = d["ask"].split()
+        self.assertEqual((len(words), words[:2], words[-1]), (60, ["10", "overruns"], "…"))
 
 
 if __name__ == "__main__":

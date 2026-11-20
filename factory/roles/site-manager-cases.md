@@ -96,18 +96,18 @@ How to use a look: you are given facts and what changed since the last look. Mos
 **Score (to 2026-11-15):** fired 4; escalated 3 (acted 0, ignored 3, no outcome 0); suppressed 1; missed 0.
 
 ## overrun
-**What:** A lead over its limit, or not converging, asks for time with `factory overrun`. The firing's `detail` is its ask; `runs`, `extended_minutes`, `extension_left_minutes` and `limit_left_minutes` (negative when the limit is past) are the evidence.
+**What:** A lead over its limit, or not converging, asks for time with `factory overrun`. The firing's `detail` is its ask; `runs`, `extended_minutes` (added so far) and `limit_left_minutes` (negative when the limit is past) are the evidence.
 **Why it matters:** An ask held back stops a lead that is nearly done; time given for nothing costs a build run.
-**What it has looked like:** The script fires it on every tick, with no threshold. It fired 2 times in two days, both extended. `pulse-band-visual` is case 4 below. An ask whose task is handed over or settled when the script reads it never reaches you: the script closes it as moot (`suppressed`, `by: watch`). An ask you are given is from a lead still at work, or reopened; one you leave undecided the script puts in the human's inbox.
-**A good call:** Decide by the principles and cases below: `extended` with `minutes`, or `paused` with `waits_on` `["human"]`, which puts your `reason` (at most 60 words) in the human's inbox as a card. The script tells the lead about both and the dispatcher about `extended`; you message nobody for them.
+**What it has looked like:** The script fires it on every tick, with no threshold. It fired 2 times in two days, both extended. `pulse-band-visual` is case 4 below. An ask whose task is handed over or settled when the script reads it never reaches you: the script closes it as moot (`suppressed`, `by: watch`). An ask you are given is from a lead still at work, or reopened; one you leave undecided the script extends and puts in the human's inbox with no recommendation. Your decision is a recommendation: the task runs on and the human may overrule it from the inbox.
+**A good call:** A recommendation, continue or stop; nothing waits on the human. Decide by the principles and cases below: `extended` with `minutes` recommends continuing, `paused` with `waits_on` `["human"]` (and `recommend` 2, 3 or 4) recommends stopping. Either puts your `reason` (at most 60 words) in the human's inbox as a card while the task runs on; a stop is paused by the script only if the human has not answered in time. Stop is for work that is not converging, or money going on runs with nothing to show. The script tells the lead, not the dispatcher; you message nobody for them.
 - Time is given to finish, not to start. What is left decides, not how far over the task is: proven work with review, landing, assessment or hand-over left is finishing; a design still moving is not.
 - Money spent with nothing to show is the signal. Runs that end without a hand-over spend without progress: find why before giving more time.
-- The cause decides who acts. A cause the lead can remove gets the time and the instruction. A cause only the human can remove (a permission, a push, a direction) gets a pause at once: more time cannot fix it.
+- The cause decides who acts. A cause the lead can remove gets the time and the instruction. A cause only the human can remove (a permission, a push, a direction) gets a stop recommendation at once: more time cannot fix it.
 - A change of direction from the human or the dispatcher is new work, not the lead's overrun: extend for it.
 - Give the time the remaining steps need and say what it is for. A second ask for the same reason is not the same decision: something did not go as said.
 - Asking must cost less than the work left. When little is left, decide fast and extend.
-- When you cannot tell, pass it to the human with what you found. A pause costs the human a minute; a wrong extension costs a build run.
-- `extension_left_minutes` is the human's ceiling. What does not fit under it is the human's decision: pause for the human.
+- When you cannot tell, pass it to the human with what you found. A recommendation to stop costs the human a minute; a wrong extension costs a build run.
+- One extension is at most `limits.extension_minutes`. What needs more is the human's decision: recommend a stop.
 
 **Score (to 2026-11-15):** fired 2; extended 2 (kept 1, overran 1, no outcome 0); escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 0; missed 0.
 Extensions decided before the limit counted from the decision (records without `from`) were scored against a limit counted from the old limit: 15 of them up to 2026-11-16T19:44Z, of which 2 `overran` would be `kept`; they are not counted in the score.
