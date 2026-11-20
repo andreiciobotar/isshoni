@@ -203,6 +203,7 @@ func New(o Options) *model {
 		dirty: map[string]bool{}, inflight: map[string]bool{}, retry: map[string]time.Time{}, counter: map[string]*Counter{},
 		rowTok: map[string]*Counter{}, flash: map[string]time.Time{}, folded: map[string]bool{}, opened: map[string]bool{}, held: map[string]rankKey{},
 	}
+	m.inbox = newInboxState()
 	m.loadCtx, m.loadCancel = context.WithCancel(m.ctx)
 	for _, k := range append([]string{"tokens", "dispatches", "repeats", "loops", "warns", "share", "recheck"}, kaizenCounters...) {
 		m.counter[k] = &Counter{}

@@ -28,8 +28,7 @@ const (
 // cards, then the factory table (what waits on the human, the settings line, one section per
 // repository).
 func (m *model) factoryBody(p paint, w, h int) block {
-	lines, _ := m.inboxPage(p, w, h)
-	return scrolled(p, lines, m.inbox.top, w, h)
+	return scrolled(p, m.inboxPage(p, w, h), m.inbox.top, w, h)
 }
 
 // showsFactory says the view reads the factory's status: the Factory tab and the Inbox.
@@ -52,7 +51,7 @@ func (m *model) factoryPositions() int {
 		return 1
 	}
 	h := m.h - 3
-	lines, _ := m.inboxPage(m.th.on(m.th.Bg), m.w, h)
+	lines := m.inboxPage(m.th.on(m.th.Bg), m.w, h)
 	return max(1, len(lines)-h+1)
 }
 

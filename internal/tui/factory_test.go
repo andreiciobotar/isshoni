@@ -533,7 +533,7 @@ func TestFactoryBandLeavesOutTasksBlockedOnSomeoneElse(t *testing.T) {
 func TestFactoryTaskRowNamesWhomABlockedTaskWaitsOn(t *testing.T) {
 	for _, w := range []int{80, 100, 140} {
 		m := factoryModel(true, w, 60, delta())
-		page, _ := m.inboxPage(m.th.on(m.th.Bg), w, 60)
+		page := m.inboxPage(m.th.on(m.th.Bg), w, 60)
 		plain := ansi.Strip(strings.Join(page, "\n"))
 		lines := strings.Split(plain, "\n")
 		for _, l := range lines {
