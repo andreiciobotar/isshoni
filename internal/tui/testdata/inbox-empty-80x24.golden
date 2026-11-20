@@ -1,0 +1,24 @@
+ Isshoni [1 ✉ ▲2] 2 ≡ 3 Agent 4 Factory 5 Kaizen 6 ◉ 7 ✿     24h [7d] 30d all ○ 
+ Inbox  10 motion (1 blocked) · 1 review · 2 merged · 1 settled  · 11:00:00     
+ Nothing to decide.                                                             
+                                                                                
+ ▲ Needs you  2                                                                 
+ ◆ alpha  api-rate-limits  review PR         3h00m                              
+          #42 https://github.com/o/alpha/pull/42                                
+ ▲ alpha  needs-an-answer  answer question  45m00s                              
+          Should the export keep the legacy column order?                       
+                                                                                
+ worktree cap  5  per repo, 1 in reserve   c edit                               
+                                                                                
+ alpha                in motion ▲●●●●●● 7/4+1   review 1   merged 2   settled 1 
+  SLUG              PHASE      ELAPSED  PR                      FLAGS           
+  needs-an-answer   ▲ blocked   10m40s  example.com/design/doc                  
+  login-flow        ⠋ motion     2h15m  -                       [overtime]      
+  lost-its-lead     ● motion     9h00m  -                       [held]          
+                    held 9h · ended-undeclared · its replacement redo-plumbing… 
+  quiet-refactor    ⠋ motion     4m12s  -                                       
+  rate-limit-docs   ● motion         -  #40 closed              [stale]         
+  slow-export       ⠋ motion    41m00s  -                                       
+  stacked-on-login  ● motion     1m35s  ?                                       
+ +14 more lines · ↓ to scroll                                                   
+ ↑↓/jk move  ·  1-4 pick an option  ·  c edit cap  ·  ? help  ·  q quit         

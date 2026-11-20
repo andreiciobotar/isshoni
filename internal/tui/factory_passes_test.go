@@ -40,7 +40,7 @@ func TestFactoryFirstFrameHasRowsWhileTheFetchPassHangs(t *testing.T) {
 	writeStub(t, dir, "status.json", passStatus("alpha-task", time.Time{}))
 	os.WriteFile(filepath.Join(dir, "fetch-hang"), nil, 0o644)
 	start := time.Now()
-	first := only[factoryMsg](upd(m, press("3")))
+	first := only[factoryMsg](upd(m, press("4")))
 	_, fetch := m.Update(first[0])
 	if time.Since(start) > 3*time.Second || fetchCount(t, dir) != 0 {
 		t.Fatalf("the cached pass answers before any fetch starts: %v, %d fetches", time.Since(start), fetchCount(t, dir))
@@ -81,7 +81,7 @@ func TestFactoryFailedFetchPassKeepsRowsAndShowsTheDatedLine(t *testing.T) {
 	m, dir, now := factoryStubModel(t)
 	writeStub(t, dir, "status.json", passStatus("alpha-task", now.Add(-5*time.Minute)))
 	os.WriteFile(filepath.Join(dir, "fetch-fail"), nil, 0o644)
-	_, fetch := m.Update(only[factoryMsg](upd(m, press("3")))[0])
+	_, fetch := m.Update(only[factoryMsg](upd(m, press("4")))[0])
 	for _, g := range only[factoryFetchMsg](run(fetch)) {
 		upd(m, g)
 	}
@@ -94,7 +94,7 @@ func TestFactoryFailedFetchPassKeepsRowsAndShowsTheDatedLine(t *testing.T) {
 func TestFactoryOldDataIsDatedWithoutAnError(t *testing.T) {
 	m, dir, now := factoryStubModel(t)
 	writeStub(t, dir, "status.json", passStatus("alpha-task", now.Add(-3*time.Minute)))
-	upd(m, only[factoryMsg](upd(m, press("3")))[0])
+	upd(m, only[factoryMsg](upd(m, press("4")))[0])
 	if out := plain(m); strings.Count(out, "pull requests as of 3m ago") != 2 || strings.Contains(out, "GitHub slow") {
 		t.Fatalf("data older than 2 minutes is dated:\n%s", out)
 	}
@@ -117,7 +117,7 @@ func TestFactoryNoFetchPassOffTheViewOrWhenFreshOrWithoutRows(t *testing.T) {
 		t.Fatalf("off the view only the cached pass runs: %d fetches", fetchCount(t, dir))
 	}
 
-	send(m, "3")
+	send(m, "4")
 	*now = now.Add(factoryEvery + time.Second)
 	writeStub(t, dir, "status.json", passStatus("alpha-task", now.Add(-50*time.Second)))
 	if _, cmd := m.Update(only[factoryMsg](upd(m, tickMsg{}))[0]); cmd != nil || fetchCount(t, dir) != 0 {
@@ -134,7 +134,7 @@ func TestFactoryNoFetchPassOffTheViewOrWhenFreshOrWithoutRows(t *testing.T) {
 func TestFactoryOneFetchPassInFlightPerRepository(t *testing.T) {
 	m, dir, now := factoryStubModel(t)
 	writeStub(t, dir, "status.json", passStatus("alpha-task", time.Time{}))
-	first := only[factoryMsg](upd(m, press("3")))[0]
+	first := only[factoryMsg](upd(m, press("4")))[0]
 	_, fetch := m.Update(first)
 	if fetch == nil {
 		t.Fatal("the first result starts the fetch passes")
@@ -165,7 +165,7 @@ func TestFactoryOneFetchPassInFlightPerRepository(t *testing.T) {
 func TestFactoryFetchesOnlyTheRepositoriesThatAnswered(t *testing.T) {
 	m, dir, _ := factoryStubModel(t)
 	writeStub(t, dir, "status.json", passStatus("alpha-task", time.Time{}))
-	first := only[factoryMsg](upd(m, press("3")))[0]
+	first := only[factoryMsg](upd(m, press("4")))[0]
 	first.repos[0].st, first.repos[0].err = nil, "boom"
 	_, fetch := m.Update(first)
 	if got := only[factoryFetchMsg](run(fetch)); len(got) != 1 || got[0].path != first.repos[1].path {

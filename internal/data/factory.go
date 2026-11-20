@@ -132,6 +132,39 @@ type FactoryStatus struct {
 	Merged   int           `json:"merged"`
 	Settled  int           `json:"settled"`
 	PRs      FactoryPRs    `json:"prs"`
+
+	Decisions []FactoryDecision `json:"decisions"` // open decisions of the repository, oldest first; nil from a script before the field
+}
+
+// FactoryDecision is an open decision a lead posted for the human: the ask and its numbered options.
+// Recommend is the 1-based option the lead would take, 0 when it named none. TS is the zero time when
+// the script's timestamp does not parse: the decision then shows without an age.
+type FactoryDecision struct {
+	ID        string
+	Slug      string
+	Kind      string // question or blocked
+	Ask       string
+	Options   []string
+	Recommend int
+	TS        time.Time
+}
+
+// UnmarshalJSON reads {"id": "3f9a1c2b4d5e", "slug": "demo-task", "kind": "question", "ask": "...",
+// "options": ["a", "b"], "recommend": 1, "ts": "2026-11-14T19:00:00Z"}; recommend may be absent and a bad
+// ts leaves TS zero rather than failing the status.
+func (d *FactoryDecision) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		ID, Slug, Kind, Ask string
+		Options             []string
+		Recommend           int
+		TS                  string
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	ts, _ := time.Parse(time.RFC3339, raw.TS)
+	*d = FactoryDecision{ID: raw.ID, Slug: raw.Slug, Kind: raw.Kind, Ask: raw.Ask, Options: raw.Options, Recommend: raw.Recommend, TS: ts}
+	return nil
 }
 
 // FactoryPRs dates the pull request fields of the rows: AsOf is the epoch second of the
@@ -481,6 +514,34 @@ func WriteWorktreeCap(n int) error {
 	cmd := exec.Command(script, "settings", "set", "limits.worktree_cap", strconv.Itoa(n))
 	cmd.Stderr = &se
 	if err := cmd.Run(); err != nil {
+		return stderrLine(se.String(), err)
+	}
+	return nil
+}
+
+// answerTimeout bounds `factory decision answer`, which writes two log lines and never leaves the machine.
+const answerTimeout = 10 * time.Second
+
+// AnswerDecision runs `<root>/factory/bin/factory decision answer id n` in the repository at repoPath (root as
+// for WriteWorktreeCap): the factory queues the human's pick for the lead. Its one-line complaint is the error.
+func AnswerDecision(ctx context.Context, repoPath, id string, n int) error {
+	root, err := LocateRoot()
+	if err != nil {
+		return err
+	}
+	script := filepath.Join(root, "factory", "bin", "factory")
+	if _, err := os.Stat(script); err != nil {
+		return fmt.Errorf("factory command not found: %s", script)
+	}
+	ctx, cancel := context.WithTimeout(ctx, answerTimeout)
+	defer cancel()
+	var se bytes.Buffer
+	cmd := groupCmd(ctx, script, "decision", "answer", id, strconv.Itoa(n))
+	cmd.Dir, cmd.Stderr = repoPath, &se
+	if err := cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("answering timed out after %s", answerTimeout)
+		}
 		return stderrLine(se.String(), err)
 	}
 	return nil

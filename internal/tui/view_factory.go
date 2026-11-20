@@ -25,9 +25,29 @@ const (
 )
 
 // factoryBody is the factory view: what waits on the human, the settings line, then one
-// section per repository, scrolled when it is taller than the window.
+// section per repository, scrolled when it is taller than the window. The Inbox shows the
+// same lines under its decision cards.
 func (m *model) factoryBody(p paint, w, h int) block {
-	return scrolled(p, m.factoryLines(p, w, h), m.fac.top, w, h)
+	return scrolled(p, m.floorLines(p, w, h), *m.floorTop(), w, h)
+}
+
+// onFloor says the view shows the factory's lines: the Factory view and the Inbox.
+func (m *model) onFloor() bool { return m.view == viewFactory || m.view == viewInbox }
+
+// floorLines are the lines of the view shown; floorTop is where each of the two keeps its scroll.
+func (m *model) floorLines(p paint, w, h int) block {
+	if m.view == viewInbox {
+		lines, _ := m.inboxPage(p, w, h)
+		return lines
+	}
+	return m.factoryLines(p, w, h)
+}
+
+func (m *model) floorTop() *int {
+	if m.view == viewInbox {
+		return &m.inbox.top
+	}
+	return &m.fac.top
 }
 
 // scrolled shows h of the lines from top, the last of them saying how many more there are.
@@ -47,10 +67,15 @@ func (m *model) factoryPositions() int {
 		return 1
 	}
 	h := m.h - 3
-	return max(1, len(m.factoryLines(m.th.on(m.th.Bg), m.w, h))-h+1)
+	return max(1, len(m.floorLines(m.th.on(m.th.Bg), m.w, h))-h+1)
 }
 
 func (m *model) factoryLines(p paint, w, h int) block {
+	return m.floor(p, w, h, m.needsYou(p, w, m.waiting()))
+}
+
+// floor is the factory's lines under band: the settings line, then the repositories.
+func (m *model) floor(p paint, w, h int, band block) block {
 	th := m.th
 	f := &m.fac
 	lines := block{m.settingsLine(p, w), p.sp(w)}
@@ -65,7 +90,7 @@ func (m *model) factoryLines(p paint, w, h int) block {
 		}
 		return append(lines, p.center(msg, w, h-len(lines))...)
 	}
-	lines = append(m.needsYou(p, w), lines...)
+	lines = append(band, lines...)
 	var all []data.FactoryTask
 	for _, r := range f.repos {
 		if r.st != nil {
@@ -121,8 +146,8 @@ func (m *model) prLine(r factoryRepo) string {
 
 // waitItem is a task that waits on the human: in review (its pull request ready, not a draft), or blocked on the human.
 type waitItem struct {
-	repo string
-	task data.FactoryTask
+	repo, path string
+	task       data.FactoryTask
 }
 
 // waiting lists the waiting tasks of every repository, the longest waiting first (an
@@ -135,7 +160,7 @@ func (m *model) waiting() []waitItem {
 		}
 		for _, t := range r.st.Rows {
 			if (t.Phase == "review" && !t.PRDraft) || t.WaitsOnHuman() {
-				items = append(items, waitItem{r.name, t})
+				items = append(items, waitItem{r.name, r.path, t})
 			}
 		}
 	}
@@ -173,9 +198,8 @@ func (it waitItem) todo() (what, do string) {
 // needsYou is the band at the top of the view: a title and a row per waiting task, then a
 // blank line; one faint line when nothing waits. A row's do cell takes the rest of the
 // line, or its own line when that leaves it under bandDoLeast cells.
-func (m *model) needsYou(p paint, w int) block {
+func (m *model) needsYou(p paint, w int, items []waitItem) block {
 	th := m.th
-	items := m.waiting()
 	if len(items) == 0 {
 		quiet := "✓ nothing waits on you"
 		if slices.ContainsFunc(m.fac.repos, func(r factoryRepo) bool { return r.st == nil }) {
@@ -222,10 +246,11 @@ func (m *model) needsYou(p paint, w int) block {
 
 // ---- subheader and settings line ------------------------------------------------
 
-func (m *model) factorySubheader(p paint) string {
+// factorySubheader is the Factory view's, and under title the Inbox's.
+func (m *model) factorySubheader(p paint, title string) string {
 	th := m.th
 	f := &m.fac
-	left := p.b("Factory", th.Text)
+	left := p.b(title, th.Text)
 	var motion, blocked, review, merged, settled int
 	reported := false
 	for _, r := range f.repos {

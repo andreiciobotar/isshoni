@@ -443,18 +443,18 @@ location. It needs a terminal of at least 60x16.
 
 The pictures here and in the README are recordings of this repository's own factory (`make pictures`, below); the checkout is in a directory named `ccmon`, which is why that name shows as the repository.
 
-<img src="../assets/tabs/dashboard.webp" alt="View 1, the dashboard: the cursor moves over the repository, its tasks and a session; the pane shows the selected row's agent and model mix, its dispatches and timeline; then the repository is folded">
+<img src="../assets/tabs/dashboard.webp" alt="View 2, Sessions (shown as Dashboard when the picture was recorded): the cursor moves over the repository, its tasks and a session; the pane shows the selected row's agent and model mix, its dispatches and timeline; then the repository is folded">
 
-<img src="../assets/tabs/agents.webp" alt="View 2, Agents: per agent type the dispatches, tokens, cost and duration at the median and the 90th percentile, as the range goes from 24 hours to all time">
+<img src="../assets/tabs/agents.webp" alt="View 3, Agents: per agent type the dispatches, tokens, cost and duration at the median and the 90th percentile, as the range goes from 24 hours to all time">
 
-<img src="../assets/tabs/factory.webp" alt="View 3, Factory: what waits for you, then each task's phase, elapsed time, pull request and base, against the worktree cap">
+<img src="../assets/tabs/factory.webp" alt="View 4, Factory: what waits for you, then each task's phase, elapsed time, pull request and base, against the worktree cap">
 
-<img src="../assets/tabs/kaizen.webp" alt="View 4, Kaizen, its four pages in turn: Pulse, Flow, Anatomy, Board">
+<img src="../assets/tabs/kaizen.webp" alt="View 5, Kaizen, its four pages in turn: Pulse, Flow, Anatomy, Board">
 
 ```
 bin/isshoni-tui [--range 24h|7d|30d|all] [--follow] [--no-color]
                 [--projects-dir DIR] [--agents-dir DIR] [--prices PATH]
-bin/isshoni-tui --snapshot dashboard|session|agents|factory|ops|kaizen|kaizen-friction|kaizen-flow|kaizen-anatomy|kaizen-board|hanami|help [--size 140x40] [--session ID] [--row N] [--fold] [--frames N]
+bin/isshoni-tui --snapshot dashboard|inbox|session|agents|factory|ops|kaizen|kaizen-friction|kaizen-flow|kaizen-anatomy|kaizen-board|hanami|help [--size 140x40] [--session ID] [--row N] [--fold] [--frames N]
 ```
 `--range` defaults to `7d`. `NO_COLOR` gives the plain rendering too. `--snapshot`
 prints one settled frame and exits, non-zero when the load fails; `--row N` puts the
@@ -471,7 +471,8 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 
 | Key | |
 |---|---|
-| `tab` `shift+tab`, `1` `2` `3` `4` `5` `6` | switch view: dashboard, agents, factory, kaizen, ops, hanami |
+| `tab` `shift+tab`, `1` `2` `3` `4` `5` `6` `7` | switch view: inbox, sessions, agents, factory, kaizen, ops, hanami |
+| `1`-`4` | inbox, with a decision under the cursor (`▸`): pick that option of it, then `enter` does the marked one of `Accept` `Reject`; `←` `→` `h` `l` `tab` switch the mark, `y` accepts, `n` or `esc` rejects. Every other key but `ctrl+c` is ignored until then. A digit the card has no option for switches the view as everywhere |
 | `↑` `↓` `j` `k`, `g` `G`, `pgup` `pgdn` | move, first and last, page |
 | `←` `→` `h` `l` | dashboard: collapse the repository the cursor is in (the cursor moves to its row), expand it. A collapsed row (`▸`) keeps its totals, and the tiles and follow mode still count what is inside; a filter leaves it collapsed, counting the matches. Folding turns follow mode off and is forgotten on exit. On a short-runs row, `→` opens it and `←` closes it (also from one of its sessions); on a closed one `←` still folds the repository |
 | `enter`, `esc` | dashboard: open the session row under the cursor full screen (the zoom; in it `↑` `↓` `g` `G` `pgup` `pgdn` move over the dispatches and `enter` swaps the list for the selected dispatch); on `all`, a repository or a task, a message says to pick a session row and the cursor stays. Back: first the detail, then the zoom, then the dashboard from any other view |
@@ -480,11 +481,12 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 | `/` | filter by `repo`, `repo/task`, project or session id |
 | `f` | follow the most recently active session (off until pressed or `--follow`; any cursor key turns it off) |
 | `←` `→`, `h` `l` | kaizen view: previous and next page (Pulse, Flow, Anatomy, Board) |
-| `c` | factory view: edit the cap (digits or `↑` `↓`, `enter` saves, `esc` cancels) |
+| `c` | factory view and inbox: edit the cap (digits or `↑` `↓`, `enter` saves, `esc` cancels) |
 | `d` | over SSH with a `write` key only: open the dispatcher's conversation on this connection ([Over SSH](#over-ssh)) |
 | `?`, `q` | help, quit |
 
-- **Dashboard:** one screen, from the top: the totals for the range, the sessions as a
+- **Inbox:** the start view. Under the sub-header, one card per open decision of every repository, oldest first: `▸ demo-task · question · 12m` (the task, the kind, how long ago it was asked), the ask, and its numbered options, the one the lead recommends marked `(recommended)`. A lead posts a decision with `factory decision ask` when its task waits on you ([factory.md](factory.md#messages)); without one the page says `Nothing to decide.`. `↑` `↓` `j` `k` move the `▸` over the cards, then scroll the page; the page keeps the card under the cursor in view. A digit picks that option (see the key table): the option is highlighted and `Accept   Reject` appears under the card; `Accept` runs `factory decision answer <id> <n>` in the card's repository (10 s limit, never on the update loop), which queues the pick for the lead, and the next watch tick delivers it. The card shows `sending…` meanwhile; on success a toast says `answered <task>: <n>` and the factory is read again, so the card goes when the status says so; on failure a toast gives the script's line and the card is back to unpicked. A key that is not `write` over `--serve` gets the toast `read-only: this key may not answer a decision` and picks nothing. Under the cards are the Factory view's lines (below), one implementation: the band of what waits on you (without the tasks that have a card), the cap line (`c` edits it), and each repository's tasks. The cap, the refresh (105 s while shown, 2 minutes otherwise, a fresh one on entering) and the scroll are the Factory view's too. A decision can appear up to one refresh late, and `--snapshot inbox` shows it once. The `▲N` badge of what waits on you is on the `1 Inbox` tab (below 110 columns the tab is an envelope, `1 ✉`).
+- **Sessions** (the Dashboard tab before the Inbox): one screen, from the top: the totals for the range, the sessions as a
   tree of repository, task and session (with the agent and model mix beside it from 120
   columns), a pane about the row under the cursor, and every dispatch running now.
   A group row sums its sessions (rates from summed counts, never a mean of rates); a
@@ -550,7 +552,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   repositories, oldest first: tasks in review (the pull request or deliverable to look
   at) and tasks blocked on you (what they asked; a task blocked on the dispatcher or on
   another task says so in its row, with its reason beneath, and is not in the band), each
-  with how long it has waited; when nothing waits it says so. The `3 Factory` tab carries
+  with how long it has waited; when nothing waits it says so. The `1 Inbox` tab carries
   `▲N` for the number waiting on every view (in a narrow header the live count then
   shows as `● N`, without the word). A task the site manager paused reads
   `paused 12m: waits a, b` in place of `blocked on a, b`, yellow from 30 minutes on (a
@@ -659,8 +661,8 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   old the answer is. If a reload fails the watches stay under one red line saying why and
   the sub-header says `stale, from 5m ago`. With a factory that has no `ops` command the
   page says `⚠ this factory has no ops command yet`; with no watch it says how to start
-  one from your terminal. `↑` `↓` scroll. Below 110 columns the tab is an eye, `5 ◉`
-  (`5 ▲N` with the badge). Known limit: at 60 columns a two-digit alarm count, or an alarm count beside a Factory badge, pushes the selected range chip out of the header. `--snapshot ops` loads once and renders.
+  one from your terminal. `↑` `↓` scroll. Below 110 columns the tab is an eye, `6 ◉`
+  (`6 ▲N` with the badge). Known limit: at 60 columns a two-digit alarm count, or an alarm count beside an Inbox badge, pushes the selected range chip out of the header. `--snapshot ops` loads once and renders.
 
 A session is live when its transcript changed in the last 30 seconds or so. Agents keep
 one colour and one order everywhere: main, coder, reviewer, explorer, lander, then the rest.
@@ -676,7 +678,7 @@ bin/isshoni-tui --serve ADDR [--authorized-keys FILE] [--host-key FILE]
 | `--authorized-keys` | `~/.claude/factory/dashboard/authorized_keys` | OpenSSH's format, one public key per line. Required: the server does not start without the file. Read again on every connection, so a key added or removed applies at once |
 | `--host-key` | `~/.claude/factory/dashboard/host_key` | the server's private key; an ed25519 key is created on the first start (directory 0700, file 0600). The start line, on stderr, prints its SHA256 fingerprint: check it against what `ssh` asks you to accept the first time |
 
-- **The key file is the only gate.** Public keys only: no password, no keyboard-interactive login, no banner. A key that is listed sees everything the dashboard shows (session titles, repositories, costs). Put `write` before a key (`write ssh-ed25519 AAAA... laptop`) and that key may also change the worktree cap with `c` on the Factory view, which writes `~/.claude/factory/settings.toml` of the account the server runs as, and open the dispatcher's conversation with `d` (next bullet); every other key is read-only (`c` and `d` say so). Any other option on a line is ignored. **A `write` key reaches the dispatcher's conversation, a session that runs commands as the server's account and acts on GitHub as the factory's bot: give `write` only to people you would give a shell.** Whether a key may write is decided when it connects: a key removed or demoted while connected keeps what it had until that connection ends.
+- **The key file is the only gate.** Public keys only: no password, no keyboard-interactive login, no banner. A key that is listed sees everything the dashboard shows (session titles, repositories, costs). Put `write` before a key (`write ssh-ed25519 AAAA... laptop`) and that key may also change the worktree cap with `c` on the Factory view or the Inbox, which writes `~/.claude/factory/settings.toml` of the account the server runs as, and open the dispatcher's conversation with `d` (next bullet); may also answer a decision on the Inbox (`factory decision answer`, which writes the decisions log and the outbox of the repository); every other key is read-only (`c`, `d` and the picks say so). Any other option on a line is ignored. **A `write` key reaches the dispatcher's conversation, a session that runs commands as the server's account and acts on GitHub as the factory's bot: give `write` only to people you would give a shell.** Whether a key may write is decided when it connects: a key removed or demoted while connected keeps what it had until that connection ends.
 - **The dispatcher (`d`)**, in every view outside an open input, for a `write` key only (not on the local dashboard or `--snapshot`, where `d` does nothing and is not in the help). It gives the connection's terminal to `claude attach NAME`, the dispatcher's conversation, and brings the dashboard back when that exits, at the terminal's size by then. `claude` must be on the server's `PATH`; it runs as the server's account with the server's environment plus the client's `TERM` (and `COLORTERM`, when the client sent it). The names are `sessions.dispatchers` of `~/.claude/factory/settings.toml` (`["dispatcher-<repository>", ...]`), read at every press: one name attaches at once; several open a picker (`1`-`9` or `↑↓` and `enter`; `esc` cancels; past nine only the arrows reach the rest). A name that is not letters, digits, `.`, `_` and `-`, or starts with `-`, is never offered. A missing or empty list, or a settings file that cannot be read, is a toast naming the file and the key. Coming back: `Ctrl+Z` in the attached conversation detaches it and returns to the dashboard; `←` on an empty prompt opens Claude Code's agent view (every session on the server), and `Ctrl+C` twice there returns to the dashboard. If `claude attach` fails (no such session, `claude` missing), the dashboard returns with a toast. The server only ever starts and ends the attach client, never the dispatcher's session, which a Claude Code supervisor owns: detaching, a dropped connection and a server shutdown leave it running. A dropped connection or a shutdown sends the attach client SIGHUP, and the server kills it 2 seconds later if it stays. The pty is resized with the window, and the kernel signals the client; where the server runs on macOS the client has no controlling terminal (the system revokes the terminal when its session leader exits) and does not see a resize. Each attach start and end is a line on stderr (remote address, key fingerprint, name).
 - **Shared calls.** Viewers who ask for the same thing at the same time share one `isshoni` or `factory status` process. A result is used for up to 10 seconds, and not once a transcript has changed since it was started (sessions) or the cap was saved (everything), so the periodic data (agents, kaizen, factory status) can be up to 10 seconds older than on a local dashboard. `factory ops list` is not shared: each viewer runs its own, every 30 seconds on the Ops tab and every 2 minutes off it. Viewers on different ranges, or on different sessions, each cost their own call. Two further limits: a transcript that is deleted does not invalidate a shared `sessions` result, so a deleted session can stay listed for a viewer until the next transcript change, or until the 10 seconds lapse and a viewer refetches; and freshness compares the time a run started with file modification times, so on a filesystem with coarse (one-second) times a shared result can miss a write made in the same second until the next change.
 - **Colour** follows what each client's `TERM` promises (`xterm-256color`: 256 colours; `dumb`: none). Most SSH clients do not forward `COLORTERM`, so truecolor needs it asked for: `ssh -o SetEnv=COLORTERM=truecolor -p 2222 HOST` (the server takes any variable the client sets; a test covers it). The server's own `NO_COLOR` is not consulted; `--no-color` makes every viewer plain. A phone's SSH client usually sends `xterm-256color` and no `COLORTERM`, so it shows 256 colours, in which Hanami's glow is drawn in bands; set `COLORTERM=truecolor` in the client where it lets you set an environment variable.
@@ -706,7 +708,7 @@ bin/isshoni-tui --serve ADDR [--authorized-keys FILE] [--host-key FILE]
 
 The sixth view (`6`) draws the same work as motion, for a second screen: the mark come alive. Nothing in it is decoration posing as data: every moving thing is one event from `isshoni events`, and `l` shows the legend.
 
-<img src="../assets/tabs/hanami.webp" alt="View 6, Hanami: a stretch of the last day replayed at 60 times its speed, with a merge in the middle">
+<img src="../assets/tabs/hanami.webp" alt="View 7, Hanami: a stretch of the last day replayed at 60 times its speed, with a merge in the middle">
 
 | you see | it is |
 |---|---|
@@ -731,7 +733,7 @@ The sixth view (`6`) draws the same work as motion, for a second screen: the mar
 
 Ambient, and not data: the disc's slow breath, the sway of lanterns, the slowest breeze. With nothing running, that is all there is: quiet looks quiet, and the tree at four in the afternoon looks like the afternoon's work.
 
-Colour is always the agent's role, as everywhere in the dashboard. Keys: `l` legend, `z` hides the header and footer, `p` replays the last 24 hours (again: back to live). A replay runs at a minute a second and skips stretches where nothing happened, so a day takes as many seconds as it had busy minutes; its clock is in the sub-header, and its rates (the disc, the wind, the bars) are per event second, so they read as they would have live. Below 110 columns the tab is a blossom, `6 ✿`.
+Colour is always the agent's role, as everywhere in the dashboard. Keys: `l` legend, `z` hides the header and footer, `p` replays the last 24 hours (again: back to live). A replay runs at a minute a second and skips stretches where nothing happened, so a day takes as many seconds as it had busy minutes; its clock is in the sub-header, and its rates (the disc, the wind, the bars) are per event second, so they read as they would have live. Below 110 columns the tab is a blossom, `7 ✿`.
 
 It runs at 20 frames a second and only while it is shown: the view starts `isshoni events --follow` when you open it and stops it when you leave. Measured on a 140x40 terminal (a pty, 30 s after start, CPU time of the process) it takes 7.5% of one core idle and 9.5% replaying a busy stretch, the same as before the beat and the light along the branches were added (the glow is a background colour per cell, two where a half block is drawn, which the terminal layer pays for; the scene itself draws in a millisecond), plus about 1% for the event stream. What had happened before you opened it sets the scene without animation: the last 2 hours of sessions and agents, every open pull request and every unanswered question. An agent whose transcript was last written more than 2 hours earlier and that is still running has no blossom until it next writes. Pull requests come from `gh`, polled once a minute, so a lantern or a firework can be up to a minute late; check states are known live only, so a replay's lanterns do not flicker. Without colour (`--no-color`) there is no glow: shapes and motion carry it; a terminal without truecolor gets the nearest colours it has.
 
@@ -759,7 +761,7 @@ Parsing a transcript is slow, so parsed sessions are cached, one file per transc
 
 ## Shutdown
 
-The dashboard starts three kinds of child process, each in its own process group (`groupCmd` in `internal/data/runner.go`): the monitor calls (`python3 -m isshoni sessions|session|agents|kaizen`, 2 minutes), `factory status --json` (10 s cached, 25 s with a fetch), `factory ops list --json` (10 s) and the event stream `isshoni events --follow` (while the Hanami tab or follow mode needs it). A cancel or timeout kills the whole group with SIGKILL, so what the child started (`gh`, `git`) goes with it, and waits at most 1 s for its pipes. Under `--serve`, key `d` starts a fourth, `claude attach <name>` (`attach` in `cmd/isshoni-tui/serve.go`, see above): it does not go through `groupCmd`, has no timeout because it waits on a human, and ends when the human detaches or the connection ends, on which it gets SIGHUP and a kill 2 s later. Nothing else is started and nothing is written to disk except the caches below.
+The dashboard starts three kinds of child process, each in its own process group (`groupCmd` in `internal/data/runner.go`): the monitor calls (`python3 -m isshoni sessions|session|agents|kaizen`, 2 minutes), `factory status --json` (10 s cached, 25 s with a fetch), `factory ops list --json` (10 s), `factory decision answer` (10 s, only when you accept a decision) and the event stream `isshoni events --follow` (while the Hanami tab or follow mode needs it). A cancel or timeout kills the whole group with SIGKILL, so what the child started (`gh`, `git`) goes with it, and waits at most 1 s for its pipes. Under `--serve`, key `d` starts a fourth, `claude attach <name>` (`attach` in `cmd/isshoni-tui/serve.go`, see above): it does not go through `groupCmd`, has no timeout because it waits on a human, and ends when the human detaches or the connection ends, on which it gets SIGHUP and a kill 2 s later. Nothing else is started and nothing is written to disk except the caches below.
 
 What ends the children, by how the dashboard stops:
 

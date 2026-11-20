@@ -92,7 +92,7 @@ func TestAttachGivesTheTerminalToTheDispatcherAndComesBack(t *testing.T) {
 	waitFor(t, "the attach end line", func() bool { return strings.Contains(e.logs.String(), "attach end") })
 	mark = v.out.Len()
 	v.send("?") // a key typed after the return reaches the dashboard
-	v.waitAfter(mark, "dashboard · agents · factory")
+	v.waitAfter(mark, "inbox sessions agents factory")
 	v.send("?q") // closes the help, then quits
 	if err := v.waitExit(); err != nil {
 		t.Fatalf("q ends the session cleanly after coming back: %v", err)
