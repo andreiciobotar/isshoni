@@ -86,14 +86,19 @@ class ApproveTests(Loop):
         self.assertEqual(len(self.approvals()["items"]), 1)
         self.assertEqual(self.approvals(state="working")["items"], [])
 
-    def test_a_stop_at_the_current_head_is_a_stale_item_with_its_text_and_an_older_head_is_none(self):
+    def test_a_stop_at_the_current_head_is_a_stale_item_with_its_text(self):
         self.sim.add(1, behind=False)
         self.lander_stop("h1")
         self.go("watch")
         self.assertEqual(self.approvals()["items"], [{"slug": "t1", "number": 1, "url": "https://x/pull/1", "why": "stale",
                                                       "text": "its head changed after the approval", "since": iso(NOW - 600)}])
+
+    def test_a_stop_at_an_older_head_is_no_item_while_the_pull_request_is_open(self):
+        self.sim.add(1, behind=False)
         self.lander_stop("h0")
-        self.go("watch")
+        with mock.patch.object(factory, "drain"):  # the drain would merge it or drop the stop: only the tick's own write is under test
+            self.go("watch")
+        self.assertEqual(self.sim.open(), [1])
         self.assertEqual(self.approvals()["items"], [])
 
     def test_an_approved_pull_request_with_no_stop_is_none(self):

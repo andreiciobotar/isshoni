@@ -9235,7 +9235,10 @@ def watch_snapshot(repo, fallback, snap):
     """Give the open pull requests `snap` to the comment forwarder; with a task handed over (or a task's pull request that
     is ready for review while its task is not: it goes back to draft), also set the draft flags. The approve items are
     written from the lander's state as the last pass left it: a stop it reports shows one tick later."""
-    write_approvals(repo, snap)
+    try:
+        write_approvals(repo, snap)
+    except Exception as e:  # the tick goes on without it
+        print(f"approve: {why(e)}")
     try:
         watch_comments(repo, fallback, snap)
     except Exception as e:  # the tick goes on without it
