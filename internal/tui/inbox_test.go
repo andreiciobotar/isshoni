@@ -607,6 +607,29 @@ func TestInboxCursorStaysOnItsPullRequestThroughARefreshThatReordersRows(t *test
 	}
 }
 
+func TestInboxBandLeavesOutAnApproveRowsReviewPRButTheFactoryTabKeepsIt(t *testing.T) {
+	repos := noticeRepos()
+	repos[0].st.Rows = append(repos[0].st.Rows, data.FactoryTask{Slug: "demo-export", Phase: "review", PRURL: "https://github.com/example/demo/pull/12"})
+	m := fakeModel(true, 140, 60)
+	setInbox(m, repos...)
+	inBand := func() bool {
+		for _, l := range strings.Split(plain(m), "\n") {
+			if strings.Contains(l, "demo-export") && strings.Contains(l, "review PR") {
+				return true
+			}
+		}
+		return false
+	}
+	if inBand() {
+		t.Errorf("the Inbox band repeats the approve row's task:\n%s", plain(m))
+	}
+	m.view = viewFactory
+	m.fixScroll()
+	if !inBand() {
+		t.Errorf("the Factory tab's band keeps it:\n%s", plain(m))
+	}
+}
+
 func TestInboxNothingToDecideOnlyWhenThereIsNeitherADecisionNorAnApproval(t *testing.T) {
 	m := noticeModel(100, 40)
 	m.fac.repos[0].st.Decisions, m.fac.repos[len(m.fac.repos)-1].st.Decisions = nil, nil
