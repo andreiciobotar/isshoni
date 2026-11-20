@@ -1,17 +1,14 @@
  Isshoni 一緒に [1 Inbox ▲7] 2 Sessions  3 Agents  4 Factory  5 Kaizen  6 Ops  7 Hanami                          24h [7d] 30d  all   ○ idle 
  Inbox  18 in motion (8 blocked) · 3 waiting for review · 2 merged, not cleaned · 1 settled  · as of 11:00:00                               
- alpha                                                                                                                                      
- ▸ needs-an-answer · question · 45m                                                                                                         
-   Should the export keep the legacy column order, or switch to the new one now? Switching breaks two downstream readers.                   
-   1  Keep the legacy order  (recommended)                                                                                                  
-   2  Switch now and update both readers                                                                                                    
-   3  Keep legacy now, switch next release                                                                                                  
-                                                                                                                                            
- delta-docs                                                                                                                                 
-   stuck-on-keys · blocked · 1m                                                                                                             
-   git push is refused: the deploy key is read-only. Run `git push origin worktree-stuck-on-keys` by hand.                                  
-   1  Done, carry on                                                                                                                        
-   2  Stop the task                                                                                                                         
+    TASK            ASK                              AGE │ needs-an-answer · question · asked 45m ago                                       
+ alpha                                                   │ alpha · blocked 45m00s · PR example.com/design/doc · base main                   
+> ? needs-an-answer Should the export keep the lega… 45m │                                                                                  
+ delta-docs                                              │ Should the export keep the legacy column order, or switch to the new one now?    
+  ▲ stuck-on-keys   git push is refused: the deploy…  1m │ Switching breaks two downstream readers.                                         
+                                                         │                                                                                  
+                                                         │ 1  Keep the legacy order  (recommended)                                          
+                                                         │ 2  Switch now and update both readers                                            
+                                                         │ 3  Keep legacy now, switch next release                                          
                                                                                                                                             
  ▲ Needs you  5                                                                                                                             
  ◆ alpha       api-rate-limits  review PR          3h00m  #42 https://github.com/o/alpha/pull/42                                            
@@ -36,5 +33,8 @@
   old-experiment     ✓ merged, not cleaned                             1m01s  -       #31                     main                          
   old-plumbing       ✓ merged, not cleaned                             2h00m  -       #9                      main          [kept]          
                      kept: uncommitted changes                                                                                              
- +25 more lines · ↓ to scroll                                                                                                               
+  release-notes      · settled, not cleaned                           50m00s  -       release-notes.md        main                          
+                                                                                                                                            
+ beta-é日本語                                                                                       in motion ●●● 3/2   review 0   merged 0 
+ +22 more lines · ↓ to scroll                                                                                                               
  ↑↓/jk move  ·  1–3 pick an option  ·  c edit cap  ·  tab next view  ·  ? help  ·  q quit                                                   
