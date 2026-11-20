@@ -493,33 +493,56 @@ func TestEscFromAnotherTopLevelViewGoesToTheInbox(t *testing.T) {
 	}
 }
 
+// withOlderInAlpha puts a decision older than every other at the head of alpha, so every card of alpha
+// moves one place down.
+func withOlderInAlpha(repos []factoryRepo) []factoryRepo {
+	repos[0].st.Decisions = append([]data.FactoryDecision{{
+		ID: "oo00", Slug: "older-of-alpha", Kind: "question", TS: fakeNow.Add(-3 * time.Hour),
+		Ask: "Which?", Options: []string{"This", "That"},
+	}}, repos[0].st.Decisions...)
+	return repos
+}
+
 func TestInboxCursorFollowsItsDecisionThroughARefresh(t *testing.T) {
 	m := fakeModel(true, 100, 30)
 	setInbox(m, reposWithAnExtra()...)
-	send(m, "j") // second-of-alpha
-	repos := reposWithAnExtra()
-	repos[0].st.Decisions = repos[0].st.Decisions[1:] // the first card is answered
-	setInbox(m, repos...)
-	if c, _ := m.cursorCard(); c.d.ID != "aa11" || m.inbox.cursor != 1 {
-		t.Errorf("the cursor stays on its decision: %s at %d", c.d.ID, m.inbox.cursor)
+	send(m, "j") // second-of-alpha, the second card
+	setInbox(m, withOlderInAlpha(reposWithAnExtra())...)
+	if c, _ := m.cursorCard(); c.d.ID != "aa11" || m.inbox.cursor != 2 {
+		t.Errorf("the cursor stays on its decision at its new place: %s at %d", c.d.ID, m.inbox.cursor)
 	}
-	repos[0].st.Decisions = nil // its decision goes too: the nearest card
+	repos := reposWithAnExtra()
+	repos[0].st.Decisions = nil // its decision goes: the nearest card
 	setInbox(m, repos...)
 	if c, _ := m.cursorCard(); c.d.ID != idBlocked {
 		t.Errorf("the nearest card: %s", c.d.ID)
 	}
 }
 
-func TestInboxPendingPickClosesWhenItsDecisionIsGone(t *testing.T) {
+func TestInboxPendingPickFollowsItsDecisionAndClosesWhenItIsGone(t *testing.T) {
 	m := inboxModel(100, 30)
 	send(m, "2")
-	repos := inboxRepos()
-	repos[0].st.Decisions = nil
+	setInbox(m, withOlderInAlpha(inboxRepos())...)
+	if c, _ := m.cursorCard(); c.d.ID != idQuestion || m.inbox.cursor != 1 || m.inbox.pick != 2 {
+		t.Fatalf("the pick stays on its decision at its new place: %s, %+v", c.d.ID, m.inbox)
+	}
+	repos := withOlderInAlpha(inboxRepos())
+	repos[0].st.Decisions = repos[0].st.Decisions[:1] // another decision takes the place the picked one had
 	setInbox(m, repos...)
 	if m.inbox.pick != 0 || m.inbox.sending {
 		t.Fatalf("the pick closes: %+v", m.inbox)
 	}
 	if c, _ := m.cursorCard(); c.d.ID != idBlocked {
 		t.Errorf("cursor %s", c.d.ID)
+	}
+}
+
+func TestInboxLateAnswerKeepsThePickOfAnotherCard(t *testing.T) {
+	m := inboxModel(100, 30)
+	send(m, "j", "1") // a pick on the blocked card
+	late := answerMsg{card: inboxCard{d: data.FactoryDecision{ID: idQuestion, Slug: "needs-an-answer"}}, n: 2}
+	m.Update(late)
+	if m.inbox.pick != 1 || m.inbox.id != idBlocked {
+		t.Errorf("the answer of another card leaves the pick: %+v", m.inbox)
 	}
 }

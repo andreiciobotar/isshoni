@@ -184,7 +184,9 @@ func (m *model) accept() tea.Cmd {
 // answered ends a send: a failure shows the script's line and unpicks, a success refreshes the factory so the
 // card goes when the status says so.
 func (m *model) answered(msg answerMsg) tea.Cmd {
-	m.inbox.sending, m.inbox.pick = false, 0
+	if msg.card.d.ID == m.inbox.id { // a refresh may have moved the pick to another card
+		m.inbox.sending, m.inbox.pick = false, 0
+	}
 	if msg.err != nil {
 		m.setToast(firstLine(msg.err.Error()), true)
 		return nil
