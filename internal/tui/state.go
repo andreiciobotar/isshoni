@@ -21,7 +21,8 @@ import (
 type viewID int
 
 const (
-	viewDashboard viewID = iota
+	viewInbox viewID = iota // the start view
+	viewDashboard
 	viewAgents
 	viewFactory
 	viewKaizen
@@ -135,6 +136,7 @@ type model struct {
 	acursor int
 	atop    int
 	fac     factoryState
+	inbox   inboxState
 	kz      kaizenState
 	ops     opsState
 	hn      hanamiState
@@ -199,6 +201,7 @@ func New(o Options) *model {
 		dirty: map[string]bool{}, inflight: map[string]bool{}, retry: map[string]time.Time{}, counter: map[string]*Counter{},
 		rowTok: map[string]*Counter{}, flash: map[string]time.Time{}, folded: map[string]bool{}, opened: map[string]bool{}, held: map[string]rankKey{},
 	}
+	m.inbox = newInboxState()
 	m.loadCtx, m.loadCancel = context.WithCancel(m.ctx)
 	for _, k := range append([]string{"tokens", "dispatches", "repeats", "loops", "warns", "share", "recheck"}, kaizenCounters...) {
 		m.counter[k] = &Counter{}
@@ -838,7 +841,7 @@ func (m *model) animating() bool {
 	switch m.view {
 	case viewDashboard:
 		return len(m.nowRunning()) > 0
-	case viewFactory:
+	case viewFactory, viewInbox:
 		return m.fac.busy || m.factoryWorking()
 	case viewKaizen:
 		return m.kaizenMoving()
@@ -1153,6 +1156,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case factoryFetchMsg:
 		m.applyFetch(msg)
 
+	case answerMsg:
+		cmds = append(cmds, m.answered(msg))
+
 	case kaizenMsg:
 		cmds = append(cmds, m.applyKaizen(msg))
 
@@ -1302,6 +1308,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.capKey(msg)
 	case m.pick != nil:
 		return m.pickKey(msg)
+	case m.view == viewInbox && m.inbox.pick != 0 && !m.help:
+		return m.confirmKey(msg)
 	case m.help:
 		if key.Matches(msg, keys.Help, keys.Back, keys.Open, keys.Quit) {
 			m.help = false
@@ -1324,6 +1332,10 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.switchView(m.cycle(1))
 	case key.Matches(msg, keys.Prev):
 		return m.switchView(m.cycle(-1))
+	case m.view == viewInbox && m.pickable(msg) > 0:
+		return m.pickOption(m.pickable(msg))
+	case key.Matches(msg, keys.Inbox):
+		return m.switchView(viewInbox)
 	case key.Matches(msg, keys.Dash):
 		return m.switchView(viewDashboard)
 	case key.Matches(msg, keys.Agents):
@@ -1363,7 +1375,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	case key.Matches(msg, keys.Open):
 		return m.enter()
 	case key.Matches(msg, keys.Back):
-		m.back()
+		return m.back()
 	case key.Matches(msg, keys.Range):
 		if len(m.sessions) == 0 && m.refreshErr != "" {
 			return m.reload() // the error screen: try the same range again
@@ -1387,9 +1399,9 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 			m.filterIn = true
 		}
 	case key.Matches(msg, keys.CapEdit):
-		if m.view == viewFactory && m.opts.ReadOnly {
+		if m.onFloor() && m.opts.ReadOnly {
 			m.setToast("read-only: this key may not change the cap", true)
-		} else if m.view == viewFactory {
+		} else if m.onFloor() {
 			m.openCap()
 		}
 	}
@@ -1475,8 +1487,9 @@ func (m *model) filterKey(msg tea.KeyPressMsg) tea.Cmd {
 func (m *model) switchView(v viewID) tea.Cmd {
 	m.view, m.zoom, m.detailOnly = v, false, false
 	m.fixScroll()
+	m.inbox.pick = 0
 	switch v {
-	case viewFactory:
+	case viewFactory, viewInbox:
 		return m.refreshFactory(factoryFresh)
 	case viewKaizen:
 		m.kz.shownAt = m.now()
@@ -1539,7 +1552,7 @@ func shortRowAt(rows []treeRow, i int) int {
 
 // cycle is the next view in a direction.
 func (m *model) cycle(step int) viewID {
-	const n = int(viewHanami) + 1
+	const n = int(viewHanami) + 1 // the last view constant
 	return viewID((int(m.view) + step + n) % n)
 }
 
@@ -1582,19 +1595,20 @@ func (m *model) enter() tea.Cmd {
 	return m.ensureDetail(row.s.ID)
 }
 
-func (m *model) back() {
+func (m *model) back() tea.Cmd {
 	switch {
 	case m.zoomed() && m.detailOnly:
 		m.detailOnly = false
 	case m.zoomed():
 		m.zoom = false
-	case m.view != viewDashboard:
-		m.view = viewDashboard
-	case m.filter != "":
+	case m.view != viewDashboard && m.view != viewInbox:
+		return m.switchView(viewInbox)
+	case m.view == viewDashboard && m.filter != "":
 		m.filter = ""
 		m.normalizeSelection()
 		m.retarget(false)
 	}
+	return nil
 }
 
 func (m *model) listLen() int {
@@ -1611,7 +1625,7 @@ func (m *model) listLen() int {
 		if m.agents != nil {
 			return len(m.agents.Agents)
 		}
-	case viewFactory:
+	case viewFactory, viewInbox:
 		return m.factoryPositions()
 	case viewKaizen:
 		return m.kaizenPositions()
@@ -1624,6 +1638,9 @@ func (m *model) listLen() int {
 func (m *model) pageSize() int { return max(1, m.h-10) }
 
 func (m *model) move(delta int) {
+	if m.view == viewInbox && m.stepCard(delta) {
+		return
+	}
 	n := m.listLen()
 	if n == 0 {
 		return
@@ -1638,8 +1655,8 @@ func (m *model) move(delta int) {
 		}
 	case viewAgents:
 		cur = m.acursor
-	case viewFactory:
-		cur = m.fac.top
+	case viewFactory, viewInbox:
+		cur = *m.floorTop()
 	case viewKaizen:
 		cur = m.kz.top[m.kz.page]
 	case viewOps:
@@ -1668,8 +1685,8 @@ func (m *model) moveTo(i int) {
 		}
 	case viewAgents:
 		m.acursor = i
-	case viewFactory:
-		m.fac.top = i
+	case viewFactory, viewInbox:
+		*m.floorTop() = i
 	case viewKaizen:
 		m.kz.top[m.kz.page] = i
 	case viewOps:
@@ -1692,6 +1709,7 @@ func (m *model) fixScroll() {
 		}
 		return max(0, top)
 	}
+	m.syncInbox()
 	rows := m.rows()
 	cur, first := m.cursorRow(rows)
 	if slices.ContainsFunc(rows, func(r treeRow) bool { return r.holds(m.selID) }) {
@@ -1708,8 +1726,9 @@ func (m *model) fixScroll() {
 	m.atop = keep(m.acursor, m.atop, m.agentRows())
 	m.top = min(m.top, max(0, len(rows)-n))
 	switch m.view {
-	case viewFactory:
-		m.fac.top = min(m.fac.top, m.factoryPositions()-1)
+	case viewFactory, viewInbox:
+		t := m.floorTop()
+		*t = min(*t, m.factoryPositions()-1)
 	case viewKaizen:
 		m.kz.top[m.kz.page] = min(m.kz.top[m.kz.page], m.kaizenPositions()-1)
 	case viewOps:

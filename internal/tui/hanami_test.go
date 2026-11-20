@@ -626,7 +626,7 @@ func TestHanamiCostsNothingWhenHidden(t *testing.T) {
 		t.Fatal("a scene exists outside the tab")
 	}
 
-	m.Update(press("6"))
+	m.Update(press("7"))
 	if m.view != viewHanami || !m.hn.following || m.hn.scene == nil {
 		t.Fatal("key 6 does not open the tab on a live stream")
 	}
@@ -670,7 +670,7 @@ func TestHanamiCostsNothingWhenHidden(t *testing.T) {
 	}
 
 	m.Update(press("esc"))
-	if m.view != viewDashboard || m.hn.following || m.hn.scene != nil || m.hn.gen == gen {
+	if m.view != viewInbox || m.hn.following || m.hn.scene != nil || m.hn.gen == gen {
 		t.Fatal("leaving the tab keeps the stream or the scene")
 	}
 	m.Update(hanamiEventsMsg{gen: gen, evs: []data.Event{ev("tool", 0, nil)}}) // a late message of the old stream
@@ -691,7 +691,7 @@ func TestHanamiReplayKey(t *testing.T) {
 	m := New(Options{NoColor: true, Runner: r, Now: func() time.Time { return goldenNow }})
 	m.fatal, m.loading = nil, false
 	defer func() { m.hn.cancel(); r.Wait() }()
-	m.Update(press("6"))
+	m.Update(press("7"))
 	history := func() tea.Msg {
 		t.Helper()
 		cmd := m.handleKey(press("p"))

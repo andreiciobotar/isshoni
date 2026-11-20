@@ -87,7 +87,7 @@ PROMPT_FROM = (("<agent-message", "subagent"), ("<cross-session-message", "sessi
 COMMANDS = {}  # name -> (help, options, function), filled by @command where each command is defined
 COMMAND_ORDER = ("new", "ci", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "guard-hook", "retro", "env",
                  "feedback", "review", "log", "health", "watch", "ops", "mcp", "digest", "firing", "miss", "firings",
-                 "pauses", "lead", "merge", "lander", "tech-lead", "build", "land", "overlap", "scratch", "rerun", "schedule",
+                 "pauses", "lead", "decision", "merge", "lander", "tech-lead", "build", "land", "overlap", "scratch", "rerun", "schedule",
                  "dispatcher", "settings", "wizard", "uninstall")  # `factory --help` order; a name not here follows, by name
 
 
@@ -2220,7 +2220,7 @@ def cmd_status(args):
         doc = {"rows": rows, "cap": cap, "reserve": held_back, "open": len(rows), **counts,
                "leftover_agent_worktrees": repo.leftover, "outside_worktrees": repo.outside, "identity": bot or None,
                "repository_selection": stored and stored.get("repository_selection"),
-               "prs": {"as_of": as_of, "error": pr_error}}
+               "prs": {"as_of": as_of, "error": pr_error}, "decisions": open_decisions(repo.root)}
         print(json.dumps(doc, indent=2))
         return 0
     now = time.time()
@@ -4906,6 +4906,92 @@ def cmd_lead(args):
     outbox_put(repo, args.slug, f"DISPATCHER: {args.slug}: {args.message}")
     print(f"queued for {args.slug}: the next tick delivers it")
     return 0
+
+
+DECISION_KEYS = ("id", "slug", "kind", "ask", "options", "recommend", "ts")
+
+
+def open_decisions(root):
+    """The open decisions of the repo at `root`, oldest first: an ask with no answer, whose task's last state is `blocked`
+    on the human and not later than the ask, so any state the lead declares after asking closes it."""
+    records = repo_log("decisions", root) or []
+    answered = {r["id"] for r in records if "choice" in r}
+    tasks = read_tasks(root)
+    return [{k: r[k] for k in DECISION_KEYS if k in r} for r in records
+            if "ask" in r and r["id"] not in answered and (t := tasks.get(r["slug"]))
+            and t["state"] == "blocked" and t.get("waits_on") in (None, "human") and stamp(t) <= stamp(r)]
+
+
+def args_decision(parser):
+    actions = parser.add_subparsers(dest="action", required=True)
+    ask = actions.add_parser("ask", help="a lead posts a decision for the human to the inbox")
+    ask.add_argument("--kind", required=True, choices=("question", "blocked"))
+    ask.add_argument("--option", action="append", default=[], help="one option, 1 to 15 words; repeat, 2 to 4 in all")
+    ask.add_argument("--recommend", type=int, metavar="N", help="the number of the option you would take")
+    ask.add_argument("text", metavar="ASK", help="1 to 60 words")
+    show = actions.add_parser("list", help="the open decisions, oldest first")
+    show.add_argument("--json", action="store_true")
+    answer = actions.add_parser("answer", help="record the human's pick and queue it for the lead (never a lead)")
+    answer.add_argument("id")
+    answer.add_argument("n", type=int)
+
+
+def decision_ask(args):
+    slug = tags()["slug"]
+    if not slug:
+        raise Fail("decision ask: run it from inside a task worktree")
+    repo = Repo()
+    last = read_tasks(repo.root).get(slug, {})
+    if last.get("state") != "blocked" or last.get("waits_on") not in (None, "human"):
+        raise Fail("decision ask: declare `factory state blocked human` first")
+    ask, options = " ".join(args.text.split()), [" ".join(o.split()) for o in args.option]
+    for refused, why_not in ((not 1 <= len(ask.split()) <= 60, "the ask is 1 to 60 words"),
+                             (not 2 <= len(options) <= 4, "give 2 to 4 options"),
+                             (any(not 1 <= len(o.split()) <= 15 for o in options), "each option is 1 to 15 words"),
+                             (args.recommend is not None and not 1 <= args.recommend <= len(options),
+                              f"--recommend names an option, 1 to {len(options)}")):
+        if refused:
+            raise Fail(f"decision ask: {why_not}")
+    rid = secrets.token_hex(6)
+    log("decisions", {**record(repo.root, slug, "lead", None, os.environ.get("CLAUDE_CODE_SESSION_ID")), "id": rid,
+                      "kind": args.kind, "ask": ask, "options": options,
+                      **({"recommend": args.recommend} if args.recommend else {})})
+    print(rid)
+    return 0
+
+
+def decision_list(args):
+    found = open_decisions(Repo().root)
+    if args.json:
+        print(json.dumps(found, indent=2))
+        return 0
+    for d in found:
+        print(f"{d['id']}  {d['slug']}  {d['kind']}\n{d['ask']}")
+        for i, o in enumerate(d["options"], 1):
+            print(f"  {i}  {o}" + ("  (recommended)" if d.get("recommend") == i else ""))
+    return 0
+
+
+def decision_answer(args):
+    if tags()["slug"]:
+        raise Fail("decision answer: only the human answers, from outside a task worktree")
+    repo = Repo()
+    found = next((d for d in open_decisions(repo.root) if d["id"] == args.id), None)
+    if found is None:
+        taken = any(r.get("id") == args.id and "choice" in r for r in repo_log("decisions", repo.root) or [])
+        raise Fail(f"decision answer: {args.id} is " + ("already answered" if taken else "not an open decision"))
+    if not 1 <= args.n <= len(found["options"]):
+        raise Fail(f"decision answer: the pick is 1 to {len(found['options'])}")
+    log("decisions", {"ts": now(), "repo": repo.root, "id": args.id, "slug": found["slug"], "choice": args.n})
+    outbox_put(repo, found["slug"],
+               f"INBOX: {found['slug']}: decision {args.id}: the human picked {args.n}: {found['options'][args.n - 1]}")
+    print(f"answered {found['slug']}: {args.n}; the next tick delivers it")
+    return 0
+
+
+@command("decision", "decisions for the human: a lead asks (ask), the inbox lists them (list), the human answers (answer)", args_decision)
+def cmd_decision(args):
+    return {"ask": decision_ask, "list": decision_list, "answer": decision_answer}[args.action](args)
 
 
 def tick_picture(repo, fallback):
