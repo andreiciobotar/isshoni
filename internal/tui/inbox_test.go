@@ -644,6 +644,7 @@ func TestInboxHoldCardRendersItsOneOptionAndTakesPick1(t *testing.T) {
 	}}
 	m := fakeModel(true, 120, 40)
 	setInbox(m, repos...)
+	send(m, "j", "j", "j") // past delta-docs' three rows
 	out := plain(m)
 	for _, want := range []string{"hold", "stacked-task is held", "1  Release: build now on base-task as it stands", "1–1 pick an option"} {
 		if !strings.Contains(out, want) {
@@ -651,7 +652,7 @@ func TestInboxHoldCardRendersItsOneOptionAndTakesPick1(t *testing.T) {
 		}
 	}
 	send(m, "1")
-	if m.inbox.pick != 1 || m.inbox.id != "hh00" || m.inbox.reject {
+	if m.inbox.pick != "1" || m.inbox.id != "hh00" || m.inbox.reject {
 		t.Fatalf("pick 1 opens the confirm: %+v", m.inbox)
 	}
 	send(m, "n", "2") // the card has one option: 2 is the Sessions tab
