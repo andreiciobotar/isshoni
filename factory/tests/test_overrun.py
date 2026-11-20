@@ -686,6 +686,15 @@ class InboxCardTests(Overrun):
         self.assertEqual(factory.extension_state({"repo": self.repo}, "x", None)[1:], (50, 10))
         self.assertEqual(self.inbox_lines(), [f"INBOX: x: decision {d['id']}: the human picked 1: {d['options'][0]}"])
 
+    def test_continue_is_granted_though_the_earlier_extensions_used_up_the_allowance(self):
+        self.seed("firings", [fired("e1", criterion="overrun", ts=NOW - 3600),
+                              {"ts": iso(NOW - 3500), "repo": ROOT, "id": "e1", "decision": "extended", "reason": "r", "by": "site-manager",
+                               "minutes": 55, "from": iso(NOW - 3500), "until": iso(NOW - 200)}])
+        [d] = self.post(minutes=45)  # 5 minutes of the 60 are left
+        self.assertEqual(self.answer(d["id"], 1)[0], 0)
+        [f] = self.human_extensions()
+        self.assertEqual((f["minutes"], f["until"]), (45, iso(NOW + 45 * 60)))
+
     def test_continue_before_the_limit_runs_from_the_limit(self):
         self.seed("events", [ev("x", "TaskStarted", ts=iso(NOW - 110 * 60))])  # 10 minutes left
         [d] = self.post(minutes=15)

@@ -4866,6 +4866,7 @@ def cmd_lead(args):
 
 DECISION_KEYS = ("id", "slug", "kind", "ask", "options", "recommend", "ts")
 ASK_WORDS = 60
+BLOCKED_ON_HUMAN = (None, "human", ["human"])  # the `waits_on` values of a task that waits for the human
 
 
 def open_decisions(root):
@@ -4876,7 +4877,7 @@ def open_decisions(root):
     tasks = read_tasks(root)
     return [{k: r[k] for k in DECISION_KEYS if k in r} for r in records
             if "ask" in r and r["id"] not in answered and (t := tasks.get(r["slug"]))
-            and t["state"] == "blocked" and t.get("waits_on") in (None, "human", ["human"]) and stamp(t) <= stamp(r)]
+            and t["state"] == "blocked" and t.get("waits_on") in BLOCKED_ON_HUMAN and stamp(t) <= stamp(r)]
 
 
 def args_decision(parser):
@@ -4899,7 +4900,7 @@ def decision_ask(args):
         raise Fail("decision ask: run it from inside a task worktree")
     repo = Repo()
     last = read_tasks(repo.root).get(slug, {})
-    if last.get("state") != "blocked" or last.get("waits_on") not in (None, "human"):
+    if last.get("state") != "blocked" or last.get("waits_on") not in BLOCKED_ON_HUMAN:
         raise Fail("decision ask: declare `factory state blocked human` first")
     ask, options = " ".join(args.text.split()), [" ".join(o.split()) for o in args.option]
     for refused, why_not in ((not 1 <= len(ask.split()) <= ASK_WORDS, f"the ask is 1 to {ASK_WORDS} words"),
