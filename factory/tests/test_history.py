@@ -49,6 +49,17 @@ class HistoryTests(History):
                                           ("demo-other", "site-manager", "paused: the human decides"),
                                           ("demo-task", "site-manager", f"extended 20 min to {iso(NOW + 1200)[11:16]}Z: landing left")])
 
+    def test_a_leads_or_tech_leads_paused_declaration_is_no_script_entry(self):
+        self.seed("tasks", [{"repo": ROOT, "slug": "demo-task", "role": role, "state": "blocked", "waits_on": ["human"], "paused": True, "ts": iso(NOW - HOUR)}
+                            for role in ("lead", "tech-lead")])
+        self.assertEqual(self.history(), [])
+
+    def test_a_legacy_overrun_pause_with_its_declaration_is_one_paused_entry(self):
+        self.seed("tasks", [{"repo": ROOT, "slug": "demo-task", "role": "site-manager", "state": "blocked", "waits_on": ["human"], "paused": True,
+                             "ts": iso(NOW - HOUR)}])
+        self.seed("firings", [fired("a", criterion="overrun", subject="demo-task"), decided("a", "paused", ts=NOW - HOUR, reason="no progress")])
+        self.assertEqual(self.entries(), [("demo-task", "site-manager", "paused: no progress")])
+
     def test_entries_are_newest_first_and_those_older_than_seven_days_are_left_out(self):
         self.seed("tasks", [{"repo": ROOT, "slug": f"demo-{n}", "role": "lead", "state": "handed-over", "deliverable": f"d{n}", "ts": iso(NOW - age)}
                             for n, age in ((1, 8 * DAY), (2, 6 * DAY), (3, HOUR), (4, 2 * DAY))])

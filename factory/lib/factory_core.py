@@ -4955,18 +4955,21 @@ def history(root):
     asks = {r["id"]: r for r in answers if "ask" in r}
     entries = [(r["ts"], r["slug"], "human", f"{a['kind']}: picked {r['choice']}: {a['options'][r['choice'] - 1]}")
                for r in answers if "choice" in r and (a := asks.get(r["id"]))]
-    said = {"extended": lambda f: f"extended {f['minutes']} min to {f['until'][11:16]}Z: {f['reason']}",
-            "paused": lambda f: f"{'stop recommended' if f['criterion'] == 'overrun' else 'paused'}: {f['reason']}",
-            "closed": lambda f: f"closed: {f['reason']}"}
     firings = fold(repo_log("firings", root) or [])[0]
+    # The site manager's pause writes its `tasks` declaration just before its firing's decision: a `paused` firing with one
+    # within PAUSE_PAIR_SECONDS did pause; one without (an overrun's recommendation) did not; a declaration with no such
+    # firing is the script's (`pause_unanswered_stops`).
+    declared = [r for r in read_log("tasks") if r.get("repo") == root and r.get("role") == "site-manager" and r.get("state") == "blocked"
+                and r.get("paused") is True and r.get("waits_on") == ["human"]]
+    paused = [f for f in firings if f["decision"] == "paused"]
+    pair = lambda r, f: r["slug"] == f["slug"] and 0 <= epoch(f["decided"]) - epoch(r["ts"]) <= PAUSE_PAIR_SECONDS
+    said = {"extended": lambda f: f"extended {f['minutes']} min to {f['until'][11:16]}Z: {f['reason']}",
+            "paused": lambda f: f"{'paused' if f['criterion'] != 'overrun' or any(pair(r, f) for r in declared) else 'stop recommended'}: {f['reason']}",
+            "closed": lambda f: f"closed: {f['reason']}"}
     entries += [(f["decided"], f["slug"], f["by"], said[f["decision"]](f))
                 for f in firings if f["decision"] in said and f["by"] != "human"]
-    # The site manager's pause of a task writes its `tasks` declaration just before its firing's decision; one with no such
-    # firing within PAUSE_PAIR_SECONDS is the script's (`pause_unanswered_stops`).
-    decided = [(f["slug"], epoch(f["decided"])) for f in firings if f["decision"] == "paused" and f["criterion"] != "overrun"]
     entries += [(r["ts"], r["slug"], "script", "paused: the human has not answered the stop recommended")
-                for r in read_log("tasks") if r.get("repo") == root and r.get("state") == "blocked" and r.get("paused") is True
-                and not any(slug == r["slug"] and 0 <= at - epoch(r["ts"]) <= PAUSE_PAIR_SECONDS for slug, at in decided)]
+                for r in declared if not any(pair(r, f) for f in paused)]
     entries += [(r.get("ts", ""), r["slug"], r.get("role", ""), "handed over" + (f": {r['deliverable']}" if r.get("deliverable") else ""))
                 for r in read_log("tasks") if r.get("repo") == root and r.get("state") == "handed-over"]
     entries += [(e["ts"], e["slug"] or "", e["role"], e["text"].removeprefix(DECISION))
