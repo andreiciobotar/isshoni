@@ -112,10 +112,11 @@ class DelegatedTests(Delegation):
         self.watch({"decision": "picked", "option": 1, "reason": "the brief wants it small"})
         self.assertEqual([(e["by"], e["text"]) for e in self.history()], [("site-manager", "question: picked 1: a b")])
 
-    def test_a_decision_left_to_the_lead_or_handed_back_is_no_entry_until_settled(self):
+    def test_a_decision_left_to_the_lead_is_one_entry_by_the_human(self):
         self.answer("lead")
-        self.assertEqual(self.history(), [])
-        self.setUp()
+        self.assertEqual([(e["by"], e["text"]) for e in self.history()], [("human", "question: left to the lead")])
+
+    def test_a_decision_handed_back_is_no_entry_until_the_human_picks(self):
         self.answer("site-manager")
         self.watch({"decision": "returned", "reason": "unsure"})
         self.assertEqual(self.history(), [])

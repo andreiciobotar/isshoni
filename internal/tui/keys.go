@@ -100,10 +100,7 @@ func (m *model) footerKeys() []key.Binding {
 		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept}
 	case m.view == viewInbox:
 		cs, i := m.cards(), m.inbox.tbl.Cursor()
-		switch {
-		case i >= 0 && i < len(cs) && cs[i].app != nil: // an approval has nothing to pick or leave
-			return []key.Binding{keys.Down, keys.CapEdit, keys.History, keys.Next, keys.Help, keys.Quit}
-		case i >= 0 && i < len(cs) && cs[i].d.With != "":
+		if i >= 0 && i < len(cs) && (cs[i].app != nil || cs[i].d.With != "") { // an approval, or a decision with the site manager, has nothing to pick or leave
 			return []key.Binding{keys.Down, keys.CapEdit, keys.History, keys.Next, keys.Help, keys.Quit}
 		}
 		return []key.Binding{keys.Down, m.pickHint(), keys.CapEdit, keys.Leave, keys.History, keys.Next, keys.Help, keys.Quit}

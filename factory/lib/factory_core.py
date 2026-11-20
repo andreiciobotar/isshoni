@@ -5004,6 +5004,8 @@ def history(root):
     asks = {r["id"]: r for r in answers if "ask" in r}
     entries = [(r["ts"], r["slug"], r.get("by", "human"), f"{a['kind']}: picked {r['choice']}: {a['options'][r['choice'] - 1]}")
                for r in answers if isinstance(r.get("choice"), int) and (a := asks.get(r["id"]))]
+    entries += [(r["ts"], r["slug"], "human", f"{a['kind']}: left to the lead")
+                for r in answers if r.get("choice") == "lead" and (a := asks.get(r["id"]))]
     firings = fold(repo_log("firings", root) or [])[0]
     # The site manager's pause writes its `tasks` declaration just before its firing's decision: a `paused` firing with one
     # within PAUSE_PAIR_SECONDS did pause; one without (an overrun's recommendation) did not; a declaration with no such
