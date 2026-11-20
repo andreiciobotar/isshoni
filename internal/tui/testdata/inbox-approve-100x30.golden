@@ -1,0 +1,30 @@
+ Isshoni [1 ✉ ▲7] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
+ Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                   
+    TASK            ASK              AGE │ demo-import · approve · approval stale 2h ago            
+ alpha                                   │ alpha                                                    
+  ? needs-an-answer Should the expo… 45m │                                                          
+> ◆ demo-import     stale #9          2h │ its head changed after the approval; a fresh approval is 
+  ◆ demo-export     new #12          25m │ needed (the lander stopped it at 8c1f2a9)                
+ delta-docs                              │                                                          
+  ▲ stuck-on-keys   git push is ref…  1m │ https://github.com/example/demo/pull/9                   
+                                         │                                                          
+                                         │ Approve on GitHub: an approving review, or a comment     
+                                         │ reading lgtm.                                            
+                                                                                                    
+ History                                                                                            
+ TIME   TASK         BY            WHAT                                                             
+ 10:55  demo-task    site manager  extended 20 min to 11:05Z: landing left                          
+ 10:48  demo-export  lead          handed over: https://github.com/example/demo/pull/12             
+ 10:30  demo-import  human         question: picked 2: Add retry now                                
+ 10:23  demo-import  lead          Retry lives in the importer, not the queue. Why: one owner       
+ 10:10  demo-sync    site manager  closed: its pull request merged and the worktree is clean        
+ 09:00  demo-sync    lead          handed over: https://github.com/example/demo/pull/7              
+ 08:00  demo-docs    site manager  paused: waits on demo-sync                                       
+ 06:00  demo-docs    lead          Docs stay in one file until a second reader asks for more. Long… 
+ … 3 older · H shows them                                                                           
+                                                                                                    
+ ▲ Needs you  5                                                                                     
+ ◆ alpha       api-rate-limits  review PR          3h00m  #42 https://github.com/o/alpha/pull/42    
+ ▲ delta-docs  wide-ask         unblock            2h00m  データベースの接続情報が見つかりません。… 
+ +45 more lines · ↓ to scroll                                                                       
+ ↑↓/jk move  ·  1-4 pick an option  ·  c edit cap  ·  H all history  ·  ? help  ·  q quit           

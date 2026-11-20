@@ -3,28 +3,28 @@
     TASK            ASK              AGE │ needs-an-answer · question · asked 45m ago               
  alpha                                   │ alpha · blocked 45m00s · PR example.com/design/doc · ba… 
 > ? needs-an-answer Should the expo… 45m │                                                          
- delta-docs                              │ Should the export keep the legacy column order, or       
-  ▲ stuck-on-keys   git push is ref…  1m │ switch to the new one now? Switching breaks two          
-                                         │ downstream readers.                                      
-                                         │                                                          
+  ◆ demo-import     stale #9          2h │ Should the export keep the legacy column order, or       
+  ◆ demo-export     new #12          25m │ switch to the new one now? Switching breaks two          
+ delta-docs                              │ downstream readers.                                      
+  ▲ stuck-on-keys   git push is ref…  1m │                                                          
                                          │ 1  Keep the legacy order  (recommended)                  
                                          │ 2  Switch now and update both readers                    
                                          │ 3  Keep legacy now, switch next release                  
                                                                                                     
+ History                                                                                            
+ TIME   TASK         BY            WHAT                                                             
+ 10:55  demo-task    site manager  extended 20 min to 11:05Z: landing left                          
+ 10:48  demo-export  lead          handed over: https://github.com/example/demo/pull/12             
+ 10:30  demo-import  human         question: picked 2: Add retry now                                
+ 10:23  demo-import  lead          Retry lives in the importer, not the queue. Why: one owner       
+ 10:10  demo-sync    site manager  closed: its pull request merged and the worktree is clean        
+ 09:00  demo-sync    lead          handed over: https://github.com/example/demo/pull/7              
+ 08:00  demo-docs    site manager  paused: waits on demo-sync                                       
+ 06:00  demo-docs    lead          Docs stay in one file until a second reader asks for more. Long… 
+ … 3 older · H shows them                                                                           
+                                                                                                    
  ▲ Needs you  5                                                                                     
  ◆ alpha       api-rate-limits  review PR          3h00m  #42 https://github.com/o/alpha/pull/42    
  ▲ delta-docs  wide-ask         unblock            2h00m  データベースの接続情報が見つかりません。… 
- ◆ delta-docs  video-cut        see deliverable   30m00s  https://example.com/cut/v2                
- ▲ delta-docs  slow-import      decide: overtime   5m00s  ran 3h of 2h: split it?                   
- ◆ delta-docs  design-review    see deliverable        -  /r/delta/docs/design.md                   
-                                                                                                    
- worktree cap  5  per repo, 1 in reserve   c edit                   ~/.claude/factory/settings.toml 
-                                                                                                    
- alpha                                    in motion ▲●●●●●● 7/4+1   review 1   merged 2   settled 1 
-  SLUG               PHASE                       ELAPSED  PR                      FLAGS             
-  needs-an-answer    ▲ blocked, needs you         10m40s  example.com/design/doc                    
-  login-flow         ⠋ in motion                   2h15m  -                       [overtime]        
-  lost-its-lead      ● in motion                   9h00m  -                       [held]            
-                     held 9h · ended-undeclared · its replacement redo-plumbing is in review: this… 
- +33 more lines · ↓ to scroll                                                                       
+ +45 more lines · ↓ to scroll                                                                       
  ↑↓/jk move  ·  1–3 pick an option  ·  c edit cap  ·  H all history  ·  ? help  ·  q quit           
