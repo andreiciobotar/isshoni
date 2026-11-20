@@ -254,3 +254,32 @@ func TestInboxCardDrawsTheNoteUnderTheAskInFaint(t *testing.T) {
 	}
 	t.Fatalf("no split card:\n%s", strings.Join(lines, "\n"))
 }
+
+func TestInboxSplitAndOverrunCardsTakeNoLeaveKey(t *testing.T) {
+	const idOverrun = "0ver0ver0ver"
+	m, _ := splitModel(t)
+	st := m.fac.repos[0].st
+	st.Decisions = append(st.Decisions, data.FactoryDecision{
+		ID: idOverrun, Slug: "slow-task", Kind: "overrun", Recommend: 1, TS: fakeNow.Add(-5 * time.Minute),
+		Ask: "Over its limit.", Options: []string{"Continue", "Stop it"},
+	})
+	m.fixScroll()
+	for _, id := range []string{idSplit, idOverrun} {
+		for i := 0; ; i++ {
+			if c, _ := m.cursorCard(); c.d.ID == id {
+				break
+			} else if i == 10 {
+				t.Fatalf("no card %s", id)
+			}
+			send(m, "j")
+		}
+		for _, k := range []string{"L", "S"} {
+			if cmd := upd(m, press(k)); len(cmd) != 0 || m.inbox.pick != "" {
+				t.Fatalf("%s on card %s picked %q", k, id, m.inbox.pick)
+			}
+		}
+		if out := plain(m); strings.Contains(out, "L S") || strings.Contains(out, "leave it to") {
+			t.Errorf("card %s shows a leave hint:\n%s", id, out)
+		}
+	}
+}

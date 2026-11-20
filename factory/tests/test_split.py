@@ -288,6 +288,11 @@ class AlwaysTests(Splits):
         self.assertEqual((code, "a split decision has 1" in err), (2, True))
         self.assertEqual((self.always_records(), [r for r in self.records("decisions") if "choice" in r]), ([], []))
 
+    def test_always_is_refused_for_a_lead_or_site_manager_answer(self):
+        code, _, err = self.as_human("decision", "answer", self.posted(), "lead", "--always")
+        self.assertEqual((code, "decision answer: --always goes with an option number" in err), (2, True))
+        self.assertEqual((self.always_records(), [r for r in self.records("decisions") if "choice" in r]), ([], []))
+
     def test_always_on_a_split_answers_with_the_flag_and_logs_it(self):
         sid = self.posted_split()
         self.assertEqual(self.as_human("decision", "answer", sid, "1", "--always")[0], 0)
