@@ -113,8 +113,8 @@ func TestOpsViewKeys(t *testing.T) {
 		t.Fatalf("shift+tab goes back to Ops: %v", m.view)
 	}
 	send(m, "esc")
-	if m.view != viewDashboard {
-		t.Fatal("esc goes back to the dashboard")
+	if m.view != viewInbox {
+		t.Fatal("esc goes back to the inbox")
 	}
 	send(m, "7")
 	if m.view != viewHanami {

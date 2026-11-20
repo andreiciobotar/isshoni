@@ -385,7 +385,7 @@ func TestInboxPickIsDroppedWhenItsCardIsGone(t *testing.T) {
 
 func TestInboxFooterAndHelpNameThePickKeys(t *testing.T) {
 	m := inboxModel(120, 30)
-	if foot := plain(m); !strings.Contains(foot, "1-4 pick an option") {
+	if foot := plain(m); !strings.Contains(foot, "1–3 pick an option") {
 		t.Errorf("footer:\n%s", foot)
 	}
 	send(m, "2")
@@ -558,5 +558,126 @@ func TestInboxNamesTheHistoryKey(t *testing.T) {
 	m.help = true
 	if out := plain(m); !strings.Contains(out, "all history") {
 		t.Errorf("help:\n%s", out)
+	}
+}
+
+// reposWithAnExtra is inboxRepos with a second, newer decision in alpha: by age it falls between the two
+// others, so only the grouping puts it before delta-docs' card.
+func reposWithAnExtra() []factoryRepo {
+	repos := inboxRepos()
+	repos[0].st.Decisions = append(repos[0].st.Decisions, data.FactoryDecision{
+		ID: "aa11", Slug: "second-of-alpha", Kind: "question", TS: fakeNow.Add(-10 * time.Second),
+		Ask: "Which?", Options: []string{"This", "That"},
+	})
+	return repos
+}
+
+func TestInboxGroupsCardsByRepository(t *testing.T) {
+	m := fakeModel(true, 140, 40)
+	setInbox(m, reposWithAnExtra()...)
+	var order []string
+	for _, c := range m.cards() {
+		order = append(order, c.d.Slug)
+	}
+	if got := strings.Join(order, " "); got != "needs-an-answer second-of-alpha stuck-on-keys" {
+		t.Fatalf("cards %s", got)
+	}
+	var seen []string // the headings and cards in the order shown
+	for _, l := range strings.Split(plain(m), "\n") {
+		switch l = strings.TrimSpace(l); {
+		case l == "alpha" || l == "delta-docs":
+			seen = append(seen, l)
+		case strings.HasPrefix(l, "▸ needs-an-answer"), strings.HasPrefix(l, "second-of-alpha"), strings.HasPrefix(l, "stuck-on-keys"):
+			seen = append(seen, strings.Fields(strings.TrimPrefix(l, "▸"))[0])
+		}
+	}
+	if got := strings.Join(seen, " "); got != "alpha needs-an-answer second-of-alpha delta-docs stuck-on-keys" {
+		t.Errorf("one heading per repository over its cards: %s", got)
+	}
+	send(m, "j", "j")
+	if c, _ := m.cursorCard(); c.d.Slug != "stuck-on-keys" {
+		t.Errorf("j walks the displayed order: %s", c.d.Slug)
+	}
+}
+
+func TestInboxFooterNamesTheCardsOptionRange(t *testing.T) {
+	m := inboxModel(140, 40)
+	if out := plain(m); !strings.Contains(out, "1–3 pick an option") {
+		t.Errorf("three options:\n%s", out)
+	}
+	send(m, "j")
+	if out := plain(m); !strings.Contains(out, "1–2 pick an option") {
+		t.Errorf("two options:\n%s", out)
+	}
+}
+
+func TestEscFromAnotherTopLevelViewGoesToTheInbox(t *testing.T) {
+	m := inboxModel(100, 30)
+	for _, v := range []viewID{viewAgents, viewFactory, viewKaizen} {
+		m.switchView(v)
+		send(m, "esc")
+		if m.view != viewInbox {
+			t.Errorf("esc from view %v -> %v", v, m.view)
+		}
+	}
+	m.switchView(viewDashboard)
+	m.zoom = true
+	send(m, "esc")
+	if m.view != viewDashboard || m.zoom {
+		t.Errorf("esc leaves a zoomed session for Sessions: view %v, zoom %v", m.view, m.zoom)
+	}
+}
+
+// withOlderInAlpha puts a decision older than every other at the head of alpha, so every card of alpha
+// moves one place down.
+func withOlderInAlpha(repos []factoryRepo) []factoryRepo {
+	repos[0].st.Decisions = append([]data.FactoryDecision{{
+		ID: "oo00", Slug: "older-of-alpha", Kind: "question", TS: fakeNow.Add(-3 * time.Hour),
+		Ask: "Which?", Options: []string{"This", "That"},
+	}}, repos[0].st.Decisions...)
+	return repos
+}
+
+func TestInboxCursorFollowsItsDecisionThroughARefresh(t *testing.T) {
+	m := fakeModel(true, 100, 30)
+	setInbox(m, reposWithAnExtra()...)
+	send(m, "j") // second-of-alpha, the second card
+	setInbox(m, withOlderInAlpha(reposWithAnExtra())...)
+	if c, _ := m.cursorCard(); c.d.ID != "aa11" || m.inbox.cursor != 2 {
+		t.Errorf("the cursor stays on its decision at its new place: %s at %d", c.d.ID, m.inbox.cursor)
+	}
+	repos := reposWithAnExtra()
+	repos[0].st.Decisions = nil // its decision goes: the nearest card
+	setInbox(m, repos...)
+	if c, _ := m.cursorCard(); c.d.ID != idBlocked {
+		t.Errorf("the nearest card: %s", c.d.ID)
+	}
+}
+
+func TestInboxPendingPickFollowsItsDecisionAndClosesWhenItIsGone(t *testing.T) {
+	m := inboxModel(100, 30)
+	send(m, "2")
+	setInbox(m, withOlderInAlpha(inboxRepos())...)
+	if c, _ := m.cursorCard(); c.d.ID != idQuestion || m.inbox.cursor != 1 || m.inbox.pick != 2 {
+		t.Fatalf("the pick stays on its decision at its new place: %s, %+v", c.d.ID, m.inbox)
+	}
+	repos := withOlderInAlpha(inboxRepos())
+	repos[0].st.Decisions = repos[0].st.Decisions[:1] // another decision takes the place the picked one had
+	setInbox(m, repos...)
+	if m.inbox.pick != 0 || m.inbox.sending {
+		t.Fatalf("the pick closes: %+v", m.inbox)
+	}
+	if c, _ := m.cursorCard(); c.d.ID != idBlocked {
+		t.Errorf("cursor %s", c.d.ID)
+	}
+}
+
+func TestInboxLateAnswerKeepsThePickOfAnotherCard(t *testing.T) {
+	m := inboxModel(100, 30)
+	send(m, "j", "1") // a pick on the blocked card
+	late := answerMsg{card: inboxCard{d: data.FactoryDecision{ID: idQuestion, Slug: "needs-an-answer"}}, n: 2}
+	m.Update(late)
+	if m.inbox.pick != 1 || m.inbox.id != idBlocked {
+		t.Errorf("the answer of another card leaves the pick: %+v", m.inbox)
 	}
 }

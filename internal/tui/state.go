@@ -1376,7 +1376,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	case key.Matches(msg, keys.Open):
 		return m.enter()
 	case key.Matches(msg, keys.Back):
-		m.back()
+		return m.back()
 	case key.Matches(msg, keys.Range):
 		if len(m.sessions) == 0 && m.refreshErr != "" {
 			return m.reload() // the error screen: try the same range again
@@ -1596,19 +1596,20 @@ func (m *model) enter() tea.Cmd {
 	return m.ensureDetail(row.s.ID)
 }
 
-func (m *model) back() {
+func (m *model) back() tea.Cmd {
 	switch {
 	case m.zoomed() && m.detailOnly:
 		m.detailOnly = false
 	case m.zoomed():
 		m.zoom = false
-	case m.view != viewDashboard:
-		m.view = viewDashboard
-	case m.filter != "":
+	case m.view != viewDashboard && m.view != viewInbox:
+		return m.switchView(viewInbox)
+	case m.view == viewDashboard && m.filter != "":
 		m.filter = ""
 		m.normalizeSelection()
 		m.retarget(false)
 	}
+	return nil
 }
 
 func (m *model) listLen() int {

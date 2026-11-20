@@ -1078,8 +1078,8 @@ func TestFactoryViewKeys(t *testing.T) {
 		t.Fatal("4 opens the factory view")
 	}
 	send(m, "esc")
-	if m.view != viewDashboard {
-		t.Fatal("esc goes back to the dashboard")
+	if m.view != viewInbox {
+		t.Fatal("esc goes back to the inbox")
 	}
 	if !strings.Contains(plain(m), "4 Factory") {
 		t.Fatal("the tab is in the header")
