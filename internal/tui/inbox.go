@@ -138,6 +138,9 @@ func (m *model) stepCard(delta int) bool {
 	return true
 }
 
+// delegable mirrors the script's DELEGABLE: only these kinds may be left to the lead or the site manager.
+func delegable(kind string) bool { return kind == "question" || kind == "blocked" }
+
 // choiceOf is what a key answers the card under the cursor with: the option a digit names, lead for L, site-manager
 // for S; "" when it names none, and always on a parked card.
 func (m *model) choiceOf(msg tea.KeyPressMsg) string {
@@ -145,9 +148,9 @@ func (m *model) choiceOf(msg tea.KeyPressMsg) string {
 	c, ok := m.cursorCard()
 	switch {
 	case !ok || c.d.With != "":
-	case t == "L":
+	case t == "L" && delegable(c.d.Kind):
 		return "lead"
-	case t == "S":
+	case t == "S" && delegable(c.d.Kind):
 		return "site-manager"
 	case len(t) == 1 && t[0] >= '1' && t[0] <= '9' && int(t[0]-'0') <= len(c.d.Options):
 		return t
@@ -406,7 +409,7 @@ func (m *model) message(p paint, c inboxCard, w int) block {
 			return p.t(" "+label+" ", th.Muted)
 		}
 		lines = append(lines, "", button("Accept", !in.reject, th.Green)+p.sp(2)+button("Reject", in.reject, th.Red))
-	case c.d.Kind != "overrun": // an overrun card is not delegable
+	case delegable(c.d.Kind):
 		lines = append(lines, "")
 		for _, l := range wrapPlain("L leave it to the lead · S to the site manager", max(8, w)) {
 			lines = append(lines, p.t(l, th.Faint))

@@ -100,6 +100,9 @@ func (m *model) footerKeys() []key.Binding {
 		if c, ok := m.cursorCard(); ok && c.d.With != "" {
 			return []key.Binding{keys.Down, keys.CapEdit, keys.Next, keys.Help, keys.Quit}
 		}
+		if c, ok := m.cursorCard(); ok && !delegable(c.d.Kind) {
+			return []key.Binding{keys.Down, m.pickHint(), keys.CapEdit, keys.Next, keys.Help, keys.Quit}
+		}
 		return []key.Binding{keys.Down, m.pickHint(), keys.CapEdit, keys.Leave, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewFactory:
 		return []key.Binding{keys.Down, keys.CapEdit, keys.Range, keys.Next, keys.Help, keys.Quit}

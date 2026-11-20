@@ -661,6 +661,29 @@ func TestInboxHoldCardRendersItsOneOptionAndTakesPick1(t *testing.T) {
 	}
 }
 
+func TestInboxHoldCardIsNotDelegable(t *testing.T) {
+	repos := inboxRepos()
+	repos[0].st.Decisions = []data.FactoryDecision{{
+		ID: "hh00", Slug: "stacked-task", Kind: "hold", TS: fakeNow.Add(-5 * time.Minute),
+		Ask:     "stacked-task is held.",
+		Options: []string{"Release: build now on base-task as it stands"},
+	}}
+	m := fakeModel(true, 120, 40)
+	setInbox(m, repos...)
+	send(m, "j", "j", "j")
+	out := plain(m)
+	for _, not := range []string{"leave it to the lead", "L S"} {
+		if strings.Contains(out, not) {
+			t.Errorf("a hold card shows %q:\n%s", not, out)
+		}
+	}
+	send(m, "L")
+	send(m, "S")
+	if m.inbox.pick != "" {
+		t.Fatalf("L and S do not open a confirm on a hold card: %+v", m.inbox)
+	}
+}
+
 func TestEscFromAnotherTopLevelViewGoesToTheInbox(t *testing.T) {
 	m := inboxModel(100, 30)
 	for _, v := range []viewID{viewAgents, viewFactory, viewKaizen} {
