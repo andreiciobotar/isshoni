@@ -340,7 +340,7 @@ func TestInboxConfirmIgnoresEveryOtherKey(t *testing.T) {
 		return fmt.Sprint(m.inbox.pick, m.inbox.id, m.inbox.reject, m.inbox.sending, m.inbox.tbl.Cursor(), m.inbox.top)
 	}
 	before := state()
-	for _, k := range []string{"x", "j", "k", "q", "?", "c", "d", "r", "4", "7", "pgdown", "G", "/"} { // 4: the card has three options
+	for _, k := range []string{"x", "j", "k", "q", "?", "c", "d", "r", "4", "7", "pgdown", "G", "/", "s"} { // 4: the card has three options
 		if cmd := upd(m, press(k)); len(cmd) != 0 {
 			t.Fatalf("%q ran something", k)
 		}
