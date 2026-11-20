@@ -690,7 +690,7 @@ class WatchTests(Harness):
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["to"]["enum"],
                          ["dispatcher", "lead"])
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["decision"]["enum"],
-                         ["escalated", "suppressed", "paused", "extended", "told", "closed"])
+                         ["escalated", "suppressed", "paused", "extended", "told", "closed", "picked", "returned"])
         head, _, body = argv[-1].partition("\n\n")
         self.assertEqual(head, f"Job: watch. Repo: {ROOT}. The dispatcher's session name is dispatcher-repo.")
         picture = json.loads(body)

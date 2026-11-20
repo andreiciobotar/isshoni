@@ -13,7 +13,7 @@ ENTRIES = ["overrun", "collision", "review-loops", "unlisted"]
 DISPATCH = DISPATCHER | {"name": "dispatcher-repo"}
 SHIPPED_ENTRIES = (
     "nearing-limit past-limit quiet blocked-unanswered handover-unacknowledged busy-after-handover review-loops deep-stack "
-    "merged-not-cleaned cost-outlier lead-heavy wrong-model overrun run-stopped collision new-spec churning base-merged "
+    "merged-not-cleaned cost-outlier lead-heavy wrong-model overrun decision run-stopped collision new-spec churning base-merged "
     "ci-red-default ci-red-handover red-waiting ended-undeclared unlisted").split()
 LABELS = ["**What:**", "**Why it matters:**", "**What it has looked like:**", "**A good call:**", "**Score (to 2026-11-15):**"]
 

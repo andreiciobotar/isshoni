@@ -120,6 +120,13 @@ Extensions decided before the limit counted from the decision (records without `
 5. `lander-agent-file-current` (2026-11-15). Fix proven; two build runs ended early; then its own landing was refused by the fault it fixes. Decided: extended to a fixed time. Outcome: ended blocked, needing the human to push. Lesson: the extension bought nothing: once the cause is a refusal only the human can lift, pause for the human at once.
 6. Known fault (open, outbox faec7502cc7a). A headless build run that ends a turn to wait for a background subagent or command is forced to answer at once and files `stopped`, often with no reason or `ended without an answer`, after a few minutes and a few dollars; the work it started is lost. About eight runs on three tasks on 2026-11-15. Recognise it: a `stopped` run with no reason, short, whose transcript ends waiting on a background dispatch. Decided since: a run told to keep every dispatch in the foreground finished. So on the first such run tell the lead to start the next run with a note saying that; when runs keep ending this way after the lead was told, pause for the human.
 
+## decision
+**What:** The human left an inbox decision of a lead's to you. The firing's `detail` is the ask, its numbered options and the lead's recommendation; the task is still `blocked` on the human.
+**Why it matters:** The human handed it over to save a minute; a wrong pick costs the lead a build run, a decision returned for nothing costs the human that minute.
+**What it has looked like:** New, never fired.
+**A good call:** Read the task's row and transcript before you decide. `picked` with the `option` when the evidence favours one option, and the `reason` says which evidence. `returned` when the choice turns on something only the human knows or wants (scope, taste, a risk to accept, a permission), or when no option fits. The human's delegation is their authority, so a pick is not bounded by `extension_left_minutes`. You message nobody: the script tells the lead of a pick.
+**Score (to 2026-11-15):** fired 0.
+
 ## run-stopped
 **What:** A build run ended `stopped` on a task still `working`. The firing names its reason and how many of the task's runs ended `stopped`, with their cost; the row's `runs` list them.
 **Why it matters:** A stopped run spends money and loses the work it started; a call on a one-off costs the lead a turn.
