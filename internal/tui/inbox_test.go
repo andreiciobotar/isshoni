@@ -623,3 +623,48 @@ func TestInboxElevenDecisionsScrollTheListNotThePage(t *testing.T) {
 		t.Error("past the last row j scrolls the page")
 	}
 }
+
+func TestInboxListShowsTheCursorRowAfterARefreshMovesItFar(t *testing.T) {
+	build := func(newest string) []factoryRepo {
+		repos := inboxRepos()
+		repos[0].st.Decisions = nil
+		repos[len(repos)-1].st.Decisions = nil
+		for i := 1; i <= 11; i++ {
+			id := fmt.Sprintf("id%02d", i)
+			age := time.Duration(12-i) * time.Minute
+			if id == newest {
+				age = 0 // the decision that becomes the newest, the last row
+			}
+			repos[0].st.Decisions = append(repos[0].st.Decisions, data.FactoryDecision{
+				ID: id, Slug: "task-" + id[2:], Kind: "question", TS: fakeNow.Add(-age),
+				Ask: "Ask of " + id + "?", Options: []string{"First", "Second"},
+			})
+		}
+		return repos
+	}
+	for _, tc := range []struct {
+		name         string
+		from, to     int
+		before, then []factoryRepo
+	}{
+		{"row 0 to row 10", 0, 10, build(""), build("id01")},
+		{"row 10 to row 0", 10, 0, build("id01"), build("")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := fakeModel(true, 140, 40)
+			setInbox(m, tc.before...)
+			for range tc.from {
+				send(m, "j")
+			}
+			c, _ := m.cursorCard()
+			setInbox(m, tc.then...)
+			if got, _ := m.cursorCard(); got.d.ID != c.d.ID || m.inbox.tbl.Cursor() != tc.to {
+				t.Fatalf("the cursor is on %s at %d, want %s at %d", got.d.ID, m.inbox.tbl.Cursor(), c.d.ID, tc.to)
+			}
+			out := plain(m)
+			if !strings.Contains(out, "> ? task-"+c.d.ID[2:]) || !strings.Contains(out, "Ask of "+c.d.ID+"?") {
+				t.Errorf("the list lacks the selected row of %s:\n%s", c.d.ID, out)
+			}
+		})
+	}
+}

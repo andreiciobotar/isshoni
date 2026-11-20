@@ -96,7 +96,8 @@ func (m *model) syncInbox() {
 		i = max(0, min(in.tbl.Cursor(), len(cs)-1))
 	}
 	in.tbl.SetRows(make([]table.Row, len(cs)))
-	in.tbl.SetCursor(i)
+	in.tbl.SetCursor(0) // MoveDown from the top sets the scroll offset; SetCursor alone leaves it
+	in.tbl.MoveDown(i)
 	in.at = ""
 	if len(cs) > 0 {
 		in.at = cs[i].d.ID
