@@ -418,7 +418,10 @@ func (m *model) message(p paint, c inboxCard, w int) block {
 		}
 		lines = append(lines, "", button("Accept", !in.reject, th.Green)+p.sp(2)+button("Reject", in.reject, th.Red))
 	default:
-		lines = append(lines, "", p.t("L leave it to the lead · S to the site manager", th.Faint))
+		lines = append(lines, "")
+		for _, l := range wrapPlain("L leave it to the lead · S to the site manager", max(8, w)) {
+			lines = append(lines, p.t(l, th.Faint))
+		}
 	}
 	return lines
 }

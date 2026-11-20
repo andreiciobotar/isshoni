@@ -535,10 +535,23 @@ func TestInboxHintOnTheSelectedMessageOnly(t *testing.T) {
 	if !strings.Contains(out, "With the site manager since 10:50") || strings.Contains(out, hint) || strings.Contains(out, "The production ones") {
 		t.Errorf("parked: its line, no hint, no options:\n%s", out)
 	}
+	if foot := strings.Split(out, "\n")[39]; strings.Contains(foot, "pick an option") || strings.Contains(foot, "L S") {
+		t.Errorf("parked: the footer names keys the card refuses: %q", foot)
+	}
 	send(m, "j") // the handed-back message: its reason and the options and the hint of a normal one
 	out = plain(m)
 	if !strings.Contains(out, "The site manager handed it back: it turns on whether") || !strings.Contains(out, hint) || !strings.Contains(out, "2  Split it in two") {
 		t.Errorf("handed back:\n%s", out)
+	}
+}
+
+func TestInboxHintWrapsToANarrowPane(t *testing.T) {
+	out := plain(inboxModel(80, 24))
+	if strings.Contains(out, "mana…") {
+		t.Errorf("the hint is cut:\n%s", out)
+	}
+	if !strings.Contains(out, "│ manager") {
+		t.Errorf("the hint's end is missing:\n%s", out)
 	}
 }
 
@@ -611,6 +624,7 @@ func TestInboxFooterNamesTheCardsOptionRange(t *testing.T) {
 	if out := plain(m); !strings.Contains(out, "1–3 pick an option") {
 		t.Errorf("three options:\n%s", out)
 	}
+	send(m, "j") // the parked card: no pick keys
 	send(m, "j")
 	if out := plain(m); !strings.Contains(out, "1–2 pick an option") {
 		t.Errorf("two options:\n%s", out)
