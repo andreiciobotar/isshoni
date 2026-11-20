@@ -106,8 +106,13 @@ func TestFloorEveryTaskIsACubeOrCounted(t *testing.T) {
 			belt++
 		}
 	}
-	if belt < 4 || siding < floorSide {
-		t.Errorf("80x24 holds a cube at every station and %d on the BLOCKED pad, got %d and %d", floorSide, belt, siding)
+	if belt < 6 || siding < floorSide {
+		t.Errorf("80x24 holds at least 6 cubes on the belt and %d on the BLOCKED pad, got %d and %d", floorSide, belt, siding)
+	}
+	// the queues grow with the window
+	shown := func(w, h int) int { return len(floorModel(true, w, h, crowded).floorNow().cubes) }
+	if a, b, c := shown(80, 24), shown(100, 30), shown(140, 40); a < 5 || b <= a || c <= b {
+		t.Errorf("a crowded BUILD queue holds at least 5 cubes at 80x24, then more at 100x30 and 140x40: %d, %d, %d", a, b, c)
 	}
 	if out := plain(floorModel(true, 80, 24, crowded)); !strings.Contains(out, "BUILD 12 · ") || !strings.Contains(out, " more") {
 		t.Errorf("a crowded station keeps its full count and says how many have no slot:\n%s", out)
@@ -127,11 +132,12 @@ func TestFloorBeltSpansTheWindow(t *testing.T) {
 				x, y := l.xy(q, 0)
 				minX, maxX, minY, maxY = math.Min(minX, x), math.Max(maxX, x), math.Min(minY, y), math.Max(maxY, y)
 			}
-			if minX/2 > 1 || float64(l.w)-maxX/2 > 1.7*l.e+3 {
+			// within 3 cells of the left, right and bottom edges; the top has the BLOCKED spur and its cubes above the entry
+			if minX/2 > 3 || float64(l.w)-maxX/2 > 3 {
 				t.Errorf("%s at %dx%d: the belt runs from column %.0f to %.0f of %d", name, sz[0], sz[1], minX/2, maxX/2, l.w)
 			}
-			if rows := (maxY - minY) / 4; rows < float64(l.h)*0.3 || maxY/4 > float64(l.h) || minY < 0 {
-				t.Errorf("%s at %dx%d: the belt takes %.1f of %d rows, %.0f to %.0f dots", name, sz[0], sz[1], rows, l.h, minY, maxY)
+			if minY < 0 || minY/4 > 7 || float64(l.h)-maxY/4 > 3 {
+				t.Errorf("%s at %dx%d: the belt runs from row %.1f to %.1f of %d", name, sz[0], sz[1], minY/4, maxY/4, l.h)
 			}
 		}
 	}
@@ -335,7 +341,7 @@ func TestFloorFilter(t *testing.T) {
 		t.Fatalf("enter chooses beta: menu %v repo %q", m.floor.menu, m.floor.repo)
 	}
 	out = plain(m)
-	if !strings.Contains(out, "· beta-é") || strings.Contains(out, "alpha") {
+	if !strings.Contains(out, "· beta-é") || strings.Contains(out, "alpha") || !strings.Contains(out, "task-01") {
 		t.Errorf("the scene and the subheader follow the filter:\n%s", out)
 	}
 	if l := m.floorNow(); len(l.cubes)+l.more["build"]+l.more["review"]+l.more["merged"]+l.more["settled"]+l.more["blocked"] != 3 {
@@ -390,7 +396,7 @@ func TestFloorHonesty(t *testing.T) {
 	if !strings.Contains(out, "⚠ gamma: not inside a git repository") || !strings.Contains(out, "alpha: pull requests as of 12m") {
 		t.Errorf("a failed repository and stale pull requests are said under the scene:\n%s", out)
 	}
-	if m := floorModel(true, 100, 30, fakeFactoryRepos()[1:]...); len(m.floorNow().cubes) == 0 || !strings.Contains(plain(m), "⚠ gamma") {
+	if m := floorModel(true, 100, 30, fakeFactoryRepos()[1:]...); len(m.floorNow().cubes) == 0 || !strings.Contains(plain(m), "task-02") || !strings.Contains(plain(m), "⚠ gamma") {
 		t.Errorf("the other repositories still draw:\n%s", plain(m))
 	}
 	send(m, "/", "j", "j", "j", "enter")
@@ -409,6 +415,25 @@ func TestFloorSurvivesAnyWindow(t *testing.T) {
 					t.Fatalf("%dx%d: a line of %d runes", sz[0], sz[1], w)
 				}
 			}
+		}
+	}
+}
+
+// A cube between the belt and the BLOCKED spur goes along the belt, then along the spur, never across.
+func TestFloorMoveBetweenBeltAndSpurTurnsAtTheJunction(t *testing.T) {
+	belt, spur := point{x: 10}, point{x: 4, y: 6}
+	for _, tc := range []struct {
+		a, b point
+		t    float64
+		want point
+	}{
+		{belt, spur, 0.5, point{x: 4, y: 0}}, // 6 along the belt of 12 in all
+		{belt, spur, 0.75, point{x: 4, y: 3}},
+		{spur, belt, 0.25, point{x: 4, y: 3}},
+		{spur, belt, 0.75, point{x: 7, y: 0}},
+	} {
+		if got := lerp(tc.a, tc.b, tc.t); got != tc.want {
+			t.Errorf("lerp(%v, %v, %v) = %v, want %v", tc.a, tc.b, tc.t, got, tc.want)
 		}
 	}
 }

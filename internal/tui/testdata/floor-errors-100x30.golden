@@ -1,29 +1,29 @@
  Isshoni  1 ✉ ▲2  2 ≡  3 Agent [4 Factory] 5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
  Factory  10 motion (1 blocked) · 1 review · 2 merged · 1 settled  · as of 11:00:00                 
-                      BLOCKED 1                                     ╭─ all repositories ──────────╮ 
-                                                                    │ in motion ▲●●●●●●●●● 10/6+1 │ 
-          ⣀⣤⣤⣄⡀     ⢀⡠⠔⠤⣀                                           ╰─────────────────────────────╯ 
-         ⠘⢽⣼⣿⡼⠟   ⢰⠮⣁⣀⠤⠒⢢⣭⣶                                                                         
-            ⡇    ⣀⢼⠒⠉⠉▲⠊⠁ ⢸⠑⠢⣄                                                                      
- INTAKE      ⣀⠤⠒⠉ ⠘⠤⣀ ⢸ ⢀⣠⢼⡲⠝⠊ ─ alpha/needs-an-answer  10m40s                                      
-         ⣀⠤⠒⠉        ⣉⢾⡺⠝⠊⠁                                                                         
-  ⢀    ⣰⢯⣄       ⣀⢤⡲⠝⠊⠁                                                                             
-⠴⣊⠁⠉⠒⠶⣉⠈⠒⠭⣛⠵⣢⢄⢤⡲⠝⠊⠁  BUILD 9 · 8 more                                                               
-⣀ ⠉    ⠉⠒⢤⣠⠝⠋⠉⠉⠒⠤⣀─ alpha/lost-its-lead  9h00m                                                      
- ⠉⠒⠤⣀ ⠉⠒⠄⢸⣉⠿⠶⣤⣠⠔⠊⢹⣀⣀⣀⣤⣒⣢⣄⡀            REVIEW 1                                                      
-     ⠉⠒⠤⣒⢹ ⠐⣤⣼⣖⡋⣛⢽⣒⣉⢄⡀  ⠈⠉⠙⠶⣢⢤⡤⠤⣄⠤⠢⢄⡀         ⢀             ─ alpha/old-experiment  1m01s           
-         ⠉⡿⠾⣤⣸⣶⡝⠊⣁ ⠉⠒⠭⢕⠦ ⣀⠤⠚⢹ ⡿⢝⣄   ⣈⠵⡆   ⢀⡠⠔⠊⢹⡩⠖       MERGE 2 · 1 more                            
-         ⣸ ⢀⣠⣽⣖⣌⠑⠢⢄⡀ ⣀⠤⠒⠉  ⢀⠼ ⣇⡠⠬▲⡖⠛⠒⠒⣧⡤⢔⣊⢁⡠⠔⠊⢹     ⣀⠤⠒⠉⠑⠢⢄⡀   ⣀⠤⠒⠢⢄⡀                               
-         ⠸⡀⢷⣿⣿⣿⡿⣀  ⠈⡏  ⢀⡠⠔⠊⠉⠉⠫⡣⢄⣠⠃⡇ ⣀⠤⢻⠉⠒⠊⢉⡲⠤⣀⠸    ⢸⠑⠢⢄⡀⣀⠤⢒⣹⠤⠒⠉     ⢨⠑⠢⢄⡀                           
-          ⠉⠢⣧⣸   ⠉⠒⠤⡧⠔⠺⠥⣀⣀⣀⣀⣀⣀⣸⣖⣩⠵⠗⡛⠳⣦⢼⣀⠤⠚⠁   ⠉⠒⢤⣀⣀⣼⠔⠒⠊⢹⢹⡯⣉⢹⠙⠒⠢⠤⣀  ⢀⣸⣔⠶⠛⠁              SHIPPED 1    
-          ⠈⠉⠁⠉⠑⠒⠤⠤⢄⣀⣀⣀⣀⣀⠤⠤⠤⠛⢫⠋⠁ ⠈⠒⠤⡧⠔⠋⠸⠈⠑⠢⢄⡀       ⠉⠳⢦⢄⣸⣀⣬⡓⠫⢶⡤⣀⢀⣠⣽⠾⠷⣉      ⣀⣀⣀⣀⣀⣀⣀⡀                 
-                                   ⠃       ⠈⠙⠒⠦⠤⠤⠤⠤⠤⠤⠤⣟⠋⢩⠉⢛⡕⢺⣬⡕⠛⠉    ⠉⠲⠤⠴⠾⡉⠁      ⠈⠉⠑⠢⢄⡀ ⢀⡠⠔⠤⣀      
-                                                      ⠈⠉⢺⠊⠉ ⠈ ⠈⠑⠢⢄⡀       ⠈⠑⠢⣤⠤⠤⢄⡀    ⢀⣸⠿⣣⢤⠒⠢⢄⡩⢶    
-                                                        ⠈         ⠈⠉⠓⠒⠒⠒⠒⠒⠒⠋⠉    ⠈⠑⠢⢔⣊⡡⢺⠉ ⠉⢲⠊⠁⠈⢹⠢⢄⡀ 
-                                                                                 ⢠⠖⠊⡑⠛⣶⣜⡤⣀ ⢸ ⢀⡠⣜⣤⠶⠛ 
-                                                                                 ⠈⠓⠒⡗⠊⠁⠈⠙⠳⢯⣞⣮⠷⠛⠉    
-                                                       alpha/release-notes  50m00s ─⠃      ⠈        
-                                                                                                    
+    ⠙⢻⠛⠋ ⢰⢫⣤▲⣄⡬⢳   BLOCKED 1                                        ╭─ all repositories ──────────╮ 
+     ⠈⢀⡠⠔⢺⡁ ⢸ ⠈⣹⣦ ─ alpha/needs-an-answer  10m40s                   │ in motion ▲●●●●●●●●● 10/6+1 │ 
+⢀⡠⠤⢄⣴⣊⠁   ⠈⢑⣺⡶⠟⠋⠁                                                   ╰─────────────────────────────╯ 
+⠉⠒⠄ ⠈⠙⠻⢶⣤⣴⢞⢯⣁                                                                                       
+⠒⠤⣀ ⠈⠒⠄⣏⠿⠋⡷⢕⣫⣗⢖⢤⣀─ beta-é日本語/task-01  2m00s                                                      
+   ⠉⠒⠴⣋⠧⣈⠒⡇⣏⡻⠋⡷⢕⡫⡗⠒⠤⣀─ beta-é日本語/task-00  1m00s                                                  
+INTAKE ⠉⠒⠭⣋⠧⣀⢒⡧⣟⡺⠷⡢⢔⡪⡗⠒⠤⣀─ alpha/rate-limit-docs                                                    
+           ⠉⠚⠭⣋⠧⣀⠒⡧⣏⡺⠷⡢⢔⣪⣗⢖⢤⣀─ alpha/stacked-on-login  1m35s                                        
+               ⠉⠒⠭⣋⢧⣠⠶⡷⣏⡻⠋⡷⢕⣫⣗⢖⢤⣀─ alpha/quiet-refactor  4m12s                                      
+                   ⠉⠒⠭⣋⠧⣀⠐⡧⣏⡻⠷⠋⢕⣋⡧⠢⢄⡀     BUILD 9 · 1 more                                          
+   alpha/slow-export ─ ⠉⠒⠭⣋⡧⣔⠚⡧⣟⡪⢗⠋⢤⣚⡧⠢⢄⡀                                                           
+ alpha/login-flow  2h15m ─ ⠉⠒⠭⣋⢇⡀ ⡧⣟⣪⣷⣦⢤⣚⣧⣒⣉⣒⠤⣀                                                     
+  alpha/lost-its-lead  9h00m ─ ⠉⠚⠵⣗⢏⣥⣞⡿⣋⣘⠟⠷⣢⠄⣉⠭⠟⣶⡂                                                  
+                                  ⢀⣿⣾⣕⠛⠛⠤⣀⡠⠔⢊⡤⣴⢦⠛⢻⠒⠂⠤⣀ ⢀⡠⣀  REVIEW 1                                
+                                  ⠘⠿⣿⣟⠓⠤⣀⣸⣀⡠⠔⢉⣀⣀⡠⠎⣀⡠⠔⢺⠯⣓⠤⣀⡩⢶ ⢀⡠⠔⣗⡢      ─ alpha/old-plumbing  2h00m 
+                                   ⠈⠋⠈⠉⠒⠒⠚⠒⠚⠛⠒⠪⠓⠋⠛⠥⣀ ⢸  ▲⢁⡩⢾⢮⣡⠔⠊⡇ ⣀⠤⠒⠢⢄⡀ MERGE 2                    
+                      alpha/api-rate-limits  1h30m ─⠉⠒⠭⣒⢼⣼⠟⠋⠁ ⠉⠒⣥⣸⠱⠦⢤⡤⣒⢽⠒⠢⢄⡀⢀⡠⣀                     
+                                                    ⠐⣏⣹⣉⡟⢺⠤⣀   ⠉ ⠸⢧⡀⢸⢸⣑⠿⢖⣤⣖⢻⠁  ⢩⠒⠤⣀                 
+                                                      ⠸     ⠉⠂⠢ ⠤⠈⠷⠺⢟⡹⢄⡾⣽⣀⣀⡽⠖⠤⣀⣼⠶⠝⠋        SHIPPED 1
+                                       alpha/old-experiment  1m01s ─⢀⡨⠵⢮⣝⣻⠻⢦⠶⠛⠉⡭⣶⠦⠐⠂⠐⠂⠤⣀            
+                                                                    ⠘⠲⢼⠔⠃⠘⠑⠢⢄⡀   ⢉⣒⠤⣀   ⠉⠒⠤⣀⡀ ⣀⢄⡀   
+                                                                      ⠈       ⠉ ⠒ ⠉⠙⠢⢄⡀ ⣀⠤⠒⠉⡿⣟⡤⠢⣌⡵⡆ 
+                                                                                      ⠈⠙⣢⣄⣤⡒⡏ ⠈⡏ ⠈⡗⣢
+                                                          alpha/release-notes  50m00s ─⢯⣱⣈⠽⠙⠿⣵⣢⢧⣲⡽⠟⠉
  ⚠ gamma: not inside a git repository                                                               
  alpha: pull requests as of 12m ago · GitHub slow: factory status timed out after 25s               
  beta-é日本語: pull requests as of 3m ago                                                           

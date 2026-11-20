@@ -1637,7 +1637,7 @@ func TestCapSaveDuringARefreshFollowsIt(t *testing.T) {
 
 func TestSnapshotFactory(t *testing.T) {
 	table := []string{"proj", "stacked", "cost-in-money", "in motion ▲▲●●○○◌ 4/6+1", "held 7h5m · ended-undeclared · its replacement", "kept: uncommitted changes", "paused 12m: waits nee", "Needs the login task to land first.", "write-up.md", "needs-an-answer", "worktree cap  7", "[1 ✉ ▲2]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"}
-	floor := []string{"BUILD 2", "REVIEW 1", "MERGE 1", "SHIPPED 1", "BLOCKED 2", "in motion ▲▲●●○○◌ 4/6+1", "1 ✉ ▲2", "[4 Factory]"}
+	floor := []string{"stacked", "write-up", "needs-an-answer", "BUILD 2", "REVIEW 1", "MERGE 1", "SHIPPED 1", "BLOCKED 2", "in motion ▲▲●●○○◌ 4/6+1", "1 ✉ ▲2", "[4 Factory]"}
 	for _, c := range []struct {
 		view string
 		want []string

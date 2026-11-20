@@ -19,6 +19,7 @@ type floorArt struct {
 	m    *model
 	l    *floorLayout
 	cv   *hCanvas
+	cut  int    // dots left off each end of a line: a cube's corners come out rounded
 	used []bool // cells that hold a line of the scene (not the grid) or text
 	// grey is rest, green is work; every other colour is a signal
 	grid, tick, edge, rest, green hrgb
@@ -29,7 +30,7 @@ func newFloorArt(m *model, l *floorLayout) *floorArt {
 	bg, muted := toRGB(th.Bg), toRGB(th.Muted)
 	return &floorArt{
 		m: m, l: l, cv: &hCanvas{w: l.w, h: l.h, maxY: 4 * l.h, cells: make([]hCell, l.w*l.h)}, used: make([]bool, l.w*l.h),
-		grid: bg.mix(muted, 0.16), tick: bg.mix(muted, 0.4), edge: bg.mix(muted, 0.75), rest: muted, green: toRGB(th.Green),
+		grid: bg.mix(muted, 0.11), tick: bg.mix(muted, 0.55), edge: bg.mix(muted, 0.9), rest: muted, green: toRGB(th.Green),
 	}
 }
 
@@ -44,6 +45,9 @@ func (a *floorArt) dot(x, y float64, c hrgb) {
 func (a *floorArt) line(x0, y0, x1, y1 float64, c hrgb) {
 	n := int(math.Ceil(math.Max(math.Abs(x1-x0), math.Abs(y1-y0))))
 	for i := 0; i <= n; i++ {
+		if n > 2*a.cut+1 && (i < a.cut || i > n-a.cut) {
+			continue
+		}
 		t := 0.0
 		if n > 0 {
 			t = float64(i) / float64(n)
@@ -248,10 +252,10 @@ func (a *floorArt) drawStation(place string, working bool) {
 	if working {
 		a.cv.layer = 2
 		ring := a.green.mix(toRGB(a.m.th.Bg), 0.4)
-		a.ring(c, 2.1*e, 0, ring)
+		a.ring(c, 1.7*e, 0, ring)
 		ph := float64(a.m.floor.belt) * 0.35
 		for k := range 4 {
-			a.arrowhead(c, 2.1*e, ph+float64(k)*math.Pi/2, a.rest)
+			a.arrowhead(c, 1.7*e, ph+float64(k)*math.Pi/2, a.rest)
 		}
 		a.cv.layer = 1
 	}
@@ -356,7 +360,7 @@ func (a *floorArt) canvas() *canvas {
 
 // ---- text over the dots --------------------------------------------------------------------
 
-// free is how many of the n cells from x on row y are empty (n if all are, 0 outside the scene).
+// free is whether the n cells from x on row y are all empty (false outside the scene).
 func (a *floorArt) free(x, y, n int) bool {
 	if y < 0 || y >= a.cv.h || x < 0 || x+n > a.cv.w {
 		return false

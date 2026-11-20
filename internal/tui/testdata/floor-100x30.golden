@@ -1,30 +1,30 @@
  Isshoni  1 ✉ ▲7  2 ≡  3 Agent [4 Factory] 5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
  Factory  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                 
-                 BLOCKED 8 · 6 more                           ╭─ all repositories ────────────────╮ 
-                                                              │ in motion ███████████████ 18/11+1 │ 
-                                                              ╰───────────────────────────────────╯ 
-          ⣀⣤⣤⣄⡀     ⢀⡠⠔⠤⣀                                                                           
-         ⠘⢽⣼⣿⡼⠟   ⢰⠮⣁⣀⠤⠒⢢⣭⣶                                                                         
-            ⣇⡠⠔⠤⣀⣀⢼⠒⠉⠉⢲⠊⠁ ⢸⠑⠢⣄                                                                      
- INTAKE   ⢰⠮⣁⣀⠤⠒⢉⡩⢾⠤⣀ ⢸ ⢀⣠⢼⡲⠝⠊ ─ delta-docs/docs-after-review · design-review-of-docs               
-         ⣀⢼⠒⠉⠉▲⠊⠁ ⢸  ⣉⢾⡺⠝⠊⠁                                                                         
-  ⢀    ⣰⢯⣄⠘⠤⣀ ⢸ ⢀⣠⢼⡲⠝⠊⠁─ alpha/needs-an-answer  10m40s                                              
-⠴⣊⠁⠉⠒⠶⣉⠈⠒⠭⣛⠵⣢⢍⢾⡺⠝⠊⠁  BUILD 10 · 9 more                                                              
-⣀ ⠉    ⠉⠒⢤⣠⠝⠋⠉⠉⠒⠤⣀─ alpha/lost-its-lead  9h00m                                                      
- ⠉⠒⠤⣀ ⠉⠒⠄⢸⣉⠿⠶⣤⣠⠔⠊⢹⣀⣀⣀⣤⣒⣢⣄⡀        REVIEW 3 · 2 more                                                 
-     ⠉⠒⠤⣒⢹ ⠐⣤⣼⣖⡋⣛⢽⣒⣉⢄⡀  ⠈⠉⠙⠶⣢⢤⡤⠤⣄⠤⠢⢄⡀         ⢀             ─ alpha/old-experiment  1m01s           
-         ⠉⡿⠾⣤⣸⣶⡝⠊⣁ ⠉⠒⠭⢕⠦ ⣀⠤⠚⢹ ⡿⢝⣄   ⣈⠵⡆   ⢀⡠⠔⠊⢹⡩⠖       MERGE 2 · 1 more                            
-         ⣸ ⢀⣠⣽⣖⣌⠑⠢⢄⡀ ⣀⠤⠒⠉  ⢀⠼ ⣇⡠⠬▲⡖⠛⠒⠒⣧⡤⢔⣊⢁⡠⠔⠊⢹     ⣀⠤⠒⠉⠑⠢⢄⡀   ⣀⠤⠒⠢⢄⡀                               
-         ⠸⡀⢷⣿⣿⣿⡿⣀  ⠈⡏  ⢀⡠⠔⠊⠉⠉⠫⡣⢄⣠⠃⡇ ⣀⠤⢻⠉⠒⠊⢉⡲⠤⣀⠸    ⢸⠑⠢⢄⡀⣀⠤⢒⣹⠤⠒⠉     ⢨⠑⠢⢄⡀                           
-          ⠉⠢⣧⣸   ⠉⠒⠤⡧⠔⠺⠥⣀⣀⣀⣀⣀⣀⣸⣖⣩⠵⠗⡛⠳⣦⢼⣀⠤⠚⠁   ⠉⠒⢤⣀⣀⣼⠔⠒⠊⢹⢹⡯⣉⢹⠙⠒⠢⠤⣀  ⢀⣸⣔⠶⠛⠁              SHIPPED 1    
-          ⠈⠉⠁⠉⠑⠒⠤⠤⢄⣀⣀⣀⣀⣀⠤⠤⠤⠛⢫⠋⠁ ⠈⠒⠤⡧⠔⠋⠸⠈⠑⠢⢄⡀       ⠉⠳⢦⢄⣸⣀⣬⡓⠫⢶⡤⣀⢀⣠⣽⠾⠷⣉      ⣀⣀⣀⣀⣀⣀⣀⡀                 
-                                   ⠃       ⠈⠙⠒⠦⠤⠤⠤⠤⠤⠤⠤⣟⠋⢩⠉⢛⡕⢺⣬⡕⠛⠉    ⠉⠲⠤⠴⠾⡉⠁      ⠈⠉⠑⠢⢄⡀ ⢀⡠⠔⠤⣀      
-                                                      ⠈⠉⢺⠊⠉ ⠈ ⠈⠑⠢⢄⡀       ⠈⠑⠢⣤⠤⠤⢄⡀    ⢀⣸⠿⣣⢤⠒⠢⢄⡩⢶    
-                                                        ⠈         ⠈⠉⠓⠒⠒⠒⠒⠒⠒⠋⠉    ⠈⠑⠢⢔⣊⡡⢺⠉ ⠉⢲⠊⠁⠈⢹⠢⢄⡀ 
-                                                                                 ⢠⠖⠊⡑⠛⣶⣜⡤⣀ ⢸ ⢀⡠⣜⣤⠶⠛ 
-                                                                                 ⠈⠓⠒⡗⠊⠁⠈⠙⠳⢯⣞⣮⠷⠛⠉    
-                                                       alpha/release-notes  50m00s ─⠃      ⠈        
-                                                                                                    
-                                                                                                    
+    ⣤⣤⣤⣄   ⣀⠤⢄⡀        BLOCKED 8 · 6 more                     ╭─ all repositories ────────────────╮ 
+    ⠙⢻⠛⣋⠤⢴⣫⣤⡢⣄⡬⢳                                              │ in motion ███████████████ 18/11+1 │ 
+     ⢸⢫⣤▲⣺⡭⢳⢸ ⠈⣹⣦ ─ delta-docs/docs-after-review              ╰───────────────────────────────────╯ 
+⢀⡠⠤⢄⣴⣺⡁ ⢸ ⠈⣹⣺⡶⠟⠋⠁                                                                                   
+⠉⠒⠄ ⠈⠙⠻⢷⣾⣶⢟⢯⣁ ─ alpha/needs-an-answer  10m40s                                                       
+⠒⠤⣀ ⠈⠒⠄⣏⠿⠋⡷⢕⣫⣗⢖⢤⣀─ beta-é日本語/task-00  1m00s                                                      
+   ⠉⠒⠴⣋⠧⣈⠒⡇⣏⡻⠋⡷⢕⡫⡗⠒⠤⣀─ delta-docs/rush-fix  10m00s                                                  
+INTAKE ⠉⠒⠭⣋⠧⣀⢒⡧⣟⡺⠷⡢⢔⡪⡗⠒⠤⣀─ alpha/rate-limit-docs                                                    
+           ⠉⠚⠭⣋⠧⣀⠒⡧⣏⡺⠷⡢⢔⣪⣗⢖⢤⣀─ alpha/stacked-on-login  1m35s                                        
+               ⠉⠒⠭⣋⢧⣠⠶⡷⣏⡻⠋⡷⢕⣫⣗⢖⢤⣀─ alpha/quiet-refactor  4m12s                                      
+                   ⠉⠒⠭⣋⠧⣀⠐⡧⣏⡻⠷⠋⢕⣋⡧⠢⢄⡀     BUILD 10 · 2 more                                         
+   alpha/slow-export ─ ⠉⠒⠭⣋⡧⣔⠚⡧⣟⡪⢗⠋⢤⣚⡧⠢⢄⡀                                                           
+ alpha/login-flow  2h15m ─ ⠉⠒⠭⣋⢇⡀ ⡧⣟⣪⣷⣦⢤⣚⣧⣒⣉⣒⠤⣀                                                     
+  alpha/lost-its-lead  9h00m ─ ⠉⠚⠵⣗⢏⣥⣞⡿⣋⣘⠟⠷⣢⠄⣩⠽⠟⣿⡒⢤⣀⡠⣀─ delta-docs/video-cut                        
+                                  ⢀⣿⣾⣕⠛⠛⠤⣀⡠⠔⢊⡧⣽⢶▲⢻⠿⣇⠤⣀⡩⢶⡠⣀  REVIEW 3                                
+                                  ⠘⠿⣿⣟⠓⠤⣀⣸⣀⡠⠔⢛⣤⣀⣧⣾⣔⡣▲⢻⠯⣻⠤⣀⡩⢶ ⢀⡠⠔⣗⡢      ─ alpha/old-plumbing  2h00m 
+                                   ⠈⠋⠈⠉⠒⠒⠚⠒⠚⠛⠒⠪⠓⠋⠛⠭⣒⠼⢼⠊⠁▲⢁⡩⢾⢮⣡⠔⠊⡇ ⣀⠤⠒⠢⢄⡀ MERGE 2                    
+                      delta-docs/design-review ─    ⠉⠒⠭⣒⢼⣼⠟⠋⠁ ⠉⠒⣥⣸⠱⠦⢤⡤⣒⢽⠒⠢⢄⡀⢀⡠⣀                     
+                      alpha/api-rate-limits  1h30m ─⠐⣏⣹⣉⡟⢺⠤⣀   ⠉ ⠸⢧⡀⢸⢸⣑⠿⢖⣤⣖⢻⠁  ⢩⠒⠤⣀                 
+                                                      ⠸     ⠉⠂⠢ ⠤⠈⠷⠺⢟⡹⢄⡾⣽⣀⣀⡽⠖⠤⣀⣼⠶⠝⠋        SHIPPED 1
+                                       alpha/old-experiment  1m01s ─⢀⡨⠵⢮⣝⣻⠻⢦⠶⠛⠉⡭⣶⠦⠐⠂⠐⠂⠤⣀            
+                                                                    ⠘⠲⢼⠔⠃⠘⠑⠢⢄⡀   ⢉⣒⠤⣀   ⠉⠒⠤⣀⡀ ⣀⢄⡀   
+                                                                      ⠈       ⠉ ⠒ ⠉⠙⠢⢄⡀ ⣀⠤⠒⠉⡿⣟⡤⠢⣌⡵⡆ 
+                                                                                      ⠈⠙⣢⣄⣤⡒⡏ ⠈⡏ ⠈⡗⣢
+                                                          alpha/release-notes  50m00s ─⢯⣱⣈⠽⠙⠿⣵⣢⢧⣲⡽⠟⠉
+                                                                                        ⠸     ⠈⠙    
  ⚠ gamma: not inside a git repository                                                               
  / filter  ·  r range  ·  tab next view  ·  ? help  ·  q quit                                       

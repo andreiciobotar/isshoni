@@ -57,8 +57,9 @@ type floorPath struct {
 	legEnd []float64 // arc length where each leg's straight part ends
 }
 
-// newFloorPath walks legs of the given lengths (corner to corner) along the two floor axes in turn,
-// starting on u, rounding every corner with a quarter circle of radius r.
+// newFloorPath walks legs (corner to corner) along the two floor axes in turn, starting on +u,
+// rounding every corner with a quarter circle of radius r. The odd legs run along v: a negative
+// length runs down-left on screen, a positive one up-right.
 func newFloorPath(lens []float64, r float64) *floorPath {
 	p := &floorPath{}
 	pos := fpt{}
@@ -74,9 +75,10 @@ func newFloorPath(lens []float64, r float64) *floorPath {
 		if i%2 == 0 {
 			return fpt{1, 0}
 		}
-		return fpt{0, 1}
+		return fpt{0, math.Copysign(1, lens[i])}
 	}
 	for i, l := range lens {
+		l = math.Abs(l)
 		d := dir(i)
 		last := i == len(lens)-1
 		n := l
@@ -134,6 +136,34 @@ func (p *floorPath) at(s float64) (fpt, fpt) {
 	return fpt{a.u + (b.u-a.u)*t, a.v + (b.v-a.v)*t}, p.tan[i]
 }
 
+// newFloorSerpentine is the belt for a w x h scene and the length of its tail past the dock: seven legs, long
+// ones down-right (+u) joined by short ones along v, a station at the end of the 1st, 3rd, 5th and 7th. It
+// enters at the left edge and leaves at the right one. The joins run down-left, so that every leg descends,
+// as long as the height allows; otherwise some run up-right, which gives back height.
+func newFloorSerpentine(w, h int, e float64) (*floorPath, float64) {
+	r, tail := 0.4*e, e
+	x := float64(2*w-4) / 2          // across, in floor units (2 dots each): the long legs plus the joins' signed sum
+	avail := float64(4*h) - 4*e - 10 // the cubes, the signs and the BLOCKED spur stand above and beside the belt
+	minB := 2*r + 0.2
+	// the height spanned is x minus twice the joins' signed sum
+	b, signs := minB, []float64{1, 1, 1}
+	for _, p := range [][]float64{{-1, -1, -1}, {-1, 1, -1}, {1, -1, 1}} {
+		k := p[0] + p[1] + p[2]
+		if k < 0 {
+			if sb := (avail - x) / (-2 * k); sb >= minB {
+				b, signs = min(sb, x/4), p
+				break
+			}
+		} else if x-2*k*minB <= avail {
+			signs = p
+			break
+		}
+	}
+	v := (signs[0] + signs[1] + signs[2]) * b
+	a := math.Max(0, (x-tail-v)/6.6)
+	return newFloorPath([]float64{3.5 * a, signs[0] * b, 1.2 * a, signs[1] * b, a, signs[2] * b, 0.9*a + tail}, r), tail
+}
+
 // floorTask is a shown task and where it came from.
 type floorTask struct {
 	repo, path string
@@ -165,10 +195,10 @@ type floorLayout struct {
 	prefix bool // labels name the repository
 }
 
-func (l *floorLayout) bw() float64      { return 0.65 * l.e } // half the belt's width
-func (l *floorLayout) pitch() float64   { return 2 * l.e }    // from one cube of a queue to the next
+func (l *floorLayout) bw() float64      { return 0.8 * l.e }  // half the belt's width
+func (l *floorLayout) pitch() float64   { return 1.35 * l.e } // from one cube of a queue to the next
 func (l *floorLayout) hs() float64      { return 0.9 * l.e }  // half a station's length along the belt
-func (l *floorLayout) spurFar() float64 { return 2.4*l.e + float64(floorSide-1)*l.pitch() }
+func (l *floorLayout) spurFar() float64 { return 1.6*l.e + float64(floorSide-1)*l.pitch() }
 
 // fp is the floor spot of a place on the belt or the spur.
 func (l *floorLayout) fp(p point) fpt {
@@ -216,9 +246,17 @@ type floorGone struct {
 
 func (f *floorState) moving() bool { return len(f.moves) > 0 || len(f.gone) > 0 }
 
+// lerp is the point t of the way from a to b: along the belt, and up or down the spur, never across between them.
 func lerp(a, b point, t float64) point {
-	t = min(1, max(0, t))
-	return point{a.x + (b.x-a.x)*t, a.y + (b.y-a.y)*t}
+	d := math.Abs(b.x - a.x)
+	s := min(1, max(0, t)) * (a.y + d + b.y)
+	switch {
+	case s <= a.y && a.y > 0:
+		return point{a.x, a.y - s}
+	case s <= a.y+d:
+		return point{a.x + math.Copysign(s-a.y, b.x-a.x), 0}
+	}
+	return point{b.x, s - a.y - d}
 }
 
 // floorRepo is the chosen repository's path, or empty when none is chosen or it is gone from the data.
@@ -289,23 +327,18 @@ func (m *model) floorLayout(w, h int) *floorLayout {
 	l.prefix = m.floorRepo() == "" && len(repos) > 1
 	l.e = 3
 	switch {
-	case w >= 130:
+	case w >= 200:
 		l.e = 5
-	case w >= 100:
+	case w >= 130:
 		l.e = 4
 	}
 	e := l.e
-	r := 0.9 * e
-	// Seven legs along the two floor axes, a station at the end of the 1st, 3rd, 5th and 7th. The
-	// belt's length follows the width: it crosses the window and the dock stands inside the edge.
-	total := (float64(2*w) - 4 - 3.2*e) / 2
-	b := math.Max(2*r+0.2, 0.075*total)
-	a := math.Max(0, (total-3*b)/4.9)
-	l.path = newFloorPath([]float64{2 * a, b, a, b, a, b, 0.9 * a}, r)
+	var tail float64
+	l.path, tail = newFloorSerpentine(w, h, e)
 	for i, place := range floorStations {
 		l.stn[place] = l.path.legEnd[2*i] - l.hs()
 	}
-	l.stn["settled"] = l.path.total()
+	l.stn["settled"] = l.path.total() - tail
 	l.spur = 1.2 * e
 
 	// Vertically, the belt and the spur's far cube are centred in the scene.
@@ -335,15 +368,15 @@ func (m *model) floorLayout(w, h int) *floorLayout {
 
 // slots are the places of a queue: as many cubes as fit between the previous station and this one.
 func (l *floorLayout) slots(place string) []point {
-	lo := l.spur + 1.2*l.e
+	lo := l.spur + 0.8*l.e
 	for _, p := range floorStations {
 		if p == place {
 			break
 		}
-		lo = l.stn[p] + l.hs() + 1.0*l.e
+		lo = l.stn[p] + l.hs() + 0.5*l.e
 	}
 	var out []point
-	for s := l.stn[place] - l.hs() - 1.0*l.e; s >= lo-1e-9 || len(out) == 0; s -= l.pitch() {
+	for s := l.stn[place] - l.hs() - 0.5*l.e; s >= lo-1e-9 || len(out) == 0; s -= l.pitch() {
 		out = append(out, point{s, 0})
 	}
 	return out
