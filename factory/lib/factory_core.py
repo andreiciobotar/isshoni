@@ -1417,15 +1417,10 @@ def extensions(granted, slug, started):
             for f in granted if f["slug"] == slug and (started is None or (epoch(f["decided"]) or 0) >= started)]
 
 
-def is_pick(record):
-    """Whether a decisions `record` is a pick of an option (an integer `choice`), not a delegation of the question."""
-    return isinstance(record.get("choice"), int) and not isinstance(record["choice"], bool)
-
-
 def hold_spans(records, slug):
     """[(begin, end)] of the `hold` cards of `slug` in the decisions `records`: the card's `ts` to the `ts` of its `choice` or
     `released` record, None while it is unclosed."""
-    ended = {r["id"]: r["ts"] for r in records if is_pick(r) or "released" in r}
+    ended = {r["id"]: r["ts"] for r in records if "choice" in r or "released" in r}
     return [(r["ts"], ended.get(r["id"])) for r in records if r.get("kind") == "hold" and r["slug"] == slug and "ask" in r]
 
 
@@ -4956,7 +4951,7 @@ def open_decisions(root):
     holds the task, and a hand-over closes it. Of a `hold` ask (`settle_holds`), whose task's last state is `working` or `blocked`.
     A `choice` or a `released` record answers an ask."""
     records = repo_log("decisions", root) or []
-    answered = {r["id"] for r in records if is_pick(r) or "released" in r}
+    answered = {r["id"] for r in records if "choice" in r or "released" in r}
     latest = {r["slug"]: r["id"] for r in records if r.get("kind") == "overrun"}
     tasks = read_tasks(root)
     return [{k: r[k] for k in DECISION_KEYS if k in r} for r in records
@@ -9081,7 +9076,7 @@ def held_on(repo, slug, recorded=None, declared=None, records=None, tasks_log=No
         return None
     records = (repo_log("decisions", repo.root) or []) if records is None else records
     cards = {r["id"] for r in records if r.get("kind") == "hold" and r["slug"] == slug and "ask" in r}
-    return None if any(is_pick(r) and r["id"] in cards and stamp(r) > handed for r in records) else base
+    return None if any("choice" in r and r["id"] in cards and stamp(r) > handed for r in records) else base
 
 
 def settle_holds(p, repo):
@@ -9089,7 +9084,7 @@ def settle_holds(p, repo):
     each unclosed card whose task is no longer held or no longer working or blocked, with a `released` record; the lead
     of a working task is told once, by that record."""
     records, declared = repo_log("decisions", repo.root) or [], read_tasks(repo.root)
-    closed = {r["id"] for r in records if is_pick(r) or "released" in r}
+    closed = {r["id"] for r in records if "choice" in r or "released" in r}
     cards = {r["slug"]: r for r in records if r.get("kind") == "hold" and "ask" in r and r["id"] not in closed}
     here, tasks_log = {os.path.basename(t["path"]) for t in repo.tasks}, list(read_log("tasks"))
     for slug in here:

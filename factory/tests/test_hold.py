@@ -164,23 +164,6 @@ class CardTests(Hold):
         self.assertEqual((factory.open_decisions(ROOT), self.released(), self.lines()), ([], ["bet is handed-over"], []))
 
 
-class DelegationTests(Hold):
-    """A `choice` that is not an integer delegates the question; it is not a pick and releases nothing."""
-
-    def test_a_string_choice_on_a_hold_card_keeps_the_task_held_and_the_card_open(self):
-        for n, who in enumerate(("lead", "site-manager"), 1):
-            self.tick()
-            card = self.cards()[-1]
-            self.seed("decisions", [{"ts": iso(self.clock), "repo": ROOT, "id": card["id"], "slug": "bet", "choice": who}])
-            self.tick()
-            self.assertEqual(self.build()[0], 1, who)
-            self.assertEqual([d["id"] for d in factory.open_decisions(ROOT)], [card["id"]], who)
-            self.assertEqual((len(self.cards()), self.released()), (n, ["x"] * (n - 1)), who)
-            self.assertEqual(self.lines(), [], who)
-            self.assertIsNone(factory.hold_spans(self.records("decisions"), "bet")[-1][1], who)  # the span stays open
-            self.seed("decisions", [{"ts": iso(self.clock), "repo": ROOT, "id": card["id"], "slug": "bet", "released": "x"}])
-
-
 class ReleaseTests(Hold):
     def test_a_base_that_hands_over_releases_the_card_and_tells_the_lead_once(self):
         self.tick()
