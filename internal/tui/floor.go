@@ -4,7 +4,9 @@ import (
 	"cmp"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
+	"sort"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -20,19 +22,13 @@ const (
 	floorMoveFor   = time.Second            // a cube travels from its old place to its new one in this long
 	floorBeltEvery = 120 * time.Millisecond // one step of the belt's tread
 	floorEvery     = 10 * time.Second       // the refresh interval while the Factory tab is shown
-	floorStepX     = 4                      // cells from one belt slot to the next, across: the belt's 2 columns per row
-	floorStepY     = 2                      // and down
-	floorTop       = 1                      // rows the intake hopper takes above the first slot
-	floorBandW     = 8                      // columns between the belt's two edges
-	floorSideDX    = -6                     // the siding's slots stand this far left of the belt slot beside them
-	floorSideDY    = 5                      // and this far below it
-	floorPile      = 3                      // settled cubes stacked on a pallet before the next pile
+	floorPile      = 3                      // settled cubes stacked on the dock pad
+	floorSide      = 2                      // cubes the BLOCKED pad holds
 	floorMinScene  = 16                     // rows the scene keeps before notes under it are cut
-	floorCubeW     = 6
-	floorCubeH     = 3
+	floorStep      = 0.5                    // floor units between two samples of the belt's centre line
 )
 
-// floorStations are the belt's segments in flow order; every other phase waits on the siding.
+// floorStations are the belt's stations in flow order; every other phase waits on the BLOCKED pad.
 var floorStations = []string{"build", "review", "merged", "settled"}
 
 var floorSigns = map[string]string{"build": "BUILD", "review": "REVIEW", "merged": "MERGE", "settled": "SHIPPED", "blocked": "BLOCKED"}
@@ -47,7 +43,96 @@ func floorPlace(phase string) string {
 	return "blocked"
 }
 
+// point is a place on the belt: x the arc length along it, y the distance up the BLOCKED spur (0 on the belt).
 type point struct{ x, y float64 }
+
+// fpt is a spot on the floor: u runs down-right on screen, v up-right; a unit is 2 dots across and 1 down.
+type fpt struct{ u, v float64 }
+
+// floorPath is the belt's centre line, sampled, with its direction and arc length at each sample.
+type floorPath struct {
+	pts    []fpt
+	tan    []fpt
+	s      []float64
+	legEnd []float64 // arc length where each leg's straight part ends
+}
+
+// newFloorPath walks legs of the given lengths (corner to corner) along the two floor axes in turn,
+// starting on u, rounding every corner with a quarter circle of radius r.
+func newFloorPath(lens []float64, r float64) *floorPath {
+	p := &floorPath{}
+	pos := fpt{}
+	add := func(q, t fpt) {
+		if n := len(p.pts); n == 0 {
+			p.s = append(p.s, 0)
+		} else {
+			p.s = append(p.s, p.s[n-1]+math.Hypot(q.u-p.pts[n-1].u, q.v-p.pts[n-1].v))
+		}
+		p.pts, p.tan = append(p.pts, q), append(p.tan, t)
+	}
+	dir := func(i int) fpt {
+		if i%2 == 0 {
+			return fpt{1, 0}
+		}
+		return fpt{0, 1}
+	}
+	for i, l := range lens {
+		d := dir(i)
+		last := i == len(lens)-1
+		n := l
+		if i > 0 {
+			n -= r
+		}
+		if !last {
+			n -= r
+		}
+		n = math.Max(0, n)
+		start := pos
+		if i == 0 {
+			add(pos, d)
+		}
+		for k := 1; k <= int(math.Ceil(n/floorStep)); k++ {
+			t := math.Min(n, float64(k)*floorStep)
+			pos = fpt{start.u + d.u*t, start.v + d.v*t}
+			add(pos, d)
+		}
+		p.legEnd = append(p.legEnd, p.s[len(p.s)-1])
+		if last {
+			break
+		}
+		nd := dir(i + 1)
+		c := fpt{pos.u + r*nd.u, pos.v + r*nd.v}
+		steps := int(math.Ceil(math.Pi / 2 * r / floorStep))
+		for k := 1; k <= steps; k++ {
+			phi := float64(k) / float64(steps) * math.Pi / 2
+			q := fpt{c.u + r*(-nd.u*math.Cos(phi)+d.u*math.Sin(phi)), c.v + r*(-nd.v*math.Cos(phi)+d.v*math.Sin(phi))}
+			add(q, fpt{d.u*math.Cos(phi) + nd.u*math.Sin(phi), d.v*math.Cos(phi) + nd.v*math.Sin(phi)})
+			pos = q
+		}
+	}
+	return p
+}
+
+func (p *floorPath) total() float64 { return p.s[len(p.s)-1] }
+
+// at is the spot and direction at arc length s; past either end the belt goes on straight.
+func (p *floorPath) at(s float64) (fpt, fpt) {
+	n := len(p.pts) - 1
+	switch {
+	case s <= 0:
+		return fpt{p.pts[0].u + p.tan[0].u*s, p.pts[0].v + p.tan[0].v*s}, p.tan[0]
+	case s >= p.s[n]:
+		d := s - p.s[n]
+		return fpt{p.pts[n].u + p.tan[n].u*d, p.pts[n].v + p.tan[n].v*d}, p.tan[n]
+	}
+	i := sort.SearchFloat64s(p.s, s)
+	if i == 0 {
+		return p.pts[0], p.tan[0]
+	}
+	t := (s - p.s[i-1]) / math.Max(1e-9, p.s[i]-p.s[i-1])
+	a, b := p.pts[i-1], p.pts[i]
+	return fpt{a.u + (b.u-a.u)*t, a.v + (b.v-a.v)*t}, p.tan[i]
+}
 
 // floorTask is a shown task and where it came from.
 type floorTask struct {
@@ -57,7 +142,7 @@ type floorTask struct {
 
 func (ft floorTask) key() string { return ft.path + "\x00" + ft.t.Slug }
 
-// floorCube is a task's place: the top-left cell of its glyph.
+// floorCube is a task's place.
 type floorCube struct {
 	floorTask
 	place string
@@ -67,23 +152,34 @@ type floorCube struct {
 }
 
 type floorLayout struct {
-	w, h, x0 int
-	slots    int            // belt slots, the intake first
-	sideN    int            // slots of the siding
-	first    map[string]int // the belt slot of each station's first slot
-	count    map[string]int // tasks of each place, shown or not
-	more     map[string]int // tasks of each place that have no slot
-	cubes    []floorCube
-	prefix   bool // labels name the repository
+	w, h   int
+	e      float64            // the floor side of a cube: 3 or 4 units, by window width
+	path   *floorPath         // the belt's centre line
+	oy     float64            // dots of the floor's origin, down; across it is 0, the belt enters at the left edge
+	stn    map[string]float64 // arc length of each station's centre
+	spur   float64            // arc length where the BLOCKED spur leaves the belt
+	count  map[string]int     // tasks of each place, shown or not
+	more   map[string]int     // tasks of each place that have no slot
+	work   map[string]bool    // a task of the place has a working session
+	cubes  []floorCube
+	prefix bool // labels name the repository
 }
 
-func (l *floorLayout) belt(slot int) point {
-	return point{float64(l.x0 + floorStepX*slot), float64(floorTop + floorStepY*slot)}
+func (l *floorLayout) bw() float64      { return 0.65 * l.e } // half the belt's width
+func (l *floorLayout) pitch() float64   { return 2 * l.e }    // from one cube of a queue to the next
+func (l *floorLayout) hs() float64      { return 0.9 * l.e }  // half a station's length along the belt
+func (l *floorLayout) spurFar() float64 { return 2.4*l.e + float64(floorSide-1)*l.pitch() }
+
+// fp is the floor spot of a place on the belt or the spur.
+func (l *floorLayout) fp(p point) fpt {
+	q, _ := l.path.at(p.x)
+	q.v += p.y
+	return q
 }
 
-func (l *floorLayout) side(slot int) point {
-	b := l.belt(1 + slot)
-	return point{b.x + floorSideDX, b.y + floorSideDY}
+// xy is the dot of a floor spot z dots above the floor.
+func (l *floorLayout) xy(q fpt, z float64) (float64, float64) {
+	return 2 * (q.u + q.v), l.oy + q.u - q.v - z
 }
 
 // floorState is the Factory tab's own state: the repository filter and its dropdown, the
@@ -177,81 +273,101 @@ func floorOrder(place string) func(a, b floorTask) int {
 	}
 }
 
-// floorAlloc shares room belt slots between the stations in proportion to their demand
-// (Sainte-Lague), every station keeping at least one and none getting more than it needs.
-func floorAlloc(demand [4]int, room int) [4]int {
-	n := [4]int{1, 1, 1, 1}
-	for left := room - 4; left > 0; left-- {
-		best := -1
-		for i := range n {
-			if demand[i] > n[i] && (best < 0 || demand[i]*(2*n[best]+1) > demand[best]*(2*n[i]+1)) {
-				best = i
-			}
-		}
-		if best < 0 {
-			break
-		}
-		n[best]++
-	}
-	return n
-}
-
-// floorLayout places every shown task in a w x h scene: a cube in a slot (settled ones
-// stacked), or counted in its station's sign when its place has no slot left.
+// floorLayout lays the belt out for a w x h scene and places every shown task: a cube in a slot
+// of the queue before its station (the first in order nearest the station), settled ones
+// stacked on the dock pad, or counted in its station's sign when its place has no slot left.
 func (m *model) floorLayout(w, h int) *floorLayout {
-	tasks := m.floorTasks()
 	byPlace := map[string][]floorTask{}
 	repos := map[string]bool{}
-	for _, ft := range tasks {
+	l := &floorLayout{w: w, h: h, stn: map[string]float64{}, count: map[string]int{}, more: map[string]int{}, work: map[string]bool{}}
+	for _, ft := range m.floorTasks() {
 		p := floorPlace(ft.t.Phase)
 		byPlace[p] = append(byPlace[p], ft)
 		repos[ft.path] = true
+		l.work[p] = l.work[p] || ft.t.Session == "working"
 	}
-	l := &floorLayout{w: w, h: h, first: map[string]int{}, count: map[string]int{}, more: map[string]int{}, prefix: m.floorRepo() == "" && len(repos) > 1}
-	l.x0 = 20
-	if w >= 100 {
-		l.x0 = 24
+	l.prefix = m.floorRepo() == "" && len(repos) > 1
+	l.e = 3
+	switch {
+	case w >= 130:
+		l.e = 5
+	case w >= 100:
+		l.e = 4
 	}
-	if w >= 140 {
-		l.x0 = 30
+	e := l.e
+	r := 0.9 * e
+	// Seven legs along the two floor axes, a station at the end of the 1st, 3rd, 5th and 7th. The
+	// belt's length follows the width: it crosses the window and the dock stands inside the edge.
+	total := (float64(2*w) - 4 - 3.2*e) / 2
+	b := math.Max(2*r+0.2, 0.075*total)
+	a := math.Max(0, (total-3*b)/4.9)
+	l.path = newFloorPath([]float64{2 * a, b, a, b, a, b, 0.9 * a}, r)
+	for i, place := range floorStations {
+		l.stn[place] = l.path.legEnd[2*i] - l.hs()
 	}
-	var demand [4]int
-	for i, p := range floorStations {
-		demand[i] = len(byPlace[p])
+	l.stn["settled"] = l.path.total()
+	l.spur = 1.2 * e
+
+	// Vertically, the belt and the spur's far cube are centred in the scene.
+	minY, maxY := math.Inf(1), math.Inf(-1)
+	for _, q := range l.path.pts {
+		minY, maxY = math.Min(minY, q.u-q.v), math.Max(maxY, q.u-q.v)
 	}
-	demand[3] = (demand[3] + floorPile - 1) / floorPile
-	room := max(len(floorStations), min((h-floorTop-4)/floorStepY, (w-l.x0-27)/floorStepX)) // the dock's pallet takes the row under the last slot
-	n := floorAlloc(demand, room)
-	l.slots = 1
-	for i, p := range floorStations {
-		l.first[p] = l.slots
-		l.slots += n[i]
-		l.fill(p, byPlace[p], n[i], func(slot int) point { return l.belt(l.first[p] + slot) })
+	sp, _ := l.path.at(l.spur)
+	minY = math.Min(minY, sp.u-sp.v-l.spurFar()-3*e-2)
+	maxY += 2 * e
+	l.oy = math.Max(0, (float64(4*h)-(maxY-minY))/2-minY)
+
+	for _, p := range floorStations {
+		slots := []point{{l.stn[p], 0}}
+		if p != "settled" {
+			slots = l.slots(p)
+		}
+		l.fill(p, byPlace[p], slots)
 	}
-	l.sideN = min(max(1, len(byPlace["blocked"])), max(2, n[0]), max(1, (h-floorTop-floorSideDY-5)/floorStepY))
-	l.fill("blocked", byPlace["blocked"], l.sideN, l.side)
+	var side []point
+	for k := range floorSide {
+		side = append(side, point{l.spur, l.spurFar() - float64(k)*l.pitch()})
+	}
+	l.fill("blocked", byPlace["blocked"], side)
 	return l
 }
 
-// fill puts a place's tasks into its n slots, the nearest to the next station in the last
-// slot; settled ones stack floorPile high on a pallet before the next slot. Tasks beyond
-// the slots are counted in l.more.
-func (l *floorLayout) fill(place string, tasks []floorTask, n int, at func(slot int) point) {
+// slots are the places of a queue: as many cubes as fit between the previous station and this one.
+func (l *floorLayout) slots(place string) []point {
+	lo := l.spur + 1.2*l.e
+	for _, p := range floorStations {
+		if p == place {
+			break
+		}
+		lo = l.stn[p] + l.hs() + 1.0*l.e
+	}
+	var out []point
+	for s := l.stn[place] - l.hs() - 1.0*l.e; s >= lo-1e-9 || len(out) == 0; s -= l.pitch() {
+		out = append(out, point{s, 0})
+	}
+	return out
+}
+
+// fill puts a place's tasks into its slots, the first in order in the first slot; settled ones
+// stack floorPile high in their one slot. Tasks beyond the slots are counted in l.more.
+func (l *floorLayout) fill(place string, tasks []floorTask, slots []point) {
 	l.count[place] = len(tasks)
 	slices.SortFunc(tasks, floorOrder(place))
-	per := 1
+	shown := min(len(tasks), len(slots))
 	if place == "settled" {
-		per = floorPile
+		shown = min(len(tasks), floorPile)
 	}
-	shown := min(len(tasks), n*per)
 	l.more[place] = len(tasks) - shown
 	for i, ft := range tasks[:shown] {
-		slot, level := n-1-i/per, i%per
-		pt := at(slot)
-		pt.y -= float64(floorStepY * level)
-		c := floorCube{floorTask: ft, place: place, at: pt, level: level}
-		if level == 0 {
-			c.pile = min(per, shown-i) - 1
+		c := floorCube{floorTask: ft, place: place}
+		if place == "settled" {
+			c.at, c.level = slots[0], i
+			if i == 0 {
+				c.pile = shown - 1
+			}
+		} else {
+			c.at = slots[i]
 		}
 		l.cubes = append(l.cubes, c)
 	}
@@ -325,7 +441,7 @@ func (m *model) floorSync() {
 		old, ok := f.seen[k]
 		switch {
 		case !ok:
-			f.moves[k] = &floorMove{from: l.belt(0)}
+			f.moves[k] = &floorMove{from: point{}}
 		case old.at != now[k].at:
 			f.moves[k] = &floorMove{from: f.shown(k, old.at)}
 		}
@@ -335,7 +451,7 @@ func (m *model) floorSync() {
 			old := f.seen[k]
 			from := f.shown(k, old.at)
 			delete(f.moves, k)
-			f.gone = append(f.gone, &floorGone{ft: old.ft, from: from, to: point{from.x + 2*floorStepX, from.y + 2*floorStepY}})
+			f.gone = append(f.gone, &floorGone{ft: old.ft, from: from, to: point{from.x + 3*l.e, from.y}})
 		}
 	}
 	f.seen = now

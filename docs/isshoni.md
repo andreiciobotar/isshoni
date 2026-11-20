@@ -447,7 +447,7 @@ The pictures here and in the README are recordings of this repository's own fact
 
 <img src="../assets/tabs/agents.webp" alt="View 3, Agents: per agent type the dispatches, tokens, cost and duration at the median and the 90th percentile, as the range goes from 24 hours to all time">
 
-<img src="../assets/tabs/factory.gif" alt="View 4, Factory: an isometric factory floor with one cube per task riding a conveyor through the stations BUILD, REVIEW, MERGE and SHIPPED, blocked tasks parked on a siding, and a cube travelling to its next station when its phase changes">
+<img src="../assets/tabs/factory.gif" alt="View 4, Factory: an isometric factory floor in thin grey lines on a faint grid, one wireframe cube per task riding a winding conveyor through the stations BUILD, REVIEW, MERGE and SHIPPED, blocked tasks on a pad off a short spur, and a cube travelling to its next station when its phase changes">
 
 <img src="../assets/tabs/kaizen.webp" alt="View 5, Kaizen, its four pages in turn: Pulse, Flow, Anatomy, Board">
 
@@ -564,24 +564,30 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   into a group and a child row, a line or two lower; the cursor stays on its session.
 - **Agents:** per agent type: dispatches, models, tokens and cost, p50/p90 cost and
   durations, repeats, review loops, warnings.
-- **Factory:** an isometric factory floor, drawn from what `factory status --json`
-  reports for each repository seen in the range that has task worktrees. Every task is
-  one cube on a conveyor belt that runs from the intake chute at the upper left to the
-  lower right through the stations `BUILD`, `REVIEW`, `MERGE` and `SHIPPED`; each
-  station's sign gives its name and how many tasks it holds (`BUILD 3`). A task's phase
-  is its place: in motion on BUILD, in review on REVIEW, merged (not cleaned up) on
-  MERGE, settled on SHIPPED. A blocked task, and one whose phase the view does not know
-  (its label then shows the raw phase), stands on the `BLOCKED` siding beside BUILD,
-  labelled with what it waits on. Position is an order, not a measurement: BUILD cubes
-  stand by elapsed time against the limit (furthest along nearest REVIEW, tasks without
-  both last), the other places by slug. A cube takes the colour of its phase; a
-  spinner on it means its session is working, `▲` that it waits on you (a ready pull
-  request in review, or a task blocked on the human), heavy side edges that it is past
-  its time. Each cube has a label: the slug (with the repository name before it when
-  several repositories have tasks) and the elapsed time where there is room. The belt's
-  tread turns only while a shown task in motion has a working session; otherwise it stands
-  still. A place with more tasks than room has a sign that shows the full count and `· N more` for the tasks without a slot; SHIPPED stacks its cubes on a pallet, 3 high, before the next slot; a larger terminal shows more cubes and longer labels. When a
-  refresh changes a task's phase, its cube travels along the line to its new place over
+- **Factory:** an isometric factory floor in thin lines (braille dots) on a faint diamond
+  grid, drawn from what `factory status --json` reports for each repository seen in the
+  range that has task worktrees. A conveyor belt winds from the left edge to the right
+  through the stations `BUILD` (a block with a slot), `REVIEW` (a gantry), `MERGE` (a press)
+  and `SHIPPED` (a dock pad); each station's sign gives its name and how many tasks it holds
+  (`BUILD 3`), and `INTAKE` marks where new tasks come in. Every task is one wireframe cube,
+  queued on the belt before the station of its phase, the first in order nearest the station:
+  in motion before BUILD, in review before REVIEW, merged (not cleaned up) before MERGE,
+  settled stacked 3 high on the SHIPPED pad. A blocked task, and one whose phase the view
+  does not know (its label then shows the raw phase), stands on the `BLOCKED` pad at the end
+  of a short spur off the belt, with a red lamp. Position is an order, not a measurement:
+  BUILD cubes stand by elapsed time against the limit (furthest along nearest the station,
+  tasks without both last), the other places by slug. Grey is rest and green is work: a cube
+  whose session is working has a green outline, a lit top and a spinner, and its station a
+  green ring with arrowheads that turn, a green lamp, and a green centre line on the belt
+  leading to it; `▲` in yellow marks a cube that waits on you (a ready pull request in
+  review, or a task blocked on the human), red a blocked cube or one past its time, the
+  muted green of the merged colour a merged or settled one. Each cube has a label where
+  there is room: the slug (with the repository name before it when several repositories
+  have tasks) and the elapsed time; a label that would overlap a sign or a cube is left out.
+  The belt's tread and rings turn only while a shown task in motion has a working session;
+  otherwise the floor stands still. A place with more tasks than room has a sign that shows
+  the full count and `· N more` for the tasks without a slot; a larger terminal draws bigger
+  cubes, a longer belt and more slots. When a refresh changes a task's phase, its cube travels along the belt, round its corners, to its new place over
   about a second; a new task comes in at the intake, a task that is gone leaves from
   where it stood. A sign plate at the upper right names the repository (or `all
   repositories`) and holds the capacity meter: the tasks in motion against the cap

@@ -1,24 +1,24 @@
  Isshoni 1 ✉ ▲7 2 ≡ 3 Agent [4 Factory] 5 Kaizen 6 ◉ 7 ✿     24h [7d] 30d all ○ 
  Factory  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · 11:00:00   
-                  ╲▁▁▁▁▁▁╱  INTAKE               ╭─ all repositories ─────────╮ 
-                   ╲▒▒▒▒╱                        │ in motion ████████ 18/11+1 │ 
-               ╔═══╗     ╲╲ BUILD 10 · 6 more    ╰────────────────────────────╯ 
-               ║ ╲╲║┈┈┈┈◢░░░░◣ ─ alpha/quiet-refactor  4m12s                    
-               ║   ║╲   ▒▒⠋▓▓▓╲                                                 
-                     ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/slow-export  41m00s                  
-                       ╲╲┈┈┈▒▒⠋▓▓▓╲                                             
-    ● BLOCKED 8 · 4 more ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/login-flow  2h15m                
-                  ◢░░░░◣   ╲╲   █▒⠋▓▓█╲                                         
-                  ▒▒▒▓▓▓     ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/lost-its-lead  9h00m         
- delta-docs/paus… ◥▒▒▓◢░░░░◣   ╔═══╗▒▒▒▓▓▓╲ REVIEW 3 · 2 more                   
-                  ╌╌╌╌╌╌▒▓▓▓   ║ ╲╲║◥▒▒▓◢░░░░◣ ─ alpha/api-rate-limits  1h30m   
- delta-docs/paused-f… ◥▒▒▓◢░░░░║   ╔═══╗▒▒▲▓▓▓╲ MERGE 2 · 1 more                
-                      ╌╌╌╌╌╌▲▓▓▓   ║ ╲╲║◥▒▒▓◢░░░░◣ ─ alpha/old-experiment  1m01s
-    alpha/needs-an-answer ◥▒▒▓◢░░░░║   ╔═══╗▒▒▒▓▓▓╲ SHIPPED 1                   
-                          ╌╌╌╌╌╌▒▓▓▓   ║ ╲╲║◥▒▒▓◢░░░░◣ ─ alpha/release-notes    
- delta-docs/docs-after-review ◥▒▒▓▓◤   ║   ║╲   ▒▒▒▓▓▓╲                         
-                              ╌╌╌╌╌╌         ╲╲ ◥▒▒▓▓◤ ╲╲                       
-                                               ╲▀▀▀▀▀▀▀▀┈╲╲                     
+          BLOCKED 8 · 6 more                     ╭─ all repositories ─────────╮ 
+                                                 │ in motion ████████ 18/11+1 │ 
+       ⣠⣤⣤⣤⡀  ⢀⡠⠔⠒⠤⣀                             ╰────────────────────────────╯ 
+       ⠙⠛⡟⢛⣁  ⣏⠶⠶⡩⠕⠪⣇⡀                                                          
+INTAKE  ⡶⣋⣁⠤⢛⡻⡧⣀ ⡇⢀⣠⣧⠾⠃ ─ delta-docs/docs-after-review · design-review-of-docs  
+      ⣀⠤⡗⠉▲⡏⠁ ⡇⣀⣭⠿⠛⠉                                                            
+⣀⡠⠤⣀⡠⠼⣳⢦⣍⡒⠤⣧⣴⠾⠛⠉─ alpha/needs-an-answer  10m40s                                 
+⡈⠑⠂ ⠉⠒⠤⣉⡺⠝⠛⣉⢄⡀   BUILD 10 · 9 more                                              
+⠈⠑⠢⢄⡈⠑⢂⡠⠝⡶⢭⣀ ⣈⠵⡆  ⣀⡀      REVIEW 3 · 2 more                                     
+    ⠈⠛⠣⢄⡈⡗⠂⣨⣯⡖⣶⣟⣛⣉⠉⠉⠓⠲⠦⣤⣀⡠ ⣀⠤⢄⡀ ─ alpha/api-rate-limits  1h30m                  
+        ⠈⡽⠻⢦⡷⣟⡯⠒⠉⠓⠭⢖⡠⠔⠊⢹⠙⢵⣯⢄▲⣀⠬⢳  ⢀⡠⠔⢺⡲⠄     ⢀     MERGE 2 · 1 more             
+        ⠰⡅⣴⣶⣿⣧⠈⠑⢦⠔⠊⠁⢀⡠⢴⠮⠔⢺⣹⠉⢹⠉⠉⣹⣶⢪⣥⡔⠊⢹    ⢠⣔⠊⠁⠉⢒⣤ ⢀⣀⠴⠤⣀⡀                        
+         ⠙⢾⣍⡏⠁⠉⠒⢼⠤⠲⣍⣁⣠⣃⣀⣀⣴⣋⣵⣾⣲⣍⣸ ⠁ ⠈⠑⠪⢄⡀ ⢀⣸⠤⠭⢶⢮⡥⢼⣊⡁    ⡎⣑⣦           SHIPPED 1  
+         ⠈⠉⠉⠉⠒⠒⠤⠤⠤⠤⠤⠤⠒⠛⠝⠉  ⠻⠤⡧⠜⠸⠑⠢⢄⡀  ⡠⠋⠉⠁⠈⠒⠤⣸⣻⠶⣮⣀⠈⠑⢢⣤⡶⠟⠉                       
+                             ⠃     ⠈⠉⠒⠓⠦⠤⠒⠒⠒⢽⠓⡖⢻⠖⡯⣛⠟⠋⠁⠈⠑⡦⠤⠖⠒⠉⠉⠉⠉⡩⠋⠑⠒⠤⣀  ⣀⢄⡀     
+            alpha/old-experiment  1m01s ─   ⠈⠉⡏⠉ ⠁ ⠉⠲⠤⣠⣊⣀⣀⣀⣀⣠⠤⠖⠚⠤⣀    ⡿⣟⡤⠢⣬⣵⡆   
+                                                                  ⣉⣒⣤⡒⡏ ⠈⡏  ⡏⢒⣤ 
+                                    alpha/release-notes  50m00s ─⠘⠦⢼⠬⠋⠛⠷⣦⣧⣶⠿⠚⠉⠁ 
+                                                                   ⠘    ⠈⠉      
                                                                                 
  ⚠ gamma: not inside a git repository                                           
  / filter  ·  r range  ·  tab next view  ·  ? help  ·  q quit                   

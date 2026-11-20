@@ -2,29 +2,29 @@
  Factory  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                 
  ╭─ repository ───────────────────────╮                       ╭─ all repositories ────────────────╮ 
  │   ✓ all                            │                       │ in motion ███████████████ 18/11+1 │ 
- │ ›   alpha                          │0 · 4 more             ╰───────────────────────────────────╯ 
- │     beta-é日本語                   │pha/rate-limit-docs                                          
+ │ ›   alpha                          │                       ╰───────────────────────────────────╯ 
+ │     beta-é日本語                   │                                                             
  │     gamma                          │                                                             
- │     delta-docs                     │─ alpha/stacked-on-login  1m35s                              
- │ ↑↓ move · enter choose · esc close │                                                             
- ╰────────────────────────────────────╯░░◣ ─ alpha/quiet-refactor  4m12s                            
-                      ◢░░░░◣   ╲╲   ▒▒⠋▓▓▓╲                                                         
-                      ▒▒▲▓▓▓     ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/slow-export  41m00s                          
- delta-docs/slow-imp… ◥▒▒▓◢░░░░◣   ╲╲   ▒▒⠋▓▓▓╲                                                     
-                      ╌╌╌╌╌╌▒▓▓▓     ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/login-flow  2h15m                        
- delta-docs/pick-a-theme… ◥▒▒▓◢░░░░◣   ╲╲┈┈┈█▒⠋▓▓█╲                                                 
-                          ╌╌╌╌╌╌▒▓▓▓     ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/lost-its-lead  9h00m                 
- delta-docs/paused-stale · l… ◥▒▒▓◢░░░░◣   ╔═══╗▒▒▒▓▓▓╲ REVIEW 3 · 1 more                           
-                              ╌╌╌╌╌╌▒▓▓▓   ║ ╲╲║◥▒▒▓◢░░░░◣ ─ delta-docs/design-review               
- delta-docs/paused-fresh · login… ◥▒▒▓◢░░░░║   ║╲   ▒▒▲▓▓▓╲                                         
-                                  ╌╌╌╌╌╌▲▓▓▓     ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/api-rate-limits  1h30m       
-                alpha/needs-an-answer ◥▒▒▓◢░░░░◣   ╔═══╗▒▒▲▓▓▓╲ MERGE 2 · 1 more                    
-                                      ╌╌╌╌╌╌▒▓▓▓   ║ ╲╲║◥▒▒▓◢░░░░◣ ─ alpha/old-experiment  1m01s    
- delta-docs/docs-after-review · design-r… ◥▒▒▓▓◤   ║   ╔═══╗▒▒▒▓▓▓╲ SHIPPED 1                       
-                                          ╌╌╌╌╌╌       ║ ╲╲║◥▒▒▓◢░░░░◣ ─ alpha/release-notes  50m00s
-                                                       ║   ║╲   ▒▒▒▓▓▓╲                             
-                                                             ╲╲ ◥▒▒▓▓◤ ╲╲                           
-                                                               ╲▀▀▀▀▀▀▀▀┈╲╲                         
+ │     delta-docs                     │                                                             
+ │ ↑↓ move · enter choose · esc close │docs/docs-after-review · design-review-of-docs               
+ ╰────────────────────────────────────╯                                                             
+  ⢀    ⣰⢯⣄⠘⠤⣀ ⢸ ⢀⣠⢼⡲⠝⠊⠁─ alpha/needs-an-answer  10m40s                                              
+⠴⣊⠁⠉⠒⠶⣉⠈⠒⠭⣛⠵⣢⢍⢾⡺⠝⠊⠁  BUILD 10 · 9 more                                                              
+⣀ ⠉    ⠉⠒⢤⣠⠝⠋⠉⠉⠒⠤⣀─ alpha/lost-its-lead  9h00m                                                      
+ ⠉⠒⠤⣀ ⠉⠒⠄⢸⣉⠿⠶⣤⣠⠔⠊⢹⣀⣀⣀⣤⣒⣢⣄⡀        REVIEW 3 · 2 more                                                 
+     ⠉⠒⠤⣒⢹ ⠐⣤⣼⣖⡋⣛⢽⣒⣉⢄⡀  ⠈⠉⠙⠶⣢⢤⡤⠤⣄⠤⠢⢄⡀         ⢀             ─ alpha/old-experiment  1m01s           
+         ⠉⡿⠾⣤⣸⣶⡝⠊⣁ ⠉⠒⠭⢕⠦ ⣀⠤⠚⢹ ⡿⢝⣄   ⣈⠵⡆   ⢀⡠⠔⠊⢹⡩⠖       MERGE 2 · 1 more                            
+         ⣸ ⢀⣠⣽⣖⣌⠑⠢⢄⡀ ⣀⠤⠒⠉  ⢀⠼ ⣇⡠⠬▲⡖⠛⠒⠒⣧⡤⢔⣊⢁⡠⠔⠊⢹     ⣀⠤⠒⠉⠑⠢⢄⡀   ⣀⠤⠒⠢⢄⡀                               
+         ⠸⡀⢷⣿⣿⣿⡿⣀  ⠈⡏  ⢀⡠⠔⠊⠉⠉⠫⡣⢄⣠⠃⡇ ⣀⠤⢻⠉⠒⠊⢉⡲⠤⣀⠸    ⢸⠑⠢⢄⡀⣀⠤⢒⣹⠤⠒⠉     ⢨⠑⠢⢄⡀                           
+          ⠉⠢⣧⣸   ⠉⠒⠤⡧⠔⠺⠥⣀⣀⣀⣀⣀⣀⣸⣖⣩⠵⠗⡛⠳⣦⢼⣀⠤⠚⠁   ⠉⠒⢤⣀⣀⣼⠔⠒⠊⢹⢹⡯⣉⢹⠙⠒⠢⠤⣀  ⢀⣸⣔⠶⠛⠁              SHIPPED 1    
+          ⠈⠉⠁⠉⠑⠒⠤⠤⢄⣀⣀⣀⣀⣀⠤⠤⠤⠛⢫⠋⠁ ⠈⠒⠤⡧⠔⠋⠸⠈⠑⠢⢄⡀       ⠉⠳⢦⢄⣸⣀⣬⡓⠫⢶⡤⣀⢀⣠⣽⠾⠷⣉      ⣀⣀⣀⣀⣀⣀⣀⡀                 
+                                   ⠃       ⠈⠙⠒⠦⠤⠤⠤⠤⠤⠤⠤⣟⠋⢩⠉⢛⡕⢺⣬⡕⠛⠉    ⠉⠲⠤⠴⠾⡉⠁      ⠈⠉⠑⠢⢄⡀ ⢀⡠⠔⠤⣀      
+                                                      ⠈⠉⢺⠊⠉ ⠈ ⠈⠑⠢⢄⡀       ⠈⠑⠢⣤⠤⠤⢄⡀    ⢀⣸⠿⣣⢤⠒⠢⢄⡩⢶    
+                                                        ⠈         ⠈⠉⠓⠒⠒⠒⠒⠒⠒⠋⠉    ⠈⠑⠢⢔⣊⡡⢺⠉ ⠉⢲⠊⠁⠈⢹⠢⢄⡀ 
+                                                                                 ⢠⠖⠊⡑⠛⣶⣜⡤⣀ ⢸ ⢀⡠⣜⣤⠶⠛ 
+                                                                                 ⠈⠓⠒⡗⠊⠁⠈⠙⠳⢯⣞⣮⠷⠛⠉    
+                                                       alpha/release-notes  50m00s ─⠃      ⠈        
+                                                                                                    
                                                                                                     
  ⚠ gamma: not inside a git repository                                                               
  ↑↓/jk move  ·  enter choose  ·  esc close                                                          
