@@ -64,7 +64,7 @@ func TestInboxConfirmOffersAlwaysOnlyForTheOptionThatMayStand(t *testing.T) {
 		t.Fatalf("h from Accept goes to Reject: %d", m.inbox.mark)
 	}
 	send(m, "enter")
-	if m.inbox.pick != 0 {
+	if m.inbox.pick != "" {
 		t.Fatal("enter on Reject unpicks")
 	}
 }
@@ -178,17 +178,19 @@ func TestInboxReadOnlyRefusesToSwitchAnAlwaysOff(t *testing.T) {
 		t.Fatalf("A in a read-only dashboard: %v, %+v, %+v", got, m.inbox, m.toast)
 	}
 	send(m, "j", "1")
-	if m.inbox.pick != 0 || readCalls(calls) != "" {
+	if m.inbox.pick != "" || readCalls(calls) != "" {
 		t.Fatalf("a read-only dashboard opens no confirm, so Always cannot run: %+v", m.inbox)
 	}
 }
 
 func TestInboxFootersNameAlwaysKeys(t *testing.T) {
 	m, _ := splitModel(t)
-	if out := plain(m); !strings.Contains(strings.Split(out, "\n")[len(strings.Split(out, "\n"))-1], "A switch an always off") {
+	m.w = 120
+	send(m, "j") // the split card: the footer has room for A beside the base's keys
+	if out := plain(m); !strings.Contains(strings.Split(out, "\n")[len(strings.Split(out, "\n"))-1], "A always off") {
 		t.Fatalf("the footer names A while the line shows:\n%s", out)
 	}
-	send(m, "j", "1")
+	send(m, "1")
 	if out := plain(m); !strings.Contains(out, "a always") {
 		t.Fatalf("the confirm footer names a:\n%s", out)
 	}
@@ -202,24 +204,24 @@ func TestInboxFootersNameAlwaysKeys(t *testing.T) {
 	}
 	m.w, m.h = 100, 60
 	send(m, "esc", "?")
-	if out := plain(m); !strings.Contains(out, "switch an always off") || !strings.Contains(out, "│ a    ") {
+	if out := plain(m); !strings.Contains(out, "always off") || !strings.Contains(out, "│ a    ") {
 		t.Fatalf("the help names a and A:\n%s", out)
 	}
 }
 
 func TestInboxPickedCardsAreNotCountedInTheBadge(t *testing.T) {
 	m := inboxModel(100, 30)
-	want := " Inbox ▲7 "
+	want := " Inbox ▲6 "
 	repos := inboxRepos()
 	repos[0].st.Decisions = append(repos[0].st.Decisions, data.FactoryDecision{ID: idSplit, Slug: "needs-an-answer", Kind: "split", Always: 1, Picked: 1,
 		Options: []string{"a", "b"}, TS: fakeNow})
 	setInbox(m, repos...)
-	if !strings.Contains(plain(m), "▲7") {
+	if !strings.Contains(plain(m), "▲6") {
 		t.Fatalf("a task with a picked and an open card still counts:\n%s", plain(m))
 	}
 	repos[0].st.Decisions = repos[0].st.Decisions[1:] // only the picked card remains on that task
 	setInbox(m, repos...)
-	if out := plain(m); !strings.Contains(out, "▲7") {
+	if out := plain(m); !strings.Contains(out, "▲6") {
 		t.Fatalf("a blocked task whose only card is picked still counts (%s):\n%s", want, out)
 	}
 	if out := plain(m); !strings.Contains(out, "answer question") {

@@ -139,6 +139,12 @@ class OpenRuleTests(Splits):
         self.assertEqual(self.as_human("decision", "answer", rid, "2")[0], 0)
         self.assertEqual((self.listed(), len(self.outbox())), ([], 1))
 
+    def test_a_split_is_never_left_to_the_lead_or_the_site_manager(self):
+        rid = self.posted_split()
+        for to in ("lead", "site-manager"):
+            self.assertEqual(self.as_human("decision", "answer", rid, to)[2], "factory: decision answer: a decision of kind split is the human's alone\n")
+        self.assertEqual([d["id"] for d in self.listed()], [rid])
+
     def test_a_started_split_is_gone(self):
         rid = self.posted_split()
         self.as_human("decision", "answer", rid, "1")
@@ -325,7 +331,12 @@ class HistoryTests(Splits):
         self.as_human("decision", "always", "split", "off")
         self.assertIn(("", "human", "asks again on split"), self.entries())
 
-    def test_an_answer_that_is_not_a_number_is_no_entry_and_no_crash(self):
+    def test_a_non_numeric_answer_is_its_own_entry_beside_a_split_and_breaks_neither(self):
         rid = self.posted()
         self.seed("decisions", [{"ts": iso(NOW), "repo": ROOT, "id": rid, "slug": "demo-task", "choice": "lead"}])
-        self.assertEqual(self.entries(), [])
+        split = self.posted_split()
+        self.assertEqual(self.entries(), [("demo-task", "human", "question: left to the lead")])
+        self.assertEqual([d["id"] for d in self.listed()], [split])
+        self.assertEqual(self.as_human("decision", "answer", split, "2")[0], 0)
+        self.assertEqual(self.listed(), [])
+        self.assertIn(("demo-task", "human", "split: picked 2: Do not start it"), self.entries())

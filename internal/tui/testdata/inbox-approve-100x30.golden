@@ -1,13 +1,13 @@
- Isshoni [1 ✉ ▲7] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
+ Isshoni [1 ✉ ▲6] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
  Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                   
 REPO          TASK            ASK    AGE │ demo-import · approve · approval stale 2h ago            
 alpha       ? needs-an-answer Shou…  45m │ alpha                                                    
             ⑂ demo-task       The …  20m │                                                          
           > ◆ demo-import     stale   2h │ its head changed after the approval; a fresh approval is 
             ◆ demo-export     new    25m │ needed (the lander stopped it at 8c1f2a9)                
-delta-do…   ▲ stuck-on-keys   git …   1m │                                                          
-                                         │ https://github.com/example/demo/pull/9                   
-                                         │                                                          
+delta-do…   … wide-ask        Whic…  30m │                                                          
+            ? slow-import     The …  20m │ https://github.com/example/demo/pull/9                   
+            ▲ stuck-on-keys   git …   1m │                                                          
                                          │ Approve on GitHub: an approving review, or a comment     
                                          │ reading lgtm.                                            
  Always   split → start it · 4 times                                                                
@@ -24,7 +24,7 @@ delta-do…   ▲ stuck-on-keys   git …   1m │
  06:00  demo-docs    lead          Docs stay in one file until a second reader asks for more. Long… 
  … 3 older · H shows them                                                                           
                                                                                                     
- ▲ Needs you  5                                                                                     
- ◆ alpha       api-rate-limits  review PR          3h00m  #42 https://github.com/o/alpha/pull/42    
- +46 more lines · ↓ to scroll                                                                       
- ↑↓/jk move  ·  A switch an always off  ·  c edit cap  ·  H all history  ·  ? help  ·  q quit       
+ ▲ Needs you  3                                                                                     
+ ◆ alpha       api-rate-limits  review PR         3h00m  #42 https://github.com/o/alpha/pull/42     
+ +44 more lines · ↓ to scroll                                                                       
+ ↑↓/jk move  ·  c edit cap  ·  H all history  ·  A always off  ·  ? help  ·  q quit                 

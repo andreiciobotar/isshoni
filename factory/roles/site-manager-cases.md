@@ -96,18 +96,18 @@ How to use a look: you are given facts and what changed since the last look. Mos
 **Score (to 2026-11-15):** fired 4; escalated 3 (acted 0, ignored 3, no outcome 0); suppressed 1; missed 0.
 
 ## overrun
-**What:** A lead over its limit, or not converging, asks for time with `factory overrun`. The firing's `detail` is its ask; `runs`, `extended_minutes`, `extension_left_minutes` and `limit_left_minutes` (negative when the limit is past) are the evidence.
+**What:** A lead over its limit, or not converging, asks for time with `factory overrun`. The firing's `detail` is its ask; `runs`, `extended_minutes` (added so far) and `limit_left_minutes` (negative when the limit is past) are the evidence.
 **Why it matters:** An ask held back stops a lead that is nearly done; time given for nothing costs a build run.
-**What it has looked like:** The script fires it on every tick, with no threshold. It fired 2 times in two days, both extended. `pulse-band-visual` is case 4 below. An ask whose task is handed over or settled when the script reads it never reaches you: the script closes it as moot (`suppressed`, `by: watch`). An ask you are given is from a lead still at work, or reopened; one you leave undecided the script escalates to the human.
-**A good call:** Decide by the principles and cases below: `extended` with `minutes`, `paused` with `waits_on` `["human"]`, or `escalated` to the dispatcher. The script tells the lead and the dispatcher about `extended` and `paused`; you message nobody for them.
+**What it has looked like:** The script fires it on every tick, with no threshold. It fired 2 times in two days, both extended. `pulse-band-visual` is case 4 below. An ask whose task is handed over or settled when the script reads it never reaches you: the script closes it as moot (`suppressed`, `by: watch`). An ask you are given is from a lead still at work, or reopened; one you leave undecided the script extends and puts in the human's inbox with no recommendation. Your decision is a recommendation: the task runs on and the human may overrule it from the inbox.
+**A good call:** A recommendation, continue or stop; nothing waits on the human. Decide by the principles and cases below: `extended` with `minutes` recommends continuing, `paused` with `waits_on` `["human"]` (and `recommend` 2, 3 or 4) recommends stopping. Either puts your `reason` (at most 60 words) in the human's inbox as a card while the task runs on; a stop is paused by the script only if the human has not answered in time. Stop is for work that is not converging, or money going on runs with nothing to show. The script tells the lead, not the dispatcher; you message nobody for them.
 - Time is given to finish, not to start. What is left decides, not how far over the task is: proven work with review, landing, assessment or hand-over left is finishing; a design still moving is not.
 - Money spent with nothing to show is the signal. Runs that end without a hand-over spend without progress: find why before giving more time.
-- The cause decides who acts. A cause the lead can remove gets the time and the instruction. A cause only the human can remove (a permission, a push, a direction) gets a pause at once: more time cannot fix it.
+- The cause decides who acts. A cause the lead can remove gets the time and the instruction. A cause only the human can remove (a permission, a push, a direction) gets a stop recommendation at once: more time cannot fix it.
 - A change of direction from the human or the dispatcher is new work, not the lead's overrun: extend for it.
 - Give the time the remaining steps need and say what it is for. A second ask for the same reason is not the same decision: something did not go as said.
 - Asking must cost less than the work left. When little is left, decide fast and extend.
-- When you cannot tell, pass it to the human with what you found. A pause costs the human a minute; a wrong extension costs a build run.
-- `extension_left_minutes` is the human's ceiling. What does not fit under it is the human's decision: escalate.
+- When you cannot tell, pass it to the human with what you found. A recommendation to stop costs the human a minute; a wrong extension costs a build run.
+- One extension is at most `limits.extension_minutes`. What needs more is the human's decision: recommend a stop.
 
 **Score (to 2026-11-15):** fired 2; extended 2 (kept 1, overran 1, no outcome 0); escalated 0 (acted 0, ignored 0, no outcome 0); suppressed 0; missed 0.
 Extensions decided before the limit counted from the decision (records without `from`) were scored against a limit counted from the old limit: 15 of them up to 2026-11-16T19:44Z, of which 2 `overran` would be `kept`; they are not counted in the score.
@@ -119,6 +119,13 @@ Extensions decided before the limit counted from the decision (records without `
 4. `pulse-band-visual` (2026-11-15). The dispatcher redirected it to a second layout and extended 30 min; then review went round again and six build runs cost 16.62 USD, three of them ending with no hand-over. Decided late, by message: no seventh run. Outcome: handed over on the sixth. Lesson: the first extension was right (a redirect); after it, runs ending with nothing were the signal, and the decision should have come at the second such run, not the sixth: tell the lead the cause (case 6) or pause.
 5. `lander-agent-file-current` (2026-11-15). Fix proven; two build runs ended early; then its own landing was refused by the fault it fixes. Decided: extended to a fixed time. Outcome: ended blocked, needing the human to push. Lesson: the extension bought nothing: once the cause is a refusal only the human can lift, pause for the human at once.
 6. Known fault (open, outbox faec7502cc7a). A headless build run that ends a turn to wait for a background subagent or command is forced to answer at once and files `stopped`, often with no reason or `ended without an answer`, after a few minutes and a few dollars; the work it started is lost. About eight runs on three tasks on 2026-11-15. Recognise it: a `stopped` run with no reason, short, whose transcript ends waiting on a background dispatch. Decided since: a run told to keep every dispatch in the foreground finished. So on the first such run tell the lead to start the next run with a note saying that; when runs keep ending this way after the lead was told, pause for the human.
+
+## decision
+**What:** The human left an inbox decision of a lead's to you. The firing's `detail` is the ask, its numbered options and the lead's recommendation; the task is still `blocked` on the human.
+**Why it matters:** The human handed it over to save a minute; a wrong pick costs the lead a build run, a decision returned for nothing costs the human that minute.
+**What it has looked like:** New, never fired.
+**A good call:** Read the task's row and transcript before you decide. `picked` with the `option` when the evidence favours one option, and the `reason` says which evidence. `returned` when the choice turns on something only the human knows or wants (scope, taste, a risk to accept, a permission), or when no option fits. You message nobody: the script tells the lead of a pick.
+**Score (to 2026-11-15):** fired 0.
 
 ## run-stopped
 **What:** A build run ended `stopped` on a task still `working`. The firing names its reason and how many of the task's runs ended `stopped`, with their cost; the row's `runs` list them.

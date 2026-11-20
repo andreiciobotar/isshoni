@@ -1,15 +1,18 @@
- Isshoni [1 ✉ ▲7] 2 ≡ 3 Agent 4 Factory 5 Kaizen 6 ◉ 7 ✿     24h [7d] 30d all ○ 
+ Isshoni [1 ✉ ▲6] 2 ≡ 3 Agent 4 Factory 5 Kaizen 6 ◉ 7 ✿     24h [7d] 30d all ○ 
  Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · 11:00:00     
 REPO        TASK             AGE │ needs-an-answer · question · asked 45m ago   
 alpha   > ? needs-an-answer  45m │ alpha · blocked 45m00s · PR example.com/des… 
           ⑂ demo-task        20m │                                              
           ◆ demo-import       2h │ Should the export keep the legacy column     
           ◆ demo-export      25m │ order, or switch to the new one now?         
-delta-…   ▲ stuck-on-keys     1m │ Switching breaks two downstream readers.     
-                                 │                                              
-                                 │ 1  Keep the legacy order  (recommended)      
+delta-…   … wide-ask         30m │ Switching breaks two downstream readers.     
+          ? slow-import      20m │                                              
+          ▲ stuck-on-keys     1m │ 1  Keep the legacy order  (recommended)      
                                  │ 2  Switch now and update both readers        
                                  │ 3  Keep legacy now, switch next release      
+                                 │                                              
+                                 │ L leave it to the lead · S to the site       
+                                 │ manager                                      
  Always   split → start it · 4 times                                            
                                                                                 
  History                                                                        
@@ -17,8 +20,5 @@ delta-…   ▲ stuck-on-keys     1m │ Switching breaks two downstream readers
  10:55  demo-task    site manager  extended 20 min to 11:05Z: landing left      
  10:48  demo-export  lead          handed over: https://github.com/example/dem… 
  10:30  demo-import  human         question: picked 2: Add retry now            
- 10:23  demo-import  lead          Retry lives in the importer, not the queue.… 
- 10:10  demo-sync    site manager  closed: its pull request merged and the wor… 
- 09:00  demo-sync    lead          handed over: https://github.com/example/dem… 
- +57 more lines · ↓ to scroll                                                   
- ↑↓/jk move  ·  1–3 pick an option  ·  ? help  ·  q quit                        
+ +56 more lines · ↓ to scroll                                                   
+ ↑↓/jk move  ·  1–3 pick an option  ·  c edit cap  ·  ? help  ·  q quit         

@@ -1,13 +1,13 @@
- Isshoni [1 ✉ ▲7] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
+ Isshoni [1 ✉ ▲6] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
  Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                   
 REPO          TASK            ASK    AGE │ demo-task · ⑂ split · asked 20m ago                      
 alpha       ? needs-an-answer Shou…  45m │ alpha                                                    
           > ⑂ demo-task       The …  20m │                                                          
             ◆ demo-import     stale   2h │ The importer's retry is separable: it needs the queue    
             ◆ demo-export     new    25m │ change first.                                            
-delta-do…   ▲ stuck-on-keys   git …   1m │ its parent demo-task was closed: start it or not is      
-                                         │ yours                                                    
-                                         │                                                          
+delta-do…   … wide-ask        Whic…  30m │ its parent demo-task was closed: start it or not is      
+            ? slow-import     The …  20m │ yours                                                    
+            ▲ stuck-on-keys   git …   1m │                                                          
                                          │ [1] Start demo-retry                                     
                                          │ 2  Do not start it                                       
                                          │                                                          
@@ -26,5 +26,5 @@ delta-do…   ▲ stuck-on-keys   git …   1m │ its parent demo-task was clos
  06:00  demo-docs    lead          Docs stay in one file until a second reader asks for more. Long… 
  … 3 older · H shows them                                                                           
                                                                                                     
- +48 more lines · ↓ to scroll                                                                       
+ +46 more lines · ↓ to scroll                                                                       
  enter do the marked one  ·  ←→/hl mark a button  ·  y n accept · reject  ·  a always               

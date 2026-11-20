@@ -1311,7 +1311,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.capKey(msg)
 	case m.pick != nil:
 		return m.pickKey(msg)
-	case m.view == viewInbox && m.inbox.pick != 0 && !m.help:
+	case m.view == viewInbox && m.inbox.pick != "" && !m.help:
 		return m.confirmKey(msg)
 	case m.view == viewInbox && m.inbox.always && !m.help:
 		return m.alwaysKey(msg)
@@ -1337,8 +1337,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.switchView(m.cycle(1))
 	case key.Matches(msg, keys.Prev):
 		return m.switchView(m.cycle(-1))
-	case m.view == viewInbox && m.pickable(msg) > 0:
-		return m.pickOption(m.pickable(msg))
+	case m.view == viewInbox && m.choiceOf(msg) != "":
+		return m.pickChoice(m.choiceOf(msg))
 	case m.view == viewInbox && key.Matches(msg, keys.History):
 		m.inbox.history = !m.inbox.history
 	case m.view == viewInbox && key.Matches(msg, keys.AlwaysOff):
@@ -1496,7 +1496,7 @@ func (m *model) filterKey(msg tea.KeyPressMsg) tea.Cmd {
 func (m *model) switchView(v viewID) tea.Cmd {
 	m.view, m.zoom, m.detailOnly = v, false, false
 	m.fixScroll()
-	m.inbox.pick, m.inbox.always = 0, false
+	m.inbox.pick, m.inbox.always = "", false
 	switch v {
 	case viewFactory, viewInbox:
 		return m.refreshFactory(factoryFresh)
