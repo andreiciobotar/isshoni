@@ -422,6 +422,9 @@ func (a *floorArt) labelLeft(x, y int, ps []lpiece) {
 	for room < x+1 && a.free(x-room, y) {
 		room++
 	}
+	if room <= x { // stopped by something drawn: keep one clear column before it
+		room--
+	}
 	if room < 8 {
 		return
 	}
