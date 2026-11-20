@@ -17,7 +17,7 @@ CHECKS = {"read": "mcp__metrics__query: errors in the last 10m", "fine": "0 erro
 EVERY = 600
 SERVER = {"type": "stdio", "command": "/bin/true"}
 OPS_RUN = ("claude", "-p", "--model", "sonnet", "--agents")
-COURIER = ("claude", "-p", "--model", "haiku")
+COURIER = ("claude", "-p", "-n", "factory-courier", "--model", "haiku")  # pins the courier's argv
 
 
 class OpsHarness(SchedHarness):
@@ -80,7 +80,7 @@ class OpsHarness(SchedHarness):
         return [c for c in self.calls if tuple(c[:5]) == OPS_RUN]
 
     def courier_lines(self):
-        return [c[-1] for c in self.calls if tuple(c[:4]) == COURIER]
+        return [c[-1] for c in self.calls if tuple(c[:len(COURIER)]) == COURIER]
 
 
 class StartTests(OpsHarness):

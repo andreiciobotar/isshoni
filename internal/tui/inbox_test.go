@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"isshoni/internal/data"
 )
@@ -54,9 +56,9 @@ func noticeRepos() []factoryRepo {
 	})
 	st.Standing = []data.FactoryStanding{{Kind: "split", Label: "start it", On: true, Uses: 4}}
 	st.Approvals = data.FactoryApprovals{AsOf: ago(2 * time.Minute), Items: []data.FactoryApproval{
-		{Slug: "demo-export", Number: 12, URL: "https://github.com/example/demo/pull/12", Why: "new", Since: ago(25 * time.Minute)},
 		{Slug: "demo-import", Number: 9, URL: "https://github.com/example/demo/pull/9", Why: "stale", Since: ago(2 * time.Hour),
 			Text: "its head changed after the approval; a fresh approval is needed (the lander stopped it at 8c1f2a9)"},
+		{Slug: "demo-export", Number: 12, URL: "https://github.com/example/demo/pull/12", Why: "new", Since: ago(25 * time.Minute)},
 	}}
 	st.History = []data.FactoryHistory{
 		{TS: ago(5 * time.Minute), Slug: "demo-task", By: "site-manager", Text: "extended 20 min to 11:05Z: landing left"},
@@ -140,6 +142,7 @@ func TestGoldenInbox(t *testing.T) {
 	}{
 		{"inbox-140x40", 140, 40, func(m *model) { setInbox(m, noticeRepos()...) }},
 		{"inbox-100x30", 100, 30, func(m *model) { setInbox(m, noticeRepos()...) }},
+		{"inbox-approve-100x30", 100, 30, func(m *model) { setInbox(m, noticeRepos()...); onApprove(m, 9) }},
 		{"inbox-80x24", 80, 24, func(m *model) { setInbox(m, noticeRepos()...) }},
 		{"inbox-history-100x30", 100, 30, func(m *model) { setInbox(m, noticeRepos()...); send(m, "H") }},
 		{"inbox-confirm-100x30", 100, 30, func(m *model) { setInbox(m, inboxRepos()...); send(m, "2") }},
@@ -159,16 +162,40 @@ func TestGoldenInbox(t *testing.T) {
 func TestInboxShowsTheCardsOverTheFactoryLines(t *testing.T) {
 	out := plain(inboxModel(140, 40))
 	for _, want := range []string{
-		"▸ needs-an-answer · question · 45m", "Should the export keep the legacy column order",
+		"> ? needs-an-answer", "  ▲ stuck-on-keys", "REPO", "TASK", "AGE", "│",
+		"needs-an-answer · question · asked 45m ago", "Should the export keep the legacy column order",
 		"1  Keep the legacy order  (recommended)", "2  Switch now and update both readers",
-		"  stuck-on-keys · blocked · 1m", "1  Done, carry on", "worktree cap", "delta-docs", "SLUG",
+		"worktree cap", "delta-docs", "SLUG",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("inbox lacks %q:\n%s", want, out)
 		}
 	}
-	if strings.Index(out, "needs-an-answer · question") > strings.Index(out, "worktree cap") {
-		t.Error("the cards come first")
+	if strings.Index(out, "TASK") > strings.Index(out, "worktree cap") {
+		t.Error("the panes come first")
+	}
+}
+
+func TestInboxMessagePaneFollowsTheCursor(t *testing.T) {
+	calls, _ := answerScript(t)
+	m, _, delta := answerModel(t)
+	send(m, "j")
+	out := plain(m)
+	for _, want := range []string{"stuck-on-keys · blocked · asked 1m ago", "git push is refused", "1  Done, carry on", "2  Stop the task"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("after j the message lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Should the export keep") {
+		t.Errorf("after j the first decision's ask is gone:\n%s", out)
+	}
+	send(m, "1")
+	msgs := upd(m, press("y"))
+	if got := only[answerMsg](msgs); len(got) != 1 || got[0].err != nil {
+		t.Fatalf("%v", msgs)
+	}
+	if want := fmt.Sprintf("%s decision answer %s 1\n", delta, idBlocked); readCalls(calls) != want {
+		t.Errorf("script ran as %q, want %q", readCalls(calls), want)
 	}
 }
 
@@ -232,12 +259,12 @@ func TestInboxIsAFactoryPage(t *testing.T) {
 	}
 	m = inboxModel(80, 24)
 	send(m, "j", "j", "j", "j", "j", "j")
-	if m.inbox.cursor != 1 || m.inbox.top == 0 {
-		t.Fatalf("j walks the cards, then scrolls the page: cursor %d, top %d", m.inbox.cursor, m.inbox.top)
+	if m.inbox.tbl.Cursor() != 1 || m.inbox.top == 0 {
+		t.Fatalf("j walks the cards, then scrolls the page: cursor %d, top %d", m.inbox.tbl.Cursor(), m.inbox.top)
 	}
 	send(m, "k", "k", "k", "k", "k", "k", "k", "k", "k", "k", "k", "k")
-	if m.inbox.cursor != 0 || m.inbox.top != 0 {
-		t.Fatalf("k comes back: cursor %d, top %d", m.inbox.cursor, m.inbox.top)
+	if m.inbox.tbl.Cursor() != 0 || m.inbox.top != 0 {
+		t.Fatalf("k comes back: cursor %d, top %d", m.inbox.tbl.Cursor(), m.inbox.top)
 	}
 	send(m, "G")
 	if m.inbox.top == 0 || m.fac.top != 0 {
@@ -318,13 +345,16 @@ func TestInboxRejectAnswersNothing(t *testing.T) {
 func TestInboxConfirmIgnoresEveryOtherKey(t *testing.T) {
 	m, _, _ := answerModel(t)
 	send(m, "2")
-	before := m.inbox
+	state := func() string {
+		return fmt.Sprint(m.inbox.pick, m.inbox.id, m.inbox.mark, m.inbox.sending, m.inbox.tbl.Cursor(), m.inbox.top)
+	}
+	before := state()
 	for _, k := range []string{"x", "j", "k", "q", "?", "c", "d", "r", "4", "7", "pgdown", "G", "/"} { // 4: the card has three options
 		if cmd := upd(m, press(k)); len(cmd) != 0 {
 			t.Fatalf("%q ran something", k)
 		}
-		if m.inbox != before || m.view != viewInbox || m.help || m.fac.editing {
-			t.Fatalf("%q changed the confirm: %+v view %v", k, m.inbox, m.view)
+		if state() != before || m.view != viewInbox || m.help || m.fac.editing {
+			t.Fatalf("%q changed the confirm: %s view %v", k, state(), m.view)
 		}
 	}
 	send(m, "3")
@@ -435,7 +465,7 @@ func TestSnapshotInboxAndDashboard(t *testing.T) {
 		}
 		return out
 	}
-	if out := snap("inbox"); !strings.Contains(out, "[1 Inbox]") || !strings.Contains(out, "▸ demo-task · question") || !strings.Contains(out, "2  Add retry now  (recommended)") {
+	if out := snap("inbox"); !strings.Contains(out, "[1 Inbox]") || !strings.Contains(out, "> ? demo-task") || !strings.Contains(out, "demo-task · question · asked") || !strings.Contains(out, "2  Add retry now  (recommended)") {
 		t.Errorf("inbox snapshot:\n%s", out)
 	}
 	if out := snap("dashboard"); !strings.Contains(out, "[2 Sessions]") || strings.Contains(out, "demo-task") {
@@ -473,27 +503,187 @@ func noticeModel(w, h int) *model {
 	return m
 }
 
-func TestInboxApproveAndHistorySitInTheirRepositorysGroup(t *testing.T) {
+// onApprove puts the cursor on the approval of that pull request number.
+func onApprove(m *model, number int) {
+	i := slices.IndexFunc(m.cards(), func(c inboxCard) bool { return c.app != nil && c.app.Number == number })
+	m.inbox.at = m.cards()[i].key()
+	m.syncInbox()
+}
+
+// cursorRow is the message under the cursor.
+func cursorRow(m *model) inboxCard { return m.cards()[m.inbox.tbl.Cursor()] }
+
+func TestInboxApprovalsAreRowsOfTheirRepositorysGroup(t *testing.T) {
 	out := plain(noticeModel(140, 60))
 	at := func(s string) int { return strings.Index(out, s) }
-	order := []string{"needs-an-answer · question", "\n   Approve", "demo-export · new · 25m", "\n   History", "… 3 older · H shows them", "stuck-on-keys · blocked", "worktree cap"}
+	order := []string{"needs-an-answer", "◆ demo-import", "◆ demo-export", "stuck-on-keys", "History"}
 	for i, s := range order {
 		if at(s) < 0 || (i > 0 && at(s) < at(order[i-1])) {
 			t.Fatalf("%q out of order:\n%s", s, out)
 		}
 	}
-	if !strings.Contains(out, "demo-import · stale · 2h") || !strings.Contains(out, "its head changed after the approval") {
-		t.Errorf("a stale item shows its text:\n%s", out)
-	}
-	if strings.Contains(out, "extended 30 min to 09:45Z") || strings.Contains(out, "Nov 12") {
-		t.Errorf("only 8 entries show by default:\n%s", out)
+	for _, want := range []string{"new #12", "stale #9"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the list lacks %q:\n%s", want, out)
+		}
 	}
 }
 
-func TestInboxWithoutApprovalsOrHistoryHasNoSections(t *testing.T) {
-	out := plain(inboxModel(140, 60))
-	if strings.Contains(out, "Approve") || strings.Contains(out, "History") {
-		t.Errorf("sections without entries:\n%s", out)
+func TestInboxRightPaneFollowsTheCursorOntoAnApprovalAndShowsItsURLWhole(t *testing.T) {
+	m := noticeModel(100, 60)
+	onApprove(m, 9)
+	out := plain(m)
+	for _, want := range []string{"demo-import · approve · approval stale 2h ago", "its head changed after the approval", "https://github.com/example/demo/pull/9", "Approve on GitHub"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the stale approval's message lacks %q:\n%s", want, out)
+		}
+	}
+	onApprove(m, 12)
+	if out := plain(m); !strings.Contains(out, "demo-export · approve · handed over 25m ago") || !strings.Contains(out, "New: handed over, checks green.") ||
+		strings.Contains(out, "approval stale") {
+		t.Errorf("a new approval says so:\n%s", out)
+	}
+}
+
+func TestInboxFooterHasNoPickHintOnAnApprovalRow(t *testing.T) {
+	m := noticeModel(120, 30)
+	onApprove(m, 9)
+	if foot := strings.Split(plain(m), "\n")[29]; strings.Contains(foot, "pick an option") {
+		t.Errorf("footer on an approval: %q", foot)
+	}
+}
+
+func TestInboxApprovalURLWrapsInAPaneNarrowerThanIt(t *testing.T) {
+	const url = "https://github.com/example/demo/pull/9"
+	m := noticeModel(60, 60)
+	onApprove(m, 9)
+	var lines []string
+	for _, l := range m.approveMessage(m.th.on(m.th.Bg), cursorRow(m), 20) {
+		lines = append(lines, strings.TrimSpace(ansi.Strip(l)))
+	}
+	if got := strings.Join(lines, ""); !strings.Contains(got, url) {
+		t.Errorf("the URL is cut in a pane of 20: %q", lines)
+	}
+}
+
+func TestInboxApprovalMessageLabelsOldDataOnlyPastTenMinutes(t *testing.T) {
+	m := noticeModel(140, 60)
+	onApprove(m, 12)
+	if out := plain(m); strings.Contains(out, "ago · as of") {
+		t.Errorf("fresh data is not labelled:\n%s", out)
+	}
+	m.fac.repos[0].st.Approvals.AsOf = fakeNow.Add(-14 * time.Minute)
+	if out := plain(m); !strings.Contains(out, "handed over 25m ago · as of 14m") {
+		t.Errorf("old data is labelled:\n%s", out)
+	}
+	m.fac.repos[0].st.Approvals.AsOf = time.Time{}
+	if out := plain(m); !strings.Contains(out, "handed over 25m ago · as of unknown") {
+		t.Errorf("no time is not an age:\n%s", out)
+	}
+}
+
+func TestInboxNoKeyActsOnAnApprovalRow(t *testing.T) {
+	calls, _ := answerScript(t)
+	m, _, _ := answerModel(t)
+	m.fac.repos[0].st.Approvals = data.FactoryApprovals{AsOf: fakeNow, Items: []data.FactoryApproval{
+		{Slug: "demo-export", Number: 12, URL: "https://github.com/example/demo/pull/12", Why: "new", Since: fakeNow.Add(-time.Hour)}}}
+	onApprove(m, 12)
+	send(m, "enter")
+	if m.view != viewInbox || m.inbox.pick != 0 || cursorRow(m).app == nil {
+		t.Errorf("enter did something: view %v, pick %d", m.view, m.inbox.pick)
+	}
+	send(m, "2")
+	if m.view != viewDashboard || m.inbox.pick != 0 {
+		t.Errorf("a digit on an approval is the tab key: view %v, pick %d", m.view, m.inbox.pick)
+	}
+	if got := readCalls(calls); got != "" {
+		t.Errorf("the script ran: %q", got)
+	}
+}
+
+func TestInboxCursorStaysOnItsPullRequestThroughARefreshThatReordersRows(t *testing.T) {
+	m := noticeModel(140, 60)
+	onApprove(m, 12)
+	before := m.inbox.tbl.Cursor()
+	st := m.fac.repos[0].st
+	st.Approvals.Items = slices.Insert(st.Approvals.Items, 0, data.FactoryApproval{Slug: "demo-old", Number: 3, URL: "u", Why: "new", Since: fakeNow.Add(-5 * time.Hour)})
+	m.syncInbox()
+	if r := cursorRow(m); r.app == nil || r.app.Number != 12 || m.inbox.tbl.Cursor() != before+1 {
+		t.Errorf("the cursor left pull request 12: row %d (was %d) %+v", m.inbox.tbl.Cursor(), before, r.app)
+	}
+	st.Approvals.Items = nil
+	m.syncInbox()
+	if len(m.cards()) > 0 && cursorRow(m).app != nil {
+		t.Error("with its pull request gone the cursor is on a row that is there")
+	}
+}
+
+func TestInboxBandLeavesOutAnApproveRowsReviewPRButTheFactoryTabKeepsIt(t *testing.T) {
+	repos := noticeRepos()
+	repos[0].st.Rows = append(repos[0].st.Rows, data.FactoryTask{Slug: "demo-export", Phase: "review", PRURL: "https://github.com/example/demo/pull/12"})
+	m := fakeModel(true, 140, 60)
+	setInbox(m, repos...)
+	inBand := func() bool {
+		for _, l := range strings.Split(plain(m), "\n") {
+			if strings.Contains(l, "demo-export") && strings.Contains(l, "review PR") {
+				return true
+			}
+		}
+		return false
+	}
+	if inBand() {
+		t.Errorf("the Inbox band repeats the approve row's task:\n%s", plain(m))
+	}
+	m.view = viewFactory
+	m.fixScroll()
+	if !inBand() {
+		t.Errorf("the Factory tab's band keeps it:\n%s", plain(m))
+	}
+}
+
+func TestInboxNothingToDecideOnlyWhenThereIsNeitherADecisionNorAnApproval(t *testing.T) {
+	m := noticeModel(100, 40)
+	m.fac.repos[0].st.Decisions, m.fac.repos[len(m.fac.repos)-1].st.Decisions = nil, nil
+	out := plain(m)
+	if strings.Contains(out, "Nothing to decide.") || !strings.Contains(out, "│") || !strings.Contains(out, "demo-export") {
+		t.Errorf("approvals only: the panes are drawn:\n%s", out)
+	}
+	m.fac.repos[0].st.Approvals = data.FactoryApprovals{}
+	m.syncInbox()
+	if out := plain(m); !strings.Contains(out, "Nothing to decide.") {
+		t.Errorf("nothing at all:\n%s", out)
+	}
+}
+
+func TestInboxHistoryIsOneTableUnderThePanes(t *testing.T) {
+	out := plain(noticeModel(140, 60))
+	at := func(s string) int { return strings.Index(out, s) }
+	if !(at("stuck-on-keys") < at("History") && at("History") < at("TIME") && at("TIME") < at("… 3 older · H shows them") && at("… 3 older · H shows them") < at("worktree cap")) {
+		t.Errorf("History sits under the panes, above the Needs-you band:\n%s", out)
+	}
+	if strings.Contains(out, "TIME   REPO") || strings.Contains(out, "extended 30 min to 09:45Z") {
+		t.Errorf("one repository has entries, and 8 show by default:\n%s", out)
+	}
+	if strings.Count(out, "\n   History")+strings.Count(out, "TIME") != 1 {
+		t.Errorf("one table, not one per repository:\n%s", out)
+	}
+}
+
+func TestInboxHistoryDefaultsCountAcrossRepositories(t *testing.T) {
+	m := noticeModel(140, 60)
+	last := m.fac.repos[len(m.fac.repos)-1].st
+	for i := range 3 {
+		last.History = append(last.History, data.FactoryHistory{TS: fakeNow.Add(-time.Duration(i+1) * time.Minute), Slug: "demo-docs", By: "human", Text: "question: picked 1: Ship"})
+	}
+	out := plain(m)
+	if !strings.Contains(out, "TIME   REPO") || !strings.Contains(out, "demo-docs") {
+		t.Errorf("with two repositories having entries the table names them:\n%s", out)
+	}
+	if !strings.Contains(out, "… 6 older · H shows them") {
+		t.Errorf("14 entries, 8 shown across both repositories:\n%s", out)
+	}
+	if hist := out[strings.Index(out, "TIME"):]; strings.Index(hist, "demo-docs") > strings.Index(hist, "demo-task") {
+		t.Errorf("newest first across repositories:\n%s", out)
 	}
 }
 
@@ -501,7 +691,7 @@ func TestInboxHTogglesTheWholeHistory(t *testing.T) {
 	m := noticeModel(140, 60)
 	send(m, "H")
 	out := plain(m)
-	for _, want := range []string{"extended 30 min to 09:45Z", "Nov 12 05:00", "demo-task    lead "} {
+	for _, want := range []string{"extended 30 min to 09:45Z", "Nov 12 05:00"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("after H lacks %q:\n%s", want, out)
 		}
@@ -509,7 +699,7 @@ func TestInboxHTogglesTheWholeHistory(t *testing.T) {
 	if strings.Contains(out, "older · H shows them") {
 		t.Error("nothing is older once all show")
 	}
-	if send(m, "H"); strings.Contains(plain(m), "Nov 12 05:00") {
+	if send(m, "H"); strings.Contains(plain(m), "09:45Z") {
 		t.Error("H again goes back to the day's entries")
 	}
 }
@@ -522,53 +712,40 @@ func TestInboxHistoryTakesEntriesOfTheLastDayOnly(t *testing.T) {
 	}
 }
 
-func TestInboxApproveLabelsOldDataOnlyPastTenMinutes(t *testing.T) {
-	m := noticeModel(140, 60)
-	if out := plain(m); !strings.Contains(out, "\n   Approve  ") || strings.Contains(out, "Approve ·") {
-		t.Errorf("fresh data is not labelled:\n%s", out)
-	}
-	m.fac.repos[0].st.Approvals.AsOf = fakeNow.Add(-14 * time.Minute)
-	if out := plain(m); !strings.Contains(out, "Approve · as of 14m") {
-		t.Errorf("old data is labelled:\n%s", out)
-	}
-}
-
-func TestInboxApproveKeepsTheURLWholeWhenNarrow(t *testing.T) {
-	for _, w := range []int{80, 60} {
-		m := noticeModel(w, 60)
-		out := plain(m)
-		for _, url := range []string{"https://github.com/example/demo/pull/12", "https://github.com/example/demo/pull/9"} {
-			if !strings.Contains(out, url) {
-				t.Errorf("width %d cuts %s:\n%s", w, url, out)
-			}
+func TestInboxAt80ColumnsDropsTheNumberAndTheDate(t *testing.T) {
+	m := noticeModel(80, 60)
+	send(m, "H")
+	out := plain(m)
+	for _, l := range strings.Split(out, "\n") {
+		if w := ansi.StringWidth(l); w > 80 {
+			t.Errorf("a line of %d cells:\n%s", w, l)
 		}
 	}
-	if out := plain(noticeModel(60, 60)); strings.Contains(out, "demo-import · stale · 2h   https") {
-		t.Errorf("at 60 columns the URL is under the entry:\n%s", out)
+	if strings.Contains(out, "Nov ") {
+		t.Errorf("at 80 columns TIME has no date:\n%s", out)
+	}
+	if !strings.Contains(out, "…") {
+		t.Errorf("WHAT is cut:\n%s", out)
 	}
 }
 
-func TestInboxEachRepositorysNoticesSitUnderItsOwnHeading(t *testing.T) {
-	m := noticeModel(140, 60)
-	last := &m.fac.repos[len(m.fac.repos)-1]
-	last.st.History = []data.FactoryHistory{{TS: fakeNow.Add(-time.Minute), Slug: "demo-docs", By: "human", Text: "question: picked 1: Ship"}}
-	out := plain(m)
-	at := func(s string) int { return strings.Index(out, s) }
-	if hist := strings.LastIndex(out, "\n   History"); !(at("stuck-on-keys · blocked") < hist && hist < at("demo-docs  human") && at("demo-docs  human") < at("worktree cap")) {
-		t.Errorf("delta-docs' history follows its card:\n%s", out)
-	}
-	if !strings.Contains(out, "\n   10:59  ") {
-		t.Errorf("history rows begin with the time, after the indent, with no repository column:\n%s", out)
-	}
-}
-
-func TestInboxRepositoryWithoutCardsStillHasItsGroup(t *testing.T) {
+func TestInboxRepositoryWithOnlyApprovalsStillHasItsGroup(t *testing.T) {
 	m := noticeModel(140, 60)
 	m.fac.repos[0].st.Decisions = nil
 	out := plain(m)
-	head, next, item := strings.Index(out, "\n alpha "), strings.Index(out, "\n ▲ Needs you"), strings.Index(out, "demo-export · new · 25m")
-	if head < 0 || !(head < item && item < next) {
-		t.Errorf("alpha keeps a group for its approvals and history:\n%s", out)
+	named := false
+	for _, l := range strings.Split(out, "\n") {
+		named = named || strings.HasPrefix(strings.TrimSpace(strings.SplitN(l, "│", 2)[0]), "alpha") && strings.Contains(l, "◆ demo-import")
+	}
+	if !named {
+		t.Errorf("alpha is named on the first of its approval rows:\n%s", out)
+	}
+}
+
+func TestInboxWithoutApprovalsOrHistoryHasNoSections(t *testing.T) {
+	out := plain(inboxModel(140, 60))
+	if strings.Contains(out, "Approve") || strings.Contains(out, "History") {
+		t.Errorf("sections without entries:\n%s", out)
 	}
 }
 
@@ -604,17 +781,21 @@ func TestInboxGroupsCardsByRepository(t *testing.T) {
 	if got := strings.Join(order, " "); got != "needs-an-answer second-of-alpha stuck-on-keys" {
 		t.Fatalf("cards %s", got)
 	}
-	var seen []string // the headings and cards in the order shown
-	for _, l := range strings.Split(plain(m), "\n") {
-		switch l = strings.TrimSpace(l); {
-		case l == "alpha" || l == "delta-docs":
-			seen = append(seen, l)
-		case strings.HasPrefix(l, "▸ needs-an-answer"), strings.HasPrefix(l, "second-of-alpha"), strings.HasPrefix(l, "stuck-on-keys"):
-			seen = append(seen, strings.Fields(strings.TrimPrefix(l, "▸"))[0])
+	var seen []string                                 // the headings and cards in the order shown
+	for _, l := range strings.Split(plain(m), "\n") { // the list is what is left of the rule; the lines below have none
+		if !strings.Contains(l, "│") {
+			continue
+		}
+		f := slices.DeleteFunc(strings.Fields(strings.SplitN(l, "│", 2)[0]), func(s string) bool { return s == ">" })
+		if len(f) > 0 && (f[0] == "alpha" || f[0] == "delta-docs") { // the repository, on its first row only
+			seen, f = append(seen, f[0]), f[1:]
+		}
+		if len(f) > 1 && (f[0] == "?" || f[0] == "▲") {
+			seen = append(seen, f[1])
 		}
 	}
 	if got := strings.Join(seen, " "); got != "alpha needs-an-answer second-of-alpha delta-docs stuck-on-keys" {
-		t.Errorf("one heading per repository over its cards: %s", got)
+		t.Errorf("the repository on the first row of its group: %s", got)
 	}
 	send(m, "j", "j")
 	if c, _ := m.cursorCard(); c.d.Slug != "stuck-on-keys" {
@@ -665,8 +846,8 @@ func TestInboxCursorFollowsItsDecisionThroughARefresh(t *testing.T) {
 	setInbox(m, reposWithAnExtra()...)
 	send(m, "j") // second-of-alpha, the second card
 	setInbox(m, withOlderInAlpha(reposWithAnExtra())...)
-	if c, _ := m.cursorCard(); c.d.ID != "aa11" || m.inbox.cursor != 2 {
-		t.Errorf("the cursor stays on its decision at its new place: %s at %d", c.d.ID, m.inbox.cursor)
+	if c, _ := m.cursorCard(); c.d.ID != "aa11" || m.inbox.tbl.Cursor() != 2 {
+		t.Errorf("the cursor stays on its decision at its new place: %s at %d", c.d.ID, m.inbox.tbl.Cursor())
 	}
 	repos := reposWithAnExtra()
 	repos[0].st.Decisions = nil // its decision goes: the nearest card
@@ -680,7 +861,7 @@ func TestInboxPendingPickFollowsItsDecisionAndClosesWhenItIsGone(t *testing.T) {
 	m := inboxModel(100, 30)
 	send(m, "2")
 	setInbox(m, withOlderInAlpha(inboxRepos())...)
-	if c, _ := m.cursorCard(); c.d.ID != idQuestion || m.inbox.cursor != 1 || m.inbox.pick != 2 {
+	if c, _ := m.cursorCard(); c.d.ID != idQuestion || m.inbox.tbl.Cursor() != 1 || m.inbox.pick != 2 {
 		t.Fatalf("the pick stays on its decision at its new place: %s, %+v", c.d.ID, m.inbox)
 	}
 	repos := withOlderInAlpha(inboxRepos())
@@ -701,5 +882,95 @@ func TestInboxLateAnswerKeepsThePickOfAnotherCard(t *testing.T) {
 	m.Update(late)
 	if m.inbox.pick != 1 || m.inbox.id != idBlocked {
 		t.Errorf("the answer of another card leaves the pick: %+v", m.inbox)
+	}
+}
+
+func TestInboxElevenDecisionsScrollTheListNotThePage(t *testing.T) {
+	repos := inboxRepos()
+	repos[0].st.Decisions = nil
+	repos[len(repos)-1].st.Decisions = nil
+	for i := 1; i <= 11; i++ {
+		repos[0].st.Decisions = append(repos[0].st.Decisions, data.FactoryDecision{
+			ID: fmt.Sprintf("id%02d", i), Slug: fmt.Sprintf("task-%02d", i), Kind: "question", TS: fakeNow.Add(time.Duration(i-12) * time.Minute),
+			Ask: fmt.Sprintf("Ask number %d?", i), Options: []string{fmt.Sprintf("First of %d", i), "Second"},
+		})
+	}
+	m := fakeModel(true, 140, 40)
+	setInbox(m, repos...)
+	listed := func() (n int) {
+		for _, l := range strings.Split(plain(m), "\n") {
+			if left, _, ok := strings.Cut(l, "│"); ok && strings.Contains(left, "task-") {
+				n++
+			}
+		}
+		return n
+	}
+	if out := plain(m); listed() != 8 || !strings.Contains(out, "Ask number 1?") || !strings.Contains(out, "1  First of 1") {
+		t.Fatalf("the list shows eight rows beside the first message:\n%s", out)
+	}
+	send(m, "f", "d", "u", "b") // the table's own paging keys are not bound here
+	if m.inbox.tbl.Cursor() != 0 {
+		t.Fatalf("the table's paging keys moved the cursor to %d", m.inbox.tbl.Cursor())
+	}
+	for range 10 {
+		send(m, "j")
+	}
+	out := plain(m)
+	if m.inbox.tbl.Cursor() != 10 || m.inbox.top != 0 || listed() != 8 {
+		t.Fatalf("cursor %d, page top %d, %d rows listed:\n%s", m.inbox.tbl.Cursor(), m.inbox.top, listed(), out)
+	}
+	for _, want := range []string{"> ? task-11", "task-11 · question", "Ask number 11?", "1  First of 11", "worktree cap"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("at the last row the page lacks %q:\n%s", want, out)
+		}
+	}
+	send(m, "j")
+	if m.inbox.top == 0 {
+		t.Error("past the last row j scrolls the page")
+	}
+}
+
+func TestInboxListShowsTheCursorRowAfterARefreshMovesItFar(t *testing.T) {
+	build := func(newest string) []factoryRepo {
+		repos := inboxRepos()
+		repos[0].st.Decisions = nil
+		repos[len(repos)-1].st.Decisions = nil
+		for i := 1; i <= 11; i++ {
+			id := fmt.Sprintf("id%02d", i)
+			age := time.Duration(12-i) * time.Minute
+			if id == newest {
+				age = 0 // the decision that becomes the newest, the last row
+			}
+			repos[0].st.Decisions = append(repos[0].st.Decisions, data.FactoryDecision{
+				ID: id, Slug: "task-" + id[2:], Kind: "question", TS: fakeNow.Add(-age),
+				Ask: "Ask of " + id + "?", Options: []string{"First", "Second"},
+			})
+		}
+		return repos
+	}
+	for _, tc := range []struct {
+		name         string
+		from, to     int
+		before, then []factoryRepo
+	}{
+		{"row 0 to row 10", 0, 10, build(""), build("id01")},
+		{"row 10 to row 0", 10, 0, build("id01"), build("")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := fakeModel(true, 140, 40)
+			setInbox(m, tc.before...)
+			for range tc.from {
+				send(m, "j")
+			}
+			c, _ := m.cursorCard()
+			setInbox(m, tc.then...)
+			if got, _ := m.cursorCard(); got.d.ID != c.d.ID || m.inbox.tbl.Cursor() != tc.to {
+				t.Fatalf("the cursor is on %s at %d, want %s at %d", got.d.ID, m.inbox.tbl.Cursor(), c.d.ID, tc.to)
+			}
+			out := plain(m)
+			if !strings.Contains(out, "> ? task-"+c.d.ID[2:]) || !strings.Contains(out, "Ask of "+c.d.ID+"?") {
+				t.Errorf("the list lacks the selected row of %s:\n%s", c.d.ID, out)
+			}
+		})
 	}
 }

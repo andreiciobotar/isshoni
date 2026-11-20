@@ -10,7 +10,7 @@ import (
 )
 
 // alwaysCol is where the kinds of the Always line start, after its label.
-const alwaysCol = noticeIndent + len("Always") + 3
+const alwaysCol = 1 + len("Always") + 3
 
 // standingMsg is the end of `factory decision always <kind> off`.
 type standingMsg struct {
@@ -50,7 +50,7 @@ func times(n int) string {
 	return fmt.Sprintf("%d times", n)
 }
 
-// alwaysLine is the section line under the sub-header: each kind that is on, with its option and its
+// alwaysLine is the line under the panes, then a blank: each kind that is on, with its option and its
 // uses. In pick mode the kinds that are on carry a number, and the hint goes on a line of
 // its own when it does not fit beside them.
 func (m *model) alwaysLine(p paint, w int) block {
@@ -60,7 +60,7 @@ func (m *model) alwaysLine(p paint, w int) block {
 	if pick {
 		gap = 3
 	}
-	row, n, num := p.sp(noticeIndent)+p.t("Always", th.Faint)+p.sp(3), alwaysCol, 0
+	row, n, num := p.sp(1)+p.t("Always", th.Faint)+p.sp(3), alwaysCol, 0
 	for _, s := range list {
 		if !s.On {
 			continue
@@ -76,7 +76,7 @@ func (m *model) alwaysLine(p paint, w int) block {
 		row, n = row+p.t(s.Kind, th.Text)+p.t(text, th.Muted), n+width(s.Kind+text)
 	}
 	if n == alwaysCol {
-		return nil
+		return block{p.sp(w)}
 	}
 	lines := block{fit(row, w, p)}
 	if pick {

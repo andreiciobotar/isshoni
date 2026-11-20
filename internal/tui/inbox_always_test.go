@@ -30,7 +30,8 @@ func splitModel(t *testing.T) (m *model, alpha string) {
 func confirmLine(m *model) string {
 	for _, l := range strings.Split(plain(m), "\n") {
 		if strings.Contains(l, "Accept") {
-			return strings.TrimSpace(l)
+			_, r, _ := strings.Cut(l, "│")
+			return strings.TrimSpace(r)
 		}
 	}
 	return ""
@@ -129,7 +130,7 @@ func TestInboxAlwaysPickSwitchesOneOff(t *testing.T) {
 		t.Fatalf("A puts the line in pick mode:\n%s", plain(m))
 	}
 	send(m, "x", "2", "j", "q", "tab")
-	if !m.inbox.always || m.inbox.cursor != 0 || m.view != viewInbox {
+	if !m.inbox.always || m.inbox.tbl.Cursor() != 0 || m.view != viewInbox {
 		t.Fatalf("other keys and a digit past the kinds are ignored: %+v", m.inbox)
 	}
 	send(m, "esc")
@@ -229,10 +230,11 @@ func TestInboxPickedCardsAreNotCountedInTheBadge(t *testing.T) {
 func TestInboxCardDrawsTheNoteUnderTheAskInFaint(t *testing.T) {
 	m, _ := splitModel(t)
 	m.fac.repos[0].st.Decisions[1].Note = "starts by itself when it can: at the cap of 6 tasks in motion: a, b (always: start it)"
+	send(m, "j")
 	lines := strings.Split(plain(m), "\n")
 	for i, l := range lines {
 		if strings.Contains(l, "The importer's retry is separable.") {
-			if !strings.Contains(lines[i+1], "starts by itself when it can") || !strings.Contains(lines[i+2], "1  Start demo-retry") {
+			if !strings.Contains(lines[i+1], "starts by itself when it can") || !strings.Contains(strings.Join(lines[i+2:i+5], "\n"), "1  Start demo-retry") {
 				t.Fatalf("the note sits between the ask and the options:\n%s", strings.Join(lines, "\n"))
 			}
 			return
