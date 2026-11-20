@@ -504,8 +504,10 @@ func TestServeAbruptDisconnectLeavesTheOthersRunning(t *testing.T) {
 	b := e.view(addr, viewOpts{signer: s})
 	a.waitFor("zebrafish")
 	b.waitFor("zebrafish")
-	a.send("4c")
-	a.waitFor("INTAKE")
+	a.send("1c")
+	a.waitFor("per repo") // the cap editor is open on the Inbox
+	b.send("4")
+	b.waitFor("INTAKE")
 	a.sess.Close()
 	a.client.Close()
 	waitFor(t, "A's session to end", func() bool { return strings.Contains(e.logs.String(), "session end") })

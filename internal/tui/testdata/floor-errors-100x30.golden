@@ -2,28 +2,28 @@
  Factory  10 motion (1 blocked) · 1 review · 2 merged · 1 settled  · as of 11:00:00                 
                       ╲▁▁▁▁▁▁╱  INTAKE                              ╭─ all repositories ──────────╮ 
                        ╲▒▒▒▒╱                                       │ in motion ▲●●●●●●●●● 10/6+1 │ 
-                   ╔═════════╗╲ BUILD 9 · 2 more                    ╰─────────────────────────────╯ 
-                   ║ ╲╲┈┈┈┈┈◢░░░░◣ ─ beta-é日本語/task-00  1m00s                                    
-                   ║   ╲╲   ▒▒⠋▓▓▓╲                                                                 
-                         ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/rate-limit-docs                                      
+                   ╔═══╗     ╲╲ BUILD 9 · 3 more                    ╰─────────────────────────────╯ 
+                   ║ ╲╲║┈┈┈┈◢░░░░◣ ─ alpha/rate-limit-docs                                          
+                   ║   ║╲   ▒▒▒▓▓▓╲                                                                 
+                         ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/stacked-on-login  1m35s                              
                            ╲╲┈┈┈▒▒▒▓▓▓╲                                                             
-                 ● BLOCKED 1 ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/stacked-on-login  1m35s                          
-                      ◢░░░░◣   ╲╲   ▒▒▒▓▓▓╲                                                         
-                      ▒▒▲▓▓▓     ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/quiet-refactor  4m12s                        
+                 ● BLOCKED 1 ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/quiet-refactor  4m12s                            
+                      ◢░░░░◣   ╲╲   ▒▒⠋▓▓▓╲                                                         
+                      ▒▒▲▓▓▓     ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/slow-export  41m00s                          
  alpha/needs-an-answ… ◥▒▒▓▓◤       ╲╲   ▒▒⠋▓▓▓╲                                                     
-                      ╌╌╌╌╌╌         ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/slow-export  41m00s                      
-                                       ╲╲┈┈┈▒▒⠋▓▓▓╲                                                 
-                                         ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/login-flow  2h15m                    
-                                           ╲╲   █▒⠋▓▓█╲                                             
-                                             ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/lost-its-lead  9h00m             
-                                               ╔════▒▒▒▓▓▓╲ REVIEW 1                                
-                                               ║ ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/api-rate-limits  1h30m       
-                                               ║   ╔════▒▒▲▓▓▓╲ MERGE 2 · 1 more                    
-                                                   ║ ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/old-experiment  1m01s    
-                                                   ║   ╔════▒▒▒▓▓▓╲ SHIPPED 1                       
-                                                       ║ ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/release-notes  50m00s
-                                                       ║   ╲╲   ▒▒▒▓▓▓╲                             
-                                                             ╲╲ ◥▒▒▓▓◤ ╲╲                           
+                      ╌╌╌╌╌╌         ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/login-flow  2h15m                        
+                                       ╲╲┈┈┈█▒⠋▓▓█╲                                                 
+                                         ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/lost-its-lead  9h00m                 
+                                           ╔═══╗▒▒▒▓▓▓╲ REVIEW 1                                    
+                                           ║ ╲╲║◥▒▒▓◢░░░░◣ ─ alpha/api-rate-limits  1h30m           
+                                           ║   ╔═══╗▒▒▲▓▓▓╲ MERGE 2 · 1 more                        
+                                               ║ ╲╲║◥▒▒▓◢░░░░◣ ─ alpha/old-experiment  1m01s        
+                                               ║   ╔═══╗▒▒▒▓▓▓╲ SHIPPED 1                           
+                                                   ║ ╲╲║◥▒▒▓◢░░░░◣ ─ alpha/release-notes  50m00s    
+                                                   ║   ║╲   ▒▒▒▓▓▓╲                                 
+                                                         ╲╲┈◥▒▒▓▓◤┈╲╲                               
+                                                           ╲▀▀▀▀▀▀▀▀ ╲╲                             
+                                                                                                    
  ⚠ gamma: not inside a git repository                                                               
  alpha: pull requests as of 12m ago · GitHub slow: factory status timed out after 25s               
  beta-é日本語: pull requests as of 3m ago                                                           

@@ -843,7 +843,7 @@ func (m *model) animating() bool {
 	case viewDashboard:
 		return len(m.nowRunning()) > 0
 	case viewFactory:
-		return m.fac.busy || m.factoryWorking() || m.floor.moving()
+		return m.fac.busy || m.floorWorking() || m.floor.moving()
 	case viewInbox:
 		return m.fac.busy || m.factoryWorking()
 	case viewKaizen:
@@ -1224,7 +1224,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.agentsDirty && !m.agentsBusy && now.Sub(m.agentsAt) >= agentsEvery {
 			cmds = append(cmds, m.loadAgentsCmd())
 		}
-		cmds = append(cmds, m.refreshFactory(factoryEvery), m.loadOps(m.opsTickEvery()))
+		every := factoryEvery
+		if m.view == viewFactory {
+			every = floorEvery
+		}
+		cmds = append(cmds, m.refreshFactory(every), m.loadOps(m.opsTickEvery()))
 
 	case attachMsg:
 		if msg.err != nil {

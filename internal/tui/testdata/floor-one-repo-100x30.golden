@@ -2,9 +2,9 @@
  Factory  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00  · alpha        
                       ╲▁▁▁▁▁▁╱  INTAKE                                  ╭─ alpha ─────────────────╮ 
                        ╲▒▒▒▒╱                                           │ in motion ▲●●●●●● 7/4+1 │ 
-                   ╔═════════╗╲ BUILD 6                                 ╰─────────────────────────╯ 
-                   ║ ╲╲┈┈┈┈┈◢░░░░◣ ─ rate-limit-docs                                                
-                   ║   ╲╲   ▒▒▒▓▓▓╲                                                                 
+                   ╔═══╗     ╲╲ BUILD 6                                 ╰─────────────────────────╯ 
+                   ║ ╲╲║┈┈┈┈◢░░░░◣ ─ rate-limit-docs                                                
+                   ║   ║╲   ▒▒▒▓▓▓╲                                                                 
                          ╲╲ ◥▒▒▓◢░░░░◣ ─ stacked-on-login  1m35s                                    
                            ╲╲┈┈┈▒▒▒▓▓▓╲                                                             
                  ● BLOCKED 1 ╲╲ ◥▒▒▓◢░░░░◣ ─ quiet-refactor  4m12s                                  
@@ -14,15 +14,15 @@
                       ╌╌╌╌╌╌         ╲╲ ◥▒▒▓◢░░░░◣ ─ login-flow  2h15m                              
                                        ╲╲┈┈┈█▒⠋▓▓█╲                                                 
                                          ╲╲ ◥▒▒▓◢░░░░◣ ─ lost-its-lead  9h00m                       
-                                           ╔════▒▒▒▓▓▓╲ REVIEW 1                                    
-                                           ║ ╲╲┈◥▒▒▓◢░░░░◣ ─ api-rate-limits  1h30m                 
-                                           ║   ╔════▒▒▲▓▓▓╲ MERGE 2                                 
-                                               ║ ╲╲ ◥▒▒▓◢░░░░◣ ─ old-plumbing  2h00m                
-                                               ║   ╲╲┈┈┈▒▒▒▓▓▓╲                                     
+                                           ╔═══╗▒▒▒▓▓▓╲ REVIEW 1                                    
+                                           ║ ╲╲║◥▒▒▓◢░░░░◣ ─ api-rate-limits  1h30m                 
+                                           ║   ╔═══╗▒▒▲▓▓▓╲ MERGE 2                                 
+                                               ║ ╲╲║◥▒▒▓◢░░░░◣ ─ old-plumbing  2h00m                
+                                               ║   ║╲┈┈┈▒▒▒▓▓▓╲                                     
                                                      ╲╲ ◥▒▒▓◢░░░░◣ ─ old-experiment  1m01s          
-                                                       ╔════▒▒▒▓▓▓╲ SHIPPED 1                       
-                                                       ║ ╲╲┈◥▒▒▓◢░░░░◣ ─ release-notes  50m00s      
-                                                       ║   ╲╲   ▒▒▒▓▓▓╲                             
+                                                       ╔═══╗▒▒▒▓▓▓╲ SHIPPED 1                       
+                                                       ║ ╲╲║◥▒▒▓◢░░░░◣ ─ release-notes  50m00s      
+                                                       ║   ║╲   ▒▒▒▓▓▓╲                             
                                                              ╲╲ ◥▒▒▓▓◤ ╲╲                           
                                                                ╲▀▀▀▀▀▀▀▀┈╲╲                         
                                                                                                     

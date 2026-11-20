@@ -2,12 +2,12 @@
  Factory  as of 11:00:00                                                        
                   ╲▁▁▁▁▁▁╱  INTAKE                       ╭─ all repositories ─╮ 
                    ╲▒▒▒▒╱                                │ no status yet      │ 
-               ╔═════════╗╲ BUILD 0                      ╰────────────────────╯ 
-               ║ ╲╲┈┈┈┈┈┈║┈╲╲                                                   
-               ║   ╔═════════╗╲ REVIEW 0                                        
-                   ║ ╲╲      ║ ╲╲                                               
-                   ║   ╔═════════╗╲ MERGE 0                                     
-             ● BLOCKED 0 ╲╲      ║ ╲╲                                           
+               ╔═══╗     ╲╲ BUILD 0                      ╰────────────────────╯ 
+               ║ ╲╲║┈┈┈┈┈┈┈╲╲                                                   
+               ║   ╔═══╗     ╲╲ REVIEW 0                                        
+                   ║ ╲╲║       ╲╲                                               
+                   ║   ╔═══╗┈┈┈┈┈╲╲ MERGE 0                                     
+             ● BLOCKED 0 ╲╲║       ╲╲                                           
              ╭───────────────────────────────────────────────────╮              
              │ No task on the floor                              │              
              │ No repository here has a task worktree.           │              

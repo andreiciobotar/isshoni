@@ -118,7 +118,6 @@ func (m *model) floorBody(p paint, w, h int) block {
 	notes := m.floorNotes(h)
 	sh := h - len(notes)
 	l := m.floorLayout(w, sh)
-	moving := m.factoryWorking()
 	cv := newCanvas(w, sh)
 
 	hud := m.floorHUD(p, w)
@@ -127,10 +126,10 @@ func (m *model) floorBody(p paint, w, h int) block {
 		hudX = w - width(hud[0]) - 1
 	}
 
-	m.drawBelt(cv, l, moving)
+	m.drawBelt(cv, l, m.floorWorking())
+	m.drawCubes(cv, l)
 	m.drawStations(cv, l)
 	m.drawLabels(cv, l, hudX, len(hud))
-	m.drawCubes(cv, l)
 
 	lines := cv.lines(p)
 	for i, hl := range hud {
@@ -307,7 +306,7 @@ func (m *model) drawStations(cv *canvas, l *floorLayout) {
 	for _, p := range floorStations {
 		at := l.belt(l.first[p])
 		y := int(at.y)
-		lx, rx := l.beltX(y-1)-2, l.beltX(y-1)+floorBandW
+		lx, rx := l.beltX(y-1)-2, l.beltX(y-1)-2+4 // an arch on the band's left edge: no cube of the belt stands on it
 		cv.put(lx, y-1, '╔', th.Muted, false)
 		for bx := lx + 1; bx < rx; bx++ {
 			cv.put(bx, y-1, '═', th.Muted, false)
@@ -317,7 +316,7 @@ func (m *model) drawStations(cv *canvas, l *floorLayout) {
 			cv.put(lx, y+dy, '║', th.Muted, false)
 			cv.put(rx, y+dy, '║', th.Muted, false)
 		}
-		cv.text(rx+2, y-1, " "+l.signText(p)+" ", plate, cv.w)
+		cv.text(int(at.x)+3, y-1, " "+l.signText(p)+" ", plate, cv.w)
 	}
 	for j := l.first["settled"]; j < l.slots; j++ {
 		at := l.belt(j)

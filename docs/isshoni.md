@@ -485,28 +485,28 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 | `d` | over SSH with a `write` key only: open the dispatcher's conversation on this connection ([Over SSH](#over-ssh)) |
 | `?`, `q` | help, quit |
 
-- **Inbox:** the start view. Under the sub-header, one card per open decision of every repository, oldest first: `▸ demo-task · question · 12m` (the task, the kind, how long ago it was asked), the ask, and its numbered options, the one the lead recommends marked `(recommended)`. A lead posts a decision with `factory decision ask` when its task waits on you ([factory.md](factory.md#messages)); without one the page says `Nothing to decide.`. `↑` `↓` `j` `k` move the `▸` over the cards, then scroll the page; the page keeps the card under the cursor in view. A digit picks that option (see the key table): the option is highlighted and `Accept   Reject` appears under the card; `Accept` runs `factory decision answer <id> <n>` in the card's repository (10 s limit, never on the update loop), which queues the pick for the lead, and the next watch tick delivers it. The card shows `sending…` meanwhile; on success a toast says `answered <task>: <n>` and the factory is read again, so the card goes when the status says so; on failure a toast gives the script's line and the card is back to unpicked. A key that is not `write` over `--serve` gets the toast `read-only: this key may not answer a decision` and picks nothing. Under the cards is the factory table (the Factory tab's page before the floor): the band of what waits on you (without the tasks that have a card), the cap line (`c` edits it), and each repository's tasks. The refresh (10 s while shown, 2 minutes otherwise, a fresh one on entering, the passes described under Factory) and the scroll are shared with the Factory view. A decision can appear up to one refresh late, and `--snapshot inbox` shows it once. The `▲N` badge of what waits on you is on the `1 Inbox` tab (below 110 columns the tab is an envelope, `1 ✉`).
+- **Inbox:** the start view. Under the sub-header, one card per open decision of every repository, oldest first: `▸ demo-task · question · 12m` (the task, the kind, how long ago it was asked), the ask, and its numbered options, the one the lead recommends marked `(recommended)`. A lead posts a decision with `factory decision ask` when its task waits on you ([factory.md](factory.md#messages)); without one the page says `Nothing to decide.`. `↑` `↓` `j` `k` move the `▸` over the cards, then scroll the page; the page keeps the card under the cursor in view. A digit picks that option (see the key table): the option is highlighted and `Accept   Reject` appears under the card; `Accept` runs `factory decision answer <id> <n>` in the card's repository (10 s limit, never on the update loop), which queues the pick for the lead, and the next watch tick delivers it. The card shows `sending…` meanwhile; on success a toast says `answered <task>: <n>` and the factory is read again, so the card goes when the status says so; on failure a toast gives the script's line and the card is back to unpicked. A key that is not `write` over `--serve` gets the toast `read-only: this key may not answer a decision` and picks nothing. Under the cards is the factory table (the Factory tab's page before the floor): the band of what waits on you (without the tasks that have a card), the cap line (`c` edits it), and each repository's tasks. It refreshes every 105 seconds while shown, every 2 minutes otherwise, with a fresh refresh on entering (the passes are described under Factory); the scroll is the Inbox's alone. A decision can appear up to one refresh late, and `--snapshot inbox` shows it once. The `▲N` badge of what waits on you is on the `1 Inbox` tab (below 110 columns the tab is an envelope, `1 ✉`; in a narrow header the live count then shows as `● N`, without the word).
   The table, for each repository seen in the range that has task worktrees, what
-    `factory status --json` reports: the tasks holding a slot against the cap (the meter
-    shows the ordinary limit plus the slots held in reserve for critical work, `7/9+1`),
-    and every task with its phase, elapsed time (for a task in motion, against its limit,
-    yellow when nearing it and red past it; a task the site manager gave more time has one
-    faint line beneath: `limit +30m by site-manager · <reason>`), size (shown when any task
-    has one), pull
-    request or deliverable, base, and `overtime` or `stale`. At the top, a band lists everything that waits on you across
-    repositories, oldest first: tasks in review (the pull request or deliverable to look
-    at) and tasks blocked on you (what they asked; a task blocked on the dispatcher or on
-    another task says so in its row, with its reason beneath, and is not in the band), each
-    with how long it has waited; when nothing waits it says so. A task the site manager paused reads
-    `paused 12m: waits a, b` in place of `blocked on a, b`, yellow from 30 minutes on (a
-    stale pause); a task the queue prioritizes reads `motion · prioritized 3m` (or
-    `review · …`, or `blocked · …` for a released task still declared paused) in the phase
-    column. A task whose work is over but which cleanup keeps shows a `kept` pill and the
-    faint line `kept: uncommitted changes`; a task the site manager decided to leave as it
-    is shows a `held` pill (`escalated` when it passed the call on) and the line
-    `held 9h · <criterion> · <reason>`. Its line replaces the other detail line, and the row is
-    never shown as overtime: its elapsed time is not red or yellow and it has no
-    `overtime` pill. `c` sets `limits.worktree_cap` (1 to
+  `factory status --json` reports: the tasks holding a slot against the cap (the meter
+  shows the ordinary limit plus the slots held in reserve for critical work, `7/9+1`),
+  and every task with its phase, elapsed time (for a task in motion, against its limit,
+  yellow when nearing it and red past it; a task the site manager gave more time has one
+  faint line beneath: `limit +30m by site-manager · <reason>`), size (shown when any task
+  has one), pull
+  request or deliverable, base, and `overtime` or `stale`. At the top, a band lists everything that waits on you across
+  repositories, oldest first: tasks in review (the pull request or deliverable to look
+  at) and tasks blocked on you (what they asked; a task blocked on the dispatcher or on
+  another task says so in its row, with its reason beneath, and is not in the band), each
+  with how long it has waited; when nothing waits it says so. A task the site manager paused reads
+  `paused 12m: waits a, b` in place of `blocked on a, b`, yellow from 30 minutes on (a
+  stale pause); a task the queue prioritizes reads `motion · prioritized 3m` (or
+  `review · …`, or `blocked · …` for a released task still declared paused) in the phase
+  column. A task whose work is over but which cleanup keeps shows a `kept` pill and the
+  faint line `kept: uncommitted changes`; a task the site manager decided to leave as it
+  is shows a `held` pill (`escalated` when it passed the call on) and the line
+  `held 9h · <criterion> · <reason>`. Its line replaces the other detail line, and the row is
+  never shown as overtime: its elapsed time is not red or yellow and it has no
+  `overtime` pill. `c` sets `limits.worktree_cap` (1 to
   999) in `~/.claude/factory/settings.toml` by running `factory settings set`, which
   leaves every other byte of the file as it was (`<checkout>/factory/bin/factory`, found from the dashboard's own location; it needs no `PATH`). See [factory.md](factory.md).
 - **Sessions** (the Dashboard tab before the Inbox): one screen, from the top: the totals for the range, the sessions as a
@@ -580,8 +580,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   its time. Each cube has a label: the slug (with the repository name before it when
   several repositories have tasks) and the elapsed time where there is room. The belt's
   tread turns only while a task in motion has a working session; otherwise it stands
-  still. A place with more tasks than room shows `+N` in its last slot, and its sign
-  still counts them all; a larger terminal shows more cubes and longer labels. When a
+  still. A place with more tasks than room has a sign that shows the full count and `· N more` for the tasks without a slot; SHIPPED stacks its cubes on a pallet, 3 high, before the next slot; a larger terminal shows more cubes and longer labels. When a
   refresh changes a task's phase, its cube travels along the line to its new place over
   about a second; a new task comes in at the intake, a task that is gone leaves from
   where it stood. A sign plate at the upper right names the repository (or `all

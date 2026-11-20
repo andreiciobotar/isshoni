@@ -19,6 +19,7 @@ import (
 const (
 	floorMoveFor   = time.Second            // a cube travels from its old place to its new one in this long
 	floorBeltEvery = 120 * time.Millisecond // one step of the belt's tread
+	floorEvery     = 10 * time.Second       // the refresh interval while the Factory tab is shown
 	floorStepX     = 4                      // cells from one belt slot to the next, across: the belt's 2 columns per row
 	floorStepY     = 2                      // and down
 	floorTop       = 1                      // rows the intake hopper takes above the first slot
@@ -219,7 +220,7 @@ func (m *model) floorLayout(w, h int) *floorLayout {
 		demand[i] = len(byPlace[p])
 	}
 	demand[3] = (demand[3] + floorPile - 1) / floorPile
-	room := max(len(floorStations), min((h-floorTop-3)/floorStepY, (w-l.x0-27)/floorStepX))
+	room := max(len(floorStations), min((h-floorTop-4)/floorStepY, (w-l.x0-27)/floorStepX)) // the dock's pallet takes the row under the last slot
 	n := floorAlloc(demand, room)
 	l.slots = 1
 	for i, p := range floorStations {
@@ -340,7 +341,12 @@ func (m *model) floorSync() {
 	f.seen = now
 }
 
-// floorStep moves the cubes in transit on by dt and turns the belt's tread while a session works.
+// floorWorking is true while a shown task is in motion with a working session: the belt turns.
+func (m *model) floorWorking() bool {
+	return slices.ContainsFunc(m.floorTasks(), func(ft floorTask) bool { return ft.t.Phase == "motion" && ft.t.Session == "working" })
+}
+
+// floorStep moves the cubes in transit on by dt and turns the belt's tread while a shown session works.
 func (m *model) floorStep(dt time.Duration) {
 	m.floorSync()
 	f := &m.floor
@@ -350,7 +356,7 @@ func (m *model) floorStep(dt time.Duration) {
 		}
 	}
 	f.gone = slices.DeleteFunc(f.gone, func(g *floorGone) bool { g.ago += dt; return g.ago >= floorMoveFor })
-	if m.view == viewFactory && m.factoryWorking() {
+	if m.view == viewFactory && m.floorWorking() {
 		f.beltAcc += dt
 		f.belt += int(f.beltAcc / floorBeltEvery)
 		f.beltAcc %= floorBeltEvery

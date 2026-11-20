@@ -233,9 +233,55 @@ func TestFloorBeltTurnsOnlyWhileASessionWorks(t *testing.T) {
 	}
 }
 
+func TestFloorBeltIgnoresTasksTheFilterHides(t *testing.T) {
+	busy := ftask("a", "motion")
+	busy.Session = "working"
+	m := floorModel(true, 100, 30,
+		factoryRepo{name: "idle", path: "/r/idle", st: fstatus(5, ftask("b", "motion"))},
+		factoryRepo{name: "work", path: "/r/work", st: fstatus(5, busy)})
+	m.step(floorBeltEvery)
+	if m.floor.belt != 1 {
+		t.Fatalf("a shown working task turns the belt: %d", m.floor.belt)
+	}
+	m.floor.repo = "/r/idle"
+	m.step(time.Second)
+	if m.floor.belt != 1 || m.animating() {
+		t.Errorf("the belt stands still when the working task is hidden: belt %d, animating %v", m.floor.belt, m.animating())
+	}
+}
+
+func TestFloorDockPalletAndPileShowAtEverySize(t *testing.T) {
+	piled := factoryRepo{name: "r", path: "/r", st: fstatus(5, ftask("m", "merged"), ftask("a", "settled"), ftask("b", "settled"), ftask("c", "settled"))}
+	for _, sz := range [][2]int{{80, 24}, {100, 30}, {140, 40}} {
+		for name, repos := range map[string][]factoryRepo{"waiting": waitingRepos(), "piled": {piled}} {
+			out := plain(floorModel(true, sz[0], sz[1], repos...))
+			if !strings.Contains(out, "▀▀▀▀▀▀") {
+				t.Errorf("%s at %dx%d: the dock pallet is off the canvas:\n%s", name, sz[0], sz[1], out)
+			}
+		}
+	}
+	out := plain(floorModel(true, 100, 30, piled))
+	for _, want := range []string{"MERGE 1", "SHIPPED 3", "─ m", "─ a", "+2 stacked"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("a pile keeps the signs and labels readable, lacks %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestFactoryRefreshesEveryTenSecondsOnTheTab(t *testing.T) {
-	if factoryEvery != 10*time.Second {
-		t.Fatalf("factoryEvery is %v", factoryEvery)
+	m, dir, now := factoryStubModel(t)
+	upd(m, only[factoryMsg](upd(m, press("4")))[0])
+	if m.view != viewFactory {
+		t.Fatalf("on the view %v", m.view)
+	}
+	*now = now.Add(floorEvery - time.Second)
+	if got := only[factoryMsg](upd(m, tickMsg{})); len(got) != 0 {
+		t.Fatal("a tick before 10 s starts nothing")
+	}
+	calls := factoryCalls(t, dir)
+	*now = now.Add(2 * time.Second)
+	if got := only[factoryMsg](upd(m, tickMsg{})); len(got) != 1 || factoryCalls(t, dir) <= calls {
+		t.Fatalf("a tick after 10 s starts one refresh: %d results", len(got))
 	}
 }
 
@@ -365,6 +411,9 @@ func TestGoldenFloor(t *testing.T) {
 		{"floor-filter-open-100x30", 100, 30, func(m *model) { setFloor(m, waitingRepos()...); send(m, "/", "j") }},
 		{"floor-one-repo-100x30", 100, 30, func(m *model) { setFloor(m, waitingRepos()...); send(m, "/", "j", "enter") }},
 		{"floor-errors-100x30", 100, 30, stale},
+		{"floor-piled-100x30", 100, 30, func(m *model) {
+			setFloor(m, factoryRepo{name: "r", path: "/r", st: fstatus(5, ftask("merged-one", "merged"), ftask("a-shipped", "settled"), ftask("b-shipped", "settled"), ftask("c-shipped", "settled"))})
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if shots != "" {

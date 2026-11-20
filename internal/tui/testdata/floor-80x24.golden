@@ -2,23 +2,23 @@
  Factory  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · 11:00:00   
                   ╲▁▁▁▁▁▁╱  INTAKE               ╭─ all repositories ─────────╮ 
                    ╲▒▒▒▒╱                        │ in motion ████████ 18/11+1 │ 
-               ╔═════════╗╲ BUILD 10 · 5 more    ╰────────────────────────────╯ 
-               ║ ╲╲┈┈┈┈┈◢░░░░◣ ─ alpha/stacked-on-login  1m35s                  
-               ║   ╲╲   ▒▒▒▓▓▓╲                                                 
-                     ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/quiet-refactor  4m12s                
+               ╔═══╗     ╲╲ BUILD 10 · 6 more    ╰────────────────────────────╯ 
+               ║ ╲╲║┈┈┈┈◢░░░░◣ ─ alpha/quiet-refactor  4m12s                    
+               ║   ║╲   ▒▒⠋▓▓▓╲                                                 
+                     ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/slow-export  41m00s                  
                        ╲╲┈┈┈▒▒⠋▓▓▓╲                                             
-    ● BLOCKED 8 · 4 more ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/slow-export  41m00s              
-                  ◢░░░░◣   ╲╲   ▒▒⠋▓▓▓╲                                         
-                  ▒▒▒▓▓▓     ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/login-flow  2h15m            
- delta-docs/paus… ◥▒▒▓◢░░░░◣   ╲╲   █▒⠋▓▓█╲                                     
-                  ╌╌╌╌▒▒▒▓▓▓     ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/lost-its-lead  9h00m     
- delta-docs/paused-f… ◥▒▒▓◢░░░░◣   ╔════▒▒▒▓▓▓╲ REVIEW 3 · 2 more               
-                      ╌╌╌╌▒▒▲▓▓▓   ║ ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/api-rate-limits      
-    alpha/needs-an-answer ◥▒▒▓◢░░░░◣   ╔════▒▒▲▓▓▓╲ MERGE 2 · 1 more            
-                          ╌╌╌╌▒▒▒▓▓▓   ║ ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/old-experiment   
- delta-docs/docs-after-review ◥▒▒▓▓◤   ║   ╔════▒▒▒▓▓▓╲ SHIPPED 1               
-                              ╌╌╌╌╌╌       ║ ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/release-notes
-                                           ║   ╲╲┈┈┈▒▒▒▓▓▓╲                     
-                                                 ╲╲ ◥▒▒▓▓◤ ╲╲                   
+    ● BLOCKED 8 · 4 more ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/login-flow  2h15m                
+                  ◢░░░░◣   ╲╲   █▒⠋▓▓█╲                                         
+                  ▒▒▒▓▓▓     ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/lost-its-lead  9h00m         
+ delta-docs/paus… ◥▒▒▓◢░░░░◣   ╔═══╗▒▒▒▓▓▓╲ REVIEW 3 · 2 more                   
+                  ╌╌╌╌╌╌▒▓▓▓   ║ ╲╲║◥▒▒▓◢░░░░◣ ─ alpha/api-rate-limits  1h30m   
+ delta-docs/paused-f… ◥▒▒▓◢░░░░║   ╔═══╗▒▒▲▓▓▓╲ MERGE 2 · 1 more                
+                      ╌╌╌╌╌╌▲▓▓▓   ║ ╲╲║◥▒▒▓◢░░░░◣ ─ alpha/old-experiment  1m01s
+    alpha/needs-an-answer ◥▒▒▓◢░░░░║   ╔═══╗▒▒▒▓▓▓╲ SHIPPED 1                   
+                          ╌╌╌╌╌╌▒▓▓▓   ║ ╲╲║◥▒▒▓◢░░░░◣ ─ alpha/release-notes    
+ delta-docs/docs-after-review ◥▒▒▓▓◤   ║   ║╲   ▒▒▒▓▓▓╲                         
+                              ╌╌╌╌╌╌         ╲╲ ◥▒▒▓▓◤ ╲╲                       
+                                               ╲▀▀▀▀▀▀▀▀┈╲╲                     
+                                                                                
  ⚠ gamma: not inside a git repository                                           
  / filter  ·  r range  ·  tab next view  ·  ? help  ·  q quit                   

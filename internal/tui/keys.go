@@ -20,7 +20,6 @@ type keyMap struct {
 	Range, Follow, Sort, Filter              key.Binding
 	FilterKeep, FilterClear, Erase, Wipe     key.Binding
 	CapEdit, CapSave, CapCancel              key.Binding
-	FloorFilter                              key.Binding
 	Hanami, Legend, Zen, Replay              key.Binding
 	Dispatcher                               key.Binding
 }
@@ -75,8 +74,6 @@ var keys = keyMap{
 
 	Dispatcher: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "dispatcher")),
 
-	FloorFilter: key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "repository (Factory)")),
-
 	CapEdit:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "edit cap")),
 	CapSave:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "save")),
 	CapCancel: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
@@ -127,7 +124,7 @@ func (m *model) helpGroups() [][]key.Binding {
 	groups := [][]key.Binding{
 		{keys.Down, keys.Top, keys.PageDown, keys.Fold, keys.Open, keys.Back},
 		{keys.Next, keys.Prev, keys.Inbox, keys.PageLeft},
-		append([]key.Binding{keys.Range, keys.Sort, keys.Filter, keys.FloorFilter}, more...),
+		append([]key.Binding{keys.Range, keys.Sort, keys.Filter}, more...),
 		{keys.Help, keys.Quit},
 	}
 	if m.view == viewInbox {
