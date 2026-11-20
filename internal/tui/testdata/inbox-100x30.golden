@@ -13,18 +13,18 @@
    1  Done, carry on                                                                                
    2  Stop the task                                                                                 
                                                                                                     
- ▲ Needs you  5                                                                                     
- ◆ alpha       api-rate-limits  review PR          3h00m  #42 https://github.com/o/alpha/pull/42    
- ▲ delta-docs  wide-ask         unblock            2h00m  データベースの接続情報が見つかりません。… 
- ◆ delta-docs  video-cut        see deliverable   30m00s  https://example.com/cut/v2                
- ▲ delta-docs  slow-import      decide: overtime   5m00s  ran 3h of 2h: split it?                   
- ◆ delta-docs  design-review    see deliverable        -  /r/delta/docs/design.md                   
+ Approve                                                                                            
+ demo-import · stale · 2h   https://github.com/example/demo/pull/9                                  
+                            its head changed after the approval; a fresh approval is needed (the    
+                            lander stopped it at 8c1f2a9)                                           
+ demo-export · new · 25m    https://github.com/example/demo/pull/12                                 
                                                                                                     
- worktree cap  5  per repo, 1 in reserve   c edit                   ~/.claude/factory/settings.toml 
-                                                                                                    
- alpha                                    in motion ▲●●●●●● 7/4+1   review 1   merged 2   settled 1 
-  SLUG               PHASE                       ELAPSED  PR                      FLAGS             
-  needs-an-answer    ▲ blocked, needs you         10m40s  example.com/design/doc                    
-  login-flow         ⠋ in motion                   2h15m  -                       [overtime]        
- +35 more lines · ↓ to scroll                                                                       
- ↑↓/jk move  ·  1-4 pick an option  ·  c edit cap  ·  tab next view  ·  ? help  ·  q quit           
+ History                                                                                            
+ 10:55  demo-task    site manager  extended 20 min to 11:05Z: landing left                          
+ 10:48  demo-export  lead          handed over: https://github.com/example/demo/pull/12             
+ 10:30  demo-import  human         question: picked 2: Add retry now                                
+ 10:23  demo-import  lead          Retry lives in the importer, not the queue. Why: one owner       
+ 10:10  demo-sync    site manager  closed: its pull request merged and the worktree is clean        
+ 09:00  demo-sync    lead          handed over: https://github.com/example/demo/pull/7              
+ +52 more lines · ↓ to scroll                                                                       
+ ↑↓/jk move  ·  1-4 pick an option  ·  H all history  ·  c edit cap  ·  ? help  ·  q quit           

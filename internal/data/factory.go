@@ -134,6 +134,69 @@ type FactoryStatus struct {
 	PRs      FactoryPRs    `json:"prs"`
 
 	Decisions []FactoryDecision `json:"decisions"` // open decisions of the repository, oldest first; nil from a script before the field
+	Approvals FactoryApprovals  `json:"approvals"` // pull requests waiting for the human's approval; empty from a script before the field
+	History   []FactoryHistory  `json:"history"`   // what was decided and by whom, newest first; nil from a script before the field
+}
+
+// FactoryApprovals is the pull requests waiting for the human's approval. AsOf is when the watch last
+// computed them, zero when it has not (or its timestamp does not parse).
+type FactoryApprovals struct {
+	AsOf  time.Time
+	Items []FactoryApproval
+}
+
+// FactoryApproval is one such pull request: Why is "new" (nobody approved it) or "stale" (its head changed
+// after the approval; Text says what the lander reported), Since when it has waited.
+type FactoryApproval struct {
+	Slug   string
+	Number int
+	URL    string
+	Why    string
+	Text   string
+	Since  time.Time
+}
+
+// FactoryHistory is one entry of the history: a decision, who took it, and its one line.
+type FactoryHistory struct {
+	TS   time.Time
+	Slug string
+	By   string
+	Text string
+}
+
+// UnmarshalJSON reads {"as_of": "2026-11-20T10:42:00Z" or null, "items": [{"slug": "demo-export",
+// "number": 12, "url": "https://github.com/example/demo/pull/12", "why": "new", "text": "..." (absent for new),
+// "since": "2026-11-20T10:17:00Z"}]}; a bad timestamp is the zero time.
+func (a *FactoryApprovals) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		AsOf  string `json:"as_of"`
+		Items []struct {
+			Slug, URL, Why, Text, Since string
+			Number                      int
+		}
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	a.AsOf, _ = time.Parse(time.RFC3339, raw.AsOf)
+	a.Items = nil
+	for _, it := range raw.Items {
+		since, _ := time.Parse(time.RFC3339, it.Since)
+		a.Items = append(a.Items, FactoryApproval{it.Slug, it.Number, it.URL, it.Why, it.Text, since})
+	}
+	return nil
+}
+
+// UnmarshalJSON reads {"ts": "2026-11-20T10:42:00Z", "slug": "demo-task", "by": "site-manager", "text": "..."};
+// a bad ts is the zero time.
+func (h *FactoryHistory) UnmarshalJSON(b []byte) error {
+	var raw struct{ TS, Slug, By, Text string }
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	ts, _ := time.Parse(time.RFC3339, raw.TS)
+	*h = FactoryHistory{ts, raw.Slug, raw.By, raw.Text}
+	return nil
 }
 
 // FactoryDecision is an open decision a lead posted for the human: the ask and its numbered options.

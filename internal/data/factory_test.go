@@ -590,6 +590,43 @@ func TestFactoryStatusDecodesDecisions(t *testing.T) {
 	}
 }
 
+func TestFactoryStatusDecodesApprovalsAndHistory(t *testing.T) {
+	r, dir := factoryStub(t)
+	doc := `{"rows": [],
+		"approvals": {"as_of": "2026-11-20T10:42:00Z", "items": [
+			{"slug": "demo-export", "number": 12, "url": "https://github.com/example/demo/pull/12", "why": "new", "since": "2026-11-20T10:17:00Z"},
+			{"slug": "demo-import", "number": 9, "url": "https://github.com/example/demo/pull/9", "why": "stale", "text": "its head changed", "since": "2026-11-20T08:00:00Z"}]},
+		"history": [{"ts": "2026-11-20T10:42:00Z", "slug": "demo-task", "by": "site-manager", "text": "extended 20 min to 11:05Z: landing left"},
+			{"ts": "soon", "slug": "demo-import", "by": "human", "text": "question: picked 2: Add retry now"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.FactoryStatus(context.Background(), t.TempDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(h, m int) time.Time { return time.Date(2026, 11, 20, h, m, 0, 0, time.UTC) }
+	wantA := FactoryApprovals{AsOf: at(10, 42), Items: []FactoryApproval{
+		{"demo-export", 12, "https://github.com/example/demo/pull/12", "new", "", at(10, 17)},
+		{"demo-import", 9, "https://github.com/example/demo/pull/9", "stale", "its head changed", at(8, 0)},
+	}}
+	wantH := []FactoryHistory{
+		{at(10, 42), "demo-task", "site-manager", "extended 20 min to 11:05Z: landing left"},
+		{time.Time{}, "demo-import", "human", "question: picked 2: Add retry now"},
+	}
+	if !reflect.DeepEqual(st.Approvals, wantA) || !reflect.DeepEqual(st.History, wantH) {
+		t.Fatalf("approvals %+v\nhistory %+v", st.Approvals, st.History)
+	}
+	for _, doc := range []string{`{"rows": []}`, `{"rows": [], "approvals": {"as_of": null, "items": []}, "history": []}`} {
+		if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if st, err = r.FactoryStatus(context.Background(), t.TempDir(), true); err != nil || !st.Approvals.AsOf.IsZero() || len(st.Approvals.Items) != 0 || len(st.History) != 0 {
+			t.Fatalf("absent or empty keys give empty values: %+v, %v", st, err)
+		}
+	}
+}
+
 func TestAnswerDecisionRunsTheFactoryCommandInTheRepository(t *testing.T) {
 	dir := stubFactory(t, "")
 	repo, err := filepath.EvalSymlinks(t.TempDir())
