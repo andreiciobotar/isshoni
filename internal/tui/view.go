@@ -66,7 +66,7 @@ func (m *model) frame() []string {
 	case m.view == viewAgents:
 		body = m.agentsBody(p, w, bh)
 	case m.view == viewFactory:
-		body = m.factoryBody(p, w, bh)
+		body = m.floorBody(p, w, bh)
 	case m.view == viewKaizen:
 		body = m.kaizenBody(p, w, bh)
 	case m.view == viewOps:
@@ -210,7 +210,7 @@ func (m *model) subheader(p paint) string {
 		}
 		left = p.t("Dashboard › ", th.Faint) + p.b(name, th.Text)
 	case m.view == viewFactory:
-		left = m.factorySubheader(p)
+		left = m.floorSubheader(p)
 	case m.view == viewKaizen:
 		left = m.kaizenSubheader(p)
 	case m.view == viewOps:

@@ -1,0 +1,30 @@
+ Isshoni  1 Dash  2 Agents [3 Factory ▲7] 4 Kaizen  5 ◉  6 ✿             24h [7d] 30d  all   ○ idle 
+ Factory  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                 
+ ╭─ repository ───────────────────────╮                    ╭─ all repositories ───────────────────╮ 
+ │   ✓ all                            │                    │ in motion ▲▲▲▲▲▲▲▲●●●●●●●●●● 18/11+1 │ 
+ │ ›   alpha                          │ more               ╰──────────────────────────────────────╯ 
+ │     beta-é日本語                   │                                                             
+ │     gamma                          │▄▖  ─ alpha/login-flow  2h15m                                
+ │     delta-docs                     │▒▒█                                                          
+ │ ↑↓ move · enter choose · esc close │▀▘   ▗▄▄▖  ─ alpha/lost-its-lead  9h00m                      
+ ╰────────────────────────────────────╯═   ▐▓▓▒▒▌╔ REVIEW 3                                         
+                     ┆ +6 ┆         ▔▔▔▔══╪ ▝▀▀▘ ║ ╭┄┄╮  ─ 2 more                                   
+             6 more   ╰┄┄╯   ▗▄▄▖       ▔▔▔═══╪  ║┆ +2 ┆                                            
+                     ╌╌╌╌╌╌ ▐▓▲▒▒▌         ▔▔▔▔══╨ ╰┄┄╯   ▗▄▄▖  ─ alpha/api-rate-limits  1h30m      
+      alpha/needs-an-answer  ▝▀▀▘   ▗▄▄▖       ▔▔▔╪═══   ▐▓▲▒▒▌╔ MERGE 2                            
+                            ╌╌╌╌╌╌ ▐▓▓▒▒▌         ▔▔▔▔╪══ ▝▀▀▘ ║ ▗▄▄▖  ─ alpha/old-plumbing  2h00m  
+ delta-docs/docs-after-review · d…  ▝▀▀▘              ▔▔▔═╪══  ║▐▓▓▒▒▌                              
+                                   ╌╌╌╌╌╌                ▔▔▔▔═╪╨ ▝▀▀▘   ▗▄▄▖  ─ alpha/old-experiment
+                                                             ▔▔▔══╪═   ▐▓▓▒▒▌╔ SHIPPED 1            
+                                                                ▔▔▔▔══╪ ▝▀▀▘ ║ ▗▄▄▖  ─ alpha/releas…
+                                                                    ▔▔▔═══╪  ║▐▓▓▒▒▌                
+                                                                       ▔▔▔▔══╨ ▝▀▀▘                 
+                                                                           ▔▔▔╪═══                  
+                                                                              ▔▔▔▔╪═                
+                                                                                  ▔▔                
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+ ⚠ gamma: not inside a git repository                                                               
+ ↑↓/jk move  ·  enter open  ·  esc back                                                             

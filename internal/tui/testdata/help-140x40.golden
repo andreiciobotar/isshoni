@@ -19,6 +19,7 @@
                                 │ r             range                                                      │                                
                                 │ s             sort                                                       │                                
                                 │ /             filter                                                     │                                
+                                │ /             repository (Factory)                                       │                                
                                 │ f             follow                                                     │                                
                                 │ c             edit cap                                                   │                                
                                 │                                                                          │                                
@@ -34,7 +35,6 @@
                                 │ A dot pulses on sessions written in the last 30 seconds.                 │                                
                                 │ Factory: every 30 s while shown, asking GitHub; every 2 min off it, not. │                                
                                 ╰──────────────────────────────────────────────────────────────────────────╯                                
-                                                                                                                                            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

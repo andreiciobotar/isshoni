@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	factoryEvery = 105 * time.Second // from the end of one refresh to the start of the next
-	factoryFresh = 5 * time.Second   // entering the view within this of a result starts no refresh
+	factoryEvery = 10 * time.Second // from the end of one refresh to the start of the next, while the factory view is shown
+	factoryFresh = 5 * time.Second  // entering the view within this of a result starts no refresh
 	// factoryIdleEvery is the refresh interval while another view is shown: the tab badge needs the count.
 	factoryIdleEvery = 2 * time.Minute
 	prStale          = 2 * time.Minute // pull request data older than this is dated under the repository heading

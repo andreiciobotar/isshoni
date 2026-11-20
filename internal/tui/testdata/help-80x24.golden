@@ -14,11 +14,11 @@
   │ r             range                                                      │  
   │ s             sort                                                       │  
   │ /             filter                                                     │  
+  │ /             repository (Factory)                                       │  
   │ f             follow                                                     │  
   │ c             edit cap                                                   │  
   │ ?             help                                                       │  
   │ q             quit                                                       │  
   │ r cycles 24h · 7d · 30d · all; on the error screen it retries.           │  
   │ s sorts by recent · cost · subagent share.                               │  
-  │ The mix and the pane under the table show the cursor row; enter opens a  │  
   ╰──────────────────────────────────────────────────────────────────────────╯  

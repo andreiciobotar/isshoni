@@ -15,6 +15,7 @@ type keyMap struct {
 	Range, Follow, Sort, Filter               key.Binding
 	FilterKeep, FilterClear, Erase, Wipe      key.Binding
 	CapEdit, CapSave, CapCancel               key.Binding
+	FloorFilter                               key.Binding
 	Hanami, Legend, Zen, Replay               key.Binding
 	Dispatcher                                key.Binding
 }
@@ -61,6 +62,8 @@ var keys = keyMap{
 
 	Dispatcher: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "dispatcher")),
 
+	FloorFilter: key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "repository (Factory)")),
+
 	CapEdit:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "edit cap")),
 	CapSave:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "save")),
 	CapCancel: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
@@ -79,8 +82,10 @@ func (m *model) footerKeys() []key.Binding {
 		return []key.Binding{keys.FilterKeep, keys.FilterClear}
 	case m.fac.editing:
 		return []key.Binding{keys.CapSave, keys.CapCancel}
+	case m.floor.menu:
+		return []key.Binding{keys.Down, keys.Open, keys.Back}
 	case m.view == viewFactory:
-		return []key.Binding{keys.Down, keys.CapEdit, keys.Range, keys.Next, keys.Help, keys.Quit}
+		return []key.Binding{keys.Filter, keys.Range, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewHanami:
 		return []key.Binding{keys.Legend, keys.Zen, keys.Replay, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewKaizen:
@@ -105,7 +110,7 @@ func (m *model) helpGroups() [][]key.Binding {
 	return [][]key.Binding{
 		{keys.Down, keys.Top, keys.PageDown, keys.Fold, keys.Open, keys.Back},
 		{keys.Next, keys.Prev, keys.Dash, keys.PageLeft},
-		append([]key.Binding{keys.Range, keys.Sort, keys.Filter}, more...),
+		append([]key.Binding{keys.Range, keys.Sort, keys.Filter, keys.FloorFilter}, more...),
 		{keys.Help, keys.Quit},
 	}
 }

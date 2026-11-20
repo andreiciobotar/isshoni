@@ -169,6 +169,8 @@ type model struct {
 	pick    []string // the dispatchers on offer while the picker is open
 	pickCur int
 
+	floor floorState // the Factory tab: repository filter, cubes in transit, the belt
+
 	tickOn   bool
 	tickGen  int           // a tick carrying an older generation was superseded
 	tickD    time.Duration // delay of the pending tick
@@ -839,7 +841,7 @@ func (m *model) animating() bool {
 	case viewDashboard:
 		return len(m.nowRunning()) > 0
 	case viewFactory:
-		return m.fac.busy || m.factoryWorking()
+		return m.fac.busy || m.factoryWorking() || m.floor.moving()
 	case viewKaizen:
 		return m.kaizenMoving()
 	case viewOps:
@@ -1240,6 +1242,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	m.syncOrder(false)
 	m.fixScroll()
+	m.floorSync()
 	cmds = append(cmds, m.hanamiSync(), m.ensureTick())
 	return m, tea.Batch(cmds...)
 }
@@ -1281,6 +1284,7 @@ func (m *model) step(dt time.Duration) {
 	if m.toast.text != "" && !m.toast.until.After(now) {
 		m.toast = toast{}
 	}
+	m.floorStep(dt)
 }
 
 // settle jumps every animation to its end state (snapshots).
@@ -1302,6 +1306,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.capKey(msg)
 	case m.pick != nil:
 		return m.pickKey(msg)
+	case m.floor.menu:
+		return m.floorMenuKey(msg)
 	case m.help:
 		if key.Matches(msg, keys.Help, keys.Back, keys.Open, keys.Quit) {
 			m.help = false
@@ -1385,12 +1391,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	case key.Matches(msg, keys.Filter):
 		if m.view == viewDashboard && !m.zoom {
 			m.filterIn = true
-		}
-	case key.Matches(msg, keys.CapEdit):
-		if m.view == viewFactory && m.opts.ReadOnly {
-			m.setToast("read-only: this key may not change the cap", true)
 		} else if m.view == viewFactory {
-			m.openCap()
+			m.floorOpenMenu()
 		}
 	}
 	m.fixScroll()

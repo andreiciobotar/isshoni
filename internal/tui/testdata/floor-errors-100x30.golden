@@ -1,0 +1,30 @@
+ Isshoni  1 Dash  2 Agents [3 Factory ▲2] 4 Kaizen  5 ◉  6 ✿             24h [7d] 30d  all   ○ idle 
+ Factory  10 motion (1 blocked) · 1 review · 2 merged · 1 settled  · as of 11:00:00                 
+                      ╲▁▁▁▁╱ INTAKE                                 ╭─ all repositories ──────────╮ 
+                       ╲  ╱ ╔ BUILD 9                               │ in motion ▲●●●●●●●●● 10/6+1 │ 
+                        ╲╱  ║ ╭┄┄╮  ─ 6 more                        ╰─────────────────────────────╯ 
+                      ╪═══  ║┆ +6 ┆                                                                 
+                      ▔▔▔▔╪═╨ ╰┄┄╯   ▗▄▄▖  ─ alpha/slow-export  41m00s                              
+                          ▔▔▔═╪══   ▐▓⠋▒▒▌                                                          
+                ● BLOCKED 1  ▔▔▔▔═╪═ ▝▀▀▘   ▗▄▄▖  ─ alpha/login-flow  2h15m                         
+                      ▗▄▄▖       ▔▔▔══╪═   █▓⠋▒▒█                                                   
+                     ▐▓▲▒▒▌         ▔▔▔▔══╪ ▝▀▀▘   ▗▄▄▖  ─ alpha/lost-its-lead  9h00m               
+ alpha/needs-an-ans…  ▝▀▀▘              ▔▔▔═══╪   ▐▓▓▒▒▌╔ REVIEW 1                                  
+                     ╌╌╌╌╌╌                ▔▔▔▔═══ ▝▀▀▘ ║ ▗▄▄▖  ─ alpha/api-rate-limits  1h30m      
+                                               ▔▔▔╪═══  ║▐▓▲▒▒▌╔ MERGE 2                            
+                                                  ▔▔▔▔╪═╨ ▝▀▀▘ ║ ▗▄▄▖  ─ alpha/old-plumbing  2h00m  
+                                                      ▔▔▔═╪══  ║▐▓▓▒▒▌                              
+                                                         ▔▔▔▔═╪╨ ▝▀▀▘   ▗▄▄▖  ─ alpha/old-experiment
+                                                             ▔▔▔══╪═   ▐▓▓▒▒▌╔ SHIPPED 1            
+                                                                ▔▔▔▔══╪ ▝▀▀▘ ║ ▗▄▄▖  ─ alpha/releas…
+                                                                    ▔▔▔═══╪  ║▐▓▓▒▒▌                
+                                                                       ▔▔▔▔══╨ ▝▀▀▘                 
+                                                                           ▔▔▔╪═══                  
+                                                                              ▔▔▔▔╪═                
+                                                                                  ▔▔                
+                                                                                                    
+                                                                                                    
+ ⚠ gamma: not inside a git repository                                                               
+ alpha: pull requests as of 12m ago · GitHub slow: factory status timed out after 25s               
+ beta-é日本語: pull requests as of 3m ago                                                           
+ / filter  ·  r range  ·  tab next view  ·  ? help  ·  q quit                                       

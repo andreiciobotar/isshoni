@@ -447,7 +447,7 @@ The pictures here and in the README are recordings of this repository's own fact
 
 <img src="../assets/tabs/agents.webp" alt="View 2, Agents: per agent type the dispatches, tokens, cost and duration at the median and the 90th percentile, as the range goes from 24 hours to all time">
 
-<img src="../assets/tabs/factory.webp" alt="View 3, Factory: what waits for you, then each task's phase, elapsed time, pull request and base, against the worktree cap">
+<img src="../assets/tabs/factory.webp" alt="View 3, Factory: an isometric factory floor with one cube per task riding a conveyor through the stations BUILD, REVIEW, MERGE and SHIPPED, blocked tasks parked on a siding, and a cube travelling to its next station when its phase changes">
 
 <img src="../assets/tabs/kaizen.webp" alt="View 4, Kaizen, its four pages in turn: Pulse, Flow, Anatomy, Board">
 
@@ -477,7 +477,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 | `enter`, `esc` | dashboard: open the session row under the cursor full screen (the zoom; in it `↑` `↓` `g` `G` `pgup` `pgdn` move over the dispatches and `enter` swaps the list for the selected dispatch); on `all`, a repository or a task, a message says to pick a session row and the cursor stays. Back: first the detail, then the zoom, then the dashboard from any other view |
 | `r` | range: 24h, 7d, 30d, all (on the error screen: retry) |
 | `s` | sort: recent, cost, subagent share; within a repository, tasks and sessions without a task are one list; also puts the held order right |
-| `/` | filter by `repo`, `repo/task`, project or session id |
+| `/` | dashboard: filter by `repo`, `repo/task`, project or session id. Factory view: a dropdown to show `all` repositories or one (`↑` `↓`, `enter` chooses, `esc` closes) |
 | `f` | follow the most recently active session (off until pressed or `--follow`; any cursor key turns it off) |
 | `←` `→`, `h` `l` | kaizen view: previous and next page (Pulse, Flow, Anatomy, Board) |
 | `c` | factory view: edit the cap (digits or `↑` `↓`, `enter` saves, `esc` cancels) |
@@ -539,37 +539,47 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   into a group and a child row, a line or two lower; the cursor stays on its session.
 - **Agents:** per agent type: dispatches, models, tokens and cost, p50/p90 cost and
   durations, repeats, review loops, warnings.
-- **Factory:** for each repository seen in the range that has task worktrees, what
-  `factory status --json` reports: the tasks holding a slot against the cap (the meter
-  shows the ordinary limit plus the slots held in reserve for critical work, `7/9+1`),
-  and every task with its phase, elapsed time (for a task in motion, against its limit,
-  yellow when nearing it and red past it; a task the site manager gave more time has one
-  faint line beneath: `limit +30m by site-manager · <reason>`), size (shown when any task
-  has one), pull
-  request or deliverable, base, and `overtime` or `stale`. At the top, a band lists everything that waits on you across
-  repositories, oldest first: tasks in review (the pull request or deliverable to look
-  at) and tasks blocked on you (what they asked; a task blocked on the dispatcher or on
-  another task says so in its row, with its reason beneath, and is not in the band), each
-  with how long it has waited; when nothing waits it says so. The `3 Factory` tab carries
-  `▲N` for the number waiting on every view (in a narrow header the live count then
-  shows as `● N`, without the word). A task the site manager paused reads
-  `paused 12m: waits a, b` in place of `blocked on a, b`, yellow from 30 minutes on (a
-  stale pause); a task the queue prioritizes reads `motion · prioritized 3m` (or
-  `review · …`, or `blocked · …` for a released task still declared paused) in the phase
-  column. A task whose work is over but which cleanup keeps shows a `kept` pill and the
-  faint line `kept: uncommitted changes`; a task the site manager decided to leave as it
-  is shows a `held` pill (`escalated` when it passed the call on) and the line
-  `held 9h · <criterion> · <reason>`. Its line replaces the other detail line, and the row is
-  never shown as overtime: its elapsed time is not red or yellow and it has no
-  `overtime` pill. It refreshes every 105 seconds while shown, every 2
+- **Factory:** an isometric factory floor, drawn from what `factory status --json`
+  reports for each repository seen in the range that has task worktrees. Every task is
+  one cube on a conveyor belt that runs from the intake chute at the upper left to the
+  lower right through the stations `BUILD`, `REVIEW`, `MERGE` and `SHIPPED`; each
+  station's sign gives its name and how many tasks it holds (`BUILD 3`). A task's phase
+  is its place: in motion on BUILD, in review on REVIEW, merged (not cleaned up) on
+  MERGE, settled on SHIPPED. A blocked task, and one whose phase the view does not know
+  (its label then shows the raw phase), stands on the `BLOCKED` siding beside BUILD,
+  labelled with what it waits on. Position is an order, not a measurement: BUILD cubes
+  stand by elapsed time against the limit (furthest along nearest REVIEW, tasks without
+  both last), the other places by slug. A cube takes the colour of its phase; a
+  spinner on it means its session is working, `▲` that it waits on you (a ready pull
+  request in review, or a task blocked on the human), heavy side edges that it is past
+  its time. Each cube has a label: the slug (with the repository name before it when
+  several repositories have tasks) and the elapsed time where there is room. The belt's
+  tread turns only while a task in motion has a working session; otherwise it stands
+  still. A place with more tasks than room shows `+N` in its last slot, and its sign
+  still counts them all; a larger terminal shows more cubes and longer labels. When a
+  refresh changes a task's phase, its cube travels along the line to its new place over
+  about a second; a new task comes in at the intake, a task that is gone leaves from
+  where it stood. A sign plate at the upper right names the repository (or `all
+  repositories`) and holds the capacity meter: the tasks in motion against the cap
+  (`7/9+1`: the ordinary limit plus the slots held in reserve for critical work, added
+  over the repositories shown). `/` opens a dropdown of `all` and each repository (`↑`
+  `↓` move, `enter` chooses, `esc` closes without a change): the floor then shows only
+  that repository, the sub-header names it, the choice survives refreshes, and it
+  returns to `all` if the repository leaves the data. Under the floor, a repository whose
+  status failed shows its error in red, and a repository whose pull request data is
+  over 2 minutes old or failed to load says so (the `REVIEW`, `MERGE` and `SHIPPED`
+  places depend on it). Before the first answer a plate says `reading the factory…`;
+  with no task, the belt stands empty under a plate that says so. The `3 Factory` tab
+  carries `▲N` for the number waiting on every view (in a narrow header the live count
+  then shows as `● N`, without the word). It refreshes every 10 seconds while shown, every 2
   minutes otherwise, in two passes. The first, for every repository, is
   `factory status --json --cached` (10 s limit): it never contacts GitHub, so the rows
   show at once. The second, only while the view is shown, is
   `factory status --json --max-age 60` (25 s limit) for each repository with tasks
   whose pull request data is missing or older than 60 seconds; it asks GitHub (at most
   10 s per call, see [factory.md](factory.md)). It runs per repository, one at a time
-  each. If it fails, the rows stay and a dim line under the repository says
-  `pull requests as of 2m ago · GitHub slow: <why>`; a line also appears when the data
+  each. If it fails, the rows stay and a dim line under the floor says
+  `<repository>: pull requests as of 2m ago · GitHub slow: <why>`; a line also appears when the data
   is over 2 minutes old. Off the view only the first pass runs, so the dashboard makes
   no GitHub call there. `--snapshot` runs both passes. `c` sets `limits.worktree_cap` (1 to
   999) in `~/.claude/factory/settings.toml` by running `factory settings set`, which

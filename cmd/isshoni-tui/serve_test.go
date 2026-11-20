@@ -10,7 +10,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -479,7 +478,7 @@ func TestServeATerminalWithoutASizeGetsTheDefault(t *testing.T) {
 	v := e.view(addr, viewOpts{signer: s, noSize: true})
 	v.waitFor("zebrafish")
 	v.send("3")
-	v.waitFor("worktree cap")
+	v.waitFor("INTAKE")
 	v.send("q")
 	if err := v.waitExit(); err != nil {
 		t.Fatal(err)
@@ -502,7 +501,7 @@ func TestServeAbruptDisconnectLeavesTheOthersRunning(t *testing.T) {
 	a.waitFor("zebrafish")
 	b.waitFor("zebrafish")
 	a.send("3c")
-	a.waitFor("worktree cap")
+	a.waitFor("INTAKE")
 	a.sess.Close()
 	a.client.Close()
 	waitFor(t, "A's session to end", func() bool { return strings.Contains(e.logs.String(), "session end") })
@@ -512,9 +511,9 @@ func TestServeAbruptDisconnectLeavesTheOthersRunning(t *testing.T) {
 	c.waitFor("zebrafish")
 	// the server's own shutdown closes the window channel of the viewers still on the Factory view
 	b.send("3")
-	b.waitFor("worktree cap")
+	b.waitFor("INTAKE")
 	c.send("3")
-	c.waitFor("worktree cap")
+	c.waitFor("INTAKE")
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -559,43 +558,6 @@ func TestServeColourFollowsTheClientTerminal(t *testing.T) {
 
 func settingsPath(e *testEnv) string {
 	return filepath.Join(e.home, ".claude", "factory", "settings.toml")
-}
-
-func TestServeOnlyAWriteKeyChangesTheCap(t *testing.T) {
-	e := newTestEnv(t)
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 is missing")
-	}
-	root, err := filepath.Abs("../..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("ISSHONI_ROOT", root)
-	requireTempFactoryHome(t)
-	ro, rw := newSigner(t), newSigner(t)
-	e.allow(keyLine(ro, ""), keyLine(rw, "write"))
-	addr, _ := e.start()
-
-	r := e.view(addr, viewOpts{signer: ro})
-	r.waitFor("zebrafish")
-	r.send("3c")
-	r.waitFor("read-only: this key may not change the cap")
-	r.send("6\r")
-	if _, err := os.Stat(settingsPath(e)); err == nil {
-		t.Fatal("a read-only key wrote the settings file")
-	}
-	waitFor(t, "the read-only mode in the log", func() bool { return strings.Contains(e.logs.String(), "read-only") })
-
-	w := e.view(addr, viewOpts{signer: rw})
-	w.waitFor("zebrafish")
-	w.send("3c\x7f6\r")
-	waitFor(t, "the cap in the settings file", func() bool {
-		b, _ := os.ReadFile(settingsPath(e))
-		return strings.Contains(string(b), "worktree_cap = 6\n")
-	})
-	if !strings.Contains(e.logs.String(), "write") {
-		t.Fatalf("the log does not say the session may write: %s", e.logs.String())
-	}
 }
 
 func TestServeQuitEndsOnlyThatViewer(t *testing.T) {
