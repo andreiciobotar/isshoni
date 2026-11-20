@@ -5082,11 +5082,12 @@ def with_dispatcher(p, fallback):
 
 def pause_unanswered_stops(p, repo):
     """Pause, as the site manager's pause does, each task whose stop card (an open `overrun` card whose record has `recommend` 2, 3 or 4) has gone
-    `limits.overrun_stop_wait_minutes` unanswered and that is not paused: no decision record, the lead told, not the dispatcher."""
-    wait, paused = load_settings()["overrun_stop_wait_minutes"] * 60, paused_rows(repo)
+    `limits.overrun_stop_wait_minutes` unanswered and whose last record is `working` (a blocked task is not running, and a pause would replace
+    its own record): no decision record, the lead told, not the dispatcher."""
+    wait, tasks = load_settings()["overrun_stop_wait_minutes"] * 60, read_tasks(repo.root)
     open_ids = {d["id"] for d in open_decisions(repo.root) if d["kind"] == "overrun"}
     for r in repo_log("decisions", repo.root) or []:
-        if r["id"] in open_ids and "ask" in r and "minutes" in r and r.get("recommend") in (2, 3, 4) and r["slug"] not in paused and p["now"] - (epoch(stamp(r)) or p["now"]) >= wait:
+        if r["id"] in open_ids and "ask" in r and "minutes" in r and r.get("recommend") in (2, 3, 4) and tasks.get(r["slug"], {}).get("state") == "working" and p["now"] - (epoch(stamp(r)) or p["now"]) >= wait:
             declare(repo, r["slug"], "site-manager", "blocked", waits_on=["human"], paused=True)
             task_event("TaskPaused", repo, r["slug"], waits_on=["human"])
             forward(repo, p["dispatcher"], r["slug"], "SITE MANAGER",

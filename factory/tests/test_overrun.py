@@ -963,6 +963,18 @@ class RunOnTests(Card):
         self.tick(32)
         self.assertEqual((self.state()["state"], len(self.paused_events())), ("blocked", 2))
 
+    def test_a_task_blocked_on_a_question_is_not_paused_until_its_lead_declares_working(self):
+        self.stop()
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "blocked", "waits_on": ["human"], "ts": iso(NOW + 60)}])
+        self.seed("decisions", [{"repo": ROOT, "id": "q1", "slug": "x", "kind": "question", "ask": "which?", "options": ["a", "b"], "ts": iso(NOW + 61)}])
+        blocked = factory.read_tasks(ROOT)["x"]
+        self.tick(40)
+        self.assertEqual((factory.read_tasks(ROOT)["x"], self.paused_events(), self.lines()), (blocked, [], []))
+        self.assertEqual([d["kind"] for d in factory.open_decisions(ROOT)], ["overrun", "question"])
+        self.assertEqual(self.cli("state", "working")[0], 0)
+        self.tick(41)
+        self.assertEqual((self.state(), len(self.paused_events())), ({"state": "blocked", "paused": True, "waits_on": ["human"]}, 1))
+
 
 class OpenRuleTests(Card):
     """An overrun card is open while its task works or waits, until it is answered, replaced or the task hands over."""
