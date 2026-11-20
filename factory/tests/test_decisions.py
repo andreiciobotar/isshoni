@@ -204,6 +204,14 @@ class DelegateTests(Delegation):
         self.assertIn("is with the site manager", self.answer("lead")[2])
         self.assertEqual(len(self.answers()), 1)
 
+    def test_a_pending_decision_ask_does_not_block_overrun_nor_count_in_its_duplicate_check(self):
+        self.assertEqual(self.answer("site-manager")[0], 0)
+        self.assertEqual(self.pending(), self.firing()["id"])
+        self.assertEqual(self.ask()[0], 0)
+        self.assertEqual(sorted(f["criterion"] for f in factory.fold(self.records())[0] if f["decision"] is None), ["decision", "overrun"])
+        code, _, err = self.ask()
+        self.assertEqual((code, "an ask for x is pending" in err), (1, True))
+
     def test_a_pick_outside_the_options_names_the_choices(self):
         for what in ("0", "3", "later", "-1"):
             code, _, err = self.answer(what)
@@ -215,7 +223,7 @@ class DelegateTests(Delegation):
                                  "options": ["yes", "no"]}])
         for what in ("lead", "site-manager"):
             code, _, err = self.as_who(False, "decision", "answer", "ap1", what)
-            self.assertEqual((code, err.strip()), (2, "factory: decision answer: a approval decision is the human's alone"))
+            self.assertEqual((code, err.strip()), (2, "factory: decision answer: a decision of kind approval is the human's alone"))
         self.assertEqual((self.outbox(), len(self.answers())), ([], 0))
         self.assertEqual(self.as_who(False, "decision", "answer", "ap1", "1")[0], 0)
 

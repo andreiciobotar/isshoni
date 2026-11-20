@@ -5060,7 +5060,7 @@ def decision_answer(args):
     to = args.choice if args.choice in ("lead", "site-manager") else None
     if to:
         if found["kind"] not in DELEGABLE:
-            raise Fail(f"decision answer: a {found['kind']} decision is the human's alone")
+            raise Fail(f"decision answer: a decision of kind {found['kind']} is the human's alone")
         delegate(repo, found, to)
         print(f"answered {found['slug']}: left to the {to.replace('-', ' ')}; " + ("the next tick delivers it" if to == "lead" else "it decides on the next tick"))
         return 0
@@ -5340,6 +5340,7 @@ def summarize(firings, misses):
             "suppressed": sum(f["decision"] == "suppressed" for f in firings),
             "paused": sum(f["decision"] == "paused" for f in firings),
             "extended": len(given), "old_rule": len(extensions_decided) - len(given), "kept": sum(f["outcome"] == "kept" for f in given), "overran": sum(f["outcome"] == "overran" for f in given),
+            "picked": sum(f["decision"] == "picked" for f in firings), "returned": sum(f["decision"] == "returned" for f in firings),
             "closed": len(closed), "stood": sum(f["outcome"] == "stood" for f in closed), "reopened": sum(f["outcome"] == "reopened" for f in closed),
             "told": len(told), **{f"told_{o}": n for o, n in by_outcome.items()}, "told_no_outcome": len(told) - sum(by_outcome.values()),
             "told_undelivered": sum(not set(f["tell"]) & set(f["delivered"]) for f in told),
@@ -5358,7 +5359,7 @@ def entry_scores(firings, misses):
         counts = summarize(mine, [m for m in misses if (m.get("entry") or "unlisted") == name])
         scores[name] = {"fired": len(mine), "to_lead": sum(f["decision"] == "escalated" and f.get("to") == "lead" for f in mine),
                         **{k: counts[k] for k in ("escalated", "acted", "ignored", "no_outcome", "suppressed", "told", "extended", "paused",
-                                                  "closed", "missed", "precision")}}
+                                                  "closed", "picked", "returned", "missed", "precision")}}
     return scores
 
 
@@ -5383,7 +5384,7 @@ def cmd_firings(args):
     for name, e in s["entries"].items():
         if e["fired"] or e["missed"]:
             precision = "-" if e["precision"] is None else f"{e['precision']:.2f}"
-            more = "".join(f"; {k} {e[k]}" for k in ("extended", "told", "paused", "closed") if e[k])
+            more = "".join(f"; {k} {e[k]}" for k in ("extended", "told", "paused", "closed", "picked", "returned") if e[k])
             print(f"{name}: fired {e['fired']}; escalated {e['escalated']} (acted {e['acted']}, ignored {e['ignored']}, no outcome {e['no_outcome']}); "
                   f"to lead {e['to_lead']}; suppressed {e['suppressed']}{more}; missed {e['missed']}; precision {precision}")
     pct = {k: "-" if s[k] is None else f"{s[k]:.2f}" for k in ("precision", "recall")}
@@ -5391,7 +5392,7 @@ def cmd_firings(args):
     print(f"escalated {s['escalated']} (acted {s['acted']}, ignored {s['ignored']}, no outcome {s['no_outcome']}); "
           f"to lead {told}; suppressed {s['suppressed']}; paused {s['paused']}; "
           f"extended {s['extended']} (kept {s['kept']}, overran {s['overran']}, no outcome {s['extended'] - s['kept'] - s['overran']}){'; %d before the limit counted from the decision, not scored' % s['old_rule'] if s['old_rule'] else ''}; "
-          f"closed {s['closed']} (stood {s['stood']}, reopened {s['reopened']}, no outcome {s['closed'] - s['stood'] - s['reopened']}); missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
+          f"closed {s['closed']} (stood {s['stood']}, reopened {s['reopened']}, no outcome {s['closed'] - s['stood'] - s['reopened']}){'; picked %d; returned %d' % (s['picked'], s['returned']) if s['picked'] or s['returned'] else ''}; missed {s['missed']} ({s['missed_suppressed']} suppressed first, "
           f"{s['missed_never_fired']} never fired); precision {pct['precision']}; recall {pct['recall']}; "
           f"told {s['told']} (acted {s['told_acted']}, noise {s['told_noise']}, collided {s['told_collided']}, "
           f"no outcome {s['told_no_outcome']}, undelivered {s['told_undelivered']})")
