@@ -4302,7 +4302,7 @@ def record_decisions(p, sent, result, run, look=None):
         looked = d.get("looked")
         if crit == "overrun":
             stop = decision == "paused"
-            post_overrun_card(p["repo"], f["slug"], reason.strip(), d.get("recommend") if d.get("recommend") in (2, 3, 4) else 2 if stop else 1,
+            post_overrun_card(p["repo"], f["slug"], reason.strip(), (d["recommend"] if d.get("recommend") in (2, 3, 4) else 2) if stop else 1,
                               None if stop else minutes)
         elif decision == "paused" and ask:
             declare(p["repo"], f["slug"], "site-manager", "blocked", waits_on=waits, paused=True)
@@ -5043,7 +5043,7 @@ def decision_answer(args):
     extended_it = True
     asked = next(r for r in repo_log("decisions", repo.root) if r.get("id") == args.id and "ask" in r)
     if found["kind"] == "overrun" and args.n == 1 and "minutes" in asked:  # a continue card was extended when posted
-        extended_it = extend_for_human(repo, found["slug"], args.id, asked["minutes"])
+        extended_it = extend_for_human(repo, found["slug"], args.id, min(asked["minutes"], load_settings()["extension_minutes"]))
     outbox_put(repo, found["slug"],
                f"INBOX: {found['slug']}: decision {args.id}: the human picked {args.n}: {found['options'][args.n - 1]}")
     print(f"answered {found['slug']}: {args.n}; the next tick delivers it")
@@ -5083,7 +5083,7 @@ def pause_unanswered_stops(p, repo):
     wait, paused = load_settings()["overrun_stop_wait_minutes"] * 60, paused_rows(repo)
     open_ids = {d["id"] for d in open_decisions(repo.root) if d["kind"] == "overrun"}
     for r in repo_log("decisions", repo.root) or []:
-        if r["id"] in open_ids and "ask" in r and "minutes" in r and r["slug"] not in paused and p["now"] - (epoch(stamp(r)) or p["now"]) >= wait:
+        if r["id"] in open_ids and "ask" in r and "minutes" in r and r.get("recommend") in (2, 3, 4) and r["slug"] not in paused and p["now"] - (epoch(stamp(r)) or p["now"]) >= wait:
             declare(repo, r["slug"], "site-manager", "blocked", waits_on=["human"], paused=True)
             task_event("TaskPaused", repo, r["slug"], waits_on=["human"])
             forward(repo, p["dispatcher"], r["slug"], "SITE MANAGER",

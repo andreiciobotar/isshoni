@@ -911,6 +911,26 @@ class RunOnTests(Card):
         self.tick(40)
         self.assertEqual((self.state()["state"], self.lines(), self.paused_events(), factory.open_decisions(ROOT)), ("handed-over", [], [], []))
 
+    def test_an_undecided_card_is_not_a_stop_card_and_is_never_paused(self):
+        self.post()  # the card posted when nothing could be extended: `minutes`, no recommendation
+        self.tick(40)
+        self.assertEqual((self.state()["state"], self.lines(), self.paused_events()), ("working", [], []))
+
+    def test_an_extended_decision_is_recommend_1_whatever_the_site_manager_adds(self):
+        self.ask()
+        self.watch({"decision": "extended", "minutes": 20, "reason": "landing left", "recommend": 3})
+        self.assert_card("landing left", recommend=1, option=already(20), minutes=None)
+
+    def test_a_pick_is_capped_at_the_extension_setting_lowered_after_the_card(self):
+        [d] = self.post(minutes=60)
+        load = factory.load_settings
+        with mock.patch.object(factory, "load_settings", lambda: {**load(), "extension_minutes": 20}):
+            code, out, _ = self.answer(d["id"], 1)
+        self.assertEqual(code, 0)
+        self.assertNotIn("not extended", out)
+        [f] = self.human_extensions()
+        self.assertEqual(f["minutes"], 20)
+
     def test_continue_after_the_pause_extends_by_the_human_and_the_leads_working_lets_the_build_start(self):
         d = self.stop()
         self.tick(31)
