@@ -136,6 +136,17 @@ type FactoryStatus struct {
 	Decisions []FactoryDecision `json:"decisions"` // open decisions of the repository, oldest first; nil from a script before the field
 	Approvals FactoryApprovals  `json:"approvals"` // pull requests waiting for the human's approval; empty from a script before the field
 	History   []FactoryHistory  `json:"history"`   // what was decided and by whom, newest first; nil from a script before the field
+	Standing  []FactoryStanding `json:"standing"`  // the standing answers, global, in the script's table order; nil from a script before the field
+}
+
+// FactoryStanding is one kind of decision the human may answer "always": its one option's label, whether it
+// is on, how often it stood in, the uses after which it switches itself off (0: never) and whether it did.
+// {"kind": "overrun", "label": "continue", "on": true, "uses": 3, "limit": 10 or null, "lapsed": false}
+type FactoryStanding struct {
+	Kind, Label string
+	On          bool
+	Uses, Limit int
+	Lapsed      bool
 }
 
 // FactoryApprovals is the pull requests waiting for the human's approval. AsOf is when the watch last
@@ -201,32 +212,38 @@ func (h *FactoryHistory) UnmarshalJSON(b []byte) error {
 
 // FactoryDecision is an open decision a lead posted for the human: the ask and its numbered options.
 // Recommend is the 1-based option the lead would take, 0 when it named none. TS is the zero time when
-// the script's timestamp does not parse: the decision then shows without an age.
+// the script's timestamp does not parse: the decision then shows without an age. Always is the option that may
+// stand as an answer (0: none), Picked the option a split was answered with and waits on a slot for (0: none),
+// Note one line the script adds under the ask.
 type FactoryDecision struct {
 	ID        string
 	Slug      string
-	Kind      string // question or blocked
+	Kind      string // question, blocked or split
 	Ask       string
 	Options   []string
 	Recommend int
+	Always    int
+	Picked    int
+	Note      string
 	TS        time.Time
 }
 
 // UnmarshalJSON reads {"id": "3f9a1c2b4d5e", "slug": "demo-task", "kind": "question", "ask": "...",
-// "options": ["a", "b"], "recommend": 1, "ts": "2026-11-14T19:00:00Z"}; recommend may be absent and a bad
-// ts leaves TS zero rather than failing the status.
+// "options": ["a", "b"], "recommend": 1, "always": 1, "picked": 1, "note": "...", "ts": "2026-11-14T19:00:00Z"};
+// recommend, always, picked and note may be absent and a bad ts leaves TS zero rather than failing the status.
 func (d *FactoryDecision) UnmarshalJSON(b []byte) error {
 	var raw struct {
 		ID, Slug, Kind, Ask string
 		Options             []string
 		Recommend           int
-		TS                  string
+		Always, Picked      int
+		Note, TS            string
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
 	}
 	ts, _ := time.Parse(time.RFC3339, raw.TS)
-	*d = FactoryDecision{ID: raw.ID, Slug: raw.Slug, Kind: raw.Kind, Ask: raw.Ask, Options: raw.Options, Recommend: raw.Recommend, TS: ts}
+	*d = FactoryDecision{ID: raw.ID, Slug: raw.Slug, Kind: raw.Kind, Ask: raw.Ask, Options: raw.Options, Recommend: raw.Recommend, Always: raw.Always, Picked: raw.Picked, Note: raw.Note, TS: ts}
 	return nil
 }
 
@@ -582,12 +599,27 @@ func WriteWorktreeCap(n int) error {
 	return nil
 }
 
-// answerTimeout bounds `factory decision answer`, which writes two log lines and never leaves the machine.
+// answerTimeout bounds `factory decision answer` and `decision always`, which write log lines and never leave the machine.
 const answerTimeout = 10 * time.Second
 
 // AnswerDecision runs `<root>/factory/bin/factory decision answer id n` in the repository at repoPath (root as
-// for WriteWorktreeCap): the factory queues the human's pick for the lead. Its one-line complaint is the error.
-func AnswerDecision(ctx context.Context, repoPath, id string, n int) error {
+// for WriteWorktreeCap): the factory queues the human's pick for the lead. With always the pick also becomes
+// the standing answer of its kind (`--always`). Its one-line complaint is the error.
+func AnswerDecision(ctx context.Context, repoPath, id string, n int, always bool) error {
+	args := []string{"decision", "answer", id, strconv.Itoa(n)}
+	if always {
+		args = append(args, "--always")
+	}
+	return runFactory(ctx, repoPath, args...)
+}
+
+// SetStanding runs `factory decision always <kind> on|off` in the repository at repoPath, the way AnswerDecision
+// runs its command.
+func SetStanding(ctx context.Context, repoPath, kind string, on bool) error {
+	return runFactory(ctx, repoPath, "decision", "always", kind, map[bool]string{true: "on", false: "off"}[on])
+}
+
+func runFactory(ctx context.Context, repoPath string, args ...string) error {
 	root, err := LocateRoot()
 	if err != nil {
 		return err
@@ -599,11 +631,11 @@ func AnswerDecision(ctx context.Context, repoPath, id string, n int) error {
 	ctx, cancel := context.WithTimeout(ctx, answerTimeout)
 	defer cancel()
 	var se bytes.Buffer
-	cmd := groupCmd(ctx, script, "decision", "answer", id, strconv.Itoa(n))
+	cmd := groupCmd(ctx, script, args...)
 	cmd.Dir, cmd.Stderr = repoPath, &se
 	if err := cmd.Run(); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("answering timed out after %s", answerTimeout)
+			return fmt.Errorf("factory %s timed out after %s", args[1], answerTimeout)
 		}
 		return stderrLine(se.String(), err)
 	}

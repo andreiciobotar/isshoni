@@ -1158,6 +1158,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case answerMsg:
 		cmds = append(cmds, m.answered(msg))
 
+	case standingMsg:
+		cmds = append(cmds, m.standingSet(msg))
+
 	case kaizenMsg:
 		cmds = append(cmds, m.applyKaizen(msg))
 
@@ -1309,6 +1312,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.pickKey(msg)
 	case m.view == viewInbox && m.inbox.pick != 0 && !m.help:
 		return m.confirmKey(msg)
+	case m.view == viewInbox && m.inbox.always && !m.help:
+		return m.alwaysKey(msg)
 	case m.help:
 		if key.Matches(msg, keys.Help, keys.Back, keys.Open, keys.Quit) {
 			m.help = false
@@ -1335,6 +1340,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.pickOption(m.pickable(msg))
 	case m.view == viewInbox && key.Matches(msg, keys.History):
 		m.inbox.history = !m.inbox.history
+	case m.view == viewInbox && key.Matches(msg, keys.AlwaysOff):
+		m.alwaysOff()
 	case key.Matches(msg, keys.Inbox):
 		return m.switchView(viewInbox)
 	case key.Matches(msg, keys.Dash):
@@ -1488,7 +1495,7 @@ func (m *model) filterKey(msg tea.KeyPressMsg) tea.Cmd {
 func (m *model) switchView(v viewID) tea.Cmd {
 	m.view, m.zoom, m.detailOnly = v, false, false
 	m.fixScroll()
-	m.inbox.pick = 0
+	m.inbox.pick, m.inbox.always = 0, false
 	switch v {
 	case viewFactory, viewInbox:
 		return m.refreshFactory(factoryFresh)

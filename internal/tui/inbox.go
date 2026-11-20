@@ -20,8 +20,9 @@ type inboxState struct {
 	top     int    // first visible page line
 	pick    int    // the option picked on the cursor card, 1-based; 0 when none
 	id      string // the decision the pick belongs to
-	reject  bool   // the confirm cursor is on Reject
+	mark    int    // the confirm button marked: 0 Accept, then Always when offered, last Reject
 	sending bool   // the pick is being sent
+	always  bool   // the Always line is in pick mode: a digit switches a standing answer off
 
 	history bool // the history shows every entry the status carries, not the day's first few
 }
@@ -35,9 +36,10 @@ type inboxCard struct {
 
 // answerMsg is the end of `factory decision answer` for a card.
 type answerMsg struct {
-	card inboxCard
-	n    int
-	err  error
+	card   inboxCard
+	n      int
+	always bool
+	err    error
 }
 
 // cards lists the open decisions in the order they are shown: repositories by their oldest decision, each
@@ -115,6 +117,9 @@ func (m *model) syncInbox() {
 	if in.pick != 0 && !slices.ContainsFunc(cs, func(c inboxCard) bool { return c.d.ID == in.id }) {
 		in.pick, in.sending = 0, false
 	}
+	if len(m.switchable()) == 0 {
+		in.always = false
+	}
 }
 
 // stepCard moves the cursor one card; false when there is no card that way, and the caller scrolls.
@@ -160,43 +165,65 @@ func (m *model) pickOption(n int) tea.Cmd {
 		return nil
 	}
 	c, _ := m.cursorCard()
-	m.inbox.id, m.inbox.pick, m.inbox.reject = c.d.ID, n, false
+	m.inbox.id, m.inbox.pick, m.inbox.mark = c.d.ID, n, 0
 	m.showCard()
 	return nil
 }
 
-// confirmKey handles every key while a pick waits for Accept or Reject; the caller has taken ctrl+c.
+// alwaysOffered is whether the pick on the card under the cursor is the option that may stand as an answer.
+func (m *model) alwaysOffered() bool {
+	c, _ := m.cursorCard()
+	return c.d.Always != 0 && c.d.Always == m.inbox.pick
+}
+
+// buttons is how many the confirm line has: Accept and Reject, with Always between when it is offered.
+func (m *model) buttons() int {
+	if m.alwaysOffered() {
+		return 3
+	}
+	return 2
+}
+
+// confirmKey handles every key while a pick waits for Accept, Always or Reject; the caller has taken ctrl+c.
 func (m *model) confirmKey(msg tea.KeyPressMsg) tea.Cmd {
 	in := &m.inbox
 	if in.sending {
 		return nil
 	}
+	buttons := m.buttons()
 	switch {
 	case key.Matches(msg, keys.Accept):
-		return m.accept()
+		return m.accept(false)
+	case key.Matches(msg, keys.Always) && buttons == 3:
+		return m.accept(true)
 	case key.Matches(msg, keys.Reject):
 		in.pick = 0
 	case key.Matches(msg, keys.Mark):
-		in.reject = !in.reject
-	case key.Matches(msg, keys.Confirm) && in.reject:
+		step := 1
+		if k := msg.String(); k == "left" || k == "h" {
+			step = buttons - 1
+		}
+		in.mark = (in.mark + step) % buttons
+	case key.Matches(msg, keys.Confirm) && in.mark == buttons-1:
 		in.pick = 0
 	case key.Matches(msg, keys.Confirm):
-		return m.accept()
+		return m.accept(in.mark == 1 && buttons == 3)
 	default:
 		if n := m.pickable(msg); n > 0 {
-			in.pick, in.reject = n, false
+			in.pick, in.mark = n, 0
 		}
 	}
 	return nil
 }
 
-// accept sends the pick as a command: the script is never run on the update loop.
-func (m *model) accept() tea.Cmd {
+// accept sends the pick as a command, as the standing answer of its kind when always: the script is never run
+// on the update loop.
+func (m *model) accept(always bool) tea.Cmd {
 	c, _ := m.cursorCard()
 	n, ctx := m.inbox.pick, m.ctx
 	m.inbox.sending = true
 	return func() tea.Msg {
-		return answerMsg{c, n, data.AnswerDecision(ctx, c.path, c.d.ID, n)}
+		return answerMsg{c, n, always, data.AnswerDecision(ctx, c.path, c.d.ID, n, always)}
 	}
 }
 
@@ -210,7 +237,11 @@ func (m *model) answered(msg answerMsg) tea.Cmd {
 		m.setToast(firstLine(msg.err.Error()), true)
 		return nil
 	}
-	m.setToast(fmt.Sprintf("answered %s: %d", msg.card.d.Slug, msg.n), false)
+	toast := fmt.Sprintf("answered %s: %d", msg.card.d.Slug, msg.n)
+	if msg.always {
+		toast += " · always " + m.alwaysLabel(msg.card.d.Kind) + " from now"
+	}
+	m.setToast(toast, false)
 	if m.runner != nil {
 		m.runner.Forget() // the shared runner would answer with the status from before
 	}
@@ -222,8 +253,9 @@ func (m *model) answered(msg answerMsg) tea.Cmd {
 func (m *model) inboxPage(p paint, w, h int) (lines block, spans [][2]int) {
 	cs := m.cards()
 	if !m.fac.doneAt.IsZero() {
+		lines = m.alwaysLine(p, w)
 		if len(cs) == 0 {
-			lines = block{fit(p.sp(1)+p.t("Nothing to decide.", m.th.Faint), w, p), p.sp(w)}
+			lines = append(lines, fit(p.sp(1)+p.t("Nothing to decide.", m.th.Faint), w, p), p.sp(w))
 		}
 		i := 0
 		for _, r := range m.inboxRepos(cs) {
@@ -256,17 +288,25 @@ func (m *model) card(p paint, c inboxCard, cur bool, w int) block {
 	if cur {
 		mark = p.b("▸", th.Purple)
 	}
-	kind := th.Yellow
-	if c.d.Kind == "blocked" {
+	kind, label := th.Yellow, c.d.Kind
+	switch c.d.Kind {
+	case "blocked":
 		kind = th.Orange
+	case "split": // not a blocker
+		kind, label = th.Faint, "⑂ split"
 	}
-	head := p.sp(1) + mark + p.sp(1) + p.b(c.d.Slug, th.Text) + dot + p.t(c.d.Kind, kind)
+	head := p.sp(1) + mark + p.sp(1) + p.b(c.d.Slug, th.Text) + dot + p.t(label, kind)
 	if !c.d.TS.IsZero() {
 		head += dot + p.t(ago(m.now().Sub(c.d.TS)), th.Muted)
 	}
 	lines := block{fit(head, w, p)}
 	for _, l := range wrapPlain(c.d.Ask, max(8, w-5)) {
 		lines = append(lines, fit(p.sp(3)+p.t(l, th.Text), w, p))
+	}
+	if c.d.Note != "" {
+		for _, l := range wrapPlain(c.d.Note, max(8, w-5)) {
+			lines = append(lines, fit(p.sp(3)+p.t(l, th.Faint), w, p))
+		}
 	}
 	const recommended = "  (recommended)"
 	for i, o := range c.d.Options {
@@ -291,7 +331,11 @@ func (m *model) card(p paint, c inboxCard, cur bool, w int) block {
 			}
 			return p.t(" "+label+" ", th.Muted)
 		}
-		lines = append(lines, fit(p.sp(3)+button("Accept", !in.reject, th.Green)+p.sp(2)+button("Reject", in.reject, th.Red), w, p))
+		row := p.sp(3) + button("Accept", in.mark == 0, th.Green) + p.sp(2)
+		if m.alwaysOffered() {
+			row += button("Always", in.mark == 1, th.Blue) + p.sp(2)
+		}
+		lines = append(lines, fit(row+button("Reject", in.mark == m.buttons()-1, th.Red), w, p))
 	}
 	return lines
 }

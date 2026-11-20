@@ -18,6 +18,7 @@ import (
 const (
 	idQuestion = "3f9a1c2b4d5e"
 	idBlocked  = "7c0b9e1d2a46"
+	idSplit    = "5a5a5a5a5a5a"
 )
 
 // inboxRepos is the factory fixture with two open decisions: a question of alpha (three options, the
@@ -38,12 +39,20 @@ func inboxRepos() []factoryRepo {
 	return repos
 }
 
-// noticeRepos is inboxRepos with two approve items (one new, one stale) and 11 history entries from the
-// four sources, one of them from yesterday: eight show by default, three are older.
+// noticeRepos is inboxRepos with a split decision of alpha (its parent was closed; "start it" may stand), the
+// standing answers (split on, overrun on with 3 of its 10 uses), two approve items (one new, one stale) and
+// 11 history entries from the four sources, one of them from yesterday: eight show by default, three are older.
 func noticeRepos() []factoryRepo {
 	repos := inboxRepos()
 	ago := func(d time.Duration) time.Time { return fakeNow.Add(-d) }
 	st := repos[0].st
+	st.Decisions = append(st.Decisions, data.FactoryDecision{
+		ID: idSplit, Slug: "demo-task", Kind: "split", Always: 1, TS: ago(20 * time.Minute),
+		Ask:     "The importer's retry is separable: it needs the queue change first.",
+		Options: []string{"Start demo-retry", "Do not start it"},
+		Note:    "its parent demo-task was closed: start it or not is yours",
+	})
+	st.Standing = []data.FactoryStanding{{Kind: "split", Label: "start it", On: true, Uses: 4}, {Kind: "overrun", Label: "continue", On: true, Uses: 3, Limit: 10}}
 	st.Approvals = data.FactoryApprovals{AsOf: ago(2 * time.Minute), Items: []data.FactoryApproval{
 		{Slug: "demo-export", Number: 12, URL: "https://github.com/example/demo/pull/12", Why: "new", Since: ago(25 * time.Minute)},
 		{Slug: "demo-import", Number: 9, URL: "https://github.com/example/demo/pull/9", Why: "stale", Since: ago(2 * time.Hour),
@@ -134,6 +143,8 @@ func TestGoldenInbox(t *testing.T) {
 		{"inbox-80x24", 80, 24, func(m *model) { setInbox(m, noticeRepos()...) }},
 		{"inbox-history-100x30", 100, 30, func(m *model) { setInbox(m, noticeRepos()...); send(m, "H") }},
 		{"inbox-confirm-100x30", 100, 30, func(m *model) { setInbox(m, inboxRepos()...); send(m, "2") }},
+		{"inbox-confirm-always-100x30", 100, 30, func(m *model) { setInbox(m, noticeRepos()...); send(m, "j", "1") }},
+		{"inbox-always-pick-100x30", 100, 30, func(m *model) { setInbox(m, noticeRepos()...); send(m, "A") }},
 		{"inbox-empty-80x24", 80, 24, func(m *model) { setInbox(m, fakeFactoryRepos()...) }},
 	} {
 		t.Run(c.name, func(t *testing.T) { goldenCase(t, shots, c.name, c.w, c.h, c.set, true) })
@@ -239,7 +250,7 @@ func TestInboxIsAFactoryPage(t *testing.T) {
 func TestInboxDigitOpensTheConfirmOnAccept(t *testing.T) {
 	m := inboxModel(100, 30)
 	send(m, "2")
-	if m.view != viewInbox || m.inbox.pick != 2 || m.inbox.reject || m.inbox.id != idQuestion {
+	if m.view != viewInbox || m.inbox.pick != 2 || m.inbox.mark != 0 || m.inbox.id != idQuestion {
 		t.Fatalf("view %v, inbox %+v", m.view, m.inbox)
 	}
 	if out := plain(m); !strings.Contains(out, "[Accept]") || !strings.Contains(out, " Reject ") || !strings.Contains(out, "[2] Switch now") {
@@ -317,12 +328,12 @@ func TestInboxConfirmIgnoresEveryOtherKey(t *testing.T) {
 		}
 	}
 	send(m, "3")
-	if m.inbox.pick != 3 || m.inbox.reject {
+	if m.inbox.pick != 3 || m.inbox.mark != 0 {
 		t.Fatalf("a digit valid for the card changes the pick: %+v", m.inbox)
 	}
 	send(m, "tab")
 	send(m, "1")
-	if m.inbox.pick != 1 || m.inbox.reject {
+	if m.inbox.pick != 1 || m.inbox.mark != 0 {
 		t.Fatalf("a new pick marks Accept again: %+v", m.inbox)
 	}
 	_, cmd := m.Update(press("ctrl+c"))
