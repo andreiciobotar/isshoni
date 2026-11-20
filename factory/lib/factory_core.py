@@ -4996,8 +4996,8 @@ PAUSE_PAIR_SECONDS = 5
 
 def history(root):
     """What was decided in the repo at `root` in the last HISTORY_DAYS days, newest first, at most HISTORY_MAX, read from the
-    logs that hold it: the picks (the human's, or the site manager's for a decision left to it; a decision left to the lead shows as
-    the lead's own recorded decision), the site manager's `extended`, `paused` (an overrun's is a recommendation to stop)
+    logs that hold it: the picks (the human's, or the site manager's for a decision left to it; a decision left to the lead is one human entry,
+    beside the lead's own recorded decision), the site manager's `extended`, `paused` (an overrun's is a recommendation to stop)
     and `closed`, the script's own pause of an unanswered stop recommendation, the hand-overs and the leads' key decisions.
     The human's `extended` is left out: its answer is the entry. Each entry is {ts, slug, by, text}, the text on one line."""
     answers = repo_log("decisions", root) or []
