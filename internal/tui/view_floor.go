@@ -111,8 +111,6 @@ func overlay(line string, x int, over string, w int) string {
 
 // ---- the scene ---------------------------------------------------------------------------
 
-var beltTread = []rune("══╪═")
-
 // floorBody is the Factory tab: the floor, then the notes under it.
 func (m *model) floorBody(p paint, w, h int) block {
 	th := m.th
@@ -145,7 +143,7 @@ func (m *model) floorBody(p paint, w, h int) block {
 		m.overlayMenu(p, lines, w)
 	case m.fac.doneAt.IsZero():
 		overlayCentered(p, lines, w, p.t(spin(m.spinFrame())+" ", th.Purple)+p.t("reading the factory…", th.Muted))
-	case len(l.cubes) == 0 && len(l.chips) == 0:
+	case len(l.cubes) == 0:
 		why := "No repository here has a task worktree."
 		if repo := m.floorRepo(); repo != "" {
 			why = "No task in this repository."
@@ -205,7 +203,7 @@ func (m *model) floorHUD(p paint, w int) block {
 	}
 	body := p.t("no status yet", th.Faint)
 	if known {
-		body = m.meter(p, &agg, 40)
+		body = m.meter(p, &agg, min(40, w/3))
 	}
 	bw := min(w-2, max(width(body), width(title)+2)+4)
 	if bw < 12 {
@@ -256,47 +254,80 @@ func (m *model) overlayMenu(p paint, lines block, w int) {
 	}
 }
 
-// drawBelt draws the tread from the intake to the end of the last slot, a row under the
-// cubes' feet, one cell down for every floorStepX across. It moves with the belt's phase
-// only while moving.
+// beltX is the first column between the belt's edges on row r: 2 columns per row, so that a
+// cube in slot s, on rows floorTop+2s to +2, stands on it.
+func (l *floorLayout) beltX(r int) int { return l.x0 + floorStepY*(r-floorTop) - 5 }
+
+// drawBelt draws the band, from the intake to a row under the last slot: two edges going down
+// and right, and a tread row every third row that steps along the band while it moves.
 func (m *model) drawBelt(cv *canvas, l *floorLayout, moving bool) {
 	th := m.th
-	last := l.x0 + floorStepX*(l.slots-1) + 5
 	tread := th.Faint
 	if moving {
 		tread = th.Teal
 	}
-	for x := l.x0; x <= last; x++ {
-		y := 3 + (x-l.x0)*floorStepY/floorStepX
-		cv.put(x, y, beltTread[((x-m.floor.belt)%len(beltTread)+len(beltTread))%len(beltTread)], tread, false)
-		cv.put(x, y+1, '▔', th.Faint, false)
+	last := int(l.belt(l.slots-1).y) + floorCubeH
+	for r := floorTop + 1; r <= last; r++ {
+		x := l.beltX(r)
+		for _, ex := range []int{x - 2, x + floorBandW} {
+			cv.put(ex, r, '╲', th.Muted, false)
+			cv.put(ex+1, r, '╲', th.Muted, false)
+		}
+		if (r-m.floor.belt)%3 == 0 {
+			for dx := 0; dx < floorBandW; dx++ {
+				cv.put(x+dx, r, '┈', tread, false)
+			}
+		}
 	}
-	// the intake chute
-	for i, row := range []string{"╲▁▁▁▁╱", " ╲  ╱ ", "  ╲╱  "} {
+	// the intake: a hopper that pours onto the band's first row
+	x := l.beltX(floorTop+1) + 1
+	for i, row := range []string{"╲▁▁▁▁▁▁╱", " ╲▒▒▒▒╱ "} {
 		for j, r := range []rune(row) {
 			if r != ' ' {
-				cv.put(l.x0+j, i, r, th.Muted, false)
+				cv.put(x+j, i, r, th.Muted, false)
 			}
 		}
 	}
 }
 
-// drawStations draws a post and a sign plate at the start of every station, and the siding's lamp and bay.
+// signText is a station's sign: its name, its full count, and the tasks that have no slot.
+func (l *floorLayout) signText(place string) string {
+	s := fmt.Sprintf("%s %d", floorSigns[place], l.count[place])
+	if n := l.more[place]; n > 0 {
+		s += fmt.Sprintf(" · %d more", n)
+	}
+	return s
+}
+
+// drawStations draws a gantry over the belt at the start of every station: two posts and a
+// beam, the sign beside it; the dock's pallets under SHIPPED; the siding's lamp and bays.
 func (m *model) drawStations(cv *canvas, l *floorLayout) {
 	th := m.th
 	plate := gstyle{fg: th.Text, bg: th.Raised, bold: true}
 	for _, p := range floorStations {
 		at := l.belt(l.first[p])
-		x, y := int(at.x), int(at.y)
-		cv.put(x-1, y-1, '╔', th.Muted, false)
-		cv.put(x-1, y, '║', th.Muted, false)
-		cv.put(x-1, y+1, '║', th.Muted, false)
-		cv.put(x-1, y+2, '╨', th.Muted, false)
-		cv.text(x, y-1, fmt.Sprintf(" %s %d ", floorSigns[p], l.count[p]), plate, cv.w)
+		y := int(at.y)
+		lx, rx := l.beltX(y-1)-2, l.beltX(y-1)+floorBandW
+		cv.put(lx, y-1, '╔', th.Muted, false)
+		for bx := lx + 1; bx < rx; bx++ {
+			cv.put(bx, y-1, '═', th.Muted, false)
+		}
+		cv.put(rx, y-1, '╗', th.Muted, false)
+		for dy := 0; dy < 2; dy++ {
+			cv.put(lx, y+dy, '║', th.Muted, false)
+			cv.put(rx, y+dy, '║', th.Muted, false)
+		}
+		cv.text(rx+2, y-1, " "+l.signText(p)+" ", plate, cv.w)
+	}
+	for j := l.first["settled"]; j < l.slots; j++ {
+		at := l.belt(j)
+		for dx := 0; dx < floorCubeW+2; dx++ {
+			cv.put(int(at.x)+dx, int(at.y)+floorCubeH, '▀', th.Muted, false)
+		}
 	}
 
 	side := l.side(0)
-	sign := fmt.Sprintf("BLOCKED %d", l.count["blocked"])
+	sign := l.signText("blocked")
 	sx := max(0, int(side.x)+floorCubeW-width(sign)-2)
 	cv.put(sx, int(side.y)-1, '●', th.Red, true)
 	cv.text(sx+2, int(side.y)-1, sign, gstyle{fg: th.Text, bold: true}, cv.w)
@@ -352,9 +383,9 @@ func (m *model) drawLabels(cv *canvas, l *floorLayout, hudX, hudH int) {
 	if hudX > 0 {
 		intakeMax = hudX - 2
 	}
-	cv.text(l.x0+floorStepX, 0, "INTAKE", gstyle{fg: th.Muted}, intakeMax)
+	cv.text(l.x0+floorCubeW+2, 0, "INTAKE", gstyle{fg: th.Muted}, intakeMax)
 	for _, c := range l.cubes {
-		if m.floor.moves[c.key()] != nil {
+		if m.floor.moves[c.key()] != nil || c.level > 0 {
 			continue
 		}
 		x, y := int(c.at.x), int(c.at.y)
@@ -382,18 +413,12 @@ func (m *model) drawLabels(cv *canvas, l *floorLayout, hudX, hudH int) {
 		if e := elapsedText(c.t, false); e != "-" {
 			ps = append(ps, lpiece{s: "  " + e, st: faint, opt: true})
 		}
+		if c.pile > 0 {
+			ps = append(ps, lpiece{s: fmt.Sprintf("  +%d stacked", c.pile), st: faint, opt: true})
+		}
 		sx := x + floorCubeW + 1
 		for _, p := range fitPieces(ps, avail) {
 			sx = cv.text(sx, y, p.s, p.st, maxX)
-		}
-	}
-	for _, ch := range l.chips {
-		x, y := int(ch.at.x), int(ch.at.y)
-		text := fmt.Sprintf("%d more", ch.n)
-		if ch.place == "blocked" {
-			cv.text(x-2-width(text), y+floorCubeH-1, text, faint, cv.w)
-		} else {
-			cv.text(x+floorCubeW+1, y, "─ "+text, faint, cv.w)
 		}
 	}
 }
@@ -406,76 +431,58 @@ func rawPhase(phase string) string {
 	return phase
 }
 
-// drawCubes draws the chips and the cubes, the farthest first so that a nearer one covers it.
+// drawCubes draws the cubes, the farthest first so that a nearer one covers it; in a pile the
+// upper ones come after the lower.
 func (m *model) drawCubes(cv *canvas, l *floorLayout) {
-	th := m.th
 	f := &m.floor
 	type draw struct {
-		x, y int
-		t    *data.FactoryTask
-		chip int
+		x, y, z int
+		t       *data.FactoryTask
 	}
 	var ds []draw
 	at := func(p point) (int, int) { return int(math.Round(p.x)), int(math.Round(p.y)) }
 	for _, c := range l.cubes {
 		x, y := at(f.shown(c.key(), c.at))
-		ds = append(ds, draw{x: x, y: y, t: &c.t})
+		ds = append(ds, draw{x, y, y + floorStepY*c.level, &c.t})
 	}
 	for _, g := range f.gone {
 		x, y := at(lerp(g.from, g.to, float64(g.ago)/float64(floorMoveFor)))
-		ds = append(ds, draw{x: x, y: y, t: &g.ft.t})
+		ds = append(ds, draw{x, y, y, &g.ft.t})
 	}
-	for _, ch := range l.chips {
-		x, y := at(ch.at)
-		ds = append(ds, draw{x: x, y: y, chip: ch.n})
-	}
-	slices.SortStableFunc(ds, func(a, b draw) int { return a.y - b.y })
+	slices.SortStableFunc(ds, func(a, b draw) int { return a.z - b.z })
 	for _, d := range ds {
-		if d.t == nil {
-			drawChip(cv, d.x, d.y, d.chip, th)
-			continue
-		}
 		m.drawCube(cv, d.x, d.y, *d.t)
 	}
 }
 
-func drawChip(cv *canvas, x, y, n int, th *Theme) {
-	num := trunc(fmt.Sprintf("+%d", n), 4)
-	pad := 4 - len(num)
-	row := "┆" + strings.Repeat(" ", pad/2) + num + strings.Repeat(" ", pad-pad/2) + "┆"
-	for i, s := range []string{" ╭┄┄╮ ", row, " ╰┄┄╯ "} {
-		for j, r := range []rune(s) {
-			if r != ' ' {
-				cv.put(x+j, y+i, r, th.Muted, i == 1)
-			}
-		}
-	}
-}
-
-// drawCube draws a task as a cube in three tones: top lightest, left face mid, right face darkest.
-// Heavy side edges mark overtime; a spinner on the left face a working session; ▲ a task that waits on the human.
+// drawCube draws a task as a cube with three faces: the top lightest, the left face mid, the
+// right face darkest. Heavy edges mark overtime; a spinner on the left face a working
+// session; ▲ a task that waits on the human.
 func (m *model) drawCube(cv *canvas, x, y int, t data.FactoryTask) {
 	th := m.th
 	_, _, col := m.phaseLook(t, false)
 	top, mid, dark := mix(col, th.Text, 0.35), col, mix(col, th.Bg, 0.45)
-	edge, el, er := dark, '▐', '▌'
+	edge := dark
 	if t.Overtime {
-		edge, el, er = th.Red, '█', '█'
+		edge = th.Red
 	}
-	cv.put(x+1, y, '▗', top, false)
-	cv.put(x+2, y, '▄', top, false)
-	cv.put(x+3, y, '▄', top, false)
-	cv.put(x+4, y, '▖', top, false)
-	cv.put(x, y+1, el, edge, false)
-	cv.put(x+1, y+1, '▓', mid, false)
-	cv.put(x+2, y+1, '▓', mid, false)
-	cv.put(x+3, y+1, '▒', dark, false)
-	cv.put(x+4, y+1, '▒', dark, false)
-	cv.put(x+5, y+1, er, edge, false)
-	cv.put(x+1, y+2, '▝', mid, false)
-	cv.put(x+2, y+2, '▀', mid, false)
-	cv.put(x+3, y+2, '▀', dark, false)
-	cv.put(x+4, y+2, '▘', dark, false)
+	// a face's glyph carries its tone without colour; its background is a shade of its own colour
+	face := func(r rune, c color.Color) glyph {
+		return glyph{r: r, st: gstyle{fg: c, bg: mix(c, th.Bg, 0.3)}}
+	}
+	rows := [3][6]glyph{
+		{face('◢', top), face('░', top), face('░', top), face('░', top), face('░', top), face('◣', top)},
+		{face('▒', mid), face('▒', mid), face('▒', mid), face('▓', dark), face('▓', dark), face('▓', dark)},
+		{face('◥', mid), face('▒', mid), face('▒', mid), face('▓', dark), face('▓', dark), face('◤', dark)},
+	}
+	if t.Overtime {
+		rows[1][0], rows[1][5] = glyph{r: '█', st: gstyle{fg: edge}}, glyph{r: '█', st: gstyle{fg: edge}}
+	}
+	for i, row := range rows {
+		for j, g := range row {
+			cv.putOn(x+j, y+i, g.r, g.st)
+		}
+	}
 	switch {
 	case t.Phase == "motion" && t.Session == "working":
 		cv.put(x+2, y+1, []rune(spin(m.spinFrame()))[0], th.Text, true)

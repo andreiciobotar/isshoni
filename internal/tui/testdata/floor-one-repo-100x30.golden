@@ -1,30 +1,30 @@
  Isshoni  1 ✉ ▲7  2 ≡  3 Agent [4 Factory] 5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
- Factory  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:…  · filter alpha  
-                      ╲▁▁▁▁╱ INTAKE                                     ╭─ alpha ─────────────────╮ 
-                       ╲  ╱ ╔ BUILD 6                                   │ in motion ▲●●●●●● 7/4+1 │ 
-                        ╲╱  ║ ╭┄┄╮  ─ 3 more                            ╰─────────────────────────╯ 
-                      ╪═══  ║┆ +3 ┆                                                                 
-                      ▔▔▔▔╪═╨ ╰┄┄╯   ▗▄▄▖  ─ slow-export  41m00s                                    
-                          ▔▔▔═╪══   ▐▓⠋▒▒▌                                                          
-                ● BLOCKED 1  ▔▔▔▔═╪═ ▝▀▀▘   ▗▄▄▖  ─ login-flow  2h15m                               
-                      ▗▄▄▖       ▔▔▔══╪═   █▓⠋▒▒█                                                   
-                     ▐▓▲▒▒▌         ▔▔▔▔══╪ ▝▀▀▘   ▗▄▄▖  ─ lost-its-lead  9h00m                     
-     needs-an-answer  ▝▀▀▘              ▔▔▔═══╪   ▐▓▓▒▒▌╔ REVIEW 1                                  
-                     ╌╌╌╌╌╌                ▔▔▔▔═══ ▝▀▀▘ ║ ▗▄▄▖  ─ api-rate-limits  1h30m            
-                                               ▔▔▔╪═══  ║▐▓▲▒▒▌╔ MERGE 2                            
-                                                  ▔▔▔▔╪═╨ ▝▀▀▘ ║ ▗▄▄▖  ─ old-plumbing  2h00m        
-                                                      ▔▔▔═╪══  ║▐▓▓▒▒▌                              
-                                                         ▔▔▔▔═╪╨ ▝▀▀▘   ▗▄▄▖  ─ old-experiment      
-                                                             ▔▔▔══╪═   ▐▓▓▒▒▌╔ SHIPPED 1            
-                                                                ▔▔▔▔══╪ ▝▀▀▘ ║ ▗▄▄▖  ─ release-notes
-                                                                    ▔▔▔═══╪  ║▐▓▓▒▒▌                
-                                                                       ▔▔▔▔══╨ ▝▀▀▘                 
-                                                                           ▔▔▔╪═══                  
-                                                                              ▔▔▔▔╪═                
-                                                                                  ▔▔                
-                                                                                                    
-                                                                                                    
-                                                                                                    
+ Factory  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00  · alpha        
+                      ╲▁▁▁▁▁▁╱  INTAKE                                  ╭─ alpha ─────────────────╮ 
+                       ╲▒▒▒▒╱                                           │ in motion ▲●●●●●● 7/4+1 │ 
+                   ╔═════════╗╲ BUILD 6                                 ╰─────────────────────────╯ 
+                   ║ ╲╲┈┈┈┈┈◢░░░░◣ ─ rate-limit-docs                                                
+                   ║   ╲╲   ▒▒▒▓▓▓╲                                                                 
+                         ╲╲ ◥▒▒▓◢░░░░◣ ─ stacked-on-login  1m35s                                    
+                           ╲╲┈┈┈▒▒▒▓▓▓╲                                                             
+                 ● BLOCKED 1 ╲╲ ◥▒▒▓◢░░░░◣ ─ quiet-refactor  4m12s                                  
+                      ◢░░░░◣   ╲╲   ▒▒⠋▓▓▓╲                                                         
+                      ▒▒▲▓▓▓     ╲╲┈◥▒▒▓◢░░░░◣ ─ slow-export  41m00s                                
+      needs-an-answer ◥▒▒▓▓◤       ╲╲   ▒▒⠋▓▓▓╲                                                     
+                      ╌╌╌╌╌╌         ╲╲ ◥▒▒▓◢░░░░◣ ─ login-flow  2h15m                              
+                                       ╲╲┈┈┈█▒⠋▓▓█╲                                                 
+                                         ╲╲ ◥▒▒▓◢░░░░◣ ─ lost-its-lead  9h00m                       
+                                           ╔════▒▒▒▓▓▓╲ REVIEW 1                                    
+                                           ║ ╲╲┈◥▒▒▓◢░░░░◣ ─ api-rate-limits  1h30m                 
+                                           ║   ╔════▒▒▲▓▓▓╲ MERGE 2                                 
+                                               ║ ╲╲ ◥▒▒▓◢░░░░◣ ─ old-plumbing  2h00m                
+                                               ║   ╲╲┈┈┈▒▒▒▓▓▓╲                                     
+                                                     ╲╲ ◥▒▒▓◢░░░░◣ ─ old-experiment  1m01s          
+                                                       ╔════▒▒▒▓▓▓╲ SHIPPED 1                       
+                                                       ║ ╲╲┈◥▒▒▓◢░░░░◣ ─ release-notes  50m00s      
+                                                       ║   ╲╲   ▒▒▒▓▓▓╲                             
+                                                             ╲╲ ◥▒▒▓▓◤ ╲╲                           
+                                                               ╲▀▀▀▀▀▀▀▀┈╲╲                         
                                                                                                     
                                                                                                     
  / filter  ·  r range  ·  tab next view  ·  ? help  ·  q quit                                       

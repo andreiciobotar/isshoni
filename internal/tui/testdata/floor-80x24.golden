@@ -1,24 +1,24 @@
  Isshoni 1 ✉ ▲7 2 ≡ 3 Agent [4 Factory] 5 Kaizen 6 ◉ 7 ✿     24h [7d] 30d all ○ 
  Factory  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · 11:00:00   
-              ╲▁▁▁▁╱ INTAKE            ╭─ all repositories ───────────────────╮ 
-               ╲  ╱ ╔ BUILD 10         │ in motion ▲▲▲▲▲▲▲▲●●●●●●●●●● 18/11+1 │ 
-                ╲╱  ║ ╭┄┄╮  ─ 9 more   ╰──────────────────────────────────────╯ 
-              ╪═══  ║┆ +9 ┆                                                     
-              ▔▔▔▔╪═╨ ╰┄┄╯   ▗▄▄▖  ─ alpha/lost-its-lead  9h00m                 
-                  ▔▔▔═╪══   ▐▓▓▒▒▌╔ REVIEW 3                                    
-        ● BLOCKED 8  ▔▔▔▔═╪═ ▝▀▀▘ ║ ╭┄┄╮  ─ 2 more                              
-              ╭┄┄╮       ▔▔▔══╪═  ║┆ +2 ┆                                       
-             ┆ +7 ┆         ▔▔▔▔══╨ ╰┄┄╯   ▗▄▄▖  ─ alpha/api-rate-limits  1h30m 
-     7 more   ╰┄┄╯   ▗▄▄▖       ▔▔▔═══╪   ▐▓▲▒▒▌╔ MERGE 2                       
-             ╌╌╌╌╌╌ ▐▓▓▒▒▌         ▔▔▔▔═══ ▝▀▀▘ ║ ▗▄▄▖  ─ alpha/old-plumbing    
- delta-docs/docs-a…  ▝▀▀▘              ▔▔▔╪═══  ║▐▓▓▒▒▌                         
-                    ╌╌╌╌╌╌                ▔▔▔▔╪═╨ ▝▀▀▘   ▗▄▄▖  ─ alpha/old-expe…
-                                              ▔▔▔═╪══   ▐▓▓▒▒▌╔ SHIPPED 1       
-                                                 ▔▔▔▔═╪═ ▝▀▀▘ ║ ▗▄▄▖  ─ alpha/r…
-                                                     ▔▔▔══╪═  ║▐▓▓▒▒▌           
-                                                        ▔▔▔▔══╨ ▝▀▀▘            
-                                                            ▔▔▔═══╪             
-                                                               ▔▔▔▔══           
-                                                                   ▔▔           
+                  ╲▁▁▁▁▁▁╱  INTAKE               ╭─ all repositories ─────────╮ 
+                   ╲▒▒▒▒╱                        │ in motion ████████ 18/11+1 │ 
+               ╔═════════╗╲ BUILD 10 · 5 more    ╰────────────────────────────╯ 
+               ║ ╲╲┈┈┈┈┈◢░░░░◣ ─ alpha/stacked-on-login  1m35s                  
+               ║   ╲╲   ▒▒▒▓▓▓╲                                                 
+                     ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/quiet-refactor  4m12s                
+                       ╲╲┈┈┈▒▒⠋▓▓▓╲                                             
+    ● BLOCKED 8 · 4 more ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/slow-export  41m00s              
+                  ◢░░░░◣   ╲╲   ▒▒⠋▓▓▓╲                                         
+                  ▒▒▒▓▓▓     ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/login-flow  2h15m            
+ delta-docs/paus… ◥▒▒▓◢░░░░◣   ╲╲   █▒⠋▓▓█╲                                     
+                  ╌╌╌╌▒▒▒▓▓▓     ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/lost-its-lead  9h00m     
+ delta-docs/paused-f… ◥▒▒▓◢░░░░◣   ╔════▒▒▒▓▓▓╲ REVIEW 3 · 2 more               
+                      ╌╌╌╌▒▒▲▓▓▓   ║ ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/api-rate-limits      
+    alpha/needs-an-answer ◥▒▒▓◢░░░░◣   ╔════▒▒▲▓▓▓╲ MERGE 2 · 1 more            
+                          ╌╌╌╌▒▒▒▓▓▓   ║ ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/old-experiment   
+ delta-docs/docs-after-review ◥▒▒▓▓◤   ║   ╔════▒▒▒▓▓▓╲ SHIPPED 1               
+                              ╌╌╌╌╌╌       ║ ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/release-notes
+                                           ║   ╲╲┈┈┈▒▒▒▓▓▓╲                     
+                                                 ╲╲ ◥▒▒▓▓◤ ╲╲                   
  ⚠ gamma: not inside a git repository                                           
  / filter  ·  r range  ·  tab next view  ·  ? help  ·  q quit                   
