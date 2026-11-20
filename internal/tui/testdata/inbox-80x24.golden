@@ -1,24 +1,24 @@
  Isshoni [1 ✉ ▲7] 2 ≡ 3 Agent 4 Factory 5 Kaizen 6 ◉ 7 ✿     24h [7d] 30d all ○ 
  Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · 11:00:00     
- alpha                                                                          
- ▸ needs-an-answer · question · 45m                                             
-   Should the export keep the legacy column order, or switch to the new one     
-   now? Switching breaks two downstream readers.                                
-   1  Keep the legacy order  (recommended)                                      
-   2  Switch now and update both readers                                        
-   3  Keep legacy now, switch next release                                      
-                                                                                
- delta-docs                                                                     
-   stuck-on-keys · blocked · 1m                                                 
-   git push is refused: the deploy key is read-only. Run `git push origin       
-   worktree-stuck-on-keys` by hand.                                             
-   1  Done, carry on                                                            
-   2  Stop the task                                                             
+    TASK            ASK      AGE │ needs-an-answer · question · asked 45m ago   
+ alpha                           │ alpha · blocked 45m00s · PR example.com/des… 
+> ? needs-an-answer Should … 45m │                                              
+ delta-docs                      │ Should the export keep the legacy column     
+  ▲ stuck-on-keys   git pus…  1m │ order, or switch to the new one now?         
+                                 │ Switching breaks two downstream readers.     
+                                 │                                              
+                                 │ 1  Keep the legacy order  (recommended)      
+                                 │ 2  Switch now and update both readers        
+                                 │ 3  Keep legacy now, switch next release      
                                                                                 
  ▲ Needs you  5                                                                 
  ◆ alpha       api-rate-limits  review PR          3h00m                        
                #42 https://github.com/o/alpha/pull/42                           
  ▲ delta-docs  wide-ask         unblock            2h00m                        
                データベースの接続情報が見つかりません。どの環境のものを使えば…  
- +48 more lines · ↓ to scroll                                                   
+ ◆ delta-docs  video-cut        see deliverable   30m00s                        
+               https://example.com/cut/v2                                       
+ ▲ delta-docs  slow-import      decide: overtime   5m00s                        
+               ran 3h of 2h: split it?                                          
+ +44 more lines · ↓ to scroll                                                   
  ↑↓/jk move  ·  1–3 pick an option  ·  c edit cap  ·  ? help  ·  q quit         
