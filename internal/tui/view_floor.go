@@ -34,10 +34,6 @@ type canvas struct {
 
 func newCanvas(w, h int) *canvas { return &canvas{w, h, make([]glyph, max(0, w*h))} }
 
-func (c *canvas) put(x, y int, r rune, fg color.Color, bold bool) {
-	c.putOn(x, y, r, gstyle{fg: fg, bold: bold})
-}
-
 // putOn draws r at x, y; a cell outside the canvas is ignored.
 func (c *canvas) putOn(x, y int, r rune, st gstyle) {
 	if x < 0 || y < 0 || x >= c.w || y >= c.h {

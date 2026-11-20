@@ -142,25 +142,27 @@ func TestFloorLanesFillTheScene(t *testing.T) {
 		if inner+6 != l.h {
 			t.Errorf("%s at %dx%d: five lanes of %d inner rows and six edges are not %d rows", name, w, h, inner, l.h)
 		}
-		reach := func(y0, y1 int) (int, int) { // the columns the rows y0 to y1 are drawn in
+		reach := func(y int) (int, int) { // the columns row y is drawn in, but for the side walls
 			lo, hi := l.w, -1
-			for y := y0; y <= y1; y++ {
-				for x := range l.w {
-					if a.cv.g[y*l.w+x].r != 0 {
-						lo, hi = min(lo, x), max(hi, x)
-					}
+			for x := 1; x < l.w-1; x++ {
+				if a.cv.g[y*l.w+x].r != 0 {
+					lo, hi = min(lo, x), max(hi, x)
 				}
 			}
 			return lo, hi
 		}
 		for y := range l.h {
-			if lo, hi := reach(y, y); hi < 0 {
+			if lo, hi := reach(y); hi < 0 {
 				t.Errorf("%s at %dx%d: row %d is empty (%d to %d)", name, w, h, y, lo, hi)
 			}
 		}
 		for k, ln := range l.lanes {
-			if lo, hi := reach(ln.top, ln.top+ln.inner-1); lo > 1 || hi < l.w-2 {
-				t.Errorf("%s at %dx%d: lane %d is drawn from column %d to %d of %d", name, w, h, k, lo, hi, l.w)
+			// the edge above the lane runs the full width, and the lane's centre row carries its marks, crates, junction or head tile
+			if lo, hi := reach(ln.top - 1); lo != 1 || hi != l.w-2 {
+				t.Errorf("%s at %dx%d: the edge above lane %d is drawn from column %d to %d of %d", name, w, h, k, lo, hi, l.w)
+			}
+			if lo, hi := reach(ln.cy()); lo > floorGate || (k > 0 && hi < l.w-1-floorGate) { // the siding stands short of the right end
+				t.Errorf("%s at %dx%d: lane %d's centre row is drawn from column %d to %d of %d", name, w, h, k, lo, hi, l.w)
 			}
 			if ln.inner < 1 || (ln.inner >= 3) != (ln.crate == 3) {
 				t.Errorf("%s at %dx%d: lane %d has %d inner rows and crates %d rows tall", name, w, h, k, ln.inner, ln.crate)
@@ -279,6 +281,43 @@ func TestFloorCrateMarks(t *testing.T) {
 	}
 	if key24(m.floorLaneColor("merged")) != key24(m.mergedColor()) || key24(m.floorLaneColor("build")) != key24(m.th.Blue) {
 		t.Error("a junction takes the colour phaseLook gives its phase")
+	}
+}
+
+// A crate's text is its slug, what a blocked task waits on and the elapsed time; they go last first, and only the slug is cut with an ellipsis.
+func TestFloorCrateTextDropsElapsedBeforeCuttingTheSlug(t *testing.T) {
+	mk := func(slug, phase string) data.FactoryTask {
+		x := ftask(slug, phase)
+		x.Elapsed = ptr(int64(252))
+		return x
+	}
+	elapsed := elapsedText(mk("x", "motion"), false)
+	blocked := mk("stuck", "blocked")
+	blocked.WaitsOn = "ci"
+	m := floorModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: fstatus(5,
+		mk("short", "motion"), mk("fits-the-crate-12345", "review"), mk("a-slug-far-too-long-for-any-crate", "merged"), blocked)})
+	l := m.floorNow()
+	text := func(slug string) string {
+		var s string
+		for _, p := range l.crateParts(floorCrates(m)[slug].floorTask) {
+			s += p.s
+		}
+		return s
+	}
+	if got := text("short"); got != "short  "+elapsed {
+		t.Errorf("a short slug keeps its elapsed text: %q", got)
+	}
+	if got := text("fits-the-crate-12345"); got != "fits-the-crate-12345" {
+		t.Errorf("elapsed goes before the slug is cut: %q", got)
+	}
+	if got := text("a-slug-far-too-long-for-any-crate"); !strings.HasSuffix(got, "…") || strings.Contains(got, elapsed) {
+		t.Errorf("a slug too long is cut with an ellipsis and has no elapsed: %q", got)
+	}
+	if got := text("stuck"); got != "stuck · ci  "+elapsed {
+		t.Errorf("a blocked crate shows what it waits on: %q", got)
+	}
+	if out := plain(m); !strings.Contains(out, "short  "+elapsed) || !strings.Contains(out, "stuck · ci") {
+		t.Errorf("the text is drawn in the crates:\n%s", out)
 	}
 }
 

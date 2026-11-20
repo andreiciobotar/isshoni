@@ -117,7 +117,7 @@ func (a *floorArt) tile(place string) (bg, fg color.Color, g rune) {
 }
 
 func (a *floorArt) put(x, y int, r rune, fg color.Color) {
-	a.cv.put(x, y, r, fg, false)
+	a.cv.putOn(x, y, r, gstyle{fg: fg})
 }
 
 // fill paints the cells of r with g, in the colour bg on bg: a solid block.
@@ -193,7 +193,10 @@ func (a *floorArt) drawHeads() {
 			a.cv.text(r.x+2, ln.cy(), trunc(name, room), st, r.x+r.w-2)
 			a.cv.text(r.x+2, ln.cy()+1, trunc(more, room), st, r.x+r.w-2)
 		} else {
-			a.cv.text(r.x+2, ln.cy(), trunc(cmp.Or(name+" "+more, name), room), st, r.x+r.w-2)
+			if more != "" {
+				name += " " + more
+			}
+			a.cv.text(r.x+2, ln.cy(), trunc(name, room), st, r.x+r.w-2)
 		}
 	}
 }
