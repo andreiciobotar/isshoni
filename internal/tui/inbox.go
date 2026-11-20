@@ -21,6 +21,8 @@ type inboxState struct {
 	id      string // the decision the pick belongs to
 	reject  bool   // the confirm cursor is on Reject
 	sending bool   // the pick is being sent
+
+	history bool // the history shows every entry the status carries, not the day's first few
 }
 
 // inboxCard is an open decision with the repository it belongs to.
@@ -175,7 +177,7 @@ func (m *model) answered(msg answerMsg) tea.Cmd {
 	return m.refreshFactory(0)
 }
 
-// inboxPage is the Inbox: the decision cards, then the factory's lines. spans holds the lines each card takes.
+// inboxPage is the Inbox: the decision cards, the Approve and History sections, then the factory's lines. spans holds the lines each card takes.
 // A task with a card is not repeated in the band.
 func (m *model) inboxPage(p paint, w, h int) (lines block, spans [][2]int) {
 	cs := m.cards()
@@ -198,6 +200,7 @@ func (m *model) inboxPage(p paint, w, h int) (lines block, spans [][2]int) {
 	if len(items) > 0 || len(cs) == 0 {
 		band = m.needsYou(p, w, items)
 	}
+	lines = append(lines, m.notices(p, w)...)
 	return append(lines, m.floor(p, w, h-len(lines), band)...), spans
 }
 

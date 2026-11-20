@@ -14,6 +14,7 @@ type keyMap struct {
 	Next, Prev, Inbox, Dash, Agents, Factory key.Binding
 	Kaizen, Ops                              key.Binding
 	Pick, Confirm, Mark, Accept, Reject      key.Binding
+	History                                  key.Binding
 	PageLeft, PageRight                      key.Binding
 	Down, Up, Top, Bottom, PageDown, PageUp  key.Binding
 	Fold, Unfold, Open, Back                 key.Binding
@@ -44,6 +45,7 @@ var keys = keyMap{
 	Confirm: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "do the marked one")),
 	Mark:    key.NewBinding(key.WithKeys("left", "right", "h", "l", "tab"), key.WithHelp("←→/hl", "mark accept · reject")),
 	Accept:  key.NewBinding(key.WithKeys("y"), key.WithHelp("y n", "accept · reject")),
+	History: key.NewBinding(key.WithKeys("H"), key.WithHelp("H", "all history")),
 	Reject:  key.NewBinding(key.WithKeys("n", "esc")),
 
 	PageLeft:  key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("←→/hl", "kaizen page")),
@@ -95,7 +97,7 @@ func (m *model) footerKeys() []key.Binding {
 	case m.view == viewInbox && m.inbox.pick != 0:
 		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept}
 	case m.view == viewInbox:
-		return []key.Binding{keys.Down, keys.Pick, keys.CapEdit, keys.Next, keys.Help, keys.Quit}
+		return []key.Binding{keys.Down, keys.Pick, keys.History, keys.CapEdit, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewFactory:
 		return []key.Binding{keys.Down, keys.CapEdit, keys.Range, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewHanami:
@@ -126,7 +128,7 @@ func (m *model) helpGroups() [][]key.Binding {
 		{keys.Help, keys.Quit},
 	}
 	if m.view == viewInbox {
-		groups = slices.Insert(groups, 2, []key.Binding{keys.Pick, keys.Confirm, keys.Mark, keys.Accept})
+		groups = slices.Insert(groups, 2, []key.Binding{keys.Pick, keys.Confirm, keys.Mark, keys.Accept, keys.History})
 	}
 	return groups
 }

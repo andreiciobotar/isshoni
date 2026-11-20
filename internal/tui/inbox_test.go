@@ -38,6 +38,33 @@ func inboxRepos() []factoryRepo {
 	return repos
 }
 
+// noticeRepos is inboxRepos with two approve items (one new, one stale) and 11 history entries from the
+// four sources, one of them from yesterday: eight show by default, three are older.
+func noticeRepos() []factoryRepo {
+	repos := inboxRepos()
+	ago := func(d time.Duration) time.Time { return fakeNow.Add(-d) }
+	st := repos[0].st
+	st.Approvals = data.FactoryApprovals{AsOf: ago(2 * time.Minute), Items: []data.FactoryApproval{
+		{Slug: "demo-export", Number: 12, URL: "https://github.com/example/demo/pull/12", Why: "new", Since: ago(25 * time.Minute)},
+		{Slug: "demo-import", Number: 9, URL: "https://github.com/example/demo/pull/9", Why: "stale", Since: ago(2 * time.Hour),
+			Text: "its head changed after the approval; a fresh approval is needed (the lander stopped it at 8c1f2a9)"},
+	}}
+	st.History = []data.FactoryHistory{
+		{TS: ago(5 * time.Minute), Slug: "demo-task", By: "site-manager", Text: "extended 20 min to 11:05Z: landing left"},
+		{TS: ago(12 * time.Minute), Slug: "demo-export", By: "lead", Text: "handed over: https://github.com/example/demo/pull/12"},
+		{TS: ago(30 * time.Minute), Slug: "demo-import", By: "human", Text: "question: picked 2: Add retry now"},
+		{TS: ago(37 * time.Minute), Slug: "demo-import", By: "lead", Text: "Retry lives in the importer, not the queue. Why: one owner"},
+		{TS: ago(50 * time.Minute), Slug: "demo-sync", By: "site-manager", Text: "closed: its pull request merged and the worktree is clean"},
+		{TS: ago(2 * time.Hour), Slug: "demo-sync", By: "lead", Text: "handed over: https://github.com/example/demo/pull/7"},
+		{TS: ago(3 * time.Hour), Slug: "demo-docs", By: "site-manager", Text: "paused: waits on demo-sync"},
+		{TS: ago(5 * time.Hour), Slug: "demo-docs", By: "lead", Text: "Docs stay in one file until a second reader asks for more. " + strings.Repeat("Long text is cut at the width of the window. ", 4)},
+		{TS: ago(9 * time.Hour), Slug: "demo-task", By: "human", Text: "blocked: picked 1: Done, carry on"},
+		{TS: ago(20 * time.Hour), Slug: "demo-task", By: "lead", Text: "handed over: https://github.com/example/demo/pull/5"},
+		{TS: ago(30 * time.Hour), Slug: "demo-sync", By: "site-manager", Text: "extended 30 min to 09:45Z: tests running"},
+	}
+	return repos
+}
+
 func setInbox(m *model, repos ...factoryRepo) {
 	setFactory(m, repos...)
 	m.view = viewInbox
@@ -102,9 +129,10 @@ func TestGoldenInbox(t *testing.T) {
 		w, h int
 		set  func(m *model)
 	}{
-		{"inbox-140x40", 140, 40, func(m *model) { setInbox(m, inboxRepos()...) }},
-		{"inbox-100x30", 100, 30, func(m *model) { setInbox(m, inboxRepos()...) }},
-		{"inbox-80x24", 80, 24, func(m *model) { setInbox(m, inboxRepos()...) }},
+		{"inbox-140x40", 140, 40, func(m *model) { setInbox(m, noticeRepos()...) }},
+		{"inbox-100x30", 100, 30, func(m *model) { setInbox(m, noticeRepos()...) }},
+		{"inbox-80x24", 80, 24, func(m *model) { setInbox(m, noticeRepos()...) }},
+		{"inbox-history-100x30", 100, 30, func(m *model) { setInbox(m, noticeRepos()...); send(m, "H") }},
 		{"inbox-confirm-100x30", 100, 30, func(m *model) { setInbox(m, inboxRepos()...); send(m, "2") }},
 		{"inbox-empty-80x24", 80, 24, func(m *model) { setInbox(m, fakeFactoryRepos()...) }},
 	} {
@@ -423,5 +451,112 @@ func TestInboxCardsAreOldestFirstAndAnUnknownAgeLast(t *testing.T) {
 	}
 	if strings.Join(got, " ") != "old new noage" {
 		t.Fatalf("order %v", got)
+	}
+}
+
+// ---- Approve and History ----------------------------------------------------------
+
+func noticeModel(w, h int) *model {
+	m := fakeModel(true, w, h)
+	setInbox(m, noticeRepos()...)
+	return m
+}
+
+func TestInboxApproveAndHistoryComeAfterTheCardsAndBeforeTheFactoryLines(t *testing.T) {
+	out := plain(noticeModel(140, 60))
+	at := func(s string) int { return strings.Index(out, s) }
+	order := []string{"stuck-on-keys · blocked", "\n Approve", "demo-export · new · 25m", "\n History", "… 3 older · H shows them", "worktree cap"}
+	for i, s := range order {
+		if at(s) < 0 || (i > 0 && at(s) < at(order[i-1])) {
+			t.Fatalf("%q out of order:\n%s", s, out)
+		}
+	}
+	if !strings.Contains(out, "demo-import · stale · 2h") || !strings.Contains(out, "its head changed after the approval") {
+		t.Errorf("a stale item shows its text:\n%s", out)
+	}
+	if strings.Contains(out, "extended 30 min to 09:45Z") || strings.Contains(out, "Nov 12") {
+		t.Errorf("only 8 entries show by default:\n%s", out)
+	}
+}
+
+func TestInboxWithoutApprovalsOrHistoryHasNoSections(t *testing.T) {
+	out := plain(inboxModel(140, 60))
+	if strings.Contains(out, "Approve") || strings.Contains(out, "History") {
+		t.Errorf("sections without entries:\n%s", out)
+	}
+}
+
+func TestInboxHTogglesTheWholeHistory(t *testing.T) {
+	m := noticeModel(140, 60)
+	send(m, "H")
+	out := plain(m)
+	for _, want := range []string{"extended 30 min to 09:45Z", "Nov 12 05:00", "demo-task    lead "} {
+		if !strings.Contains(out, want) {
+			t.Errorf("after H lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "older · H shows them") {
+		t.Error("nothing is older once all show")
+	}
+	if send(m, "H"); strings.Contains(plain(m), "Nov 12 05:00") {
+		t.Error("H again goes back to the day's entries")
+	}
+}
+
+func TestInboxHistoryTakesEntriesOfTheLastDayOnly(t *testing.T) {
+	m := noticeModel(140, 60)
+	m.fac.repos[0].st.History = m.fac.repos[0].st.History[8:] // 9h, 20h, 30h old
+	if out := plain(m); !strings.Contains(out, "blocked: picked 1") || strings.Contains(out, "09:45Z") || !strings.Contains(out, "… 1 older") {
+		t.Errorf("the entry of 30h ago is counted, not shown:\n%s", out)
+	}
+}
+
+func TestInboxApproveLabelsOldDataOnlyPastTenMinutes(t *testing.T) {
+	m := noticeModel(140, 60)
+	if out := plain(m); !strings.Contains(out, "\n Approve  ") || strings.Contains(out, "Approve ·") {
+		t.Errorf("fresh data is not labelled:\n%s", out)
+	}
+	m.fac.repos[0].st.Approvals.AsOf = fakeNow.Add(-14 * time.Minute)
+	if out := plain(m); !strings.Contains(out, "Approve · as of 14m") {
+		t.Errorf("old data is labelled:\n%s", out)
+	}
+}
+
+func TestInboxApproveKeepsTheURLWholeWhenNarrow(t *testing.T) {
+	for _, w := range []int{80, 60} {
+		m := noticeModel(w, 60)
+		out := plain(m)
+		for _, url := range []string{"https://github.com/example/demo/pull/12", "https://github.com/example/demo/pull/9"} {
+			if !strings.Contains(out, url) {
+				t.Errorf("width %d cuts %s:\n%s", w, url, out)
+			}
+		}
+	}
+	if out := plain(noticeModel(60, 60)); strings.Contains(out, "demo-import · stale · 2h   https") {
+		t.Errorf("at 60 columns the URL is under the entry:\n%s", out)
+	}
+}
+
+func TestInboxNoticesNameTheRepositoryOnlyWhenSeveralHaveEntries(t *testing.T) {
+	m := noticeModel(140, 60)
+	last := m.fac.repos[len(m.fac.repos)-1].st
+	last.History = []data.FactoryHistory{{TS: fakeNow.Add(-time.Minute), Slug: "demo-docs", By: "human", Text: "question: picked 1: Ship"}}
+	out := plain(m)
+	if !strings.Contains(out, "delta-docs  10:59") || !strings.Contains(out, "alpha       10:55") {
+		t.Errorf("history entries of two repositories carry a repository column:\n%s", out)
+	}
+	if strings.Contains(out, "alpha       demo-import") {
+		t.Errorf("the approve items are all of one repository:\n%s", out)
+	}
+}
+
+func TestInboxNamesTheHistoryKey(t *testing.T) {
+	if foot := plain(noticeModel(140, 40)); !strings.Contains(foot, "H all history") {
+		t.Errorf("footer:\n%s", foot)
+	}
+	m := noticeModel(120, 50)
+	m.help = true
+	if out := plain(m); !strings.Contains(out, "all history") {
+		t.Errorf("help:\n%s", out)
 	}
 }

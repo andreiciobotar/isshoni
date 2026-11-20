@@ -13,12 +13,12 @@
    1  Done, carry on                                                            
    2  Stop the task                                                             
                                                                                 
- ▲ Needs you  5                                                                 
- ◆ alpha       api-rate-limits  review PR          3h00m                        
-               #42 https://github.com/o/alpha/pull/42                           
- ▲ delta-docs  wide-ask         unblock            2h00m                        
-               データベースの接続情報が見つかりません。どの環境のものを使えば…  
- ◆ delta-docs  video-cut        see deliverable   30m00s                        
-               https://example.com/cut/v2                                       
- +46 more lines · ↓ to scroll                                                   
- ↑↓/jk move  ·  1-4 pick an option  ·  c edit cap  ·  ? help  ·  q quit         
+ Approve                                                                        
+ demo-import · stale · 2h   https://github.com/example/demo/pull/9              
+                            its head changed after the approval; a fresh        
+                            approval is needed (the lander stopped it at        
+                            8c1f2a9)                                            
+ demo-export · new · 25m    https://github.com/example/demo/pull/12             
+                                                                                
+ +64 more lines · ↓ to scroll                                                   
+ ↑↓/jk move  ·  1-4 pick an option  ·  H all history  ·  ? help  ·  q quit      

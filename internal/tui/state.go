@@ -1333,6 +1333,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.switchView(m.cycle(-1))
 	case m.view == viewInbox && m.pickable(msg) > 0:
 		return m.pickOption(m.pickable(msg))
+	case m.view == viewInbox && key.Matches(msg, keys.History):
+		m.inbox.history = !m.inbox.history
 	case key.Matches(msg, keys.Inbox):
 		return m.switchView(viewInbox)
 	case key.Matches(msg, keys.Dash):
