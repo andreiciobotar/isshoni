@@ -84,7 +84,7 @@ PROMPT_FROM = (("<agent-message", "subagent"), ("<cross-session-message", "sessi
                ("<task-notification", "notification"))
 
 COMMANDS = {}  # name -> (help, options, function), filled by @command where each command is defined
-COMMAND_ORDER = ("new", "ci", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "guard-hook", "retro", "env",
+COMMAND_ORDER = ("new", "split", "ci", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "guard-hook", "retro", "env",
                  "feedback", "review", "log", "health", "watch", "ops", "mcp", "digest", "firing", "miss", "firings",
                  "pauses", "lead", "decision", "merge", "lander", "tech-lead", "build", "land", "overlap", "scratch", "rerun", "schedule",
                  "dispatcher", "settings", "wizard", "uninstall")  # `factory --help` order; a name not here follows, by name
@@ -1899,6 +1899,25 @@ def require_dispatcher(repo, sessions, fallback=None, command="factory new"):
     return caller
 
 
+def base_branch(repo, slug):
+    """The branch of the open task `slug` to stack a new task on; Fail when it is not open or has no branch."""
+    task = next((t for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
+    if not task:
+        raise Fail(f"--base {slug} is not an open task")
+    if not task["branch"]:
+        raise Fail(f"--base {slug} has a detached HEAD, no branch to stack on")
+    return task["branch"]
+
+
+def refuse_existing(repo, slug):
+    """Fail when the worktree or the local branch of a task `slug` exists."""
+    path, branch = repo.worktree_path(slug), f"worktree-{slug}"
+    if os.path.exists(path) or any(t["path"] == path for t in repo.tasks):
+        raise Fail(f"worktree already exists: {path}")
+    if repo.git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")[0] == 0:
+        raise Fail(f"branch already exists: {branch}")
+
+
 @command("new", "start a lead for a task", args_new)
 def cmd_new(args):
     validate_slug(args.slug)
@@ -1916,32 +1935,28 @@ def cmd_new(args):
         if problem := a_model(args.lead_model):
             raise Fail(f"--lead-model{problem}")
         settings["models"]["lead"] = args.lead_model
-    size = brief_size(brief)
     repo = Repo()
-    branch = f"worktree-{args.slug}"
-    path = repo.worktree_path(args.slug)
-    base = repo.default
-    if args.base:
-        task = next((t for t in repo.tasks if os.path.basename(t["path"]) == args.base), None)
-        if not task:
-            raise Fail(f"--base {args.base} is not an open task")
-        if not task["branch"]:
-            raise Fail(f"--base {args.base} has a detached HEAD, no branch to stack on")
-        base = task["branch"]
-    if os.path.exists(path) or any(t["path"] == path for t in repo.tasks):
-        raise Fail(f"worktree already exists: {path}")
-    if repo.git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")[0] == 0:
-        raise Fail(f"branch already exists: {branch}")
     sessions = list_sessions()
     if sessions is None:
         raise Fail("cannot list sessions with `claude agents --json --all`")
     caller = require_dispatcher(repo, sessions, args.dispatcher)
-    dispatcher = caller["name"]
-    if any(s.get("name") == args.slug for s in sessions) or sessions_in(sessions, repo.root, path):
-        raise Fail(f"a session named {args.slug} or inside {path} already exists")
+    return start_task(repo, sessions, caller["name"], args.slug, brief, args.base, args.critical, settings)
+
+
+def start_task(repo, sessions, dispatcher, slug, brief, base_slug, critical, settings):
+    """Start the lead of a new task `slug` with `brief` under the dispatcher named `dispatcher`, stacked on the open task
+    `base_slug` if given: the refusals of `factory new` (limit, cap, existing worktree, branch, session or pull request, no CI),
+    each a Fail. `factory new` and the watch tick's start of a split are its two callers."""
+    size = brief_size(brief)
+    branch = f"worktree-{slug}"
+    path = repo.worktree_path(slug)
+    base = base_branch(repo, base_slug) if base_slug else repo.default
+    refuse_existing(repo, slug)
+    if any(s.get("name") == slug for s in sessions) or sessions_in(sessions, repo.root, path):
+        raise Fail(f"a session named {slug} or inside {path} already exists")
     cap = settings["worktree_cap"]
     held_back = reserve(cap, settings["reserve_percent"])
-    limit = cap if args.critical else cap - held_back
+    limit = cap if critical else cap - held_back
     if len(repo.tasks) >= limit:
         declared = read_tasks(repo.root)
         held = []
@@ -1973,7 +1988,7 @@ def cmd_new(args):
     elif state == "none":
         raise Fail(f"{no_ci_line(repo)}; run factory ci for the way out")
     setup = config_value(repo, "factory.setup")
-    if args.base:
+    if base_slug:
         for argv in (["worktree", "add", "-b", branch, path, base],
                      ["config", f"branch.{branch}.factoryBase", base]):
             rc, _, err = repo.git(*argv)
@@ -1987,17 +2002,17 @@ def cmd_new(args):
         rc, _, err = repo.git("worktree", "add", "--no-track", "-b", branch, path, f"{repo.remote}/{repo.default}")
         if rc != 0:
             raise Fail(f"git worktree add failed: {err.strip()}", code=1)
-    made = bool(args.base or setup)
+    made = bool(base_slug or setup)
     sentence = ""
     if setup:
-        sentence, line = run_setup(setup, path, tech_lead_paths(repo, args.slug)[1].with_suffix(".setup.log"))
+        sentence, line = run_setup(setup, path, tech_lead_paths(repo, slug)[1].with_suffix(".setup.log"))
         print(line)
     role_skills(repo.root, "tech-lead")  # the tech lead starts later: the one warning for its record is this one
     try:  # before the launch: the lead's first hook finds its task declared (see `factory_session`)
-        declare(repo, args.slug, "dispatcher", "working")
+        declare(repo, slug, "dispatcher", "working")
     except (OSError, ValueError, KeyError) as e:
-        sys.stderr.write(f"factory: warning: cannot declare {args.slug} ({e}); its lead will count as a session outside the factory\n")
-    rc, out, err = run(build_launch_argv(args.slug, dispatcher, brief, settings, base, repo.remote, time.time(),
+        sys.stderr.write(f"factory: warning: cannot declare {slug} ({e}); its lead will count as a session outside the factory\n")
+    rc, out, err = run(build_launch_argv(slug, dispatcher, brief, settings, base, repo.remote, time.time(),
                                          task_limit(size, settings["task_time_limit_hours"]), repo.root, sentence),
                        cwd=repo.root)
     match = BACKGROUNDED_RE.search(f"{out}\n{err}")
@@ -2006,7 +2021,7 @@ def cmd_new(args):
             remove_stacked(repo, path, branch)
         sys.stderr.write(err or out)
         try:
-            declare(repo, args.slug, "dispatcher", "closed", reason="claude did not start the session")
+            declare(repo, slug, "dispatcher", "closed", reason="claude did not start the session")
         except (OSError, ValueError, KeyError):
             pass
         raise Fail("claude did not start the session", code=1)
@@ -2020,7 +2035,7 @@ def cmd_new(args):
         if rc != 0:
             sys.stderr.write(f"factory: warning: cannot record the size of {branch}: {err.strip()}\n")
     # mode: a record for `isshoni kaizen --modes`, which compares these tasks with those started before the team (`single`).
-    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"], mode="team",
+    task_event("TaskStarted", repo, slug, base=base, lead_model=settings["models"]["lead"], mode="team",
                models=agent_models(settings["models"]), commit=copy_commit(), **({"size": size} if size else {}))
     return 0
 
@@ -2220,7 +2235,8 @@ def cmd_status(args):
                "leftover_agent_worktrees": repo.leftover, "outside_worktrees": repo.outside, "identity": bot or None,
                "repository_selection": stored and stored.get("repository_selection"),
                "prs": {"as_of": as_of, "error": pr_error}, "decisions": open_decisions(repo.root),
-               "history": history(repo.root), "approvals": read_approvals(repo.root, rows)}
+               "history": history(repo.root), "approvals": read_approvals(repo.root, rows),
+               "standing": list(standing(all_decisions()).values())}
         print(json.dumps(doc, indent=2))
         return 0
     now = time.time()
@@ -4904,17 +4920,90 @@ def cmd_lead(args):
 
 
 DECISION_KEYS = ("id", "slug", "kind", "ask", "options", "recommend", "ts")
+# kind -> the one option that may stand, its label, whether it stands with no record, uses before it switches itself off
+STANDING = {"split":   {"choice": 1, "label": "start it", "default": True,  "limit": None},
+            "overrun": {"choice": 1, "label": "continue", "default": False, "limit": 10}}
+
+
+def last_answers(records):
+    """The newest answer record of each decision id."""
+    return {r["id"]: r for r in records if "choice" in r}
+
+
+def all_decisions():
+    """The decision records of every repository, oldest first."""
+    return sorted(read_log("decisions"), key=stamp)
+
+
+def standing(records):
+    """{kind: the `standing` entry of `status --json`} from the `records` of every repository. On: the newest `always` record
+    of the kind, else the table's default. Uses: the standing answers to asks of the kind after the newest `always: true`
+    record. Lapsed: the newest record switched it off by the script."""
+    found = {}
+    for kind, row in STANDING.items():
+        flags = [i for i, r in enumerate(records) if r.get("kind") == kind and "always" in r]
+        newest = records[flags[-1]] if flags else None
+        since = next((i for i in reversed(flags) if records[i]["always"]), -1)
+        asked = {r["id"] for r in records if "ask" in r and r.get("kind") == kind}
+        found[kind] = {"kind": kind, "label": row["label"], "on": newest["always"] if newest else row["default"],
+                       "uses": sum(1 for r in records[since + 1:] if r.get("by") == "standing" and r.get("id") in asked),
+                       "limit": row["limit"], "lapsed": bool(newest) and not newest["always"] and newest["by"] == "script"}
+    return found
+
+
+def pending_splits(records):
+    """The split asks in `records` that have no `started` record and whose newest answer is not 2, oldest first."""
+    answers, started = last_answers(records), {r["id"] for r in records if "started" in r}
+    return [r for r in records if "ask" in r and r["kind"] == "split" and r["id"] not in started
+            and answers.get(r["id"], {}).get("choice") != 2]
+
+
+def split_waits(root):
+    """{decision id: why its split is not started yet}, as the last tick left it."""
+    try:
+        data = json.loads(repo_state(root, "splits", "json").read_text())
+    except (OSError, ValueError):
+        return {}
+    waits = data.get("waits") if isinstance(data, dict) else None
+    return waits if isinstance(waits, dict) else {}
+
+
+def decision_note(r, answer, task, waits, entry):
+    """The one line that says why the open decision `r` is as it is, or "": a split waiting for a slot, a split whose parent
+    `task` was closed, a kind whose standing answer lapsed (`entry`)."""
+    if r["kind"] == "split" and answer and r["id"] in waits:
+        return f"starts by itself when it can: {waits[r['id']]}" + (f" (always: {entry['label']})" if answer.get("by") == "standing" else "")
+    if r["kind"] == "split" and not answer and (task or {}).get("state") == "closed":
+        return f"its parent {r['slug']} was closed: start it or not is yours"
+    if entry and entry["lapsed"] and not answer:
+        return f"always {entry['label']} ran {entry['limit']} times and switched itself off: this one is yours"
+    return ""
 
 
 def open_decisions(root):
     """The open decisions of the repo at `root`, oldest first: an ask with no answer, whose task's last state is `blocked`
-    on the human and not later than the ask, so any state the lead declares after asking closes it."""
+    on the human and not later than the ask, so any state the lead declares after asking closes it. A split ask is open
+    until it is started or its newest answer is 2, whatever its task's state; answered 1 it is `picked`, waiting for a
+    slot. A kind in STANDING has `always`, the option that may stand; a `note` says why one is as it is, when it is."""
     records = repo_log("decisions", root) or []
-    answered = {r["id"] for r in records if "choice" in r}
-    tasks = read_tasks(root)
-    return [{k: r[k] for k in DECISION_KEYS if k in r} for r in records
-            if "ask" in r and r["id"] not in answered and (t := tasks.get(r["slug"]))
-            and t["state"] == "blocked" and t.get("waits_on") in (None, "human") and stamp(t) <= stamp(r)]
+    answers = last_answers(records)
+    splits = {r["id"] for r in pending_splits(records)}
+    tasks, waits, state = read_tasks(root), split_waits(root), standing(all_decisions())
+    found = []
+    for r in records:
+        if "ask" not in r:
+            continue
+        a, t = answers.get(r["id"]), tasks.get(r["slug"])
+        if r["kind"] == "split":
+            if r["id"] not in splits:
+                continue
+        elif a or not t or t["state"] != "blocked" or t.get("waits_on") not in (None, "human") or stamp(t) > stamp(r):
+            continue
+        note = decision_note(r, a, t, waits, state.get(r["kind"]))
+        found.append({**{k: r[k] for k in DECISION_KEYS if k in r},
+                      **({"always": STANDING[r["kind"]]["choice"]} if r["kind"] in STANDING else {}),
+                      **({"picked": a["choice"]} if r["kind"] == "split" and a else {}), **({"note": note} if note else {})})
+    return found
 
 
 HISTORY_DAYS = 7
@@ -4927,8 +5016,15 @@ def history(root):
     leads' key decisions. Each entry is {ts, slug, by, text}, the text on one line."""
     answers = repo_log("decisions", root) or []
     asks = {r["id"]: r for r in answers if "ask" in r}
-    entries = [(r["ts"], r["slug"], "human", f"{a['kind']}: picked {r['choice']}: {a['options'][r['choice'] - 1]}")
-               for r in answers if "choice" in r and (a := asks.get(r["id"]))]
+    entries = [(r["ts"], r["slug"], r.get("by", "human"), f"{a['kind']}: picked {r['choice']}: {a['options'][r['choice'] - 1]}")
+               for r in answers if isinstance(r.get("choice"), int) and (a := asks.get(r["id"])) and (a["kind"], r["choice"]) != ("split", 1)]
+    latest = last_answers(answers)
+    entries += [(r["ts"], r["started"], latest[r["id"]].get("by", "human"),
+                 f"started from a split of {r['slug']}; undo: factory close {r['started']} --reason '<why>'")
+                for r in answers if "started" in r and r["id"] in latest]
+    entries += [(r["ts"], "", r["by"], f"always {STANDING[r['kind']]['label']} on {r['kind']}" if r["always"] else
+                 f"always {STANDING[r['kind']]['label']} on {r['kind']} switched off after {STANDING[r['kind']]['limit']} uses"
+                 if r["by"] == "script" else f"asks again on {r['kind']}") for r in answers if "always" in r]
     said = {"extended": lambda f: f"extended {f['minutes']} min to {f['until'][11:16]}Z: {f['reason']}",
             "paused": lambda f: f"paused: {f['reason']}", "closed": lambda f: f"closed: {f['reason']}"}
     entries += [(f["decided"], f["slug"], f["by"], said[f["decision"]](f))
@@ -4954,6 +5050,10 @@ def args_decision(parser):
     answer = actions.add_parser("answer", help="record the human's pick and queue it for the lead (never a lead)")
     answer.add_argument("id")
     answer.add_argument("n", type=int)
+    answer.add_argument("--always", action="store_true", help="and answer every later decision of this kind the same way (split, overrun)")
+    always = actions.add_parser("always", help="switch the standing answer of a kind on or off (never a lead)")
+    always.add_argument("kind")
+    always.add_argument("state", choices=("on", "off"))
 
 
 def decision_ask(args):
@@ -4992,26 +5092,89 @@ def decision_list(args):
     return 0
 
 
+def apply_pick(repo, d, n, by=None):
+    """Record the pick of option `n` of the decision `d` (the human's, or the script's `by` a standing answer) and queue it
+    for the lead. A split's answer 2 tells its parent lead; its answer 1 queues nothing: the start does."""
+    log("decisions", {"ts": now(), "repo": repo.root, "id": d["id"], "slug": d["slug"], "choice": n, **({"by": by} if by else {})})
+    if d["kind"] != "split":
+        outbox_put(repo, d["slug"], f"INBOX: {d['slug']}: decision {d['id']}: the human picked {n}: {d['options'][n - 1]}")
+    elif n == 2:
+        new = next(r["new"] for r in repo_log("decisions", repo.root) if r["id"] == d["id"] and "ask" in r)
+        outbox_put(repo, d["slug"], f"INBOX: {d['slug']}: split {new} declined by the human: it is not started")
+
+
 def decision_answer(args):
     if tags()["slug"]:
         raise Fail("decision answer: only the human answers, from outside a task worktree")
     repo = Repo()
     found = next((d for d in open_decisions(repo.root) if d["id"] == args.id), None)
     if found is None:
-        taken = any(r.get("id") == args.id and "choice" in r for r in repo_log("decisions", repo.root) or [])
+        taken = args.id in last_answers(repo_log("decisions", repo.root) or [])
         raise Fail(f"decision answer: {args.id} is " + ("already answered" if taken else "not an open decision"))
+    if found.get("picked") == args.n:
+        raise Fail(f"decision answer: {args.id} is already answered")
     if not 1 <= args.n <= len(found["options"]):
         raise Fail(f"decision answer: the pick is 1 to {len(found['options'])}")
-    log("decisions", {"ts": now(), "repo": repo.root, "id": args.id, "slug": found["slug"], "choice": args.n})
-    outbox_put(repo, found["slug"],
-               f"INBOX: {found['slug']}: decision {args.id}: the human picked {args.n}: {found['options'][args.n - 1]}")
+    if args.always:
+        if found.get("always") != args.n:
+            raise Fail(f"decision answer: --always is for the one option a standing answer repeats; a {found['kind']} decision has "
+                       + (f"{found['always']}" if "always" in found else "none"))
+        log("decisions", {"ts": now(), "repo": repo.root, "kind": found["kind"], "always": True, "by": "human"})
+    apply_pick(repo, found, args.n)
     print(f"answered {found['slug']}: {args.n}; the next tick delivers it")
     return 0
 
 
-@command("decision", "decisions for the human: a lead asks (ask), the inbox lists them (list), the human answers (answer)", args_decision)
+def decision_always(args):
+    if tags()["slug"]:
+        raise Fail("decision always: only the human switches it, from outside a task worktree")
+    if args.kind not in STANDING:
+        raise Fail(f"decision always: {args.kind} has no standing answer; the kinds are {', '.join(STANDING)}")
+    on = args.state == "on"
+    log("decisions", {"ts": now(), "repo": Repo().root, "kind": args.kind, "always": on, "by": "human"})
+    print(f"{args.kind}: always {STANDING[args.kind]['label']}" if on else f"{args.kind}: asks again from now")
+    return 0
+
+
+@command("decision", "decisions for the human: a lead asks (ask), the inbox lists them (list), the human answers (answer, always)", args_decision)
 def cmd_decision(args):
-    return {"ask": decision_ask, "list": decision_list, "answer": decision_answer}[args.action](args)
+    return {"ask": decision_ask, "list": decision_list, "answer": decision_answer, "always": decision_always}[args.action](args)
+
+
+def args_split(parser):
+    parser.add_argument("slug", metavar="NEW-SLUG")
+    parser.add_argument("--brief-file", required=True, metavar="PATH", help="the new task's whole brief")
+    parser.add_argument("--base", help="slug of an open task to stack the new task on")
+    parser.add_argument("text", metavar="ASK", help="1 to 60 words: what the new task delivers and why it is separate")
+
+
+@command("split", "a lead offers part of its work as a new task: the human decides, the watch tick starts it", args_split)
+def cmd_split(args):
+    parent = tags()["slug"]
+    if not parent:
+        raise Fail("split: run it from inside a task worktree")
+    validate_slug(args.slug)
+    try:
+        brief = Path(args.brief_file).read_text()
+    except OSError as e:
+        raise Fail(f"cannot read brief file: {e}")
+    if not brief.strip():
+        raise Fail("the brief is empty")
+    ask = " ".join(args.text.split())
+    if not 1 <= len(ask.split()) <= 60:
+        raise Fail("split: the ask is 1 to 60 words")
+    repo = Repo()
+    if args.base:
+        base_branch(repo, args.base)
+    refuse_existing(repo, args.slug)
+    if any(r["new"] == args.slug for r in pending_splits(repo_log("decisions", repo.root) or [])):
+        raise Fail(f"split: a split of {args.slug} is neither started nor declined")
+    rid = secrets.token_hex(6)
+    log("decisions", {**record(repo.root, parent, "lead", None, os.environ.get("CLAUDE_CODE_SESSION_ID")), "id": rid, "kind": "split",
+                      "ask": ask, "options": [f"Start {args.slug}", "Do not start it"], "new": args.slug, "brief": brief,
+                      **({"base": args.base} if args.base else {})})
+    print(rid)
+    return 0
 
 
 def tick_picture(repo, fallback):
@@ -5034,6 +5197,40 @@ def with_dispatcher(p, fallback):
     p["dispatcher"] = found and found["name"]
 
 
+def inbox_tick(repo, fallback):
+    """Answer the open decisions of the repo whose kind stands, switching a kind with a limit off when its uses reach it (not
+    for a split whose parent was closed); then start each split answered "start", oldest first, in the state file `splits`
+    keeping why one waits."""
+    state, tasks = standing(all_decisions()), read_tasks(repo.root)
+    for d in open_decisions(repo.root):
+        kind = d["kind"]
+        if kind not in STANDING or d.get("picked") or not state[kind]["on"] or (kind == "split" and tasks.get(d["slug"], {}).get("state") == "closed"):
+            continue
+        if state[kind]["limit"] and state[kind]["uses"] >= state[kind]["limit"]:
+            log("decisions", {"ts": now(), "repo": repo.root, "kind": kind, "always": False, "by": "script"})
+            state[kind]["on"] = False
+            continue
+        apply_pick(repo, d, STANDING[kind]["choice"], by="standing")
+        state[kind]["uses"] += 1
+    records = repo_log("decisions", repo.root) or []
+    waits = {}
+    for r in (r for r in pending_splits(records) if r["id"] in last_answers(records)):
+        try:
+            sessions = list_sessions()
+            if sessions is None:
+                raise Fail("cannot list sessions with `claude agents --json --all`")
+            found, reason = find_dispatcher(sessions, repo.root, fallback)
+            if not found:
+                raise Fail(f"no dispatcher session: {reason}")
+            start_task(Repo(repo.root), sessions, found["name"], r["new"], r["brief"], r.get("base"), False, load_settings())
+        except Fail as e:
+            waits[r["id"]] = str(e)
+            continue
+        log("decisions", {"ts": now(), "repo": repo.root, "id": r["id"], "slug": r["slug"], "started": r["new"]})
+        outbox_put(repo, r["slug"], f"INBOX: {r['slug']}: split {r['new']} started")
+    write_json(repo_state(repo.root, "splits", "json"), {"as_of": now(), "waits": waits})
+
+
 def watch_tick(args, repo):
     """The cheap part every time (comments, draft flags, approvals), the facts of every tick, and every HEALTH_SECONDS the
     rest of them and the digest. What wakes the site manager (see `wake_events`) gathers the full picture and runs it once."""
@@ -5046,6 +5243,10 @@ def watch_tick(args, repo):
     os.utime(repo_state(repo.root, "watch", "lock"), (t, t))  # the tick's age, read by `health` and by `drain`
     print(f"{now()} watch {os.path.basename(repo.root)}", flush=True)
     snap = cheap_tick(repo, args.dispatcher)
+    try:
+        inbox_tick(repo, args.dispatcher)
+    except Exception as e:  # the tick goes on without it
+        print(f"inbox: {why(e)}")
     state = read_lander(repo)
     full = time.time() - state["health"] >= HEALTH_SECONDS
     if full:
