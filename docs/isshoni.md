@@ -564,30 +564,35 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   into a group and a child row, a line or two lower; the cursor stays on its session.
 - **Agents:** per agent type: dispatches, models, tokens and cost, p50/p90 cost and
   durations, repeats, review loops, warnings.
-- **Factory:** an isometric factory floor in thin lines (braille dots) on a faint diamond
-  grid, drawn from what `factory status --json` reports for each repository seen in the
-  range that has task worktrees. A conveyor belt winds from the left edge to the right
-  through the stations `BUILD` (a block with a slot), `REVIEW` (a gantry), `MERGE` (a press)
-  and `SHIPPED` (a dock pad); each station's sign gives its name and how many tasks it holds
-  (`BUILD 3`), and `INTAKE` marks where new tasks come in. Every task is one wireframe cube,
-  queued on the belt before the station of its phase, the first in order nearest the station:
-  in motion before BUILD, in review before REVIEW, merged (not cleaned up) before MERGE,
-  settled stacked 3 high on the SHIPPED pad. A blocked task, and one whose phase the view
-  does not know (its label then shows the raw phase), stands on the `BLOCKED` pad at the end
-  of a short spur off the belt, with a red lamp. Position is an order, not a measurement:
+- **Factory:** a factory floor in thin line art (box-drawing characters, one stroke a
+  character) on a faint lattice of dots, drawn from what `factory status --json` reports for
+  each repository seen in the range that has task worktrees. A conveyor band, two edges
+  6 columns apart, runs as a sawtooth of four legs from the left edge to the right one
+  (down, up, down, up; the width left over is flat runs at the turns); at the end of each leg
+  stands a station: `BUILD` (a block with a slot), `REVIEW` (a gantry the belt passes
+  under), `MERGE` (a press) and `SHIPPED` (a dock pad), with a lamp beside it. A sign gives
+  each station's name and how many tasks it holds (`BUILD 3`), and `INTAKE`, a chute at the
+  top left, marks where new tasks come in. Every task is one wireframe cube (a small
+  hexagon), queued on the leg before the station of its phase, the first in order nearest
+  the station: in motion before BUILD, in review before REVIEW, merged (not cleaned up)
+  before MERGE, settled before SHIPPED. A blocked task, and one whose phase the view does
+  not know (its label then shows the raw phase), stands on the `BLOCKED` pad, a bracketed
+  row below-left of the first leg, reached by a short spur, with a red lamp; its labels are
+  listed under the pad. Position is an order, not a measurement:
   BUILD cubes stand by elapsed time against the limit (furthest along nearest the station,
   tasks without both last), the other places by slug. Grey is rest and green is work: a cube
-  whose session is working has a green outline, a lit top and a spinner, and its station a
-  green ring with arrowheads that turn, a green lamp, and a green centre line on the belt
-  leading to it; `▲` in yellow marks a cube that waits on you (a ready pull request in
-  review, or a task blocked on the human), red a blocked cube or one past its time, the
-  muted green of the merged colour a merged or settled one. Each cube has a label where
-  there is room: the slug (with the repository name before it when several repositories
-  have tasks) and the elapsed time; a label that would overlap a sign or a cube is left out.
-  The belt's tread and rings turn only while a shown task in motion has a working session;
+  whose session is working has a green outline and a spinner, and its station a green lamp
+  and green ticks stepping along the band leading to it; `▲` in yellow marks a cube that
+  waits on you (a ready pull request in review, or a task blocked on the human), red a
+  blocked cube or one past its time, the muted green of the merged colour a merged or
+  settled one. Each cube has a label to its right where there is room: a leader, the slug
+  (with the repository name before it when several repositories have tasks) and the elapsed
+  time, cut with `…`; a label with fewer than 8 characters of room is left out.
+  The ticks on the band move only while a shown task in motion has a working session;
   otherwise the floor stands still. A place with more tasks than room has a sign that shows
-  the full count and `· N more` for the tasks without a slot; a larger terminal draws bigger
-  cubes, a longer belt and more slots. When a refresh changes a task's phase, its cube travels along the belt, round its corners, to its new place over
+  the full count and `· N more` for the tasks without a slot; a larger terminal makes the
+  legs longer and gives them more slots. When a refresh changes a task's phase, its cube
+  travels along the band, round its turns, to its new place over
   about a second; a new task comes in at the intake, a task that is gone leaves from
   where it stood. A sign plate at the upper right names the repository (or `all
   repositories`) and holds the capacity meter: the tasks in motion against the cap

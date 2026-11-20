@@ -1,0 +1,30 @@
+ Isshoni  1 ✉  2 ≡  3 Agent [4 Factory] 5 Kaizen  6 ◉  7 ✿               24h [7d] 30d  all   ○ idle 
+ Factory  0 in motion · 0 waiting for review · 1 merged, not cleaned · 3 settled  · as of 11:00:00  
+                                                                            ╭─ all repositories ──╮ 
+                                           REVIEW 0                         │ in motion ○○○○○ 0/5 │ 
+ ╭─────╮ INTAKE                             ╭─────╮                         ╰─────────────────────╯ 
+ ╰╮   ╭╯                                   ╱╭─────╮╲                                     ╱ ╱───╲    
+  │   │                                   ╱ ╰─╮ ╭─╯ ╲                                   ╱ ╱     ╲   
+ ╲     ╲                                 ╱    │ │    ╲                                 ╱  ╲     ╱ ● 
+  ╲     ╲                               ╱  ·  │ │     ╲                               ╱╱╲· ╲───╱    
+   ╲  ·  ╲                             ╱    ╭─╯ ╰─╮ ·  ╲                  a-shipped ─╱│╲╱│          
+    ╲     ╲                           ╱  ·  ╭─────╮     ╲                           ╱  ╲╱ ╭──────   
+     ╲  ·  ╲                         ╱     ╱       ╲  ·  ╲                         ╱     ╱          
+      ╲     ╲                       ╱  ·  ╱         ╲     ╲                       ╱╱╲·  ╱           
+       ╲  ·  ╲                     ╱     ╱           ╲  ·  ╲          b-shipped ─╱│╲╱│ ╱ SHIPPED 3  
+        ╲     ╲                   ╱  ·  ╱             ╲     ╲                   ╱  ╲╱ ╱             
+         ╲  ·  ╲                 ╱     ╱               ╲  ·  ╲                 ╱     ╱              
+          ╲     ╲               ╱  ·  ╱                 ╲     ╲               ╱╱╲·  ╱               
+           ╲  ·  ╲             ╱     ╱                   ╲  ·  ╲             ╱│╲╱│ ╱─ c-shipped     
+            ╲     ╲           ╱  ·  ╱                     ╲     ╲           ╱  ╲╱ ╱                 
+             ╲  ·  ╲         ╱     ╱                       ╲  ·  ╲         ╱     ╱                  
+              ╲     ╲       ╱  ·  ╱                         ╲     ╲       ╱  ·  ╱                   
+               ╲  ·  ╰─────╯     ╱                           ╲  ╱╲ ╰─────╯     ╱                    
+                ╲    ╭─────╮ ·  ╱                 merged-one ─╲│╲╱│╰─────╯ ·  ╱                     
+                 ╲  ·│ ╭─╮ │   ╱                               ╲╲╱· │   │    ╱                      
+╰──────────────╯ ●╲  │ │ │ │  ╱                                 ╲   │   │   ╱                       
+ BLOCKED 0         ╲ │ ╰─╯ │ ╱                                   ╲  │   │  ╱                        
+                    ╲╰─────╯╱                                     ╲╭─────╮╱                         
+                     ╰─────╯                                       ╰─────╯                          
+                     BUILD 0                                       MERGE 1                          
+ / filter  ·  r range  ·  tab next view  ·  ? help  ·  q quit                                       

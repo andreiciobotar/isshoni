@@ -120,7 +120,7 @@ func (m *model) floorBody(p paint, w, h int) block {
 	if len(hud) > 0 {
 		hudX = w - width(hud[0]) - 1
 	}
-	cv := m.drawFloor(l, hud, hudX)
+	cv := m.drawFloor(l, hud, hudX).cv
 
 	lines := cv.lines(p)
 	for i, hl := range hud {

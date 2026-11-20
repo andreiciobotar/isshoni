@@ -2,9 +2,9 @@ package tui
 
 import (
 	"image/color"
-	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -106,55 +106,99 @@ func TestFloorEveryTaskIsACubeOrCounted(t *testing.T) {
 			belt++
 		}
 	}
-	if belt < 6 || siding < floorSide {
-		t.Errorf("80x24 holds at least 6 cubes on the belt and %d on the BLOCKED pad, got %d and %d", floorSide, belt, siding)
+	if belt < 6 || siding < 2 {
+		t.Errorf("80x24 holds at least 6 cubes on the belt and %d on the BLOCKED pad, got %d and %d", 2, belt, siding)
 	}
 	// the queues grow with the window
 	shown := func(w, h int) int { return len(floorModel(true, w, h, crowded).floorNow().cubes) }
-	if a, b, c := shown(80, 24), shown(100, 30), shown(140, 40); a < 5 || b <= a || c <= b {
-		t.Errorf("a crowded BUILD queue holds at least 5 cubes at 80x24, then more at 100x30 and 140x40: %d, %d, %d", a, b, c)
+	if a, b, c := shown(80, 24), shown(100, 30), shown(140, 40); a < 3 || b <= a || c <= b {
+		t.Errorf("a crowded BUILD queue holds at least 3 cubes at 80x24, then more at 100x30 and 140x40: %d, %d, %d", a, b, c)
 	}
 	if out := plain(floorModel(true, 80, 24, crowded)); !strings.Contains(out, "BUILD 12 · ") || !strings.Contains(out, " more") {
 		t.Errorf("a crowded station keeps its full count and says how many have no slot:\n%s", out)
 	}
 }
 
-// The belt crosses the window whatever its size, one task or twenty, and the dock stands inside the right edge.
+// The belt crosses the window whatever its size, one task or twenty.
 func TestFloorBeltSpansTheWindow(t *testing.T) {
 	for _, sz := range [][2]int{{80, 24}, {100, 30}, {140, 40}} {
 		for name, repos := range map[string][]factoryRepo{
 			"one": {{name: "r", path: "/r", st: fstatus(5, ftask("a", "motion"))}},
 			"20":  {{name: "r", path: "/r", st: fstatus(40, manyTasks(20)...)}},
 		} {
-			l := floorModel(true, sz[0], sz[1], repos...).floorNow()
-			minX, maxX, minY, maxY := math.Inf(1), math.Inf(-1), math.Inf(1), math.Inf(-1)
-			for _, q := range l.path.pts {
-				x, y := l.xy(q, 0)
-				minX, maxX, minY, maxY = math.Min(minX, x), math.Max(maxX, x), math.Min(minY, y), math.Max(maxY, y)
+			m := floorModel(true, sz[0], sz[1], repos...)
+			l := m.floorNow()
+			a := newFloorArt(m, l)
+			a.drawBelt()
+			minX, maxX, minY, maxY := l.w, -1, l.h, -1
+			for i, k := range a.kind {
+				if k == kEdge {
+					minX, maxX, minY, maxY = min(minX, i%l.w), max(maxX, i%l.w), min(minY, i/l.w), max(maxY, i/l.w)
+				}
 			}
-			// within 3 cells of the left, right and bottom edges; the top has the BLOCKED spur and its cubes above the entry
-			if minX/2 > 3 || float64(l.w)-maxX/2 > 3 {
-				t.Errorf("%s at %dx%d: the belt runs from column %.0f to %.0f of %d", name, sz[0], sz[1], minX/2, maxX/2, l.w)
+			if minX > 3 || l.w-1-maxX > 3 {
+				t.Errorf("%s at %dx%d: the belt runs from column %d to %d of %d", name, sz[0], sz[1], minX, maxX, l.w)
 			}
-			if minY < 0 || minY/4 > 7 || float64(l.h)-maxY/4 > 3 {
-				t.Errorf("%s at %dx%d: the belt runs from row %.1f to %.1f of %d", name, sz[0], sz[1], minY/4, maxY/4, l.h)
+			if rows := maxY - minY + 1; rows < l.h-4-2 {
+				t.Errorf("%s at %dx%d: the belt spans %d rows of %d", name, sz[0], sz[1], rows, l.h)
 			}
 		}
 	}
 }
 
-func TestFloorStacksSettledCubesOnTheDockPad(t *testing.T) {
-	var tasks []data.FactoryTask
-	for _, s := range []string{"a", "b", "c", "d"} {
-		tasks = append(tasks, ftask(s, "settled"))
+// No two cubes share a cell, none shares one with the belt's edges, a sign or a machine.
+func TestFloorCubesKeepApart(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {100, 30}, {140, 40}} {
+		for name, repos := range map[string][]factoryRepo{
+			"one": {{name: "r", path: "/r", st: fstatus(5, ftask("a", "motion"))}},
+			"20":  {{name: "r", path: "/r", st: fstatus(40, manyTasks(20)...)}},
+			"all": waitingRepos(),
+		} {
+			m := floorModel(true, sz[0], sz[1], repos...)
+			l := m.floorNow()
+			a := m.drawFloor(l, nil, 0)
+			belt := newFloorArt(m, l)
+			belt.drawBelt()
+			taken := map[[2]int]string{}
+			for _, c := range l.cubes {
+				x, y := l.pos(c.at)
+				for _, cell := range cubeCells(x, y) {
+					if other, ok := taken[cell]; ok {
+						t.Errorf("%s at %dx%d: %s and %s share cell %v", name, sz[0], sz[1], c.t.Slug, other, cell)
+					}
+					taken[cell] = c.t.Slug
+					if belt.kind[cell[1]*l.w+cell[0]] == kEdge {
+						t.Errorf("%s at %dx%d: %s stands on the belt's edge at %v", name, sz[0], sz[1], c.t.Slug, cell)
+					}
+					for _, r := range append(slices.Clone(a.machines), a.signs...) {
+						if r.has(cell[0], cell[1]) {
+							t.Errorf("%s at %dx%d: %s stands on a sign or machine at %v", name, sz[0], sz[1], c.t.Slug, cell)
+						}
+					}
+				}
+			}
+			if len(a.signs) < 5 || len(a.machines) != 5 {
+				t.Errorf("%s at %dx%d: %d signs, %d machines", name, sz[0], sz[1], len(a.signs), len(a.machines))
+			}
+		}
 	}
-	l := floorModel(true, 100, 30, factoryRepo{name: "r", path: "/r", st: fstatus(5, tasks...)}).floorNow()
-	levels := map[int]int{}
-	for _, c := range l.cubes {
-		levels[c.level]++
-	}
-	if len(l.cubes) != floorPile || levels[0] != 1 || levels[1] != 1 || levels[2] != 1 || l.more["settled"] != 1 {
-		t.Errorf("4 settled cubes make a pile of %d and one counted: %d cubes, levels %v, more %d", floorPile, len(l.cubes), levels, l.more["settled"])
+}
+
+// A cube that travels the belt passes every cell of it, corners included, one step at a time, and ends at the right edge.
+func TestFloorPathHasNoGaps(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {100, 30}, {140, 40}} {
+		l := newFloorLayout(sz[0], sz[1]-3)
+		px, py := l.path.at(0)
+		for s := 1; s <= l.path.total; s++ {
+			x, y := l.path.at(float64(s))
+			if x-px < 0 || x-px > 1 || y-py > 1 || py-y > 1 || (x == px && y == py) {
+				t.Fatalf("%dx%d: from (%d,%d) to (%d,%d) at arc %d", sz[0], sz[1], px, py, x, y, s)
+			}
+			px, py = x, y
+		}
+		if px != sz[0]-4 {
+			t.Errorf("%dx%d: the belt ends at column %d", sz[0], sz[1], px)
+		}
 	}
 }
 
@@ -179,17 +223,16 @@ func TestFloorCubeMarks(t *testing.T) {
 		t     data.FactoryTask
 		place string
 		want  color.Color
-		lit   bool
 	}{
-		{working, "build", m.th.Green, true},
-		{human, "blocked", m.th.Yellow, false},
-		{over, "build", m.th.Red, false},
-		{ftask("p", "frozen"), "blocked", m.th.Red, false},
-		{ftask("q", "motion"), "build", m.th.Muted, false},
-		{ftask("s", "settled"), "settled", m.mergedColor(), false},
+		{working, "build", m.th.Green},
+		{human, "blocked", m.th.Yellow},
+		{over, "build", m.th.Red},
+		{ftask("p", "frozen"), "blocked", m.th.Red},
+		{ftask("q", "motion"), "build", m.th.Muted},
+		{ftask("s", "settled"), "settled", m.mergedColor()},
 	} {
-		if got, lit := m.floorCubeLook(c.t, c.place); key24(got) != key24(c.want) || lit != c.lit {
-			t.Errorf("%s in %s: colour %v lit %v, want %v %v", c.t.Slug, c.place, got, lit, c.want, c.lit)
+		if got := m.floorCubeLook(c.t, c.place); key24(got) != key24(c.want) {
+			t.Errorf("%s in %s: colour %v, want %v", c.t.Slug, c.place, got, c.want)
 		}
 	}
 }
@@ -295,9 +338,9 @@ func TestFloorSignsAndPileShowAtEverySize(t *testing.T) {
 		}
 	}
 	out := plain(floorModel(true, 100, 30, piled))
-	for _, want := range []string{"MERGE 1", "SHIPPED 3", "+2 stacked"} {
+	for _, want := range []string{"MERGE 1", "SHIPPED 3"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("a pile keeps the signs and labels readable, lacks %q:\n%s", want, out)
+			t.Errorf("settled tasks queue before the dock and keep the signs readable, lacks %q:\n%s", want, out)
 		}
 	}
 }
@@ -458,13 +501,18 @@ func TestGoldenFloor(t *testing.T) {
 		{"floor-100x30", 100, 30, func(m *model) { setFloor(m, waitingRepos()...) }},
 		{"floor-80x24", 80, 24, func(m *model) { setFloor(m, waitingRepos()...) }},
 		{"floor-empty-80x24", 80, 24, func(m *model) { setFloor(m) }},
+		{"floor-single-100x30", 100, 30, func(m *model) {
+			one := ftask("quiet-refactor", "motion")
+			one.Session, one.Elapsed, one.Limit = "working", ptr(int64(252)), ptr(int64(2700))
+			setFloor(m, factoryRepo{name: "alpha", path: "/r/alpha", st: fstatus(5, one)})
+		}},
 		{"floor-crowded-80x24", 80, 24, func(m *model) {
 			setFloor(m, factoryRepo{name: "busy", path: "/r/busy", st: fstatus(40, manyTasks(12)...)})
 		}},
 		{"floor-filter-open-100x30", 100, 30, func(m *model) { setFloor(m, waitingRepos()...); send(m, "/", "j") }},
 		{"floor-one-repo-100x30", 100, 30, func(m *model) { setFloor(m, waitingRepos()...); send(m, "/", "j", "enter") }},
 		{"floor-errors-100x30", 100, 30, stale},
-		{"floor-piled-100x30", 100, 30, func(m *model) {
+		{"floor-settled-100x30", 100, 30, func(m *model) {
 			setFloor(m, factoryRepo{name: "r", path: "/r", st: fstatus(5, ftask("merged-one", "merged"), ftask("a-shipped", "settled"), ftask("b-shipped", "settled"), ftask("c-shipped", "settled"))})
 		}},
 	} {

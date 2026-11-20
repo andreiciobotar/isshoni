@@ -16,13 +16,6 @@ def cell(c,st=None):
         # cell in the foreground over the bottom half in the background, with no seam to the cells around it
         return ('<span style="display:inline-block;vertical-align:top;width:1ch;height:%dpx;'
                 'background:linear-gradient(rgb(%s) 50%%,rgb(%s) 50%%)"></span>')%(LINE_PX,st['fg'],st['bg'])
-    if '⠁'<=c<='⣿':
-        # braille is drawn by the tool: each dot fills its slot of the 2x4 grid of the cell, as it does in a terminal
-        # that draws the dots large; a fallback font draws them small with gaps, and a line of dots stops reading as a line
-        dots=''.join('<circle cx="%s" cy="%s" r=".36"/>'%(x+.5,y+.5) for b,(x,y) in enumerate(
-            [(0,0),(0,1),(0,2),(1,0),(1,1),(1,2),(0,3),(1,3)]) if ord(c)-0x2800>>b&1)
-        return ('<svg viewBox="0 0 2 4" preserveAspectRatio="none" fill="currentColor" style="display:inline-block;'
-                'vertical-align:top;width:1ch;height:%dpx">%s</svg>')%(LINE_PX,dots)
     if unicodedata.east_asian_width(c) in 'WF': w=2
     elif one_cell(c): w=1
     else: return html.escape(c)
