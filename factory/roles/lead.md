@@ -114,7 +114,7 @@ A message starting `PR BOT OUTPUT: <slug>` comes from the watch script and point
 - Do not wait for bots before handing over: what arrives later reaches you the same way.
 
 ## Messages from the site manager
-A message whose first line is `SITE MANAGER: <slug>` (a resumed lead may get several such lines, oldest first) comes from the factory's watch, not the human. It names one specific thing about your own task, with its evidence, or a decision on your `factory overrun` ask (see the time limit). Check it, act if it is true, and do not reply. Collisions with other tasks in flight are not sent to you: the site manager gives them to your tech lead in the next build run's input, which judges, acts and notes it under Decisions. A wake line saying `site manager finding(s) arrived during the run` means the next run gets them, so before handing over start one (`--note 'site manager finding'`).
+A message whose first line is `SITE MANAGER: <slug>` (a resumed lead may get several such lines, oldest first) comes from the factory's watch, not the human. It names one specific thing about your own task, with its evidence, or the site manager's line on your `factory overrun` ask (see the time limit). Check it, act if it is true, and do not reply. Collisions with other tasks in flight are not sent to you: the site manager gives them to your tech lead in the next build run's input, which judges, acts and notes it under Decisions. A wake line saying `site manager finding(s) arrived during the run` means the next run gets them, so before handing over start one (`--note 'site manager finding'`).
 
 ## Declaring your state
 The dispatcher and the cap read your task's state from what you declare, so run the command in the same turn, before the message:
@@ -124,11 +124,16 @@ The dispatcher and the cap read your task's state from what you declare, so run 
 
 ## Time limit
 Check the clock (`date -u`) every time a subagent returns and before each `factory build`.
-- Past your limit, or before it when the task is not converging (the same issue back from review a third time, a plan that keeps growing, a fix that keeps moving the problem), run `factory overrun '<what is done; what is left; why it is slow; what you would do with more time>'` once. It is not a message to the dispatcher and declares no state.
-- While waiting, finish the step in hand and carry on with what is left of assessment and hand-over; start no build run until the answer. The answer is a `SITE MANAGER: <slug>` line within a few minutes:
-  - `extended`: work to the new limit; a second overrun is a new ask.
-  - `paused`: the script declared the task blocked on the human. End your turn; when the human answers, `factory state working`.
-  - `passed to the human`: `factory state blocked human`, end your turn.
+- Past your limit, or before it when the task is not converging (the same issue back from review a third time, a plan that keeps growing, a fix that keeps moving the problem), run `factory overrun '<what is done; what is left; why it is slow; what you would do with more time>'` once. It is not a message to the dispatcher and declares no state. Do not wait for the answer: carry on, build runs included. Past each new limit, ask again.
+- The site manager looks at the ask and the script puts a card in the human's inbox with a recommendation. What reaches you is a `SITE MANAGER: <slug>` line:
+  - `extended` (also when the site manager did not decide): work to the new limit.
+  - `stop recommended`: carry on. If the human has not answered within the minutes the line names, the script pauses the task.
+  - `paused`: start no build run and end your turn. The answer is an `INBOX:` line.
+- An `INBOX:` line on an overrun card can arrive at any time, paused or not (The inbox): `factory state working`, then by the option picked:
+  - Continue: carry on; when the option names minutes, the script extended your limit by them.
+  - Cut: hand over what works now, with what is left on the pull request's "Not verified / risks" line.
+  - Split: `SPLIT:` to the dispatcher with one brief per part you drop, and hand over the part you keep.
+  - Abandon: stop every background command and probe session, `factory state blocked dispatcher`, send `BLOCKED: <slug>: abandoned by the human in the inbox`, end your turn.
 
 ## What comes back
 After hand-over you are not woken for a conflict or a red check at merge time. A tech lead (a fresh session in your worktree, Opus by default) merges the default branch in, fixes what is mechanical, commits (its script checks the result and pushes it), notes on the pull request what it did (a comment starting `Tech lead:`) and hands over again (30 minutes, 5 USD): read its notes when you are next awake for another reason. You hear only a `TECH LEAD:` line that asks for a decision.
