@@ -447,7 +447,7 @@ The pictures here and in the README are recordings of this repository's own fact
 
 <img src="../assets/tabs/agents.webp" alt="View 3, Agents: per agent type the dispatches, tokens, cost and duration at the median and the 90th percentile, as the range goes from 24 hours to all time">
 
-<img src="../assets/tabs/factory.webp" alt="View 4, Factory: an isometric factory floor with one cube per task riding a conveyor through the stations BUILD, REVIEW, MERGE and SHIPPED, blocked tasks parked on a siding, and a cube travelling to its next station when its phase changes">
+<img src="../assets/tabs/factory.gif" alt="View 4, Factory: an isometric factory floor with one cube per task riding a conveyor through the stations BUILD, REVIEW, MERGE and SHIPPED, blocked tasks parked on a siding, and a cube travelling to its next station when its phase changes">
 
 <img src="../assets/tabs/kaizen.webp" alt="View 5, Kaizen, its four pages in turn: Pulse, Flow, Anatomy, Board">
 
