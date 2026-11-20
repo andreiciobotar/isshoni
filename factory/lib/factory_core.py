@@ -1447,7 +1447,7 @@ def collect(repo, sessions, limit_hours, prs=None, deep=False):
         prs = (ask_pull_requests(repo, needed)[0] if needed else {}) or {b: UNKNOWN_PR for b in needed}
     prioritized = read_lander(repo)["prioritized"]
     granted = extended(repo)
-    holds = repo_log("decisions", repo.root) or []
+    holds, tasks_log = repo_log("decisions", repo.root) or [], list(read_log("tasks"))
     firings = fold(repo_log("firings", repo.root) or [])[0]
     events = repo_log("events", repo.root) or []
     rows = []
@@ -1470,7 +1470,7 @@ def collect(repo, sessions, limit_hours, prs=None, deep=False):
         row["extensions"] = extensions(granted, slug, started)
         spans = hold_spans(holds, slug)
         row["limit"] = extended_limit(row["size"], limit_hours, started, row["extensions"], spans)
-        base_held = held_on(repo, slug, recorded)
+        base_held = held_on(repo, slug, recorded, declared, holds, tasks_log)
         row["stack_hold"] = {"base": base_held, "since": next((begin for begin, end in spans if end is None), None)} if base_held else None
         row["state"] = declared.get(slug, {}).get("state")
         rc, out, _ = repo.git("status", "--porcelain", path=path)
@@ -9057,21 +9057,22 @@ def paused_rows(repo):
     return {s: r for s, r in read_tasks(repo.root).items() if s in here and r["state"] == "blocked" and r.get("paused") is True}
 
 
-def held_on(repo, slug, recorded=None):
+def held_on(repo, slug, recorded=None, declared=None, records=None, tasks_log=None):
     """The slug of the task that `slug` is stacked on while it holds the build back, else None: the recorded base (`recorded`,
     the `factoryBase` of its branch, read when None) is a task of this repository whose last state is `working` or `blocked`,
     not yet merged into the default branch, and the human has not picked on a `hold` card of `slug` since that task last
-    handed over."""
+    handed over. A caller that has read them passes `declared` (`read_tasks`), `records` (the repository's decisions) and
+    `tasks_log` (the `tasks` log's records), which are read when None."""
     branches = {os.path.basename(t["path"]): t["branch"] for t in repo.tasks}
     if recorded is None:
         recorded = repo.git("config", "--get", f"branch.{branches[slug]}.factoryBase")[1].strip() if branches.get(slug) else ""
     base = next((s for s, b in branches.items() if recorded and b == recorded), None)
-    if base is None or read_tasks(repo.root).get(base, {}).get("state") not in ("working", "blocked") \
+    if base is None or (read_tasks(repo.root) if declared is None else declared).get(base, {}).get("state") not in ("working", "blocked") \
             or repo.git("merge-base", "--is-ancestor", recorded, f"{repo.remote}/{repo.default}")[0] == 0:
         return None
-    handed = max((stamp(r) for r in read_log("tasks") if r.get("repo") == repo.root and r.get("slug") == base
+    handed = max((stamp(r) for r in (read_log("tasks") if tasks_log is None else tasks_log) if r.get("repo") == repo.root and r.get("slug") == base
                   and r.get("state") == "handed-over"), default="")
-    records = repo_log("decisions", repo.root) or []
+    records = (repo_log("decisions", repo.root) or []) if records is None else records
     cards = {r["id"] for r in records if r.get("kind") == "hold" and r["slug"] == slug and "ask" in r}
     return None if any("choice" in r and r["id"] in cards and stamp(r) > handed for r in records) else base
 
@@ -9083,19 +9084,23 @@ def settle_holds(p, repo):
     records, declared = repo_log("decisions", repo.root) or [], read_tasks(repo.root)
     closed = {r["id"] for r in records if "choice" in r or "released" in r}
     cards = {r["slug"]: r for r in records if r.get("kind") == "hold" and "ask" in r and r["id"] not in closed}
-    here = {os.path.basename(t["path"]) for t in repo.tasks}
+    here, tasks_log = {os.path.basename(t["path"]) for t in repo.tasks}, list(read_log("tasks"))
     for slug in here:
-        if declared.get(slug, {}).get("state") == "working" and slug not in cards and (base := held_on(repo, slug)):
+        if declared.get(slug, {}).get("state") == "working" and slug not in cards \
+                and (base := held_on(repo, slug, declared=declared, records=records, tasks_log=tasks_log)):
             post_decision(repo, slug, "site-manager", "hold",
                           f"{slug} is held: its base {base} is {declared[base]['state']}, so no build run starts. It is released when {base} hands over.",
                           [f"Release: build now on {base} as it stands"], base=base)
     for slug, card in cards.items():
         state, base = declared.get(slug, {}).get("state"), card["base"]
-        if state in ("working", "blocked") and slug in here and held_on(repo, slug):
+        if state in ("working", "blocked") and slug in here \
+                and held_on(repo, slug, declared=declared, records=records, tasks_log=tasks_log):
             continue
         why = (f"{slug} is gone" if slug not in here else f"{slug} is {state}" if state not in ("working", "blocked")
                else f"base {base} handed over" if declared.get(base, {}).get("state") == "handed-over"
-               else f"base {base} is gone" if base not in here else f"base {base} merged")
+               else f"base {base} is gone" if base not in here
+               else f"base {base} merged" if declared.get(base, {}).get("state") in ("working", "blocked")
+               else f"base {base} is {declared.get(base, {}).get('state')}")
         log("decisions", {"ts": now(), "repo": repo.root, "id": card["id"], "slug": slug, "released": why})
         if state == "working" and slug in here:
             forward(repo, p["dispatcher"], slug, "SITE MANAGER",

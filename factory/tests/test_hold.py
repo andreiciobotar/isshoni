@@ -173,6 +173,13 @@ class ReleaseTests(Hold):
         self.tick()
         self.assertEqual(self.released(), ["base alp merged", "base alp is gone"])
 
+    def test_a_base_in_any_other_state_releases_the_card_by_name(self):
+        self.tick()
+        self.move("alp", "acknowledged")
+        self.tick()
+        self.assertEqual(self.released(), ["base alp is acknowledged"])
+        self.assertEqual(len(self.lines()), 1)
+
     def test_the_human_pick_closes_the_card_and_holds_nothing_until_the_base_hands_over_and_changes_again(self):
         self.tick()
         [card] = self.cards()
