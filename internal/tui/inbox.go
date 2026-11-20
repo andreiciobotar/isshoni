@@ -389,11 +389,12 @@ func (m *model) taskContext(c inboxCard) string {
 			case t.Elapsed != nil:
 				parts = append(parts, "running "+FmtDuration(time.Duration(*t.Elapsed)*time.Second))
 			}
-			if t.PRURL != "" {
-				parts = append(parts, "PR "+t.PRURL)
+			if pr := prText(t); pr != "-" {
+				parts = append(parts, "PR "+pr)
 			}
 			if t.Base != "" {
-				parts = append(parts, "base "+t.Base)
+				b, _ := baseText(t.Base)
+				parts = append(parts, "base "+b)
 			}
 		}
 	}

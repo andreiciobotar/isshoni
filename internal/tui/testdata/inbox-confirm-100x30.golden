@@ -1,7 +1,7 @@
  Isshoni [1 ✉ ▲7] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
  Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                   
     TASK            ASK              AGE │ needs-an-answer · question · asked 45m ago               
- alpha                                   │ alpha · blocked 45m00s · base origin/main                
+ alpha                                   │ alpha · blocked 45m00s · PR example.com/design/doc · ba… 
 > ? needs-an-answer Should the expo… 45m │                                                          
  delta-docs                              │ Should the export keep the legacy column order, or       
   ▲ stuck-on-keys   git push is ref…  1m │ switch to the new one now? Switching breaks two          
