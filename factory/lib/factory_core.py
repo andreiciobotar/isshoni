@@ -110,8 +110,8 @@ class Fail(Exception):
 class StartFailed(Fail):
     """`start_task` failed after it began to make the task (from `git worktree add` on), unlike a refusal, which is a plain Fail."""
 
-    def __init__(self, message):
-        super().__init__(message, code=1)
+    def __init__(self, message, code=1):
+        super().__init__(message, code)
 
 
 def why(e):
@@ -2022,9 +2022,12 @@ def start_task(repo, sessions, dispatcher, slug, brief, base_slug, critical, set
         declare(repo, slug, "dispatcher", "working")
     except (OSError, ValueError, KeyError) as e:
         sys.stderr.write(f"factory: warning: cannot declare {slug} ({e}); its lead will count as a session outside the factory\n")
-    rc, out, err = run(build_launch_argv(slug, dispatcher, brief, settings, base, repo.remote, time.time(),
-                                         task_limit(size, settings["task_time_limit_hours"]), repo.root, sentence),
-                       cwd=repo.root)
+    try:
+        argv = build_launch_argv(slug, dispatcher, brief, settings, base, repo.remote, time.time(),
+                                 task_limit(size, settings["task_time_limit_hours"]), repo.root, sentence)
+    except Fail as e:  # the worktree exists and the task is declared: a refusal here is a failed start
+        raise StartFailed(str(e), e.code) from e
+    rc, out, err = run(argv, cwd=repo.root)
     match = BACKGROUNDED_RE.search(f"{out}\n{err}")
     if rc != 0 and not match:
         if made:

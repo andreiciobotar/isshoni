@@ -80,10 +80,8 @@ func (m *model) alwaysLine(p paint, w int) block {
 	}
 	lines := block{fit(row, w, p)}
 	if pick {
-		hint := fmt.Sprintf("· 1–%d switch one off · esc", num)
-		if num == 1 {
-			hint = "· 1 switch it off · esc"
-		}
+		digits, what := switchOffWords(num)
+		hint := "· " + digits + " " + what + " · esc"
 		if n+gap+width(hint) <= w {
 			lines[0] = fit(row+p.sp(gap)+p.t(hint, th.Faint), w, p)
 		} else {
@@ -91,6 +89,14 @@ func (m *model) alwaysLine(p paint, w int) block {
 		}
 	}
 	return append(lines, p.sp(w))
+}
+
+// switchOffWords is the digits and the words that offer to switch a standing answer off: one answer is "it", several "one".
+func switchOffWords(n int) (digits, what string) {
+	if n == 1 {
+		return "1", "switch it off"
+	}
+	return fmt.Sprintf("1–%d", n), "switch one off"
 }
 
 // alwaysOff is key A: the Always line takes digits, or the read-only refusal.

@@ -246,6 +246,14 @@ class TickTests(Splits):
         self.tick()
         self.assertEqual((self.attempts.call_count, self.started()), (3, ["demo-retry"]))
 
+    def test_a_refusal_building_the_launch_argv_is_a_failed_start_not_a_wait(self):
+        rid = self.posted_split()
+        with mock.patch.object(factory, "build_launch_argv", side_effect=factory.Fail("no such agent definition")):
+            self.tick()
+        [failed] = [r for r in self.records("decisions") if "failed" in r]
+        self.assertEqual((failed["id"], failed["failed"]), (rid, "no such agent definition"))
+        self.assertEqual(json.loads(factory.repo_state(ROOT, "splits", "json").read_text())["waits"], {})
+
     def test_no_dispatcher_is_a_wait(self):
         rid = self.posted_split()
         self.as_human("decision", "answer", rid, "1")

@@ -99,11 +99,8 @@ func (m *model) footerKeys() []key.Binding {
 	case m.fac.editing:
 		return []key.Binding{keys.CapSave, keys.CapCancel}
 	case m.view == viewInbox && m.inbox.always:
-		if n := len(m.switchable()); n == 1 {
-			return []key.Binding{key.NewBinding(key.WithHelp("1", "switch it off")), keys.CapCancel}
-		} else {
-			return []key.Binding{key.NewBinding(key.WithHelp(fmt.Sprintf("1–%d", n), "switch one off")), keys.CapCancel}
-		}
+		digits, what := switchOffWords(len(m.switchable()))
+		return []key.Binding{key.NewBinding(key.WithHelp(digits, what)), keys.CapCancel}
 	case m.view == viewInbox && m.inbox.pick != 0 && m.alwaysOffered():
 		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept, keys.Always}
 	case m.view == viewInbox && m.inbox.pick != 0:
