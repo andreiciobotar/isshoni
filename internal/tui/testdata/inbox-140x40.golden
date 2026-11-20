@@ -1,10 +1,10 @@
  Isshoni 一緒に [1 Inbox ▲7] 2 Sessions  3 Agents  4 Factory  5 Kaizen  6 Ops  7 Hanami                          24h [7d] 30d  all   ○ idle 
  Inbox  18 in motion (8 blocked) · 3 waiting for review · 2 merged, not cleaned · 1 settled  · as of 11:00:00                               
-    TASK            ASK                              AGE │ needs-an-answer · question · asked 45m ago                                       
- alpha                                                   │ alpha · blocked 45m00s · PR example.com/design/doc · base main                   
-> ? needs-an-answer Should the export keep the lega… 45m │                                                                                  
- delta-docs                                              │ Should the export keep the legacy column order, or switch to the new one now?    
-  ▲ stuck-on-keys   git push is refused: the deploy…  1m │ Switching breaks two downstream readers.                                         
+REPO           TASK            ASK                   AGE │ needs-an-answer · question · asked 45m ago                                       
+alpha      > ? needs-an-answer Should the export k…  45m │ alpha · blocked 45m00s · PR example.com/design/doc · base main                   
+delta-docs   ▲ stuck-on-keys   git push is refused…   1m │                                                                                  
+                                                         │ Should the export keep the legacy column order, or switch to the new one now?    
+                                                         │ Switching breaks two downstream readers.                                         
                                                          │                                                                                  
                                                          │ 1  Keep the legacy order  (recommended)                                          
                                                          │ 2  Switch now and update both readers                                            
