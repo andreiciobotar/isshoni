@@ -1,22 +1,27 @@
 package tui
 
-import "charm.land/bubbles/v2/key"
+import (
+	"slices"
+
+	"charm.land/bubbles/v2/key"
+)
 
 // keyMap is the one definition of every key: the handler matches against it and the
 // footer and the help overlay read their text from it. A binding without help text
 // is a second key for the one documented before it.
 type keyMap struct {
-	Interrupt, Quit, Help                     key.Binding
-	Next, Prev, Dash, Agents, Factory, Kaizen key.Binding
-	Ops                                       key.Binding
-	PageLeft, PageRight                       key.Binding
-	Down, Up, Top, Bottom, PageDown, PageUp   key.Binding
-	Fold, Unfold, Open, Back                  key.Binding
-	Range, Follow, Sort, Filter               key.Binding
-	FilterKeep, FilterClear, Erase, Wipe      key.Binding
-	CapEdit, CapSave, CapCancel               key.Binding
-	Hanami, Legend, Zen, Replay               key.Binding
-	Dispatcher                                key.Binding
+	Interrupt, Quit, Help                    key.Binding
+	Next, Prev, Inbox, Dash, Agents, Factory key.Binding
+	Kaizen, Ops                              key.Binding
+	Pick, Confirm, Mark, Accept, Reject      key.Binding
+	PageLeft, PageRight                      key.Binding
+	Down, Up, Top, Bottom, PageDown, PageUp  key.Binding
+	Fold, Unfold, Open, Back                 key.Binding
+	Range, Follow, Sort, Filter              key.Binding
+	FilterKeep, FilterClear, Erase, Wipe     key.Binding
+	CapEdit, CapSave, CapCancel              key.Binding
+	Hanami, Legend, Zen, Replay              key.Binding
+	Dispatcher                               key.Binding
 }
 
 var keys = keyMap{
@@ -26,12 +31,20 @@ var keys = keyMap{
 
 	Next:    key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next view")),
 	Prev:    key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "previous view")),
-	Dash:    key.NewBinding(key.WithKeys("1"), key.WithHelp("1 2 3 4 5 6", "dashboard · agents · factory · kaizen · ops · hanami")),
-	Agents:  key.NewBinding(key.WithKeys("2")),
-	Factory: key.NewBinding(key.WithKeys("3")),
-	Kaizen:  key.NewBinding(key.WithKeys("4")),
-	Ops:     key.NewBinding(key.WithKeys("5")),
-	Hanami:  key.NewBinding(key.WithKeys("6")),
+	Inbox:   key.NewBinding(key.WithKeys("1"), key.WithHelp("1 2 3 4 5 6 7", "inbox sessions agents factory kaizen ops hanami")),
+	Dash:    key.NewBinding(key.WithKeys("2")),
+	Agents:  key.NewBinding(key.WithKeys("3")),
+	Factory: key.NewBinding(key.WithKeys("4")),
+	Kaizen:  key.NewBinding(key.WithKeys("5")),
+	Ops:     key.NewBinding(key.WithKeys("6")),
+	Hanami:  key.NewBinding(key.WithKeys("7")),
+
+	// the Inbox: a digit picks an option of the card under the cursor, then the pick is confirmed
+	Pick:    key.NewBinding(key.WithKeys("1", "2", "3", "4"), key.WithHelp("1-4", "pick an option")),
+	Confirm: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "do the marked one")),
+	Mark:    key.NewBinding(key.WithKeys("left", "right", "h", "l", "tab"), key.WithHelp("←→/hl", "mark accept · reject")),
+	Accept:  key.NewBinding(key.WithKeys("y"), key.WithHelp("y n", "accept · reject")),
+	Reject:  key.NewBinding(key.WithKeys("n", "esc")),
 
 	PageLeft:  key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("←→/hl", "kaizen page")),
 	PageRight: key.NewBinding(key.WithKeys("l", "right")),
@@ -79,6 +92,10 @@ func (m *model) footerKeys() []key.Binding {
 		return []key.Binding{keys.FilterKeep, keys.FilterClear}
 	case m.fac.editing:
 		return []key.Binding{keys.CapSave, keys.CapCancel}
+	case m.view == viewInbox && m.inbox.pick != 0:
+		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept}
+	case m.view == viewInbox:
+		return []key.Binding{keys.Down, keys.Pick, keys.CapEdit, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewFactory:
 		return []key.Binding{keys.Down, keys.CapEdit, keys.Range, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewHanami:
@@ -102,10 +119,14 @@ func (m *model) helpGroups() [][]key.Binding {
 	if m.opts.Attach != nil {
 		more = append(more, keys.Dispatcher)
 	}
-	return [][]key.Binding{
+	groups := [][]key.Binding{
 		{keys.Down, keys.Top, keys.PageDown, keys.Fold, keys.Open, keys.Back},
-		{keys.Next, keys.Prev, keys.Dash, keys.PageLeft},
+		{keys.Next, keys.Prev, keys.Inbox, keys.PageLeft},
 		append([]key.Binding{keys.Range, keys.Sort, keys.Filter}, more...),
 		{keys.Help, keys.Quit},
 	}
+	if m.view == viewInbox {
+		groups = slices.Insert(groups, 2, []key.Binding{keys.Pick, keys.Confirm, keys.Mark, keys.Accept})
+	}
+	return groups
 }

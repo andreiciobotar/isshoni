@@ -120,6 +120,7 @@ func newFake(o Options, w, h int) *model {
 	o.Static = true
 	o.Now = func() time.Time { return fakeNow }
 	m := New(o)
+	m.view = viewDashboard // most tests are about the sessions view; New starts on the Inbox
 	m.w, m.h = w, h
 	m.prices = data.Prices{Currency: "USD", AsOf: "2026-11-14", Path: "/p/prices.toml"}
 	a, b, c := fakeSession("aaaaaaaa-0001", "alpha", 0, 800000, 2000000), fakeSession("bbbbbbbb-0002", "beta-é", 5, 100, 50), fakeSession("cccccccc-0003", "gamma", 10, 9000000, 1000)
@@ -288,6 +289,9 @@ func TestTruncByDisplayWidth(t *testing.T) {
 // ---- keys ----------------------------------------------------------------------------------
 
 func TestViewSwitching(t *testing.T) {
+	if v := New(Options{Static: true}).view; v != viewInbox {
+		t.Fatalf("the start view is %v, not the inbox", v)
+	}
 	m := fakeModel(true, 120, 40)
 	send(m, "tab")
 	if m.view != viewAgents {
@@ -302,28 +306,24 @@ func TestViewSwitching(t *testing.T) {
 		t.Fatalf("tab -> %v", m.view)
 	}
 	send(m, "tab", "tab", "tab")
-	if m.view != viewDashboard {
-		t.Fatalf("tab wraps, past ops and hanami -> %v", m.view)
+	if m.view != viewInbox {
+		t.Fatalf("tab wraps, past ops and hanami, to the first view -> %v", m.view)
 	}
 	send(m, "shift+tab", "shift+tab", "shift+tab", "shift+tab")
 	if m.view != viewFactory {
 		t.Fatalf("shift+tab -> %v", m.view)
 	}
-	send(m, "1")
-	if m.view != viewDashboard {
-		t.Fatal("1")
-	}
-	for i, want := range []viewID{viewDashboard, viewAgents, viewFactory, viewKaizen, viewOps, viewHanami} {
+	for i, want := range []viewID{viewInbox, viewDashboard, viewAgents, viewFactory, viewKaizen, viewOps, viewHanami} {
 		send(m, fmt.Sprint(i+1))
 		if m.view != want {
 			t.Fatalf("%d -> %v, want %v", i+1, m.view, want)
 		}
 	}
-	send(m, "1", "7")
-	if m.view != viewDashboard {
-		t.Fatal("7 is unbound")
+	send(m, "1", "8")
+	if m.view != viewInbox {
+		t.Fatal("8 is unbound")
 	}
-	send(m, "2", "esc")
+	send(m, "3", "esc")
 	if m.view != viewDashboard {
 		t.Fatal("esc goes back to dashboard")
 	}

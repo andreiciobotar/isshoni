@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -388,7 +389,7 @@ func TestReadDispatchers(t *testing.T) {
 	}
 }
 
-// stubFactory makes a checkout (ISSHONI_ROOT) whose factory/bin/factory records its arguments, and fails with `fail`
+// stubFactory makes a checkout (ISSHONI_ROOT) whose factory/bin/factory records its arguments and directory, and fails with `fail`
 // on stderr when that is set. Nothing is put on PATH: the dashboard must not need it.
 func stubFactory(t *testing.T, fail string) string {
 	t.Helper()
@@ -401,7 +402,7 @@ func stubFactory(t *testing.T, fail string) string {
 	if err := os.WriteFile(filepath.Join(dir, "isshoni", "__init__.py"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\necho \"$@\" > \"" + dir + "/args\"\n"
+	script := "#!/bin/sh\necho \"$@\" > \"" + dir + "/args\"\npwd -P > \"" + dir + "/cwd\"\n"
 	if fail != "" {
 		script += "echo 'noise' >&2\necho '" + fail + "' >&2\nexit 2\n"
 	}
@@ -559,5 +560,58 @@ func TestFactoryStatusHeldWithABadSinceKeepsTheRow(t *testing.T) {
 	}
 	if h := st.Rows[0].Held; h == nil || !h.Since.IsZero() || h.Decision != "escalated" || h.Reason != "why" || st.Rows[0].Kept != "" {
 		t.Fatalf("the hold stays, without an age: %+v", st.Rows[0])
+	}
+}
+
+func TestFactoryStatusDecodesDecisions(t *testing.T) {
+	r, dir := factoryStub(t)
+	doc := `{"rows": [], "decisions": [
+		{"id": "3f9a1c2b4d5e", "slug": "demo-task", "kind": "question", "ask": "Ship it?", "options": ["Ship", "Wait"], "recommend": 2, "ts": "2026-11-14T19:00:00Z"},
+		{"id": "7c0b9e1d2a46", "slug": "other-task", "kind": "blocked", "ask": "Push by hand.", "options": ["Done", "Stop"], "ts": "yesterday"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.FactoryStatus(context.Background(), t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []FactoryDecision{
+		{ID: "3f9a1c2b4d5e", Slug: "demo-task", Kind: "question", Ask: "Ship it?", Options: []string{"Ship", "Wait"}, Recommend: 2, TS: time.Date(2026, 11, 14, 19, 0, 0, 0, time.UTC)},
+		{ID: "7c0b9e1d2a46", Slug: "other-task", Kind: "blocked", Ask: "Push by hand.", Options: []string{"Done", "Stop"}},
+	}
+	if !reflect.DeepEqual(st.Decisions, want) {
+		t.Fatalf("decisions %+v\nwant %+v", st.Decisions, want)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(`{"rows": []}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if st, err = r.FactoryStatus(context.Background(), t.TempDir(), true); err != nil || len(st.Decisions) != 0 {
+		t.Fatalf("a factory before the field has no decisions: %+v, %v", st, err)
+	}
+}
+
+func TestAnswerDecisionRunsTheFactoryCommandInTheRepository(t *testing.T) {
+	dir := stubFactory(t, "")
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := AnswerDecision(context.Background(), repo, "3f9a1c2b4d5e", 2); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "args")); string(b) != "decision answer 3f9a1c2b4d5e 2\n" {
+		t.Fatalf("arguments: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "cwd")); strings.TrimSpace(string(b)) != repo {
+		t.Fatalf("ran in %q, want the repository %q", b, repo)
+	}
+	stubFactory(t, "factory: decision 3f9a1c2b4d5e is already answered")
+	if err := AnswerDecision(context.Background(), repo, "3f9a1c2b4d5e", 1); err == nil || err.Error() != "decision 3f9a1c2b4d5e is already answered" {
+		t.Fatalf("the command's last stderr line is the error: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := AnswerDecision(ctx, repo, "3f9a1c2b4d5e", 1); err == nil {
+		t.Fatal("a cancelled context stops the call")
 	}
 }

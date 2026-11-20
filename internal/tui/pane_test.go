@@ -87,7 +87,7 @@ func TestZoomKeysMoveDispatchesTreeKeysMoveRows(t *testing.T) {
 		if m.zoomed() {
 			t.Errorf("%s leaves the zoom", k)
 		}
-		send(m, "1")
+		send(m, "2")
 	}
 }
 

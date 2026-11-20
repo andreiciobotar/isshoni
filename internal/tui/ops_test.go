@@ -100,9 +100,9 @@ func TestGoldenOps(t *testing.T) {
 
 func TestOpsViewKeys(t *testing.T) {
 	m := fakeModel(true, 120, 40)
-	send(m, "5")
-	if m.view != viewOps || !strings.Contains(plain(m), "[5 Ops]") {
-		t.Fatalf("5 opens the Ops tab: view %v", m.view)
+	send(m, "6")
+	if m.view != viewOps || !strings.Contains(plain(m), "[6 Ops]") {
+		t.Fatalf("6 opens the Ops tab: view %v", m.view)
 	}
 	send(m, "tab")
 	if m.view != viewHanami {
@@ -116,9 +116,9 @@ func TestOpsViewKeys(t *testing.T) {
 	if m.view != viewDashboard {
 		t.Fatal("esc goes back to the dashboard")
 	}
-	send(m, "6")
+	send(m, "7")
 	if m.view != viewHanami {
-		t.Fatalf("6 opens Hanami: %v", m.view)
+		t.Fatalf("7 opens Hanami: %v", m.view)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestOpsLoadsAtStartEveryTwoMinutesOffTheTabAndEveryThirtySecondsOnIt(t *tes
 	if more := only[opsMsg](upd(m, tickMsg{})); len(more) != 0 {
 		t.Fatal("never two loads at once")
 	}
-	if more := only[opsMsg](upd(m, press("5"))); len(more) != 0 {
+	if more := only[opsMsg](upd(m, press("6"))); len(more) != 0 {
 		t.Fatal("entering the tab while a load runs starts none")
 	}
 	if out := plain(m); !strings.Contains(out, "asking the factory…") {
@@ -141,7 +141,7 @@ func TestOpsLoadsAtStartEveryTwoMinutesOffTheTabAndEveryThirtySecondsOnIt(t *tes
 	if m.ops.busy || m.ops.err != "" || len(m.ops.watches) != len(opsWatches(t)) {
 		t.Fatalf("the answer is applied: %+v", m.ops.busy)
 	}
-	send(m, "1")
+	send(m, "2")
 	*now = now.Add(119 * time.Second)
 	if got := only[opsMsg](upd(m, tickMsg{})); len(got) != 0 {
 		t.Fatal("off the tab an answer under 2 minutes old is kept")
@@ -152,7 +152,7 @@ func TestOpsLoadsAtStartEveryTwoMinutesOffTheTabAndEveryThirtySecondsOnIt(t *tes
 		t.Fatal("off the tab an older one is loaded again, in the background")
 	}
 	upd(m, got[0])
-	upd(m, only[opsMsg](upd(m, press("5")))[0]) // entering loads at once
+	upd(m, only[opsMsg](upd(m, press("6")))[0]) // entering loads at once
 	*now = now.Add(29 * time.Second)
 	if got := only[opsMsg](upd(m, tickMsg{})); len(got) != 0 {
 		t.Fatal("on the tab an answer under 30 s old is kept")
@@ -165,16 +165,16 @@ func TestOpsLoadsAtStartEveryTwoMinutesOffTheTabAndEveryThirtySecondsOnIt(t *tes
 
 func TestOpsEnteringTheTabLoadsAgainAtOnce(t *testing.T) {
 	m, dir, _ := opsStub(t)
-	upd(m, only[opsMsg](upd(m, press("5")))[0])
-	send(m, "1")
-	if got := only[opsMsg](upd(m, press("5"))); len(got) != 1 || calls(t, dir, "ops ") != 2 {
+	upd(m, only[opsMsg](upd(m, press("6")))[0])
+	send(m, "2")
+	if got := only[opsMsg](upd(m, press("6"))); len(got) != 1 || calls(t, dir, "ops ") != 2 {
 		t.Fatalf("entering again loads: %d msgs, %d calls", len(got), calls(t, dir, "ops "))
 	}
 }
 
 func TestOpsFailedReloadKeepsTheWatchesAndShowsOneLine(t *testing.T) {
 	m, dir, now := opsStub(t)
-	upd(m, only[opsMsg](upd(m, press("5")))[0])
+	upd(m, only[opsMsg](upd(m, press("6")))[0])
 	*now = now.Add(31 * time.Second)
 	os.WriteFile(filepath.Join(dir, "fail"), nil, 0o644)
 	got := only[opsMsg](upd(m, tickMsg{}))
@@ -208,7 +208,7 @@ func TestOpsFactoryWithoutTheCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(dir, "ops.err"), b, 0o644)
-	upd(m, only[opsMsg](upd(m, press("5")))[0])
+	upd(m, only[opsMsg](upd(m, press("6")))[0])
 	if out := plain(m); !strings.Contains(out, "⚠ this factory has no ops command yet") || strings.Contains(out, "0 watches") {
 		t.Fatalf("the page says so and does not count zero watches:\n%s", out)
 	}
@@ -318,7 +318,7 @@ func TestOpsAlarmBadgeOnTheTabOnlyOffTheTabAndOnlyWhileFresh(t *testing.T) {
 		setOps(m, opsWatches(t), "")
 		m.view = viewDashboard
 		head := strings.Split(plain(m), "\n")[0]
-		if !strings.Contains(head, "▲1") || !strings.Contains(head, "[7d]") || !strings.Contains(head, "4 Kaizen") || width(head) != w {
+		if !strings.Contains(head, "▲1") || !strings.Contains(head, "[7d]") || !strings.Contains(head, "5 Kaizen") || width(head) != w {
 			t.Errorf("%d wide, with the badge: %q", w, head)
 		}
 		m.view = viewOps
@@ -339,7 +339,7 @@ func TestOpsAlarmBadgeOnTheTabOnlyOffTheTabAndOnlyWhileFresh(t *testing.T) {
 	m := fakeModel(true, 80, 30)
 	setOps(m, opsWatches(t), "")
 	m.view = viewDashboard
-	if head := strings.Split(plain(m), "\n")[0]; !strings.Contains(head, "5 ▲1") && !strings.Contains(head, "5 Ops ▲1") {
+	if head := strings.Split(plain(m), "\n")[0]; !strings.Contains(head, "6 ▲1") && !strings.Contains(head, "6 Ops ▲1") {
 		t.Errorf("the badge sits on the Ops tab: %q", head)
 	}
 }
