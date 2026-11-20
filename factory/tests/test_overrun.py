@@ -928,6 +928,7 @@ class RunOnTests(Card):
             code, out, _ = self.answer(d["id"], 1)
         self.assertEqual(code, 0)
         self.assertNotIn("not extended", out)
+        self.assertIn("was extended by 20 minutes, not 60: limits.extension_minutes is 20", out)
         [f] = self.human_extensions()
         self.assertEqual(f["minutes"], 20)
 

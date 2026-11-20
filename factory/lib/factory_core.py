@@ -5040,15 +5040,18 @@ def decision_answer(args):
     if not 1 <= args.n <= len(found["options"]):
         raise Fail(f"decision answer: the pick is 1 to {len(found['options'])}")
     log("decisions", {"ts": now(), "repo": repo.root, "id": args.id, "slug": found["slug"], "choice": args.n})
-    extended_it = True
+    extended_it, granted = True, None
     asked = next(r for r in repo_log("decisions", repo.root) if r.get("id") == args.id and "ask" in r)
     if found["kind"] == "overrun" and args.n == 1 and "minutes" in asked:  # a continue card was extended when posted
-        extended_it = extend_for_human(repo, found["slug"], args.id, min(asked["minutes"], load_settings()["extension_minutes"]))
+        granted = min(asked["minutes"], load_settings()["extension_minutes"])
+        extended_it = extend_for_human(repo, found["slug"], args.id, granted)
     outbox_put(repo, found["slug"],
                f"INBOX: {found['slug']}: decision {args.id}: the human picked {args.n}: {found['options'][args.n - 1]}")
     print(f"answered {found['slug']}: {args.n}; the next tick delivers it")
     if not extended_it:
         print(f"the limit of {found['slug']} was not extended: no task start to count from")
+    elif granted is not None and granted < asked["minutes"]:
+        print(f"the limit of {found['slug']} was extended by {granted} minutes, not {asked['minutes']}: limits.extension_minutes is {granted}")
     return 0
 
 
@@ -5078,7 +5081,7 @@ def with_dispatcher(p, fallback):
 
 
 def pause_unanswered_stops(p, repo):
-    """Pause, as the site manager's pause does, each task whose stop card (an open `overrun` card with `minutes`) has gone
+    """Pause, as the site manager's pause does, each task whose stop card (an open `overrun` card whose record has `recommend` 2, 3 or 4) has gone
     `limits.overrun_stop_wait_minutes` unanswered and that is not paused: no decision record, the lead told, not the dispatcher."""
     wait, paused = load_settings()["overrun_stop_wait_minutes"] * 60, paused_rows(repo)
     open_ids = {d["id"] for d in open_decisions(repo.root) if d["kind"] == "overrun"}
