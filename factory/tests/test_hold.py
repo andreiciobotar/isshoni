@@ -177,6 +177,7 @@ class DelegationTests(Hold):
             self.assertEqual([d["id"] for d in factory.open_decisions(ROOT)], [card["id"]], who)
             self.assertEqual((len(self.cards()), self.released()), (n, ["x"] * (n - 1)), who)
             self.assertEqual(self.lines(), [], who)
+            self.assertIsNone(factory.hold_spans(self.records("decisions"), "bet")[-1][1], who)  # the span stays open
             self.seed("decisions", [{"ts": iso(self.clock), "repo": ROOT, "id": card["id"], "slug": "bet", "released": "x"}])
 
 
