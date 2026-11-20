@@ -1,5 +1,6 @@
  Isshoni [1 ✉ ▲6] 2 ≡ 3 Agent 4 Factory 5 Kaizen 6 ◉ 7 ✿     24h [7d] 30d all ○ 
  Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · 11:00:00     
+ alpha                                                                          
  ▸ needs-an-answer · question · 45m                                             
    Should the export keep the legacy column order, or switch to the new one     
    now? Switching breaks two downstream readers.                                
@@ -8,6 +9,7 @@
    3  Keep legacy now, switch next release                                      
    L leave it to the lead · S to the site manager                               
                                                                                 
+ delta-docs                                                                     
    wide-ask · question · 30m                                                    
    Which environment's database credentials should the import use?              
    1  The staging ones                                                          
@@ -18,7 +20,5 @@
    The import ran 3h of its 2h. Split it into two tasks, or let it finish?      
    The site manager handed it back: it turns on whether the second half may     
    wait a release, which only you know.                                         
-   1  Let it finish                                                             
-   2  Split it in two  (recommended)                                            
- +58 more lines · ↓ to scroll                                                   
- ↑↓/jk move  ·  1-4 pick an option  ·  c edit cap  ·  ? help  ·  q quit         
+ +60 more lines · ↓ to scroll                                                   
+ ↑↓/jk move  ·  1–3 pick an option  ·  c edit cap  ·  ? help  ·  q quit         

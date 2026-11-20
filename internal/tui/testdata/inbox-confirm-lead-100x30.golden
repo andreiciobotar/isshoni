@@ -1,5 +1,6 @@
  Isshoni [1 ✉ ▲6] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
  Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                   
+ alpha                                                                                              
  ▸ needs-an-answer · question · 45m                                                                 
    Should the export keep the legacy column order, or switch to the new one now? Switching breaks   
    two downstream readers.                                                                          
@@ -9,6 +10,7 @@
    Leave it to the lead?                                                                            
    [Accept]   Reject                                                                                
                                                                                                     
+ delta-docs                                                                                         
    wide-ask · question · 30m                                                                        
    Which environment's database credentials should the import use?                                  
    1  The staging ones                                                                              
@@ -24,7 +26,5 @@
    L leave it to the lead · S to the site manager                                                   
                                                                                                     
    stuck-on-keys · blocked · 1m                                                                     
-   git push is refused: the deploy key is read-only. Run `git push origin worktree-stuck-on-keys`   
-   by hand.                                                                                         
- +50 more lines · ↓ to scroll                                                                       
+ +52 more lines · ↓ to scroll                                                                       
  enter do the marked one  ·  ←→/hl mark accept · reject  ·  y n accept · reject                     

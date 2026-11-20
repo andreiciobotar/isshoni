@@ -16,7 +16,8 @@ import (
 // inboxState is the Inbox's cursor over the decision cards, its own scroll, and the choice on the
 // card under the cursor.
 type inboxState struct {
-	cursor  int
+	cursor  int    // index of the card at, in the displayed order
+	at      string // the decision the cursor is on: it follows that decision through a refresh
 	top     int    // first visible page line
 	choice  string // what the cursor card is answered with, as the script takes it: an option number, lead or site-manager; "" when none
 	id      string // the decision the choice belongs to
@@ -26,6 +27,7 @@ type inboxState struct {
 
 // inboxCard is an open decision with the repository it belongs to.
 type inboxCard struct {
+	name string
 	path string
 	d    data.FactoryDecision
 }
@@ -37,7 +39,8 @@ type answerMsg struct {
 	err    error
 }
 
-// cards lists the open decisions of every repository, oldest first (one without a time last).
+// cards lists the open decisions in the order they are shown: repositories by their oldest decision, each
+// repository's decisions oldest first (one without a time last).
 func (m *model) cards() []inboxCard {
 	var cs []inboxCard
 	for _, r := range m.fac.repos {
@@ -45,7 +48,7 @@ func (m *model) cards() []inboxCard {
 			continue
 		}
 		for _, d := range r.st.Decisions {
-			cs = append(cs, inboxCard{r.path, d})
+			cs = append(cs, inboxCard{r.name, r.path, d})
 		}
 	}
 	unknown := func(c inboxCard) int {
@@ -56,6 +59,15 @@ func (m *model) cards() []inboxCard {
 	}
 	slices.SortStableFunc(cs, func(a, b inboxCard) int {
 		return cmp.Or(cmp.Compare(unknown(a), unknown(b)), a.d.TS.Compare(b.d.TS), cmp.Compare(a.path, b.path), cmp.Compare(a.d.ID, b.d.ID))
+	})
+	var order []string // the repositories by their oldest decision
+	for _, c := range cs {
+		if !slices.Contains(order, c.path) {
+			order = append(order, c.path)
+		}
+	}
+	slices.SortStableFunc(cs, func(a, b inboxCard) int {
+		return cmp.Compare(slices.Index(order, a.path), slices.Index(order, b.path))
 	})
 	return cs
 }
@@ -81,12 +93,21 @@ func (m *model) waitingOnYou() int {
 	return n
 }
 
-// syncInbox keeps the cursor on a card and drops a choice whose card is gone.
+// syncInbox keeps the cursor on its decision, or on the nearest card when that one is gone, and drops a
+// choice whose decision is gone or parked.
 func (m *model) syncInbox() {
 	in := &m.inbox
 	cs := m.cards()
-	in.cursor = max(0, min(in.cursor, len(cs)-1))
-	if in.choice != "" && (len(cs) == 0 || cs[in.cursor].d.ID != in.id) {
+	if i := slices.IndexFunc(cs, func(c inboxCard) bool { return c.d.ID == in.at }); i >= 0 {
+		in.cursor = i
+	} else {
+		in.cursor = max(0, min(in.cursor, len(cs)-1))
+		in.at = ""
+		if len(cs) > 0 {
+			in.at = cs[in.cursor].d.ID
+		}
+	}
+	if in.choice != "" && !slices.ContainsFunc(cs, func(c inboxCard) bool { return c.d.ID == in.id && c.d.With == "" }) {
 		in.choice, in.sending = "", false
 	}
 }
@@ -96,8 +117,8 @@ func (m *model) stepCard(delta int) bool {
 	if delta != 1 && delta != -1 {
 		return false
 	}
-	if next := m.inbox.cursor + delta; next >= 0 && next < len(m.cards()) {
-		m.inbox.cursor = next
+	if cs, next := m.cards(), m.inbox.cursor+delta; next >= 0 && next < len(cs) {
+		m.inbox.cursor, m.inbox.at = next, cs[next].d.ID
 		m.showCard()
 		return true
 	}
@@ -184,7 +205,9 @@ func (m *model) accept() tea.Cmd {
 // answered ends a send: a failure shows the script's line and unpicks, a success refreshes the factory so the
 // card goes (or parks) when the status says so.
 func (m *model) answered(msg answerMsg) tea.Cmd {
-	m.inbox.sending, m.inbox.choice = false, ""
+	if msg.card.d.ID == m.inbox.id { // a refresh may have moved the choice to another card
+		m.inbox.sending, m.inbox.choice = false, ""
+	}
 	if msg.err != nil {
 		m.setToast(firstLine(msg.err.Error()), true)
 		return nil
@@ -207,6 +230,9 @@ func (m *model) inboxPage(p paint, w, h int) (lines block, spans [][2]int) {
 	default:
 		for i, c := range cs {
 			start := len(lines)
+			if i == 0 || c.path != cs[i-1].path {
+				lines = append(lines, fit(p.sp(1)+p.b(c.name, m.th.Text), w, p))
+			}
 			lines = append(lines, m.card(p, c, i == m.inbox.cursor, w)...)
 			spans = append(spans, [2]int{start, len(lines)})
 			lines = append(lines, p.sp(w))

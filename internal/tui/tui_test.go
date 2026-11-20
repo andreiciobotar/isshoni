@@ -324,9 +324,10 @@ func TestViewSwitching(t *testing.T) {
 		t.Fatal("8 is unbound")
 	}
 	send(m, "3", "esc")
-	if m.view != viewDashboard {
-		t.Fatal("esc goes back to dashboard")
+	if m.view != viewInbox {
+		t.Fatal("esc goes back to the inbox")
 	}
+	send(m, "2")
 	send(m, "j", "enter")
 	if !m.zoomed() {
 		t.Fatal("enter on a session row zooms")
