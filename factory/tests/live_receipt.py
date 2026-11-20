@@ -7,7 +7,7 @@ unittest (the name does not start with `test`). Real `claude` sessions, a few ce
     python3 factory/tests/live_receipt.py DIR lead SLUG [--bare] [--model M] PROMPT
     python3 factory/tests/live_receipt.py DIR forward SLUG TEXT      # the real `forward`; prints the result and the seconds
     python3 factory/tests/live_receipt.py DIR tick                   # the real `drain_outbox`
-    python3 factory/tests/live_receipt.py DIR rows [SLUG]            # the outbox records, one JSON line each
+    python3 factory/tests/live_receipt.py DIR rows                   # the outbox records, one JSON line each
     python3 factory/tests/live_receipt.py DIR stop [SLUG]            # stop the sessions this script started (all, or SLUG's)
 
 DIR is a new scratch directory: a git checkout `pocket` (its git directory `pocket.git` kept apart, so that Claude Code finds no
@@ -113,7 +113,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("setup", "dispatcher", "tick", "rows", "stop"):
         p = sub.add_parser(name)
-        if name in ("rows", "stop"):
+        if name == "stop":
             p.add_argument("slug", nargs="?")
     p = sub.add_parser("lead")
     p.add_argument("slug")
