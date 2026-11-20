@@ -858,7 +858,7 @@ class HooksJsonTests(unittest.TestCase):
                                        "PostToolUse"})
         for name, groups in events.items():
             want = {"PreToolUse": [("mcp__.*", "ops-hook || exit 2", 60),  # a gate that cannot start must block
-                                   ("Bash|Edit|Write|NotebookEdit", "guard-hook || exit 2", 10)],
+                                   ("Bash|Edit|Write|NotebookEdit|Read", "guard-hook || exit 2", 10)],
                     "PostToolUse": [("SendMessage|SubagentHandback", "hook", 10), ("mcp__.*", "ops-hook", 60)],
                     }.get(name, [(None, "hook", 10)])
             self.assertEqual([(g.get("matcher"), g["hooks"]) for g in groups], [
