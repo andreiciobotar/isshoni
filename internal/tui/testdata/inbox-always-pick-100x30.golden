@@ -1,0 +1,30 @@
+ Isshoni [1 ✉ ▲7] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
+ Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                   
+   Always   1 split → start it · 4 times   2 overrun → continue · 3 of 10                           
+            · 1–2 switch one off · esc                                                              
+                                                                                                    
+ alpha                                                                                              
+ ▸ needs-an-answer · question · 45m                                                                 
+   Should the export keep the legacy column order, or switch to the new one now? Switching breaks   
+   two downstream readers.                                                                          
+   1  Keep the legacy order  (recommended)                                                          
+   2  Switch now and update both readers                                                            
+   3  Keep legacy now, switch next release                                                          
+                                                                                                    
+   demo-task · ⑂ split · 20m                                                                        
+   The importer's retry is separable: it needs the queue change first.                              
+   its parent demo-task was closed: start it or not is yours                                        
+   1  Start demo-retry                                                                              
+   2  Do not start it                                                                               
+                                                                                                    
+   Approve                                                                                          
+   demo-import · stale · 2h   https://github.com/example/demo/pull/9                                
+                              its head changed after the approval; a fresh approval is needed (the  
+                              lander stopped it at 8c1f2a9)                                         
+   demo-export · new · 25m    https://github.com/example/demo/pull/12                               
+                                                                                                    
+   History                                                                                          
+   10:55  demo-task    site manager  extended 20 min to 11:05Z: landing left                        
+   10:48  demo-export  lead          handed over: https://github.com/example/demo/pull/12           
+ +63 more lines · ↓ to scroll                                                                       
+ 1–2 switch one off  ·  esc cancel                                                                  

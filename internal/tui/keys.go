@@ -15,7 +15,7 @@ type keyMap struct {
 	Next, Prev, Inbox, Dash, Agents, Factory key.Binding
 	Kaizen, Ops                              key.Binding
 	Pick, Confirm, Mark, Accept, Reject      key.Binding
-	History                                  key.Binding
+	History, Always, AlwaysOff               key.Binding
 	PageLeft, PageRight                      key.Binding
 	Down, Up, Top, Bottom, PageDown, PageUp  key.Binding
 	Fold, Unfold, Open, Back                 key.Binding
@@ -48,6 +48,9 @@ var keys = keyMap{
 	Accept:  key.NewBinding(key.WithKeys("y"), key.WithHelp("y n", "accept · reject")),
 	History: key.NewBinding(key.WithKeys("H"), key.WithHelp("H", "all history")),
 	Reject:  key.NewBinding(key.WithKeys("n", "esc")),
+
+	Always:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "always")),
+	AlwaysOff: key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "switch an always off")),
 
 	PageLeft:  key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("←→/hl", "kaizen page")),
 	PageRight: key.NewBinding(key.WithKeys("l", "right")),
@@ -95,8 +98,14 @@ func (m *model) footerKeys() []key.Binding {
 		return []key.Binding{keys.FilterKeep, keys.FilterClear}
 	case m.fac.editing:
 		return []key.Binding{keys.CapSave, keys.CapCancel}
+	case m.view == viewInbox && m.inbox.always:
+		return []key.Binding{key.NewBinding(key.WithHelp(fmt.Sprintf("1–%d", len(m.switchable())), "switch one off")), keys.CapCancel}
+	case m.view == viewInbox && m.inbox.pick != 0 && m.alwaysOffered():
+		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept, keys.Always}
 	case m.view == viewInbox && m.inbox.pick != 0:
 		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept}
+	case m.view == viewInbox && len(m.switchable()) > 0:
+		return []key.Binding{keys.Down, m.pickHint(), keys.AlwaysOff, keys.CapEdit, keys.History, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewInbox:
 		return []key.Binding{keys.Down, m.pickHint(), keys.CapEdit, keys.History, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewFactory:
@@ -129,7 +138,7 @@ func (m *model) helpGroups() [][]key.Binding {
 		{keys.Help, keys.Quit},
 	}
 	if m.view == viewInbox {
-		groups = slices.Insert(groups, 2, []key.Binding{keys.Pick, keys.Confirm, keys.Mark, keys.Accept, keys.History})
+		groups = slices.Insert(groups, 2, []key.Binding{keys.Pick, keys.Confirm, keys.Mark, keys.Accept, keys.Always, keys.AlwaysOff, keys.History})
 	}
 	return groups
 }
