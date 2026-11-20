@@ -6,6 +6,7 @@ from unittest import mock
 
 from test_factory import ROOT, WT, factory
 from test_health import HOUR, NOW, Harness, iso
+from test_overrun import Overrun
 
 ASK = "Ship the importer without retry, or add it now? Retry adds a day."
 OPTIONS = ("Ship without retry", "Add retry now")
@@ -140,3 +141,195 @@ class CloseTests(Decisions):
         self.run_in(f"{WT}/demo-task", "state", "blocked", "human")
         self.assertEqual(json.loads(self.as_human("decision", "list", "--json")[1]), [])
         self.assertEqual(self.as_human("decision", "answer", rid, "1")[0], 2)
+
+
+class Delegation(Overrun):
+    """A lead `x` blocked on the human with a posted decision; the human leaves it to the lead or the site manager."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "blocked", "ts": iso(NOW - 60)}])
+        self.rid = self.as_who(True, "decision", "ask", "--kind", "question", ASK, "--option", "a b", "--option", "c", "--recommend", "2")[1].strip()
+
+    def as_who(self, lead, *argv):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            if lead:
+                os.environ["CLAUDE_PROJECT_DIR"] = f"{WT}/x"
+            return self.cli(*argv, cwd=f"{WT}/x" if lead else ROOT)
+
+    def answer(self, what):
+        return self.as_who(False, "decision", "answer", self.rid, what)
+
+    def pending(self):
+        return next(f["id"] for f in factory.fold(self.records())[0] if f["criterion"] == "decision" and f["decision"] is None)
+
+    def listed(self):
+        return json.loads(self.as_who(False, "decision", "list", "--json")[1])
+
+    def outbox(self):
+        return [r["line"] for r in self.records("outbox") if "line" in r]
+
+    def answers(self):
+        return [r for r in self.records("decisions") if "ask" not in r]
+
+    def firing(self):
+        return next(f for f in factory.fold(self.records())[0] if f["criterion"] == "decision")
+
+
+class DelegateTests(Delegation):
+    def test_lead_closes_the_decision_and_queues_the_line(self):
+        code, out, err = self.answer("lead")
+        self.assertEqual((code, err, out), (0, "", "answered x: left to the lead; the next tick delivers it\n"))
+        self.assertEqual(self.answers(), [{"ts": iso(NOW), "repo": ROOT, "id": self.rid, "slug": "x", "choice": "lead"}])
+        self.assertEqual(self.outbox(), [f"INBOX: x: decision {self.rid}: the human leaves it to you: decide it yourself, "
+                                         "record it with factory feedback decide, and carry on"])
+        self.assertEqual(self.listed(), [])
+        for what in ("1", "lead", "site-manager"):
+            self.assertIn("already answered", self.answer(what)[2])
+
+    def test_site_manager_fires_a_firing_and_parks_the_decision(self):
+        code, out, err = self.answer("site-manager")
+        self.assertEqual((code, err, out), (0, "", "answered x: left to the site manager; it decides on the next tick\n"))
+        self.assertEqual(self.answers(), [{"ts": iso(NOW), "repo": ROOT, "id": self.rid, "slug": "x", "choice": "site-manager"}])
+        f = self.firing()
+        self.assertEqual((f["criterion"], f["slug"], f["subject"], f["detail"]),
+                         ("decision", "x", self.rid, f"question: {ASK} Options: 1. a b 2. c. The lead recommends 2."))
+        self.assertEqual(self.outbox(), [])
+        [d] = self.listed()
+        self.assertEqual((d["with"], d["with_since"], "returned" in d), ("site-manager", iso(NOW), False))
+        self.assertEqual(json.loads(self.as_who(False, "status", "--json", "--cached")[1])["decisions"], [d])
+        code, _, err = self.answer("1")
+        self.assertEqual((code, err.strip()), (2, f"factory: decision answer: {self.rid} is with the site manager"))
+        self.assertIn("is with the site manager", self.answer("lead")[2])
+        self.assertEqual(len(self.answers()), 1)
+
+    def test_a_pending_decision_ask_does_not_block_overrun_nor_count_in_its_duplicate_check(self):
+        self.assertEqual(self.answer("site-manager")[0], 0)
+        self.assertEqual(self.pending(), self.firing()["id"])
+        self.assertEqual(self.ask()[0], 0)
+        self.assertEqual(sorted(f["criterion"] for f in factory.fold(self.records())[0] if f["decision"] is None), ["decision", "overrun"])
+        code, _, err = self.ask()
+        self.assertEqual((code, "an ask for x is pending" in err), (1, True))
+
+    def test_a_pick_outside_the_options_names_the_choices(self):
+        for what in ("0", "3", "later", "-1"):
+            code, _, err = self.answer(what)
+            self.assertEqual((code, err.strip()), (2, "factory: decision answer: the pick is 1 to 2, lead or site-manager"))
+        self.assertEqual(self.answers(), [])
+
+    def test_a_kind_outside_delegable_is_the_humans_alone(self):
+        self.seed("decisions", [{"ts": iso(NOW), "repo": ROOT, "id": "ap1", "slug": "x", "kind": "approval", "ask": "Merge it?",
+                                 "options": ["yes", "no"]}])
+        for what in ("lead", "site-manager"):
+            code, _, err = self.as_who(False, "decision", "answer", "ap1", what)
+            self.assertEqual((code, err.strip()), (2, "factory: decision answer: a decision of kind approval is the human's alone"))
+        self.assertEqual((self.outbox(), len(self.answers())), ([], 0))
+        self.assertEqual(self.as_who(False, "decision", "answer", "ap1", "1")[0], 0)
+
+    def test_an_overrun_card_is_the_humans_alone(self):
+        self.seed("decisions", [{"ts": iso(NOW), "repo": ROOT, "id": "ov1", "slug": "x", "kind": "overrun", "ask": "Over its limit.",
+                                 "options": ["Continue", "Cut", "Split", "Abandon"]}])
+        for what in ("lead", "site-manager"):
+            code, _, err = self.as_who(False, "decision", "answer", "ov1", what)
+            self.assertEqual((code, err.strip()), (2, "factory: decision answer: a decision of kind overrun is the human's alone"))
+        self.assertEqual((self.outbox(), len(self.answers())), ([], 0))
+
+    def test_a_lead_never_delegates(self):
+        for what in ("lead", "site-manager"):
+            code, _, err = self.as_who(True, "decision", "answer", self.rid, what)
+            self.assertEqual((code, "only the human" in err), (2, True))
+        self.assertEqual((self.outbox(), self.answers()), ([], []))
+
+
+class SiteManagerTests(Delegation):
+    def setUp(self):
+        super().setUp()
+        self.answer("site-manager")
+
+    def test_picked_records_the_pick_and_queues_the_line_for_the_lead(self):
+        code, out, _ = self.watch({"decision": "picked", "option": 1, "reason": "the brief wants it small"})
+        self.assertEqual(code, 0, out)
+        [run] = self.runs()
+        [sent] = json.loads(run[-1].partition("\n\n")[2])["firings"]
+        self.assertEqual((sent["criterion"], sent["slug"]), ("decision", "x"))
+        self.assertIn("Options: 1. a b 2. c.", sent["detail"])
+        self.assertEqual(self.answers()[-1], {"ts": iso(NOW), "repo": ROOT, "id": self.rid, "slug": "x", "choice": 1,
+                                              "by": "site-manager", "reason": "the brief wants it small"})
+        self.assertEqual(self.outbox(), [f"INBOX: x: decision {self.rid}: the site manager picked 1 for the human: a b. the brief wants it small"])
+        self.assertEqual(self.listed(), [])
+        [d] = [r for r in self.records() if r.get("decision") == "picked"]
+        self.assertEqual((d["option"], d["by"]), (1, "site-manager"))
+        self.assertTrue(self.firing()["cleared"])
+        self.watch()
+        self.assertEqual(self.runs(), [])
+
+    def test_a_pick_out_of_range_or_not_an_integer_is_skipped_and_the_watch_returns_the_decision(self):
+        for option in (0, 3, "1", True, None):
+            with self.subTest(option=option):
+                self.setUp()
+                self.watch({"decision": "picked", "option": option, "reason": "r"})
+                self.assertEqual([r["choice"] for r in self.answers() if "choice" in r], ["site-manager"])
+                self.assertEqual(self.outbox(), [])
+                self.assertEqual((self.firing()["decision"], self.firing()["by"]), ("returned", "watch"))
+
+    def test_the_other_words_are_skipped_for_a_decision(self):
+        for word in ("extended", "escalated", "suppressed", "paused", "told", "closed"):
+            with self.subTest(word=word):
+                self.setUp()
+                self.watch({"decision": word, "minutes": 5, "waits_on": ["human"], "to": "dispatcher", "reason": "r"})
+                self.assertEqual([r["choice"] for r in self.answers() if "choice" in r], ["site-manager"])
+                self.assertEqual(self.firing()["by"], "watch")
+
+    def test_returned_opens_it_for_the_human_again_and_messages_nobody(self):
+        self.watch({"decision": "returned", "reason": "it turns on a taste call"})
+        self.assertEqual(self.answers()[-1], {"ts": iso(NOW), "repo": ROOT, "id": self.rid, "slug": "x",
+                                              "returned": "it turns on a taste call", "by": "site-manager"})
+        [d] = self.listed()
+        self.assertEqual((d["returned"], "with" in d, "with_since" in d), ("it turns on a taste call", False, False))
+        self.assertEqual((self.outbox(), self.lines()), ([], []))
+        self.assertEqual(self.answer("2")[0], 0)
+        self.assertEqual(self.outbox(), [f"INBOX: x: decision {self.rid}: the human picked 2: c"])
+
+    def test_a_returned_decision_can_be_left_to_the_site_manager_again(self):
+        self.watch({"decision": "returned", "reason": "unsure"})
+        self.clock += 60
+        self.assertEqual(self.answer("site-manager")[0], 0)
+        [d] = self.listed()
+        self.assertEqual((d["with"], d["with_since"], "returned" in d), ("site-manager", iso(NOW + 60), False))
+
+    def test_a_decision_left_undecided_is_returned_by_the_watch_once(self):
+        self.watch()
+        why = "the site manager did not decide: its decision was missing or not valid"
+        self.assertEqual((self.firing()["decision"], self.firing()["by"], self.firing()["reason"], self.firing()["cleared"]),
+                         ("returned", "watch", why, True))
+        self.assertEqual(self.answers()[-1], {"ts": iso(NOW), "repo": ROOT, "id": self.rid, "slug": "x", "by": "watch", "returned": why})
+        [d] = self.listed()
+        self.assertNotIn("with", d)
+        self.assertEqual((self.outbox(), self.lines()), ([], []))
+        self.watch()
+        self.assertEqual(self.runs(), [])
+
+    def test_a_failed_run_returns_the_decision(self):
+        self.assertEqual(self.watch(fail=True)[0], 1)
+        self.assertEqual((self.firing()["decision"], "the site manager run failed" in self.firing()["reason"]), ("returned", True))
+        self.assertIn("returned", self.listed()[0])
+
+    def test_a_lead_that_declared_working_before_the_tick_makes_it_moot(self):
+        self.seed("tasks", [{"repo": ROOT, "slug": "x", "state": "working", "ts": iso(NOW + 30)}])
+        self.assertEqual(self.watch()[0], 0)
+        self.assertEqual(self.runs(), [])
+        f = self.firing()
+        self.assertEqual((f["decision"], f["by"], f["cleared"]), ("suppressed", "watch", True))
+        self.assertEqual((self.outbox(), self.listed(), len(self.answers())), ([], [], 1))
+
+
+class OtherCriterionTests(Overrun):
+    def test_picked_and_returned_are_skipped_for_an_overrun_ask(self):
+        for word in ({"decision": "picked", "option": 1}, {"decision": "returned"}):
+            with self.subTest(word=word["decision"]):
+                self.setUp()
+                self.ask()
+                self.watch({**word, "reason": "r"})
+                self.assertEqual([(d["decision"], d["by"]) for d in self.decisions()], [("extended", "watch")])
+                self.assertEqual([r for r in self.records("decisions") if "choice" in r or "returned" in r], [])

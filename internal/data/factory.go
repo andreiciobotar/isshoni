@@ -138,7 +138,9 @@ type FactoryStatus struct {
 
 // FactoryDecision is an open decision a lead posted for the human: the ask and its numbered options.
 // Recommend is the 1-based option the lead would take, 0 when it named none. TS is the zero time when
-// the script's timestamp does not parse: the decision then shows without an age.
+// the script's timestamp does not parse: the decision then shows without an age. With is "site-manager" while the
+// human has left it there (WithSince is when, zero when it does not parse); Returned is the reason the site
+// manager handed it back.
 type FactoryDecision struct {
 	ID        string
 	Slug      string
@@ -147,23 +149,31 @@ type FactoryDecision struct {
 	Options   []string
 	Recommend int
 	TS        time.Time
+	With      string
+	WithSince time.Time
+	Returned  string
 }
 
 // UnmarshalJSON reads {"id": "3f9a1c2b4d5e", "slug": "demo-task", "kind": "question", "ask": "...",
-// "options": ["a", "b"], "recommend": 1, "ts": "2026-11-14T19:00:00Z"}; recommend may be absent and a bad
-// ts leaves TS zero rather than failing the status.
+// "options": ["a", "b"], "recommend": 1, "ts": "2026-11-14T19:00:00Z", "with": "site-manager",
+// "with_since": "2026-11-14T19:30:00Z", "returned": "why"}; recommend, with, with_since and returned may be
+// absent and a bad ts or with_since leaves the time zero rather than failing the status.
 func (d *FactoryDecision) UnmarshalJSON(b []byte) error {
 	var raw struct {
 		ID, Slug, Kind, Ask string
 		Options             []string
 		Recommend           int
-		TS                  string
+		TS, With            string
+		WithSince           string `json:"with_since"`
+		Returned            string
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
 	}
 	ts, _ := time.Parse(time.RFC3339, raw.TS)
-	*d = FactoryDecision{ID: raw.ID, Slug: raw.Slug, Kind: raw.Kind, Ask: raw.Ask, Options: raw.Options, Recommend: raw.Recommend, TS: ts}
+	since, _ := time.Parse(time.RFC3339, raw.WithSince)
+	*d = FactoryDecision{ID: raw.ID, Slug: raw.Slug, Kind: raw.Kind, Ask: raw.Ask, Options: raw.Options, Recommend: raw.Recommend, TS: ts,
+		With: raw.With, WithSince: since, Returned: raw.Returned}
 	return nil
 }
 
@@ -522,9 +532,10 @@ func WriteWorktreeCap(n int) error {
 // answerTimeout bounds `factory decision answer`, which writes two log lines and never leaves the machine.
 const answerTimeout = 10 * time.Second
 
-// AnswerDecision runs `<root>/factory/bin/factory decision answer id n` in the repository at repoPath (root as
-// for WriteWorktreeCap): the factory queues the human's pick for the lead. Its one-line complaint is the error.
-func AnswerDecision(ctx context.Context, repoPath, id string, n int) error {
+// AnswerDecision runs `<root>/factory/bin/factory decision answer id choice` in the repository at repoPath (root as
+// for WriteWorktreeCap); choice is what the script takes: an option number, "lead" or "site-manager". The factory
+// queues the human's answer. Its one-line complaint is the error.
+func AnswerDecision(ctx context.Context, repoPath, id, choice string) error {
 	root, err := LocateRoot()
 	if err != nil {
 		return err
@@ -536,7 +547,7 @@ func AnswerDecision(ctx context.Context, repoPath, id string, n int) error {
 	ctx, cancel := context.WithTimeout(ctx, answerTimeout)
 	defer cancel()
 	var se bytes.Buffer
-	cmd := groupCmd(ctx, script, "decision", "answer", id, strconv.Itoa(n))
+	cmd := groupCmd(ctx, script, "decision", "answer", id, choice)
 	cmd.Dir, cmd.Stderr = repoPath, &se
 	if err := cmd.Run(); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
