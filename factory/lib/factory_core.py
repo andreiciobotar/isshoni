@@ -3108,7 +3108,8 @@ RUN_SCHEMA = {"type": "object", "required": ["sent", "decisions"], "properties":
         "tell": {"type": "array", "items": {"type": "string"}},
         "looked": {"type": "array", "items": {"type": "string"}}}}}}}
 FIRED_KEYS = ("criterion", "slug", "subject", "detail")
-ASKS = ("overrun", "run-stopped")  # what the site manager is woken for on every tick, and the criteria of its extended and `human` decisions
+ASKS = ("overrun", "run-stopped")  # the criteria of its extended and `human` decisions
+TICK_ASKS = ("overrun", "decision")  # the criteria sent to the site manager on every tick
 
 
 class NotEvaluated(Exception):
@@ -4338,7 +4339,7 @@ def settle_asks(p, send, why):
     with it), else an overrun is escalated to the human, the lead and the dispatcher told, and a decision is returned to the human."""
     repo = p["repo"]
     folded = {f["id"]: f for f in fold(repo_log("firings", repo.root) or [])[0]}
-    for f in (f for f in send if f["criterion"] in ("overrun", "decision")):
+    for f in (f for f in send if f["criterion"] in TICK_ASKS):
         if folded[f["id"]]["decision"] is None:
             if close_moot(repo, f):
                 continue
@@ -5074,7 +5075,7 @@ def watch_tick(args, repo):
     facts = [{"name": name} for name, (_, always) in FACTS.items() if full or always]
     current, skipped = evaluate(p, facts)
     folded = fold(repo_log("firings", repo.root) or [])[0]
-    asks = [a for a in pending_asks(folded, ("overrun", "decision")) if not close_moot(repo, a)]  # a lead's ask goes to the site manager on the next tick, not the next full pass
+    asks = [a for a in pending_asks(folded, TICK_ASKS) if not close_moot(repo, a)]  # a lead's ask goes to the site manager on the next tick, not the next full pass
     for s in skipped:
         print(f"not evaluated: {s['criterion']}: {s['why']}")
     evaluated = {c["name"] for c in [*facts, *(every if full else [])]} - {s["criterion"] for s in skipped}  # a killed digest leaves its firings open

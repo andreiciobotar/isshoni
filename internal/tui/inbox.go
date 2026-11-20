@@ -68,11 +68,13 @@ func (m *model) cursorCard() (inboxCard, bool) {
 	return cs[m.inbox.cursor], true
 }
 
-// waitingOnYou is the waiting tasks minus those whose decision is parked with the site manager.
+// waitingOnYou is the waiting tasks minus those whose every decision is parked with the site manager.
 func (m *model) waitingOnYou() int {
+	cs := m.cards()
 	n := 0
 	for _, it := range m.waiting() {
-		if !slices.ContainsFunc(m.cards(), func(c inboxCard) bool { return c.d.With != "" && c.path == it.path && c.d.Slug == it.task.Slug }) {
+		mine := func(c inboxCard) bool { return c.path == it.path && c.d.Slug == it.task.Slug }
+		if !slices.ContainsFunc(cs, mine) || slices.ContainsFunc(cs, func(c inboxCard) bool { return mine(c) && c.d.With == "" }) {
 			n++
 		}
 	}

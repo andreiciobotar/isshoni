@@ -96,7 +96,7 @@ func (m *model) footerKeys() []key.Binding {
 	case m.view == viewInbox && m.inbox.choice != "":
 		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept}
 	case m.view == viewInbox:
-		return []key.Binding{keys.Down, keys.Pick, keys.Leave, keys.CapEdit, keys.Next, keys.Help, keys.Quit}
+		return []key.Binding{keys.Down, keys.Pick, keys.CapEdit, keys.Leave, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewFactory:
 		return []key.Binding{keys.Down, keys.CapEdit, keys.Range, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewHanami:

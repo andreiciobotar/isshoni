@@ -172,6 +172,17 @@ func TestInboxBandDoesNotRepeatATaskWithACard(t *testing.T) {
 	}
 }
 
+func TestBadgeCountsATaskWithAParkedAndAnUnparkedCard(t *testing.T) {
+	repos := inboxRepos()
+	last := repos[len(repos)-1].st
+	last.Decisions = append(last.Decisions, data.FactoryDecision{ID: "b1c2d3e4f5a6", Slug: "wide-ask", Kind: "question", TS: fakeNow, Ask: "Which region?", Options: []string{"eu", "us"}})
+	m := fakeModel(true, 100, 30)
+	setInbox(m, repos...)
+	if got := m.waitingOnYou(); got != 7 {
+		t.Fatalf("wide-ask still has a card waiting on you: badge %d, want 7", got)
+	}
+}
+
 func TestInboxWithoutADecision(t *testing.T) {
 	m := fakeModel(true, 100, 30)
 	setInbox(m, fakeFactoryRepos()...)
