@@ -17,6 +17,12 @@ def clock(ts):
     return iso(ts)[11:16] + "Z"
 
 
+def inbox_line(reason):
+    """The line the script sends the lead whose overrun ask went to the human's inbox."""
+    return (f"SITE MANAGER: x: paused: the human decides in the inbox. Start no build run, declare no state and end your turn; "
+            f"the answer arrives as INBOX: x. {reason}")
+
+
 class Overrun(Harness):
     """A lead `x` in the dispatcher's repository, past its limit, between two full passes."""
 
@@ -59,6 +65,15 @@ class Overrun(Harness):
 
     def decisions(self):
         return [r for r in self.records() if "decision" in r]
+
+    def assert_card(self, ask, minutes=60):
+        """The task is blocked on the human, paused, and the inbox holds one overrun card whose ask is `ask`."""
+        last = factory.read_tasks(ROOT)["x"]
+        self.assertEqual((last["state"], last["paused"], last["waits_on"]), ("blocked", True, ["human"]))
+        [d] = factory.open_decisions(ROOT)
+        self.assertEqual((d["kind"], d["slug"], d["ask"], "recommend" in d), ("overrun", "x", ask, False))
+        self.assertEqual(d["options"][0], f"Continue: {minutes} more minutes, then hand over or ask again")
+        self.assertEqual(len(d["options"]), 4)
 
     def stopped_runs(self, n, reason=None):
         self.seed("techlead", [{"ts": iso(STARTED + 120 * i), "repo": ROOT, "slug": "x", "kind": "build", "outcome": "stopped",
@@ -130,14 +145,14 @@ class IdleLeadTests(Overrun):
             ("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {until}, no answer needed: landing left")])
         self.assertEqual(self.told(), ["lead"])
 
-    def test_a_pause_reaches_an_idle_lead_and_the_dispatcher_gets_its_line(self):
+    def test_a_pause_on_an_overrun_puts_a_card_in_the_inbox_and_tells_only_the_lead(self):
         self.ask()
         self.sessions = [DISPATCHER_NAME, self.idle_lead()]
         self.watch({"decision": "paused", "waits_on": ["human"], "reason": "the human decides"})
-        self.assertEqual(self.lines(), [
-            ("x", "SITE MANAGER: x: paused: start no build run and end your turn; the human decides. the human decides"),
-            ("dispatcher-repo", "PAUSED: x: paused by the site manager, for the human: the human decides")])
+        self.assertEqual(self.lines(), [("x", inbox_line("the human decides"))])
         self.assertEqual(self.told(), ["lead"])
+        self.assert_card("the human decides")
+        self.assertEqual([d["decision"] for d in self.decisions()], ["paused"])
 
     def retired(self, resume):
         """A watch tick that extends the limit of a lead the harness retired; `resume` is what `claude --bg --resume` answers."""
@@ -182,13 +197,21 @@ class BoundTests(Overrun):
         self.ask()
         self.watch({"decision": "extended", "minutes": 61, "reason": "too long"})
         [d] = self.decisions()
-        self.assertEqual((d["decision"], d["by"], d["to"]), ("escalated", "watch", "dispatcher"))
+        self.assertEqual((d["decision"], d["by"], "to" in d), ("escalated", "watch", False))
         self.assertIn("the site manager did not decide", d["reason"])
-        self.assertEqual(self.lines(), [
-            ("x", f"SITE MANAGER: x: passed to the human: declare factory state blocked human and wait. {d['reason']}"),
-            ("dispatcher-repo", f"ESCALATION: x: overrun undecided, the human decides: {ASK}")])
+        self.assertEqual(self.lines(), [("x", inbox_line(d["reason"]))])
+        self.assert_card(ASK)
         self.watch()
         self.assertEqual(self.runs(), [])
+
+    def test_an_escalated_overrun_from_the_site_manager_is_not_recorded_and_the_ask_is_decided_undecided(self):
+        self.ask()
+        self.watch({"decision": "escalated", "to": "dispatcher", "reason": "the human should see this"})
+        [d] = self.decisions()
+        self.assertEqual((d["decision"], d["by"], "to" in d), ("escalated", "watch", False))
+        self.assertIn("the site manager did not decide", d["reason"])
+        self.assertEqual(self.lines(), [("x", inbox_line(d["reason"]))])
+        self.assert_card(ASK)
 
     def test_the_ceiling_counts_what_was_granted_before(self):
         self.seed("firings", [fired("e1", criterion="overrun", ts=STARTED + 600),
@@ -214,7 +237,8 @@ class BoundTests(Overrun):
         [d] = self.decisions()
         self.assertEqual((d["decision"], d["by"]), ("escalated", "watch"))
         self.assertIn("the site manager run failed", d["reason"])
-        self.assertEqual([n for n, _ in self.lines()], ["x", "dispatcher-repo"])
+        self.assertEqual(self.lines(), [("x", inbox_line(d["reason"]))])
+        self.assert_card(ASK)
         self.watch()
         self.assertEqual(self.runs(), [])
 
@@ -226,8 +250,10 @@ class BoundTests(Overrun):
         self.assertEqual(self.runs(), [])
         [d] = self.decisions()
         self.assertEqual((d["decision"], d["by"]), ("escalated", "watch"))
-        self.assertIn(f"overrun undecided, the human decides: {ASK}", out)
-        self.assertEqual([n for n, _ in self.lines()], ["x"])
+        self.assertNotIn("notify", out)
+        self.assertNotIn("ESCALATION", out)
+        self.assertEqual(self.lines(), [("x", inbox_line(d["reason"]))])
+        self.assert_card(ASK)
         self.watch()
         self.assertEqual(len(self.decisions()), 1)
 
@@ -243,6 +269,7 @@ class MootTests(Overrun):
         self.assertEqual((d["decision"], d["by"], d["reason"]), ("suppressed", "watch", f"{state.replace('-', ' ')} at {iso(ts)}, the ask is moot"))
         self.assertNotIn("to", d)
         self.assertEqual(self.lines(), [])
+        self.assertEqual(factory.open_decisions(ROOT), [])
         self.assertNotIn("ESCALATION", self.watch()[1])
         self.assertEqual(self.runs(), [])
 
@@ -279,6 +306,7 @@ class MootTests(Overrun):
         self.watch()
         [d] = self.decisions()
         self.assertEqual((d["decision"], d["by"]), ("escalated", "watch"))
+        self.assertEqual([r["kind"] for r in self.records("decisions")], ["overrun"])  # the seeded `working` is stamped after the pause
 
     def test_a_hand_over_during_the_look_closes_the_undecided_ask_as_moot(self):
         self.ask()
@@ -526,8 +554,9 @@ class ValidityTests(Overrun):
 
     def test_an_overrun_is_not_suppressed_nor_sent_to_the_lead(self):
         self.assertEqual(self.logged("overrun", "suppressed"), [])
-        self.assertEqual(self.logged("overrun", "escalated", to="lead"), [])
-        self.assertEqual(len(self.logged("overrun", "escalated", to="dispatcher")), 1)
+        for to in ("lead", "dispatcher"):
+            self.assertEqual(self.logged("overrun", "escalated", to=to), [])
+        self.assertEqual(len(self.logged("run-stopped", "escalated", to="dispatcher")), 1)
         self.assertEqual(len(self.logged("run-stopped", "suppressed")), 1)
 
 
@@ -547,6 +576,7 @@ class RunStoppedTests(Overrun):
         self.assertEqual(self.lines(), [
             ("x", "SITE MANAGER: x: paused: start no build run and end your turn; the human decides. two runs, nothing handed over"),
             ("dispatcher-repo", "PAUSED: x: paused by the site manager, for the human: two runs, nothing handed over")])
+        self.assertEqual(factory.open_decisions(ROOT), [])
 
     def pause_for_the_human(self, slug):
         self.seed("tasks", [{"repo": ROOT, "slug": slug, "state": "blocked", "paused": True, "waits_on": ["human"], "role": "site-manager",

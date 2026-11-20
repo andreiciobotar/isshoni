@@ -4117,18 +4117,24 @@ def grant(p, slug, minutes, capped=True):
 
 def tell_decision(p, f, decision, reason, minutes=None, until=None):
     """The lines the script sends after a decision on an overrun, or a pause: to the lead, else to the dispatcher marked
-    undelivered, then once the dispatcher; on an escalated overrun the model's own message is the dispatcher's. Logs
+    undelivered, then once the dispatcher (not for a pause or an undecided ask on an overrun: the inbox card is the human's). Logs
     on the firing who was told: `lead`, `dispatcher` or `nobody`."""
     repo, slug, clock = p["repo"], f["slug"], (until or "")[11:16] + "Z"
     if f.get("criterion") != "overrun" and not (decision == "paused" and f.get("criterion") in ASKS):
         return
+    inbox = f.get("criterion") == "overrun"
     said = {"extended": f"extended {minutes} min, limit now {clock}: {reason}",
-            "paused": f"paused: start no build run and end your turn; the human decides. {reason}",
-            "escalated": f"passed to the human: declare factory state blocked human and wait. {reason}"}[decision]
+            "paused": (f"paused: the human decides in the inbox. Start no build run, declare no state and end your turn; "
+                       f"the answer arrives as INBOX: {slug}. {reason}" if inbox
+                       else f"paused: start no build run and end your turn; the human decides. {reason}")}
+    said["escalated"] = said["paused"]
+    said = said[decision]
     to = forward(repo, p["dispatcher"], slug, "SITE MANAGER", said)
     log_firing(repo, id=f["id"], told=to or "nobody")
     heard = {"extended": ("SITE MANAGER", f"{slug}: extended {minutes} min to {clock}, no answer needed: {reason}"),
              "paused": ("PAUSED", f"{slug}: paused by the site manager, for the human: {reason}")}.get(decision)
+    if inbox and decision != "extended":
+        heard = None  # the card is the human's notice
     if heard and to == "lead":
         forward(repo, p["dispatcher"], slug, *heard, lead=False)
 
@@ -4233,10 +4239,9 @@ def record_decisions(p, sent, result, run, look=None):
         superseded_by, closed = d.get("superseded_by") or None, None
         if decision == "closed" and (crit != "ended-undeclared" or not (closed := close_decided(p, f["slug"], reason, superseded_by))):
             continue
-        if decision == "escalated" and (to not in ("dispatcher", "lead") or result.get("sent") is not True
-                                        or (crit == "overrun" and to != "dispatcher")):
+        if decision == "escalated" and (to not in ("dispatcher", "lead") or result.get("sent") is not True):
             continue
-        if decision == "suppressed" and crit == "overrun":
+        if decision in ("suppressed", "escalated") and crit == "overrun":
             continue
         if decision == "paused" and ask:
             if waits != ["human"]:
@@ -4254,7 +4259,9 @@ def record_decisions(p, sent, result, run, look=None):
         seen.add(fid)
         logged += 1
         looked = d.get("looked")
-        if decision == "paused" and ask:
+        if decision == "paused" and crit == "overrun":
+            overrun_to_human(p["repo"], f["slug"], reason)
+        elif decision == "paused" and ask:
             declare(p["repo"], f["slug"], "site-manager", "blocked", waits_on=waits, paused=True)
             task_event("TaskPaused", p["repo"], f["slug"], waits_on=waits)
         log_firing(p["repo"], id=fid, decision=decision, reason=reason.strip(), by="site-manager", run=run,
@@ -4312,7 +4319,7 @@ def settle_collisions(p):
 def settle_asks(p, send, why):
     """An `overrun` firing is cleared once the tick that sent it is over, so a later ask is a new firing. One the site
     manager left undecided is decided here, once: closed as moot when its task is over by now, else escalated to the
-    human, the lead and the dispatcher told."""
+    human's inbox, the lead told."""
     repo = p["repo"]
     folded = {f["id"]: f for f in fold(repo_log("firings", repo.root) or [])[0]}
     for f in (f for f in send if f["criterion"] == "overrun"):
@@ -4320,10 +4327,9 @@ def settle_asks(p, send, why):
             if close_moot(repo, f):
                 continue
             reason = f"the site manager did not decide: {why}"
-            log_firing(repo, id=f["id"], decision="escalated", by="watch", to="dispatcher", reason=reason)
+            log_firing(repo, id=f["id"], decision="escalated", by="watch", reason=reason)
+            overrun_to_human(repo, f["slug"], f["detail"])
             tell_decision(p, f, "escalated", reason)
-            tell_lead(repo, p["dispatcher"], f["slug"], "ESCALATION", f"{f['slug']}: overrun undecided, the human decides: {f['detail']}",
-                      f"factory: {f['slug']} overrun undecided", lead=False)
         log_firing(repo, id=f["id"], cleared=True)
 
 
