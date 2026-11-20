@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -137,7 +138,7 @@ func TestGoldenInbox(t *testing.T) {
 func TestInboxShowsTheCardsOverTheFactoryLines(t *testing.T) {
 	out := plain(inboxModel(140, 60))
 	for _, want := range []string{
-		"> ? needs-an-answer", "  ▲ stuck-on-keys", "TASK", "AGE", "│",
+		"> ? needs-an-answer", "  ▲ stuck-on-keys", "REPO", "TASK", "AGE", "│",
 		"needs-an-answer · question · asked 45m ago", "Should the export keep the legacy column order",
 		"1  Keep the legacy order  (recommended)", "2  Switch now and update both readers",
 		"worktree cap", "delta-docs", "SLUG",
@@ -245,12 +246,12 @@ func TestInboxIsAFactoryPage(t *testing.T) {
 	}
 	m = inboxModel(80, 24)
 	send(m, "j", "j", "j", "j", "j", "j")
-	if m.inbox.cursor != 3 || m.inbox.top == 0 {
-		t.Fatalf("j walks the cards, then scrolls the page: cursor %d, top %d", m.inbox.cursor, m.inbox.top)
+	if m.inbox.tbl.Cursor() != 3 || m.inbox.top == 0 {
+		t.Fatalf("j walks the cards, then scrolls the page: cursor %d, top %d", m.inbox.tbl.Cursor(), m.inbox.top)
 	}
 	send(m, "k", "k", "k", "k", "k", "k", "k", "k", "k", "k", "k", "k")
-	if m.inbox.cursor != 0 || m.inbox.top != 0 {
-		t.Fatalf("k comes back: cursor %d, top %d", m.inbox.cursor, m.inbox.top)
+	if m.inbox.tbl.Cursor() != 0 || m.inbox.top != 0 {
+		t.Fatalf("k comes back: cursor %d, top %d", m.inbox.tbl.Cursor(), m.inbox.top)
 	}
 	send(m, "G")
 	if m.inbox.top == 0 || m.fac.top != 0 {
@@ -263,14 +264,14 @@ func TestInboxIsAFactoryPage(t *testing.T) {
 func TestInboxDigitOpensTheConfirmOnAccept(t *testing.T) {
 	m := inboxModel(100, 30)
 	send(m, "2")
-	if m.view != viewInbox || m.inbox.choice != "2" || m.inbox.reject || m.inbox.id != idQuestion {
+	if m.view != viewInbox || m.inbox.pick != "2" || m.inbox.reject || m.inbox.id != idQuestion {
 		t.Fatalf("view %v, inbox %+v", m.view, m.inbox)
 	}
 	if out := plain(m); !strings.Contains(out, "[Accept]") || !strings.Contains(out, " Reject ") || !strings.Contains(out, "[2] Switch now") {
 		t.Errorf("the pick and Accept show:\n%s", out)
 	}
 	send(m, "n", "j", "j", "j", "1")
-	if m.inbox.choice != "1" || m.inbox.id != idBlocked {
+	if m.inbox.pick != "1" || m.inbox.id != idBlocked {
 		t.Fatalf("the second card picks for itself: %+v", m.inbox)
 	}
 	send(m, "n", "4") // the card has two options: 4 is the Factory tab
@@ -310,7 +311,7 @@ func TestInboxAnswerRunsTheScriptInTheRepository(t *testing.T) {
 			t.Fatalf("%v: script ran as %q, want %q", c.keys, readCalls(calls), want)
 		}
 		m.Update(got[0])
-		if m.inbox.sending || m.inbox.choice != "" || m.toast.err || !strings.HasPrefix(m.toast.text, "answered ") || !strings.HasSuffix(m.toast.text, ": "+c.choice) {
+		if m.inbox.sending || m.inbox.pick != "" || m.toast.err || !strings.HasPrefix(m.toast.text, "answered ") || !strings.HasSuffix(m.toast.text, ": "+c.choice) {
 			t.Fatalf("%v: after the answer: inbox %+v, toast %+v", c.keys, m.inbox, m.toast)
 		}
 	}
@@ -326,8 +327,8 @@ func TestInboxRejectAnswersNothing(t *testing.T) {
 				t.Fatalf("%v: %v ran something", keys, k)
 			}
 		}
-		if m.inbox.choice != "" || m.inbox.sending || readCalls(calls) != "" {
-			t.Fatalf("%v: choice %q, calls %q", keys, m.inbox.choice, readCalls(calls))
+		if m.inbox.pick != "" || m.inbox.sending || readCalls(calls) != "" {
+			t.Fatalf("%v: choice %q, calls %q", keys, m.inbox.pick, readCalls(calls))
 		}
 	}
 }
@@ -335,30 +336,33 @@ func TestInboxRejectAnswersNothing(t *testing.T) {
 func TestInboxConfirmIgnoresEveryOtherKey(t *testing.T) {
 	m, _, _ := answerModel(t)
 	send(m, "2")
-	before := m.inbox
-	for _, k := range []string{"x", "j", "k", "q", "?", "c", "d", "r", "4", "7", "pgdown", "G", "/", "s"} { // 4: the card has three options
+	state := func() string {
+		return fmt.Sprint(m.inbox.pick, m.inbox.id, m.inbox.reject, m.inbox.sending, m.inbox.tbl.Cursor(), m.inbox.top)
+	}
+	before := state()
+	for _, k := range []string{"x", "j", "k", "q", "?", "c", "d", "r", "4", "7", "pgdown", "G", "/"} { // 4: the card has three options
 		if cmd := upd(m, press(k)); len(cmd) != 0 {
 			t.Fatalf("%q ran something", k)
 		}
-		if m.inbox != before || m.view != viewInbox || m.help || m.fac.editing {
-			t.Fatalf("%q changed the confirm: %+v view %v", k, m.inbox, m.view)
+		if state() != before || m.view != viewInbox || m.help || m.fac.editing {
+			t.Fatalf("%q changed the confirm: %s view %v", k, state(), m.view)
 		}
 	}
 	send(m, "3")
-	if m.inbox.choice != "3" || m.inbox.reject {
+	if m.inbox.pick != "3" || m.inbox.reject {
 		t.Fatalf("a digit valid for the card changes the pick: %+v", m.inbox)
 	}
 	send(m, "tab")
 	send(m, "1")
-	if m.inbox.choice != "1" || m.inbox.reject {
+	if m.inbox.pick != "1" || m.inbox.reject {
 		t.Fatalf("a new pick marks Accept again: %+v", m.inbox)
 	}
 	send(m, "tab", "S")
-	if m.inbox.choice != "site-manager" || m.inbox.reject {
+	if m.inbox.pick != "site-manager" || m.inbox.reject {
 		t.Fatalf("S changes the choice and marks Accept again: %+v", m.inbox)
 	}
 	send(m, "L")
-	if m.inbox.choice != "lead" {
+	if m.inbox.pick != "lead" {
 		t.Fatalf("L changes the choice: %+v", m.inbox)
 	}
 	_, cmd := m.Update(press("ctrl+c"))
@@ -377,8 +381,8 @@ func TestInboxReadOnlyRefusesToPick(t *testing.T) {
 	for _, k := range []string{"2", "L", "S"} {
 		m.toast.text = ""
 		send(m, k)
-		if m.inbox.choice != "" || m.toast.text != "read-only: this key may not answer a decision" || !m.toast.err {
-			t.Fatalf("%s: choice %q, toast %+v", k, m.inbox.choice, m.toast)
+		if m.inbox.pick != "" || m.toast.text != "read-only: this key may not answer a decision" || !m.toast.err {
+			t.Fatalf("%s: choice %q, toast %+v", k, m.inbox.pick, m.toast)
 		}
 	}
 	send(m, "enter", "y")
@@ -400,7 +404,7 @@ func TestInboxFailedAnswerShowsTheScriptsLineAndUnpicks(t *testing.T) {
 	}
 	m.Update(got[0])
 	want := "decision " + idQuestion + " is already answered"
-	if m.toast.text != want || !m.toast.err || m.inbox.choice != "" || m.inbox.sending {
+	if m.toast.text != want || !m.toast.err || m.inbox.pick != "" || m.inbox.sending {
 		t.Fatalf("toast %+v, inbox %+v", m.toast, m.inbox)
 	}
 	if !strings.Contains(plain(m), "1  Keep the legacy order") || strings.Contains(plain(m), "[Accept]") {
@@ -417,7 +421,7 @@ func TestInboxPickIsDroppedWhenItsCardIsGone(t *testing.T) {
 	repos := inboxRepos()
 	repos[0].st.Decisions = nil
 	m.applyFactory(factoryMsg{repos: repos})
-	if m.inbox.choice != "" {
+	if m.inbox.pick != "" {
 		t.Fatalf("the status says the card is gone: %+v", m.inbox)
 	}
 }
@@ -428,7 +432,7 @@ func TestInboxPickIsDroppedWhenItsCardIsParked(t *testing.T) {
 	repos := inboxRepos()
 	repos[0].st.Decisions[0].With = "site-manager"
 	m.applyFactory(factoryMsg{repos: repos})
-	if m.inbox.choice != "" || m.inbox.sending {
+	if m.inbox.pick != "" || m.inbox.sending {
 		t.Fatalf("the status says the card is with the site manager: %+v", m.inbox)
 	}
 }
@@ -512,7 +516,7 @@ func TestInboxLeaveKeysOpenTheDelegationConfirm(t *testing.T) {
 		send(m, key)
 		out := plain(m)
 		if m.inbox.id != idQuestion || !strings.Contains(out, want) || !strings.Contains(out, "[Accept]") || !strings.Contains(out, " Reject ") {
-			t.Errorf("%s: choice %q:\n%s", key, m.inbox.choice, out)
+			t.Errorf("%s: choice %q:\n%s", key, m.inbox.pick, out)
 		}
 		if strings.Contains(out, "L leave it to the lead") {
 			t.Errorf("%s: the confirm takes the place of the hint:\n%s", key, out)
@@ -563,8 +567,8 @@ func TestInboxParkedCardTakesNoChoice(t *testing.T) {
 		t.Fatalf("cursor on %s, want the parked card", c.d.ID)
 	}
 	for _, k := range []string{"1", "L", "S"} {
-		if cmd := upd(m, press(k)); len(cmd) != 0 || m.inbox.choice != "" {
-			t.Fatalf("%s did something on a parked card: %q", k, m.inbox.choice)
+		if cmd := upd(m, press(k)); len(cmd) != 0 || m.inbox.pick != "" {
+			t.Fatalf("%s did something on a parked card: %q", k, m.inbox.pick)
 		}
 	}
 	send(m, "2")
@@ -602,16 +606,16 @@ func TestInboxGroupsCardsByRepository(t *testing.T) {
 		if !strings.Contains(l, "│") {
 			continue
 		}
-		f := strings.Fields(strings.TrimPrefix(strings.TrimSpace(strings.SplitN(l, "│", 2)[0]), ">"))
-		switch {
-		case len(f) == 1 && (f[0] == "alpha" || f[0] == "delta-docs"):
-			seen = append(seen, f[0])
-		case len(f) > 1 && (f[0] == "?" || f[0] == "▲" || f[0] == "…"):
+		f := slices.DeleteFunc(strings.Fields(strings.SplitN(l, "│", 2)[0]), func(s string) bool { return s == ">" })
+		if len(f) > 0 && (f[0] == "alpha" || f[0] == "delta-docs") { // the repository, on its first row only
+			seen, f = append(seen, f[0]), f[1:]
+		}
+		if len(f) > 1 && (f[0] == "?" || f[0] == "▲" || f[0] == "…") {
 			seen = append(seen, f[1])
 		}
 	}
 	if got := strings.Join(seen, " "); got != "alpha needs-an-answer second-of-alpha delta-docs wide-ask slow-import stuck-on-keys" {
-		t.Errorf("one heading per repository over its cards: %s", got)
+		t.Errorf("the repository on the first row of its group: %s", got)
 	}
 	send(m, "j", "j", "j", "j")
 	if c, _ := m.cursorCard(); c.d.Slug != "stuck-on-keys" {
@@ -663,8 +667,8 @@ func TestInboxCursorFollowsItsDecisionThroughARefresh(t *testing.T) {
 	setInbox(m, reposWithAnExtra()...)
 	send(m, "j") // second-of-alpha, the second card
 	setInbox(m, withOlderInAlpha(reposWithAnExtra())...)
-	if c, _ := m.cursorCard(); c.d.ID != "aa11" || m.inbox.cursor != 2 {
-		t.Errorf("the cursor stays on its decision at its new place: %s at %d", c.d.ID, m.inbox.cursor)
+	if c, _ := m.cursorCard(); c.d.ID != "aa11" || m.inbox.tbl.Cursor() != 2 {
+		t.Errorf("the cursor stays on its decision at its new place: %s at %d", c.d.ID, m.inbox.tbl.Cursor())
 	}
 	repos := reposWithAnExtra()
 	repos[0].st.Decisions = nil // its decision goes: the nearest card
@@ -678,13 +682,13 @@ func TestInboxPendingPickFollowsItsDecisionAndClosesWhenItIsGone(t *testing.T) {
 	m := inboxModel(100, 30)
 	send(m, "2")
 	setInbox(m, withOlderInAlpha(inboxRepos())...)
-	if c, _ := m.cursorCard(); c.d.ID != idQuestion || m.inbox.cursor != 1 || m.inbox.choice != "2" {
+	if c, _ := m.cursorCard(); c.d.ID != idQuestion || m.inbox.tbl.Cursor() != 1 || m.inbox.pick != "2" {
 		t.Fatalf("the pick stays on its decision at its new place: %s, %+v", c.d.ID, m.inbox)
 	}
 	repos := withOlderInAlpha(inboxRepos())
 	repos[0].st.Decisions = repos[0].st.Decisions[:1] // another decision takes the place the picked one had
 	setInbox(m, repos...)
-	if m.inbox.choice != "" || m.inbox.sending {
+	if m.inbox.pick != "" || m.inbox.sending {
 		t.Fatalf("the pick closes: %+v", m.inbox)
 	}
 	if c, _ := m.cursorCard(); c.d.ID != idParked {
@@ -697,7 +701,97 @@ func TestInboxLateAnswerKeepsThePickOfAnotherCard(t *testing.T) {
 	send(m, "j", "j", "1") // a pick on the handed-back card
 	late := answerMsg{card: inboxCard{d: data.FactoryDecision{ID: idQuestion, Slug: "needs-an-answer"}}, choice: "2"}
 	m.Update(late)
-	if m.inbox.choice != "1" || m.inbox.id != idBack {
+	if m.inbox.pick != "1" || m.inbox.id != idBack {
 		t.Errorf("the answer of another card leaves the pick: %+v", m.inbox)
+	}
+}
+
+func TestInboxElevenDecisionsScrollTheListNotThePage(t *testing.T) {
+	repos := inboxRepos()
+	repos[0].st.Decisions = nil
+	repos[len(repos)-1].st.Decisions = nil
+	for i := 1; i <= 11; i++ {
+		repos[0].st.Decisions = append(repos[0].st.Decisions, data.FactoryDecision{
+			ID: fmt.Sprintf("id%02d", i), Slug: fmt.Sprintf("task-%02d", i), Kind: "question", TS: fakeNow.Add(time.Duration(i-12) * time.Minute),
+			Ask: fmt.Sprintf("Ask number %d?", i), Options: []string{fmt.Sprintf("First of %d", i), "Second"},
+		})
+	}
+	m := fakeModel(true, 140, 40)
+	setInbox(m, repos...)
+	listed := func() (n int) {
+		for _, l := range strings.Split(plain(m), "\n") {
+			if left, _, ok := strings.Cut(l, "│"); ok && strings.Contains(left, "task-") {
+				n++
+			}
+		}
+		return n
+	}
+	if out := plain(m); listed() != 8 || !strings.Contains(out, "Ask number 1?") || !strings.Contains(out, "1  First of 1") {
+		t.Fatalf("the list shows eight rows beside the first message:\n%s", out)
+	}
+	send(m, "f", "d", "u", "b") // the table's own paging keys are not bound here
+	if m.inbox.tbl.Cursor() != 0 {
+		t.Fatalf("the table's paging keys moved the cursor to %d", m.inbox.tbl.Cursor())
+	}
+	for range 10 {
+		send(m, "j")
+	}
+	out := plain(m)
+	if m.inbox.tbl.Cursor() != 10 || m.inbox.top != 0 || listed() != 8 {
+		t.Fatalf("cursor %d, page top %d, %d rows listed:\n%s", m.inbox.tbl.Cursor(), m.inbox.top, listed(), out)
+	}
+	for _, want := range []string{"> ? task-11", "task-11 · question", "Ask number 11?", "1  First of 11", "worktree cap"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("at the last row the page lacks %q:\n%s", want, out)
+		}
+	}
+	send(m, "j")
+	if m.inbox.top == 0 {
+		t.Error("past the last row j scrolls the page")
+	}
+}
+
+func TestInboxListShowsTheCursorRowAfterARefreshMovesItFar(t *testing.T) {
+	build := func(newest string) []factoryRepo {
+		repos := inboxRepos()
+		repos[0].st.Decisions = nil
+		repos[len(repos)-1].st.Decisions = nil
+		for i := 1; i <= 11; i++ {
+			id := fmt.Sprintf("id%02d", i)
+			age := time.Duration(12-i) * time.Minute
+			if id == newest {
+				age = 0 // the decision that becomes the newest, the last row
+			}
+			repos[0].st.Decisions = append(repos[0].st.Decisions, data.FactoryDecision{
+				ID: id, Slug: "task-" + id[2:], Kind: "question", TS: fakeNow.Add(-age),
+				Ask: "Ask of " + id + "?", Options: []string{"First", "Second"},
+			})
+		}
+		return repos
+	}
+	for _, tc := range []struct {
+		name         string
+		from, to     int
+		before, then []factoryRepo
+	}{
+		{"row 0 to row 10", 0, 10, build(""), build("id01")},
+		{"row 10 to row 0", 10, 0, build("id01"), build("")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := fakeModel(true, 140, 40)
+			setInbox(m, tc.before...)
+			for range tc.from {
+				send(m, "j")
+			}
+			c, _ := m.cursorCard()
+			setInbox(m, tc.then...)
+			if got, _ := m.cursorCard(); got.d.ID != c.d.ID || m.inbox.tbl.Cursor() != tc.to {
+				t.Fatalf("the cursor is on %s at %d, want %s at %d", got.d.ID, m.inbox.tbl.Cursor(), c.d.ID, tc.to)
+			}
+			out := plain(m)
+			if !strings.Contains(out, "> ? task-"+c.d.ID[2:]) || !strings.Contains(out, "Ask of "+c.d.ID+"?") {
+				t.Errorf("the list lacks the selected row of %s:\n%s", c.d.ID, out)
+			}
+		})
 	}
 }

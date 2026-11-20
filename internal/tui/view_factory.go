@@ -37,8 +37,7 @@ func (m *model) onFloor() bool { return m.view == viewFactory || m.view == viewI
 // floorLines are the lines of the view shown; floorTop is where each of the two keeps its scroll.
 func (m *model) floorLines(p paint, w, h int) block {
 	if m.view == viewInbox {
-		lines, _ := m.inboxPage(p, w, h)
-		return lines
+		return m.inboxPage(p, w, h)
 	}
 	return m.factoryLines(p, w, h)
 }

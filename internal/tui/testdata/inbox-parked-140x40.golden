@@ -1,12 +1,11 @@
  Isshoni 一緒に [1 Inbox ▲6] 2 Sessions  3 Agents  4 Factory  5 Kaizen  6 Ops  7 Hanami                          24h [7d] 30d  all   ○ idle 
  Inbox  18 in motion (8 blocked) · 3 waiting for review · 2 merged, not cleaned · 1 settled  · as of 11:00:00                               
-    TASK            ASK                              AGE │ wide-ask · question · asked 30m ago                                              
- alpha                                                   │ delta-docs · blocked 2h00m · base main                                           
-  ? needs-an-answer Should the export keep the lega… 45m │                                                                                  
- delta-docs                                              │ Which environment's database credentials should the import use?                  
-> … wide-ask        Which environment's database cr… 30m │                                                                                  
-  ? slow-import     The import ran 3h of its 2h. Sp… 20m │ With the site manager since 10:50                                                
-  ▲ stuck-on-keys   git push is refused: the deploy…  1m │                                                                                  
+REPO           TASK            ASK                   AGE │ wide-ask · question · asked 30m ago                                              
+alpha        ? needs-an-answer Should the export k…  45m │ delta-docs · blocked 2h00m · base main                                           
+delta-docs > … wide-ask        Which environment's…  30m │                                                                                  
+             ? slow-import     The import ran 3h o…  20m │ Which environment's database credentials should the import use?                  
+             ▲ stuck-on-keys   git push is refused…   1m │                                                                                  
+                                                         │ With the site manager since 10:50                                                
                                                                                                                                             
  ▲ Needs you  3                                                                                                                             
  ◆ alpha       api-rate-limits  review PR         3h00m  #42 https://github.com/o/alpha/pull/42                                             
@@ -36,5 +35,6 @@
   task-00            ⠋ in motion                                       1m00s  -       -                       main                          
   task-01            ⠋ in motion                                       2m00s  -       -                       main                          
   task-02            ⠋ in motion                                       3m00s  -       -                       main                          
- +18 more lines · ↓ to scroll                                                                                                               
+                                                                                                                                            
+ +17 more lines · ↓ to scroll                                                                                                               
  ↑↓/jk move  ·  c edit cap  ·  tab next view  ·  ? help  ·  q quit                                                                          

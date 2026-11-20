@@ -201,6 +201,7 @@ func New(o Options) *model {
 		dirty: map[string]bool{}, inflight: map[string]bool{}, retry: map[string]time.Time{}, counter: map[string]*Counter{},
 		rowTok: map[string]*Counter{}, flash: map[string]time.Time{}, folded: map[string]bool{}, opened: map[string]bool{}, held: map[string]rankKey{},
 	}
+	m.inbox = newInboxState()
 	m.loadCtx, m.loadCancel = context.WithCancel(m.ctx)
 	for _, k := range append([]string{"tokens", "dispatches", "repeats", "loops", "warns", "share", "recheck"}, kaizenCounters...) {
 		m.counter[k] = &Counter{}
@@ -1307,7 +1308,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.capKey(msg)
 	case m.pick != nil:
 		return m.pickKey(msg)
-	case m.view == viewInbox && m.inbox.choice != "" && !m.help:
+	case m.view == viewInbox && m.inbox.pick != "" && !m.help:
 		return m.confirmKey(msg)
 	case m.help:
 		if key.Matches(msg, keys.Help, keys.Back, keys.Open, keys.Quit) {
@@ -1486,7 +1487,7 @@ func (m *model) filterKey(msg tea.KeyPressMsg) tea.Cmd {
 func (m *model) switchView(v viewID) tea.Cmd {
 	m.view, m.zoom, m.detailOnly = v, false, false
 	m.fixScroll()
-	m.inbox.choice = ""
+	m.inbox.pick = ""
 	switch v {
 	case viewFactory, viewInbox:
 		return m.refreshFactory(factoryFresh)

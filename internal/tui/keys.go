@@ -94,7 +94,7 @@ func (m *model) footerKeys() []key.Binding {
 		return []key.Binding{keys.FilterKeep, keys.FilterClear}
 	case m.fac.editing:
 		return []key.Binding{keys.CapSave, keys.CapCancel}
-	case m.view == viewInbox && m.inbox.choice != "":
+	case m.view == viewInbox && m.inbox.pick != "":
 		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept}
 	case m.view == viewInbox:
 		if c, ok := m.cursorCard(); ok && c.d.With != "" {
