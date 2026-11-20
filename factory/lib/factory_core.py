@@ -32,6 +32,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
+from types import SimpleNamespace
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 PERMISSION_MODES = ("acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan")
@@ -6464,7 +6465,6 @@ def take(tag, prompt):
     seen = set(OUTBOX_TAG.findall(prompt))
     if not seen:
         return
-    from types import SimpleNamespace
     repo = SimpleNamespace(root=tag["repo"])
     for r in outbox_rows(repo):
         if r["id"] in seen and r["slug"] == tag["slug"] and r.get("end") != "delivered":
