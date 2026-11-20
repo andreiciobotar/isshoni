@@ -111,7 +111,7 @@
         ]
       },
       {
-        "matcher": "Bash|Edit|Write|NotebookEdit",
+        "matcher": "Bash|Edit|Write|NotebookEdit|Read",
         "hooks": [
           {
             "type": "command",
