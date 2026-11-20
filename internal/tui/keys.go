@@ -21,6 +21,7 @@ type keyMap struct {
 	Range, Follow, Sort, Filter              key.Binding
 	FilterKeep, FilterClear, Erase, Wipe     key.Binding
 	CapEdit, CapSave, CapCancel              key.Binding
+	MenuChoose, MenuClose                    key.Binding
 	Hanami, Legend, Zen, Replay              key.Binding
 	Dispatcher                               key.Binding
 }
@@ -75,9 +76,11 @@ var keys = keyMap{
 
 	Dispatcher: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "dispatcher")),
 
-	CapEdit:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "edit cap")),
-	CapSave:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "save")),
-	CapCancel: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+	CapEdit:    key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "edit cap")),
+	CapSave:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "save")),
+	CapCancel:  key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+	MenuChoose: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "choose")),
+	MenuClose:  key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "close")),
 
 	// the Hanami tab's own keys: its footer shows them; the help overlay has no row left for them at 24 rows
 	Legend: key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "legend")),
@@ -94,7 +97,7 @@ func (m *model) footerKeys() []key.Binding {
 	case m.fac.editing:
 		return []key.Binding{keys.CapSave, keys.CapCancel}
 	case m.floor.menu:
-		return []key.Binding{keys.Down, keys.Open, keys.Back}
+		return []key.Binding{keys.Down, keys.MenuChoose, keys.MenuClose}
 	case m.view == viewInbox && m.inbox.pick != 0:
 		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept}
 	case m.view == viewInbox:
