@@ -292,6 +292,12 @@ class MergeInOrderTests(Loop):
         self.assertEqual(self.sim.events("push", "merge"), [e for n in range(1, 4) for e in (("push", n), ("merge", n))])
         self.assertEqual(self.stopped(out), [])
 
+    def test_a_pull_request_behind_whose_checks_report_nothing_is_updated_not_stopped_as_ci(self):
+        self.sim.add(1, checks=[])
+        code, out, _ = self.go("lander")
+        self.assertEqual((code, self.sim.pushes(), self.sim.merged), (0, [1], [1]))
+        self.assertEqual(self.stopped(out), [])
+
     def test_a_push_that_leaves_the_pull_request_behind_ends_with_that_stop_and_no_second_update(self):
         self.sim.add(1, stays_behind=True)
         code, out, _ = self.go("lander")
