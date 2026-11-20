@@ -2219,7 +2219,8 @@ def cmd_status(args):
         doc = {"rows": rows, "cap": cap, "reserve": held_back, "open": len(rows), **counts,
                "leftover_agent_worktrees": repo.leftover, "outside_worktrees": repo.outside, "identity": bot or None,
                "repository_selection": stored and stored.get("repository_selection"),
-               "prs": {"as_of": as_of, "error": pr_error}, "decisions": open_decisions(repo.root)}
+               "prs": {"as_of": as_of, "error": pr_error}, "decisions": open_decisions(repo.root),
+               "history": history(repo.root), "approvals": read_approvals(repo.root, rows)}
         print(json.dumps(doc, indent=2))
         return 0
     now = time.time()
@@ -4127,8 +4128,7 @@ def tell_decision(p, f, decision, reason, minutes=None, until=None):
             "escalated": f"passed to the human: declare factory state blocked human and wait. {reason}"}[decision]
     to = forward(repo, p["dispatcher"], slug, "SITE MANAGER", said)
     log_firing(repo, id=f["id"], told=to or "nobody")
-    heard = {"extended": ("SITE MANAGER", f"{slug}: extended {minutes} min to {clock}, no answer needed: {reason}"),
-             "paused": ("PAUSED", f"{slug}: paused by the site manager, for the human: {reason}")}.get(decision)
+    heard = {"paused": ("PAUSED", f"{slug}: paused by the site manager, for the human: {reason}")}.get(decision)
     if heard and to == "lead":
         forward(repo, p["dispatcher"], slug, *heard, lead=False)
 
@@ -4146,11 +4146,12 @@ def close_decided(p, slug, reason, superseded_by):
 
 
 def tell_closed(p, fid, label, slug, reason, superseded_by, closed):
-    """Tell the dispatcher once, in a line of the script's own, that the site manager closed `slug`: removed and nothing to
-    answer, or kept and why (an escalation for the human). `label` is the criterion or entry. Logs on the firing who was told."""
+    """Tell the dispatcher once, in a line of the script's own, that the site manager closed `slug` but kept it, and why (an
+    escalation for the human); a removed one is told to the inbox's history only. `label` is the criterion or entry. Logs on
+    the firing who was told."""
     what = f"closed ({reason.strip()}{f'; superseded by {superseded_by}' if superseded_by else ''})"
     if closed[0] == "removed":
-        to = forward(p["repo"], p["dispatcher"], slug, "SITE MANAGER", f"{slug}: {what} and removed, no answer needed", lead=False)
+        to = "inbox"
     else:
         kept = closed[1] or "its removal failed, see the watch log"
         to = forward(p["repo"], p["dispatcher"], slug, "ESCALATION", f"{fid} {label} {slug}: {what}; kept: {kept}", lead=False)
@@ -4876,6 +4877,31 @@ def open_decisions(root):
     return [{k: r[k] for k in DECISION_KEYS if k in r} for r in records
             if "ask" in r and r["id"] not in answered and (t := tasks.get(r["slug"]))
             and t["state"] == "blocked" and t.get("waits_on") in (None, "human") and stamp(t) <= stamp(r)]
+
+
+HISTORY_DAYS = 7
+HISTORY_MAX = 100
+
+
+def history(root):
+    """What was decided in the repo at `root` in the last HISTORY_DAYS days, newest first, at most HISTORY_MAX, read from the
+    logs that hold it: the human's answers, the site manager's `extended`, `paused` and `closed`, the hand-overs and the
+    leads' key decisions. Each entry is {ts, slug, by, text}, the text on one line."""
+    answers = repo_log("decisions", root) or []
+    asks = {r["id"]: r for r in answers if "ask" in r}
+    entries = [(r["ts"], r["slug"], "human", f"{a['kind']}: picked {r['choice']}: {a['options'][r['choice'] - 1]}")
+               for r in answers if "choice" in r and (a := asks.get(r["id"]))]
+    said = {"extended": lambda f: f"extended {f['minutes']} min to {f['until'][11:16]}Z: {f['reason']}",
+            "paused": lambda f: f"paused: {f['reason']}", "closed": lambda f: f"closed: {f['reason']}"}
+    entries += [(f["decided"], f["slug"], f["by"], said[f["decision"]](f))
+                for f in fold(repo_log("firings", root) or [])[0] if f["decision"] in said]
+    entries += [(r.get("ts", ""), r["slug"], r.get("role", ""), "handed over" + (f": {r['deliverable']}" if r.get("deliverable") else ""))
+                for r in read_log("tasks") if r.get("repo") == root and r.get("state") == "handed-over"]
+    entries += [(e["ts"], e["slug"] or "", e["role"], e["text"].removeprefix(DECISION))
+                for e in read_feedback() if e["kind"] == "decision" and e.get("repo") == root]
+    since = iso(time.time() - HISTORY_DAYS * 86400)
+    return [{"ts": ts, "slug": slug, "by": by, "text": " ".join(text.split())}
+            for ts, slug, by, text in sorted((e for e in entries if e[0] >= since), key=lambda e: e[0], reverse=True)[:HISTORY_MAX]]
 
 
 def args_decision(parser):
@@ -8034,6 +8060,7 @@ POLL = 20
 # kind of a stop -> (patience in seconds before it is reported, whether it keeps the loop polling meanwhile, who is told)
 # `refused`: GitHub refused a merge and nothing it shows says why. `settle` keeps the first one of a head in `waiting` (nothing
 # told: the next pass calls merge again), a second at the same head is told once, no tech lead.
+APPROVAL_STOPS = ("stale", "unapproved")  # lander stops that wait for the human's approval: the inbox shows them, nobody is told
 STOP_POLICY = {"pending": (1800, True, "dispatcher"), "handover": (600, False, "dispatcher"), "conflict": (0, False, "lead"),
                "not-ours": (0, False, "dispatcher"), "refused": (1, False, "dispatcher"), "no-ci": (180, True, "dispatcher")}
 NOT_OURS_HOURS = 24
@@ -8142,6 +8169,40 @@ def candidates(repo, snap):
     """The pull requests of `snap` that carry an approval and belong to a task declared handed-over."""
     declared = read_tasks(repo.root)
     return [pr for pr in snap if approved_at(pr) and declared.get(task_slug(repo, pr), {}).get("state") == "handed-over"]
+
+
+def approve_items(repo, snap):
+    """The approve items of `snap`, oldest first: open pull requests, not draft, whose task is handed over and that carry no
+    approval at all (`new`, since the hand-over) or whose current head has a stop in APPROVAL_STOPS (`stale`, since the stop)."""
+    declared, stopped, items = read_tasks(repo.root), read_lander(repo)["stopped"], []
+    for pr in snap:
+        slug = task_slug(repo, pr)
+        task, stop = declared.get(slug), stopped.get(str(pr["number"])) or {}
+        if pr["isDraft"] or not task or task["state"] != "handed-over":
+            continue
+        if not approved_at(pr):
+            why = {"why": "new", "since": task["ts"]}
+        elif stop.get("kind") in APPROVAL_STOPS and stop.get("head") == pr["headRefOid"]:
+            why = {"why": "stale", "text": stop["text"], "since": stop["ts"]}
+        else:
+            continue
+        items.append({"slug": slug, "number": pr["number"], "url": pr["url"], **why})
+    return sorted(items, key=lambda i: i["since"])
+
+
+def write_approvals(repo, snap):
+    write_json(repo_state(repo.root, "approve", "json"), {"as_of": now(), "items": approve_items(repo, snap)})
+
+
+def read_approvals(root, rows):
+    """The approve file's items whose task is still handed over in `rows`; `as_of` None without a file."""
+    try:
+        data = json.loads(repo_state(root, "approve", "json").read_text())
+    except (OSError, ValueError):
+        data = None
+    data = data if isinstance(data, dict) else {}
+    handed = {r["slug"] for r in rows if r["state"] == "handed-over"}
+    return {"as_of": data.get("as_of"), "items": [i for i in data.get("items") or [] if i["slug"] in handed]}
 
 
 def lander_queue(repo, snap, word):
@@ -8747,6 +8808,8 @@ def report_stop(repo, fallback, pr, kind, line):
         if kind != "conflict":
             end_priority(repo, slug, "sent-back")
         to = send_back(repo, fallback, pr, slug, evidence(repo, n, kind, line))
+    elif kind in APPROVAL_STOPS:
+        to = "inbox"
     else:
         to = forward(repo, fallback, slug, "LANDER", f"#{n} stopped {kind}: {line}", lead=False)
     held = {k: v for k, v in getattr(line, "extra", {}).items() if k in ("tests", "checks")}
@@ -9170,7 +9233,9 @@ def cheap_tick(repo, fallback):
 
 def watch_snapshot(repo, fallback, snap):
     """Give the open pull requests `snap` to the comment forwarder; with a task handed over (or a task's pull request that
-    is ready for review while its task is not: it goes back to draft), also set the draft flags."""
+    is ready for review while its task is not: it goes back to draft), also set the draft flags. The approve items are
+    written from the lander's state as the last pass left it: a stop it reports shows one tick later."""
+    write_approvals(repo, snap)
     try:
         watch_comments(repo, fallback, snap)
     except Exception as e:  # the tick goes on without it

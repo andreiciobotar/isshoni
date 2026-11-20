@@ -66,7 +66,7 @@ class Overrun(Harness):
 
 
 class AskTests(Overrun):
-    def test_an_ask_is_a_firing_the_site_manager_decides_on_the_next_tick_and_the_script_tells_both(self):
+    def test_an_ask_is_a_firing_the_site_manager_decides_on_the_next_tick_and_the_script_tells_the_lead(self):
         code, out, _ = self.ask()
         self.assertEqual(code, 0)
         self.assertIn("SITE MANAGER: x", out)
@@ -86,9 +86,10 @@ class AskTests(Overrun):
         [d] = self.decisions()
         self.assertEqual((d["id"], d["decision"], d["minutes"], d["from"], d["until"], d["by"], d["reason"], d["looked"]),
                          (ask["id"], "extended", 20, iso(NOW), iso(until), "site-manager", "landing left", ["factory status"]))
-        self.assertEqual(self.lines(), [
-            ("x", f"SITE MANAGER: x: extended 20 min, limit now {clock(until)}: landing left"),
-            ("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {clock(until)}, no answer needed: landing left")])
+        self.assertEqual(self.lines(), [("x", f"SITE MANAGER: x: extended 20 min, limit now {clock(until)}: landing left")])
+        [entry] = json.loads(self.cli("status", "--json", "--cached")[1])["history"]
+        self.assertEqual((entry["ts"], entry["slug"], entry["by"], entry["text"]),
+                         (iso(NOW), "x", "site-manager", f"extended 20 min to {clock(until)}: landing left"))
         self.assertIn({"repo": ROOT, "id": ask["id"], "cleared": True, "ts": iso(NOW)}, self.records())
         after = json.loads(self.cli("status", "--json")[1])["rows"][0]
         self.assertEqual((after["limit"], after["overtime"]), (until - STARTED, False))
@@ -125,10 +126,11 @@ class IdleLeadTests(Overrun):
         self.sessions = [DISPATCHER_NAME, self.idle_lead()]
         self.watch({"decision": "extended", "minutes": 20, "reason": "landing left"})
         until = clock(NOW + 20 * 60)
-        self.assertEqual(self.lines(), [
-            ("x", f"SITE MANAGER: x: extended 20 min, limit now {until}: landing left"),
-            ("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {until}, no answer needed: landing left")])
+        self.assertEqual(self.lines(), [("x", f"SITE MANAGER: x: extended 20 min, limit now {until}: landing left")])
         self.assertEqual(self.told(), ["lead"])
+        [entry] = json.loads(self.cli("status", "--json", "--cached")[1])["history"]
+        self.assertEqual((entry["ts"], entry["slug"], entry["by"], entry["text"]),
+                         (iso(NOW), "x", "site-manager", f"extended 20 min to {until}: landing left"))
 
     def test_a_pause_reaches_an_idle_lead_and_the_dispatcher_gets_its_line(self):
         self.ask()
@@ -148,12 +150,14 @@ class IdleLeadTests(Overrun):
                                    ("claude", "--bg", "--resume"): resume})
         return [c for c in self.fake.calls if c[:3] == ["claude", "--bg", "--resume"]]
 
-    def test_a_retired_lead_is_resumed_with_the_line_and_the_dispatcher_hears_the_extension(self):
+    def test_a_retired_lead_is_resumed_with_the_line_and_the_dispatcher_hears_nothing(self):
         until = clock(NOW + 20 * 60)
         [resume] = self.retired((0, "backgrounded · ab · x\n", ""))
         self.assertEqual(resume, ["claude", "--bg", "--resume", SID, f"SITE MANAGER: x: extended 20 min, limit now {until}: landing left"])
-        self.assertEqual(self.lines(), [("dispatcher-repo", f"SITE MANAGER: x: extended 20 min to {until}, no answer needed: landing left")])
-        self.assertEqual(self.told(), ["lead"])
+        self.assertEqual((self.lines(), self.told()), ([], ["lead"]))
+        [entry] = json.loads(self.cli("status", "--json", "--cached")[1])["history"]
+        self.assertEqual((entry["ts"], entry["slug"], entry["by"], entry["text"]),
+                         (iso(NOW), "x", "site-manager", f"extended 20 min to {until}: landing left"))
 
     def test_a_retired_lead_that_cannot_be_resumed_is_queued_and_the_dispatcher_hears_nothing_yet(self):
         self.assertEqual(len(self.retired((1, "", "boom"))), 1)
