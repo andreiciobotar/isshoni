@@ -187,9 +187,9 @@ func machineRows(place string, w int) []string {
 	return []string{" ╱" + strings.Repeat("─", w-4) + "╲ ", "╱" + sp(w-2) + "╲", "╲" + sp(w-2) + "╱", " ╲" + strings.Repeat("─", w-4) + "╱ "}
 }
 
-// drawStation stands station i on its flat run, with a lamp beside it.
+// drawStation stands station i on its flat run.
 func (a *floorArt) drawStation(i int) {
-	l, th := a.l, a.m.th
+	l := a.l
 	place := floorStations[i]
 	w := min(9, l.flat[i]+1)
 	rows := machineRows(place, w)
@@ -201,19 +201,17 @@ func (a *floorArt) drawStation(i int) {
 		}
 	}
 	a.machines = append(a.machines, rect{left, top, w, len(rows)})
-	lamp := th.Faint
+}
+
+// lamp is a station's lamp colour: green while it has a working cube, Yellow when one waits on the human, else faint.
+func (a *floorArt) lamp(place string) color.Color {
 	switch {
-	case l.work[place]:
-		lamp = th.Green
-	case l.waits[place]:
-		lamp = th.Yellow
+	case a.l.work[place]:
+		return a.m.th.Green
+	case a.l.waits[place]:
+		return a.m.th.Yellow
 	}
-	for _, x := range []int{left + w + 1, left - 2} {
-		if a.free(x, mid) {
-			a.put(x, mid, '●', lamp, kMachine)
-			return
-		}
-	}
+	return a.m.th.Faint
 }
 
 // drawIntake is the chute at the top-left start of the belt.
@@ -252,7 +250,11 @@ func (a *floorArt) drawPad() {
 			a.put(jx-i, jy+i, '╱', a.edge, kPad)
 		}
 	}
-	a.sign(trunc(l.signText("blocked"), n+3), 1, row+1, 1)
+	s, name := l.signText("blocked"), l.signName("blocked")
+	if width(s) > max(n+3, width(name)) {
+		s = name
+	}
+	a.sign(s, 1, row+1, 1)
 }
 
 // sign writes s with its first cell at x on row y, cut to the free room; the text is Text and bold.
@@ -264,10 +266,10 @@ func (a *floorArt) sign(s string, x, y, minRoom int) {
 	}
 }
 
-// signBeside puts a station's sign near its machine, centred or shifted a little: below it first when the belt turns up there
+// signBeside puts a station's sign, then its lamp, near its machine, centred or shifted a little: below it first when the belt turns up there
 // (a bottom turn), above it first otherwise; the other side when that has no room.
-func (a *floorArt) signBeside(s string, r rect, below bool) {
-	n := width(s)
+func (a *floorArt) signBeside(s string, r rect, below bool, lamp color.Color) {
+	n := width(s) + 2
 	up, down := make([]int, 0, 9), make([]int, 0, 9)
 	for d := 1; d <= 9; d++ {
 		up, down = append(up, -d), append(down, r.h-1+d)
@@ -279,9 +281,10 @@ func (a *floorArt) signBeside(s string, r rect, below bool) {
 	for _, rows := range order {
 		for _, d := range rows {
 			y := r.y + d
-			for _, dx := range []int{0, -3, 3, -6, 6, -n / 2, n / 2} {
+			for _, dx := range []int{0, -3, 3, -6, 6, -n / 2, n / 2, -n} {
 				if x := r.x + r.w/2 - n/2 + dx; a.run(x, y, n) == n && a.free(x-1, y) && a.free(x+n, y) {
 					a.text(x, y, s, gstyle{fg: a.m.th.Text, bold: true}, kSign)
+					a.put(x+n-1, y, '●', lamp, kSign)
 					a.signs = append(a.signs, rect{x, y, n, 1})
 					return
 				}
@@ -290,9 +293,14 @@ func (a *floorArt) signBeside(s string, r rect, below bool) {
 	}
 }
 
+// signName is a sign's name and full count.
+func (l *floorLayout) signName(place string) string {
+	return fmt.Sprintf("%s %d", floorSigns[place], l.count[place])
+}
+
 // signText is a station's sign: its name, its full count, and the tasks that have no slot.
 func (l *floorLayout) signText(place string) string {
-	s := fmt.Sprintf("%s %d", floorSigns[place], l.count[place])
+	s := l.signName(place)
 	if n := l.more[place]; n > 0 {
 		s += fmt.Sprintf(" · %d more", n)
 	}
@@ -339,7 +347,7 @@ func (a *floorArt) drawCubes() []floorDrawn {
 		case d.t.Phase == "motion" && d.t.Session == "working":
 			a.put(d.x-1, d.y, []rune(spin(a.m.spinFrame()))[0], th.Green, kCube)
 			a.put(d.x, d.y, ' ', th.Green, kCube)
-		case d.t.WaitsOnHuman() || (d.t.Phase == "review" && !d.t.PRDraft):
+		case waitsForYou(d.t):
 			a.put(d.x-1, d.y, '▲', th.Yellow, kCube)
 			a.put(d.x, d.y, ' ', th.Yellow, kCube)
 		}
@@ -352,7 +360,7 @@ func (m *model) floorCubeLook(t data.FactoryTask, place string) color.Color {
 	switch {
 	case t.Overtime:
 		return th.Red
-	case t.WaitsOnHuman() || (t.Phase == "review" && !t.PRDraft):
+	case waitsForYou(t):
 		return th.Yellow
 	case place == "blocked":
 		return th.Red
@@ -450,7 +458,7 @@ func (m *model) drawFloor(l *floorLayout, hud block, hudX int) *floorArt {
 	ds := a.drawCubes()
 	a.drawLabels(ds, true)
 	for i, p := range floorStations {
-		a.signBeside(l.signText(p), a.machines[i+1], i%2 == 0)
+		a.signBeside(l.signText(p), a.machines[i+1], i%2 == 0, a.lamp(p))
 	}
 	a.drawLabels(ds, false)
 	return a

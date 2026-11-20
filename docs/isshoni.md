@@ -585,7 +585,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   and green ticks stepping along the band leading to it; `▲` in yellow marks a cube that
   waits on you (a ready pull request in review, or a task blocked on the human), red a
   blocked cube or one past its time, the muted green of the merged colour a merged or
-  settled one. Each cube has a label to its right where there is room: a leader, the slug
+  settled one. Each cube has a label to its right where there is room, else to its left: a leader, the slug
   (with the repository name before it when several repositories have tasks) and the elapsed
   time, cut with `…`; a label with fewer than 8 characters of room is left out.
   The ticks on the band move only while a shown task in motion has a working session;

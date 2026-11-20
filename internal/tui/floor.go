@@ -127,9 +127,9 @@ func (l *floorLayout) pos(p point) (int, int) {
 
 // newFloorLayout fits the belt to a w x h scene: legs as long as the height allows, the width left over shared as flat runs.
 func newFloorLayout(w, h int) *floorLayout {
-	l := &floorLayout{w: w, h: h, xa: 4, count: map[string]int{}, more: map[string]int{}, work: map[string]bool{}, waits: map[string]bool{}}
-	l.hc = max(2, min(h-10, (w-l.xa-4-24)/4))
-	l.yt = 5 + max(0, (h-4-l.H())/2)
+	l := &floorLayout{w: w, h: h, xa: 6, count: map[string]int{}, more: map[string]int{}, work: map[string]bool{}, waits: map[string]bool{}}
+	l.hc = max(2, min(h-11, (w-l.xa-4-24)/4))
+	l.yt = 6 + max(0, (h-5-l.H())/2)
 	l.yb = l.yt + l.hc
 	slack := w - 4 - l.xa - 4*l.hc // the band ends 4 columns before the right edge, as the left one starts 1 after it
 	for i := range l.flat {
@@ -153,7 +153,7 @@ func newFloorLayout(w, h int) *floorLayout {
 
 	// the BLOCKED pad: below-left of leg 0, as many cubes side by side as the room there holds
 	for p := 4; p >= 1; p-- {
-		if top := h - 5 - p; top > l.yt && 5*p <= l.xa+top-l.yt-2 {
+		if top := h - 5 - p; top > l.yt && 5*p <= l.xa+top-l.yt-3 {
 			l.padCap, l.padTop = p, top
 			break
 		}
@@ -197,7 +197,7 @@ func (m *model) floorLayout(w, h int) *floorLayout {
 		byPlace[p] = append(byPlace[p], ft)
 		repos[ft.path] = true
 		l.work[p] = l.work[p] || ft.t.Session == "working"
-		l.waits[p] = l.waits[p] || ft.t.WaitsOnHuman() || (ft.t.Phase == "review" && !ft.t.PRDraft)
+		l.waits[p] = l.waits[p] || waitsForYou(ft.t)
 	}
 	l.prefix = m.floorRepo() == "" && len(repos) > 1
 	for i, p := range floorStations {

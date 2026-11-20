@@ -139,6 +139,9 @@ func TestFloorBeltSpansTheWindow(t *testing.T) {
 			if minX > 3 || l.w-1-maxX > 3 {
 				t.Errorf("%s at %dx%d: the belt runs from column %d to %d of %d", name, sz[0], sz[1], minX, maxX, l.w)
 			}
+			if minY < 3 { // the plate holds the first three rows and covers whatever the belt draws there
+				t.Errorf("%s at %dx%d: the belt reaches row %d, under the plate", name, sz[0], sz[1], minY)
+			}
 			if rows := maxY - minY + 1; rows < l.h-4-2 {
 				t.Errorf("%s at %dx%d: the belt spans %d rows of %d", name, sz[0], sz[1], rows, l.h)
 			}
@@ -160,8 +163,23 @@ func TestFloorCubesKeepApart(t *testing.T) {
 			belt := newFloorArt(m, l)
 			belt.drawBelt()
 			taken := map[[2]int]string{}
+			rowOf := map[string][]int{}
 			for _, c := range l.cubes {
 				x, y := l.pos(c.at)
+				if c.place != "blocked" {
+					for _, o := range rowOf[c.place] {
+						if o-y < 3 && y-o < 3 {
+							t.Errorf("%s at %dx%d: %s stands on row %d, %d rows from another cube of its leg", name, sz[0], sz[1], c.t.Slug, y, o-y)
+						}
+					}
+					rowOf[c.place] = append(rowOf[c.place], y)
+				} else {
+					for _, dx := range []int{-3, 2} { // a clear column between a pad cube and the belt's edge
+						if belt.kind[y*l.w+x+dx] == kEdge {
+							t.Errorf("%s at %dx%d: pad cube %s touches the belt's edge", name, sz[0], sz[1], c.t.Slug)
+						}
+					}
+				}
 				for _, cell := range cubeCells(x, y) {
 					if other, ok := taken[cell]; ok {
 						t.Errorf("%s at %dx%d: %s and %s share cell %v", name, sz[0], sz[1], c.t.Slug, other, cell)
@@ -542,5 +560,29 @@ func TestGoldenFloor(t *testing.T) {
 				t.Fatalf("%s changed; run go test ./internal/tui -update and review the diff\n--- got ---\n%s", c.name, got)
 			}
 		})
+	}
+}
+
+// Every station has its lamp, beside its sign: green when a cube of it works, Yellow when one waits on the human.
+func TestFloorStationLamps(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {100, 30}, {140, 40}} {
+		m := floorModel(false, sz[0], sz[1], waitingRepos()...)
+		l := m.floorNow()
+		a := m.drawFloor(l, nil, 0)
+		var got []uint32
+		for i, g := range a.cv.g {
+			if g.r == '●' && a.kind[i] == kSign {
+				got = append(got, key24(g.st.fg))
+			}
+		}
+		want := []uint32{key24(a.lamp("build")), key24(a.lamp("review")), key24(a.lamp("merged")), key24(a.lamp("settled"))}
+		slices.Sort(got)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("%dx%d: station lamps %v, want %v", sz[0], sz[1], got, want)
+		}
+		if key24(a.lamp("build")) != key24(m.th.Green) || key24(a.lamp("review")) != key24(m.th.Yellow) {
+			t.Errorf("%dx%d: BUILD works and REVIEW waits on the human, lamps are not green and Yellow", sz[0], sz[1])
+		}
 	}
 }

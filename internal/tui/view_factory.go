@@ -131,6 +131,11 @@ type waitItem struct {
 	task       data.FactoryTask
 }
 
+// waitsForYou is whether the task waits on the human: a ready pull request in review, or a task blocked on them.
+func waitsForYou(t data.FactoryTask) bool {
+	return (t.Phase == "review" && !t.PRDraft) || t.WaitsOnHuman()
+}
+
 // waiting lists the waiting tasks of every repository, the longest waiting first (an
 // unknown wait last), then by repository and slug.
 func (m *model) waiting() []waitItem {
@@ -140,7 +145,7 @@ func (m *model) waiting() []waitItem {
 			continue
 		}
 		for _, t := range r.st.Rows {
-			if (t.Phase == "review" && !t.PRDraft) || t.WaitsOnHuman() {
+			if waitsForYou(t) {
 				items = append(items, waitItem{r.name, r.path, t})
 			}
 		}

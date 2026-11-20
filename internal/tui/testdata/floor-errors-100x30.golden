@@ -1,29 +1,29 @@
  Isshoni  1 ✉ ▲2  2 ≡  3 Agent [4 Factory] 5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
  Factory  10 motion (1 blocked) · 1 review · 2 merged · 1 settled  · as of 11:00:00                 
                                                                     ╭─ all repositories ──────────╮ 
-                                         REVIEW 1                   │ in motion ▲●●●●●●●●● 10/6+1 │ 
- ╭─────╮ INTAKE                          ╭────────╮                 ╰─────────────────────────────╯ 
- ╰╮   ╭╯                                ╱╭───────╮ ╲                                  ╱ ╱─────╲     
-  │   │                                ╱ ╰─╮   ╭─╯  ╲                                ╱ ╱       ╲    
- ╲     ╲                              ╱    │   │     ╲                              ╱  ╲       ╱ ●  
-  ╲     ╲                            ╱╱╲   │   │      ╲                            ╱╱╲  ╲─────╱     
-   ╲  ╱╲ ╲   alpha/api-rate-limits ─╱│▲ │╭─╯   ╰─╮  ·  ╲     alpha/release-notes ─╱│╲╱│             
-    ╲│⠋ │ ╲─ alpha/quiet-refactor  ╱  ╲╱ ╭────────╮     ╲                        ╱  ╲╱ ╭─────────   
-     ╲╲╱·  ╲                      ╱  ·  ╱          ╲  ·  ╲                      ╱  ·  ╱   SHIPPED 1 
-      ╲  ╱╲ ╲                    ╱     ╱            ╲     ╲                    ╱     ╱              
-       ╲│⠋ │ ╲─ alpha/slow-expo…╱  ·  ╱              ╲  ·  ╲                  ╱  ·  ╱               
-        ╲╲╱   ╲                ╱     ╱                ╲  ╱╲ ╲                ╱     ╱                
-         ╲  ╱╲ ╲              ╱  ·  ╱                  ╲│╲╱│ ╲─ alpha/old-p…╱  ·  ╱                 
-          ╲│⠋ │ ╲─ alpha/log…╱     ╱                    ╲╲╱   ╲            ╱     ╱                  
-           ╲╲╱·  ╲          ╱  ·  ╱                      ╲  ·  ╲          ╱  ·  ╱                   
-           ╱╲  ╱╲ ╰────────╯     ╱                        ╲  ╱╲ ╰────────╯     ╱                    
-       ╱╲    ╲│╲╱│╭───────╮  ·  ╱    alpha/old-experiment ─╲│╲╱│╰───────╯  ·  ╱                     
-      │▲ │    ╲╲╱ │ ╭───╮ │    ╱                            ╲╲╱  │     │     ╱                      
-       ╲╱      ╲  │ │   │ │   ╱                              ╲   │     │    ╱                       
-╰─────────╯ ●   ╲ │ ╰───╯ │  ╱                                ╲  │     │   ╱                        
- BLOCKED 1       ╲╰───────╯ ╱                                  ╲╭───────╮ ╱                         
- alpha/needs-…    ╰────────╯                                    ╰────────╯                          
-              BUILD 9 · 5 more                                   MERGE 2                            
+                                                                    │ in motion ▲●●●●●●●●● 10/6+1 │ 
+                                                                    ╰─────────────────────────────╯ 
+   ╭─────╮ INTAKE             REVIEW 1 ● ╭────────╮                                   ╭──────────   
+   ╰╮   ╭╯                              ╱╭───────╮ ╲                                 ╱  ╱─────╲     
+    │   │                              ╱ ╰─╮   ╭─╯  ╲                               ╱  ╱       ╲    
+   ╲     ╲                            ╱    │   │     ╲                             ╱   ╲       ╱    
+    ╲  ╱╲ ╲                          ╱╱╲·  │   │      ╲                           ╱╱╲·  ╲─────╱     
+     ╲│⠋ │ ╲─ alpha/quiet-refactor  ╱│▲ │╭─╯   ╰─╮  ·  ╲    alpha/release-notes ─╱│╲╱│              
+      ╲╲╱   ╲                      ╱  ╲╱ ╭────────╮     ╲                       ╱  ╲╱ ╭──────────   
+       ╲  ╱╲ ╲                    ╱     ╱          ╲  ·  ╲                     ╱     ╱              
+        ╲│⠋ │ ╲─ alpha/slow-expo…╱  ·  ╱            ╲     ╲                   ╱  ·  ╱ SHIPPED 1 ●   
+         ╲╲╱·  ╲                ╱     ╱              ╲  ╱╲ ╲                 ╱     ╱                
+          ╲  ╱╲ ╲              ╱  ·  ╱                ╲│╲╱│ ╲─ alpha/old-pl…╱  ·  ╱                 
+           ╲│⠋ │ ╲─ alpha/log…╱     ╱                  ╲╲╱·  ╲             ╱     ╱                  
+           ╱╲╲╱   ╲          ╱  ·  ╱                    ╲     ╲           ╱  ·  ╱                   
+          ╱  ╲  ╱╲ ╰────────╯     ╱                      ╲  ╱╲ ╰─────────╯     ╱                    
+       ╱╲     ╲│╲╱│╭───────╮  ·  ╱  alpha/old-experiment ─╲│╲╱│ ╰───────╯  ·  ╱                     
+      │▲ │     ╲╲╱·│ ╭───╮ │    ╱                          ╲╲╱·  │     │     ╱                      
+       ╲╱       ╲  │ │   │ │   ╱                            ╲    │     │    ╱                       
+╰─────────╯ ●    ╲ │ ╰───╯ │  ╱                              ╲   │     │   ╱                        
+ BLOCKED 1        ╲╰───────╯ ╱                                ╲ ╭───────╮ ╱                         
+ alpha/needs-…     ╰────────╯                                  ╰─────────╯                          
+              BUILD 9 · 5 more ●                                MERGE 2 ●                           
  ⚠ gamma: not inside a git repository                                                               
  alpha: pull requests as of 12m ago · GitHub slow: factory status timed out after 25s               
  beta-é日本語: pull requests as of 3m ago                                                           
