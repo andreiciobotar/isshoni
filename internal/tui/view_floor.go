@@ -115,30 +115,21 @@ func (m *model) floorBody(p paint, w, h int) block {
 	notes := m.floorNotes(h)
 	sh := h - len(notes)
 	l := m.floorLayout(w, sh)
-	hud := m.floorHUD(p, w)
-	hudX := 0
-	if len(hud) > 0 {
-		hudX = w - width(hud[0]) - 1
-	}
-	cv := m.drawFloor(l, hud, hudX).cv
-
-	lines := cv.lines(p)
-	for i, hl := range hud {
-		if i < len(lines) {
-			lines[i] = overlay(lines[i], hudX, hl, w)
-		}
+	lines := m.drawFloor(l).cv.lines(p)
+	if plate := m.floorPlate(p, w); len(lines) > 0 {
+		lines[0] = overlay(lines[0], max(1, w-width(plate)-3), plate, w)
 	}
 	switch {
 	case f.menu:
 		m.overlayMenu(p, lines, w)
 	case m.fac.doneAt.IsZero():
-		overlayCentered(p, lines, w, p.t(spin(m.spinFrame())+" ", th.Purple)+p.t("reading the factory…", th.Muted))
-	case len(l.cubes) == 0:
+		overlayCentered(p, lines, w, l.x0, l.x1, p.t(spin(m.spinFrame())+" ", th.Purple)+p.t("reading the factory…", th.Muted))
+	case len(l.crates) == 0:
 		why := "No repository here has a task worktree."
 		if repo := m.floorRepo(); repo != "" {
 			why = "No task in this repository."
 		}
-		overlayCentered(p, lines, w, p.b("No task on the floor", th.Text), p.t(why, th.Muted), p.t("A dispatcher starts leads with /factory:dispatch.", th.Faint))
+		overlayCentered(p, lines, w, l.x0, l.x1, p.b("No task on the floor", th.Text), p.t(why, th.Muted), p.t("A dispatcher starts leads with /factory:dispatch.", th.Faint))
 	}
 
 	for _, n := range notes {
@@ -151,24 +142,24 @@ func (m *model) floorBody(p paint, w, h int) block {
 	return lines
 }
 
-// overlayCentered draws a small plate in the middle of lines.
-func overlayCentered(p paint, lines block, w int, content ...string) {
+// overlayCentered draws a small plate in the middle of the crates' room, columns x0 to x1 of lines w wide.
+func overlayCentered(p paint, lines block, w, x0, x1 int, content ...string) {
 	bw := 0
 	for _, c := range content {
 		bw = max(bw, width(c))
 	}
-	bw = min(w-2, bw+4)
+	bw = min(x1-x0, bw+4)
 	box := p.boxed("", content, bw, len(content)+2, p.th.Border)
-	top := max(0, len(lines)-len(box)-1) // low in the scene: the belt runs across the middle
+	top := max(0, (len(lines)-len(box))/2)
 	for i, bl := range box {
 		if top+i < len(lines) {
-			lines[top+i] = overlay(lines[top+i], max(0, (w-bw)/2), bl, w)
+			lines[top+i] = overlay(lines[top+i], x0+(x1-x0-bw)/2, bl, w)
 		}
 	}
 }
 
-// floorHUD is the sign plate of the upper right: the factory's name and the capacity meter.
-func (m *model) floorHUD(p paint, w int) block {
+// floorPlate is the sign in the top edge of the floor: the factory's name and the capacity meter.
+func (m *model) floorPlate(p paint, w int) string {
 	th := m.th
 	want := m.floorRepo()
 	title, agg := "all repositories", data.FactoryStatus{}
@@ -195,16 +186,7 @@ func (m *model) floorHUD(p paint, w int) block {
 	if known {
 		body = m.meter(p, &agg, min(40, w/3))
 	}
-	bw := min(w-2, max(width(body), width(title)+2)+4)
-	if bw < 12 {
-		return nil
-	}
-	label := " " + trunc(title, bw-6) + " "
-	return block{
-		fit(p.t("╭─", th.Border)+p.b(label, th.Pink)+p.t(strings.Repeat("─", max(0, bw-3-width(label)))+"╮", th.Border), bw, p),
-		p.t("│", th.Border) + fit(p.sp(1)+body, bw-2, p) + p.t("│", th.Border),
-		p.t("╰"+strings.Repeat("─", bw-2)+"╯", th.Border),
-	}
+	return p.sp(1) + p.b(trunc(title, w/3), th.Pink) + p.sp(2) + body + p.sp(1)
 }
 
 func (m *model) overlayMenu(p paint, lines block, w int) {

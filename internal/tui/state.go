@@ -171,7 +171,7 @@ type model struct {
 	pick    []string // the dispatchers on offer while the picker is open
 	pickCur int
 
-	floor floorState // the Factory tab: repository filter, cubes in transit, the belt
+	floor floorState // the Factory tab: repository filter, crates in transit, the flow marks
 
 	tickOn   bool
 	tickGen  int           // a tick carrying an older generation was superseded

@@ -167,7 +167,7 @@ func TestInboxBandDoesNotRepeatATaskWithACard(t *testing.T) {
 		t.Fatalf("the badge counts every waiting task: %d", got)
 	}
 	m.view = viewFactory
-	if out := plain(m); !strings.Contains(out, "INTAKE") || strings.Contains(out, "Needs you") {
+	if out := plain(m); !strings.Contains(out, "SHIPPED ") || strings.Contains(out, "Needs you") {
 		t.Errorf("the Factory tab draws the floor, not the table with its band:\n%s", out)
 	}
 	only := inboxRepos()[0]

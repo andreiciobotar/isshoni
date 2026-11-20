@@ -482,7 +482,7 @@ func TestServeATerminalWithoutASizeGetsTheDefault(t *testing.T) {
 	v := e.view(addr, viewOpts{signer: s, noSize: true})
 	v.waitFor("zebrafish")
 	v.send("4")
-	v.waitFor("INTAKE")
+	v.waitFor("SHIPPED")
 	v.send("q")
 	if err := v.waitExit(); err != nil {
 		t.Fatal(err)
@@ -507,7 +507,7 @@ func TestServeAbruptDisconnectLeavesTheOthersRunning(t *testing.T) {
 	a.send("1c")
 	a.waitFor("per repo") // the cap editor is open on the Inbox
 	b.send("4")
-	b.waitFor("INTAKE")
+	b.waitFor("SHIPPED")
 	a.sess.Close()
 	a.client.Close()
 	waitFor(t, "A's session to end", func() bool { return strings.Contains(e.logs.String(), "session end") })
@@ -517,9 +517,9 @@ func TestServeAbruptDisconnectLeavesTheOthersRunning(t *testing.T) {
 	c.waitFor("zebrafish")
 	// the server's own shutdown closes the window channel of the viewers still on the Factory view
 	b.send("4")
-	b.waitFor("INTAKE")
+	b.waitFor("SHIPPED")
 	c.send("4")
-	c.waitFor("INTAKE")
+	c.waitFor("SHIPPED")
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}

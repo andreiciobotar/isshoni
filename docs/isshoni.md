@@ -564,47 +564,49 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   into a group and a child row, a line or two lower; the cursor stays on its session.
 - **Agents:** per agent type: dispatches, models, tokens and cost, p50/p90 cost and
   durations, repeats, review loops, warnings.
-- **Factory:** a factory floor in thin line art (box-drawing characters, one stroke a
-  character) on a faint lattice of dots, drawn from what `factory status --json` reports for
-  each repository seen in the range that has task worktrees. A conveyor band, two edges
-  6 columns apart, runs as a sawtooth of four legs from the left edge to the right one
-  (down, up, down, up; the width left over is flat runs at the turns); at the end of each leg
-  stands a station: `BUILD` (a block with a slot), `REVIEW` (a gantry the belt passes
-  under), `MERGE` (a press) and `SHIPPED` (a dock pad), with a lamp beside it. A sign gives
-  each station's name and how many tasks it holds (`BUILD 3`), and `INTAKE`, a chute at the
-  top left, marks where new tasks come in. Every task is one wireframe cube (a small
-  hexagon), queued on the leg before the station of its phase, the first in order nearest
-  the station: in motion before BUILD, in review before REVIEW, merged (not cleaned up)
-  before MERGE, settled before SHIPPED. A blocked task, and one whose phase the view does
-  not know (its label then shows the raw phase), stands on the `BLOCKED` pad, a bracketed
-  row below-left of the first leg, reached by a short spur, with a red lamp; its labels are
-  listed under the pad. Position is an order, not a measurement:
-  BUILD cubes stand by elapsed time against the limit (furthest along nearest the station,
-  tasks without both last), the other places by slug. Grey is rest and green is work: a cube
-  whose session is working has a green outline and a spinner, and its station a green lamp
-  and green ticks stepping along the band leading to it; `▲` in yellow marks a cube that
-  waits on you (a ready pull request in review, or a task blocked on the human), red a
-  blocked cube or one past its time, the muted green of the merged colour a merged or
-  settled one. Each cube has a label to its right where there is room, else to its left: a leader, the slug
-  (with the repository name before it when several repositories have tasks) and the elapsed
-  time, cut with `…`; a label with fewer than 8 characters of room is left out.
-  The ticks on the band move only while a shown task in motion has a working session;
-  otherwise the floor stands still. A place with more tasks than room has a sign that shows
-  the full count and `· N more` for the tasks without a slot; a larger terminal makes the
-  legs longer and gives them more slots. When a refresh changes a task's phase, its cube
-  travels along the band, round its turns, to its new place over
-  about a second; a new task comes in at the intake, a task that is gone leaves from
-  where it stood. A sign plate at the upper right names the repository (or `all
-  repositories`) and holds the capacity meter: the tasks in motion against the cap
-  (`7/9+1`: the ordinary limit plus the slots held in reserve for critical work, added
-  over the repositories shown). `/` opens a dropdown of `all` and each repository (`↑`
+- **Factory:** a top view of a factory floor, drawn in horizontal and vertical strokes and
+  filled cells, from what `factory status --json` reports for each repository seen in the
+  range that has task worktrees. One conveyor snakes down the body in five lanes, each as
+  wide as the window: `BLOCKED`, a siding with dashed edges that stands off the line, then
+  `BUILD` flowing right, `REVIEW` left, `MERGE` right and `SHIPPED` left, which ends in a
+  dock at the left edge. A solid junction block at the end of a lane is the gate into the
+  next, in the colour of the lane it leads into (blue for BUILD, yellow for REVIEW, the
+  muted green of merged, grey for SHIPPED, orange for BLOCKED); a small one is where the
+  siding leaves BUILD, and an open mouth at the left of BUILD is where new tasks come in.
+  A head tile at the left of each lane, in the same colour, gives its name and how many
+  tasks it holds (`BUILD 3`), and `· N more` for the tasks that have no room. A junction
+  and a head tile are bright when their lane holds a working session or a task that waits
+  on you, and the same hue dimmed when the lane is idle or empty. Every task is a crate, a
+  tile tinted with its phase colour, `▐▲ slug  elapsed▌`: its first cell is the mark
+  (the spinner in green while its session works, `▲` in yellow when it waits on you, a
+  ready pull request in review or a task blocked on the human, `!` in red when it is past
+  its time, else a space), then the slug with the repository name before it when several
+  repositories have tasks, and the elapsed time. A blocked crate adds what it waits on,
+  and one whose phase the view does not know shows the raw phase there. A crate is as wide
+  as its text up to about 24 cells (16 at 80 columns); the slug is cut with `…` and the
+  elapsed time dropped first. Crates queue from the head tile of the lane of their phase:
+  in motion in BUILD, in review in REVIEW, merged (not cleaned up) in MERGE, settled in
+  SHIPPED, blocked or unknown in BLOCKED. Position is an order, not a measurement: BUILD
+  crates stand by elapsed time against the limit (furthest along first, tasks without both
+  last), the other lanes by slug. A taller window gives the lanes more rows; a lane of 3 or
+  more inner rows has 3-row crates. Flow marks, `›` or `‹` along the middle of each lane,
+  step along the flow only on a lane whose tasks include a working session; on the other
+  lanes they stand faint and still, so nothing moves on an idle floor. A lane with more
+  tasks than room has a head tile that shows the full count and the number without a crate.
+  When a refresh changes a task's phase, its crate travels along the conveyor, to the end
+  of its lane, through the junction and into its place, over about a second; a new task
+  comes in at the mouth, a task that is gone leaves from where it stood. A sign in the top
+  edge names the repository (or `all repositories`) and holds the capacity meter: the tasks
+  in motion against the cap (`7/9+1`: the ordinary limit plus the slots held in reserve for
+  critical work, added over the repositories shown).
+  `/` opens a dropdown of `all` and each repository (`↑`
   `↓` move, `enter` chooses, `esc` closes without a change): the floor then shows only
   that repository, the sub-header names it, the choice survives refreshes, and it
   returns to `all` if the repository leaves the data. Under the floor, a repository whose
   status failed shows its error in red, and a repository whose pull request data is
   over 2 minutes old or failed to load says so (the `REVIEW`, `MERGE` and `SHIPPED`
   places depend on it). Before the first answer a plate says `reading the factory…`;
-  with no task, the belt stands empty under a plate that says so. It refreshes every 10 seconds while shown, every 2
+  with no task, the lanes stand empty under a plate that says so. It refreshes every 10 seconds while shown, every 2
   minutes otherwise, in two passes. The first, for every repository, is
   `factory status --json --cached` (10 s limit): it never contacts GitHub, so the rows
   show at once. The second, only while the view is shown, is

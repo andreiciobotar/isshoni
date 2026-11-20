@@ -5,481 +5,20 @@ import (
 	"fmt"
 	"image/color"
 	"slices"
-	"strings"
 
 	"isshoni/internal/data"
 )
 
-// The floor's drawing: thin line art in box-drawing characters, one stroke a character, over a faint
-// lattice of dots. The floor axes are the cell diagonals: ╲ goes one column right per row down, ╱ one
-// column right per row up. Layout (floor.go) decides where things stand; this file draws them.
+// The floor's drawing: a top view in horizontal and vertical strokes and filled cells, nothing at an angle.
+// Lane edges in Border; colour is spent at the junctions, the head tiles and the crates. Layout (floor.go) decides
+// where things stand; this file paints them.
 
 type rect struct{ x, y, w, h int }
 
-func (r rect) has(x, y int) bool { return x >= r.x && x < r.x+r.w && y >= r.y && y < r.y+r.h }
-
-// cell kinds: what stands in a cell of the scene.
-const (
-	kEdge    = 'e' // the belt's two edges and its turns
-	kMachine = 'm' // a station or the intake chute
-	kSign    = 's'
-	kCube    = 'c'
-	kLabel   = 'l'
-	kPad     = 'p' // the BLOCKED pad and its spur
-	kPlate   = 'h'
-)
-
-type floorArt struct {
-	m    *model
-	l    *floorLayout
-	cv   *canvas
-	kind []byte // what stands in each cell; 0 is empty
-	band []bool // the inside of the belt: cubes ride there, text stays out
-	// rectangles of what the tests keep cubes away from
-	machines, signs           []rect
-	lattice, edge, tick, mach color.Color
-}
-
-func newFloorArt(m *model, l *floorLayout) *floorArt {
-	th := m.th
-	return &floorArt{
-		m: m, l: l, cv: newCanvas(l.w, l.h), kind: make([]byte, l.w*l.h), band: make([]bool, l.w*l.h),
-		lattice: mix(th.Bg, th.Border, 0.6), edge: mix(th.Border, th.Muted, 0.45), tick: th.Faint, mach: th.Muted,
-	}
-}
-
-func (a *floorArt) in(x, y int) bool { return x >= 0 && y >= 0 && x < a.cv.w && y < a.cv.h }
-
-func (a *floorArt) put(x, y int, r rune, col color.Color, k byte) {
-	if !a.in(x, y) {
-		return
-	}
-	a.cv.put(x, y, r, col, false)
-	if k != 0 {
-		a.kind[y*a.cv.w+x] = k
-	}
-}
-
-// free is whether a cell is inside the scene and holds nothing, not even the belt's inside.
-func (a *floorArt) free(x, y int) bool {
-	return a.in(x, y) && a.kind[y*a.cv.w+x] == 0 && !a.band[y*a.cv.w+x]
-}
-
-// run is how many free cells there are from x on row y going right, up to n.
-func (a *floorArt) run(x, y, n int) int {
-	c := 0
-	for c < n && a.free(x+c, y) {
-		c++
-	}
-	return c
-}
-
-// text writes s from x, y and marks its cells.
-func (a *floorArt) text(x, y int, s string, st gstyle, k byte) {
-	end := a.cv.text(x, y, s, st, a.cv.w-1)
-	for cx := x; cx < end; cx++ {
-		if a.in(cx, y) {
-			a.kind[y*a.cv.w+cx] = k
-		}
-	}
-}
-
-// drawBelt is the band: its inside, its two edges (6 columns apart), the turns as ╰─╯ and ╭─╮, and a tick
-// in the centre every other row, green and stepping with the tread on a leg whose station has a working cube.
-func (a *floorArt) drawBelt() {
-	l, th := a.l, a.m.th
-	for _, sg := range l.path.segs {
-		for k := 0; k <= sg.n; k++ {
-			cx, cy := sg.x+sg.dx*k, sg.y+sg.dy*k
-			for d := -3; d <= 3; d++ {
-				x, y := cx+d, cy
-				if sg.dy == 0 {
-					x, y = cx, cy+d
-				}
-				if a.in(x, y) {
-					a.band[y*a.cv.w+x] = true
-				}
-			}
-		}
-	}
-	cup := func(y, x0, x1 int, left, right rune) {
-		a.put(x0, y, left, a.edge, kEdge)
-		for x := x0 + 1; x < x1; x++ {
-			a.put(x, y, '─', a.edge, kEdge)
-		}
-		a.put(x1, y, right, a.edge, kEdge)
-	}
-	for i := range 4 {
-		start := l.path.segs[2*i]
-		g := '╲'
-		if i%2 == 1 {
-			g = '╱'
-		}
-		// a leg from a turn has its inner edge start 4 cells in and its outer one 2 before it; both stop at the next turn's cups
-		lo, ro := 4, -2
-		if i == 0 {
-			lo, ro = 0, 0
-		}
-		for k := lo; k <= l.hc+2; k++ {
-			a.put(start.x+k-3, start.y+start.dy*k, g, a.edge, kEdge)
-		}
-		for k := ro; k <= l.hc-4; k++ {
-			a.put(start.x+k+3, start.y+start.dy*k, g, a.edge, kEdge)
-		}
-		fx, fy := l.flatX[i], start.y+start.dy*l.hc
-		switch {
-		case i == 3:
-			cup(fy-3, fx, fx+l.flat[i], '╭', '─')
-			cup(fy+3, fx, fx+l.flat[i], '╭', '─')
-		case i%2 == 0:
-			cup(fy+3, fx, fx+l.flat[i], '╰', '╯')
-			cup(fy-3, fx, fx+l.flat[i], '╰', '╯')
-		default:
-			cup(fy-3, fx, fx+l.flat[i], '╭', '╮')
-			cup(fy+3, fx, fx+l.flat[i], '╭', '╮')
-		}
-		col, phase := a.tick, 0
-		if l.work[floorStations[i]] {
-			col, phase = th.Green, a.m.floor.belt
-		}
-		for k := 1; k < l.hc; k++ {
-			if (k+phase)%2 == 0 {
-				a.put(start.x+k, start.y+start.dy*k, '·', col, 0)
-			}
-		}
-	}
-}
-
-// drawLattice is the faint diamond lattice of dots under everything: every 4 rows and 8 columns, offset on alternate rows.
-// Without colour it would only be noise.
-func (a *floorArt) drawLattice() {
-	if a.m.th.NoColor {
-		return
-	}
-	for y := 0; y < a.cv.h; y += 4 {
-		for x := y / 4 % 2 * 4; x < a.cv.w; x += 8 {
-			if a.free(x, y) {
-				a.put(x, y, '·', a.lattice, 0)
-			}
-		}
-	}
-}
-
-// machineRows is a station's drawing, w columns wide (at least 3), at most 5 rows.
-func machineRows(place string, w int) []string {
-	bar := func(l, r string) string { return l + strings.Repeat("─", w-2) + r }
-	sp := func(n int) string { return strings.Repeat(" ", max(0, n)) }
-	box := []string{bar("╭", "╮"), "│" + sp(w-2) + "│", "│" + sp(w-2) + "│", "│" + sp(w-2) + "│", bar("╰", "╯")}
-	if w < 7 {
-		return box
-	}
-	switch place {
-	case "build": // a block with a slot
-		return []string{bar("╭", "╮"), "│ ╭" + strings.Repeat("─", w-6) + "╮ │", "│ │" + sp(w-6) + "│ │", "│ ╰" + strings.Repeat("─", w-6) + "╯ │", bar("╰", "╯")}
-	case "review": // a gantry the belt passes under
-		leg := "  │" + sp(w-6) + "│  "
-		return []string{bar("╭", "╮"), "╰─╮" + sp(w-6) + "╭─╯", leg, leg, "╭─╯" + sp(w-6) + "╰─╮"}
-	case "merged": // a press: a plate above, two rods, a bed
-		rod := " │" + sp(w-4) + "│ "
-		return []string{bar("╰", "╯"), rod, rod, rod, bar("╭", "╮")}
-	}
-	// a dock pad
-	return []string{" ╱" + strings.Repeat("─", w-4) + "╲ ", "╱" + sp(w-2) + "╲", "╲" + sp(w-2) + "╱", " ╲" + strings.Repeat("─", w-4) + "╱ "}
-}
-
-// drawStation stands station i on its flat run.
-func (a *floorArt) drawStation(i int) {
-	l := a.l
-	place := floorStations[i]
-	w := min(9, l.flat[i]+1)
-	rows := machineRows(place, w)
-	left, mid := l.flatX[i]+(l.flat[i]+1-w)/2, l.path.segs[2*i+1].y
-	top := mid - 2
-	for r, s := range rows {
-		for c, ch := range []rune(s) {
-			a.put(left+c, top+r, ch, a.mach, kMachine)
-		}
-	}
-	a.machines = append(a.machines, rect{left, top, w, len(rows)})
-}
-
-// lamp is a station's lamp colour: green while it has a working cube, Yellow when one waits on the human, else faint.
-func (a *floorArt) lamp(place string) color.Color {
-	switch {
-	case a.l.work[place]:
-		return a.m.th.Green
-	case a.l.waits[place]:
-		return a.m.th.Yellow
-	}
-	return a.m.th.Faint
-}
-
-// drawIntake is the chute at the top-left start of the belt.
-func (a *floorArt) drawIntake() {
-	l := a.l
-	rows := []string{"╭─────╮", "╰╮   ╭╯", " │   │ "}
-	for r, s := range rows {
-		for c, ch := range []rune(s) {
-			a.put(l.xa-3+c, l.yt-3+r, ch, a.mach, kMachine)
-		}
-	}
-	a.machines = append(a.machines, rect{l.xa - 3, l.yt - 3, 7, 3})
-	a.sign("INTAKE", l.xa+5, l.yt-3, 1)
-}
-
-// drawPad is the BLOCKED pad below-left of leg 0: a bracketed row with a red lamp, and the spur up to the belt.
-func (a *floorArt) drawPad() {
-	l, th := a.l, a.m.th
-	if l.padCap == 0 {
-		return
-	}
-	n, row := 5*l.padCap, l.padTop+3
-	a.put(0, row, '╰', a.edge, kPad)
-	for x := 1; x < n; x++ {
-		a.put(x, row, '─', a.edge, kPad)
-	}
-	a.put(n, row, '╯', a.edge, kPad)
-	lamp := th.Faint
-	if l.count["blocked"] > 0 {
-		lamp = th.Red
-	}
-	a.put(n+2, row, '●', lamp, kPad)
-	jx, jy := l.path.at(float64(l.spur))
-	for i := 1; i <= l.spurM-2; i++ {
-		if a.free(jx-i, jy+i) {
-			a.put(jx-i, jy+i, '╱', a.edge, kPad)
-		}
-	}
-	s, name := l.signText("blocked"), l.signName("blocked")
-	if width(s) > max(n+3, width(name)) {
-		s = name
-	}
-	a.sign(s, 1, row+1, 1)
-}
-
-// sign writes s with its first cell at x on row y, cut to the free room; the text is Text and bold.
-func (a *floorArt) sign(s string, x, y, minRoom int) {
-	if room := a.run(x, y, width(s)); room >= minRoom {
-		s = trunc(s, room)
-		a.text(x, y, s, gstyle{fg: a.m.th.Text, bold: true}, kSign)
-		a.signs = append(a.signs, rect{x, y, width(s), 1})
-	}
-}
-
-// signBeside puts a station's sign, then its lamp, near its machine, centred or shifted a little: below it first when the belt turns up there
-// (a bottom turn), above it first otherwise; the other side when that has no room.
-func (a *floorArt) signBeside(s string, r rect, below bool, lamp color.Color) {
-	n := width(s) + 2
-	up, down := make([]int, 0, 9), make([]int, 0, 9)
-	for d := 1; d <= 9; d++ {
-		up, down = append(up, -d), append(down, r.h-1+d)
-	}
-	order := [][]int{up, down}
-	if below {
-		order = [][]int{down, up}
-	}
-	for _, rows := range order {
-		for _, d := range rows {
-			y := r.y + d
-			for _, dx := range []int{0, -3, 3, -6, 6, -n / 2, n / 2, -n} {
-				if x := r.x + r.w/2 - n/2 + dx; a.run(x, y, n) == n && a.free(x-1, y) && a.free(x+n, y) {
-					a.text(x, y, s, gstyle{fg: a.m.th.Text, bold: true}, kSign)
-					a.put(x+n-1, y, '●', lamp, kSign)
-					a.signs = append(a.signs, rect{x, y, n, 1})
-					return
-				}
-			}
-		}
-	}
-}
-
-// signName is a sign's name and full count.
-func (l *floorLayout) signName(place string) string {
-	return fmt.Sprintf("%s %d", floorSigns[place], l.count[place])
-}
-
-// signText is a station's sign: its name, its full count, and the tasks that have no slot.
-func (l *floorLayout) signText(place string) string {
-	s := l.signName(place)
-	if n := l.more[place]; n > 0 {
-		s += fmt.Sprintf(" · %d more", n)
-	}
-	return s
-}
-
-// floorDrawn is a cube on screen: the cell of its middle, its task and place; cube is nil for a task that is leaving.
-type floorDrawn struct {
-	x, y  int
-	t     data.FactoryTask
-	place string
-	cube  *floorCube
-}
-
-// cubeCells are the eight cells a cube draws in, around its middle (x, y).
-func cubeCells(x, y int) [8][2]int {
-	return [8][2]int{{x - 1, y - 1}, {x, y - 1}, {x - 2, y}, {x - 1, y}, {x, y}, {x + 1, y}, {x - 1, y + 1}, {x, y + 1}}
-}
-
-// drawCubes draws every cube at its place or on the way to it: grey at rest, green while a session works, yellow when it
-// waits on the human, red when blocked or past its time, the muted merged colour once merged. A working cube shows the
-// spinner, a waiting one ▲, where the middle row has ╲╱.
-func (a *floorArt) drawCubes() []floorDrawn {
-	l, th, f := a.l, a.m.th, &a.m.floor
-	var ds []floorDrawn
-	add := func(p point, t data.FactoryTask, c *floorCube) {
-		x, y := l.pos(p)
-		ds = append(ds, floorDrawn{x, y, t, floorPlace(t.Phase), c})
-	}
-	for i := range l.cubes {
-		c := &l.cubes[i]
-		add(f.shown(c.key(), c.at), c.t, c)
-	}
-	for _, g := range f.gone {
-		add(lerp(g.from, g.to, float64(g.ago)/float64(floorMoveFor)), g.ft.t, nil)
-	}
-	for _, d := range ds {
-		col := a.m.floorCubeLook(d.t, d.place)
-		for i, rc := range []rune("╱╲│╲╱│╲╱") {
-			c := cubeCells(d.x, d.y)[i]
-			a.put(c[0], c[1], rc, col, kCube)
-		}
-		switch {
-		case d.t.Phase == "motion" && d.t.Session == "working":
-			a.put(d.x-1, d.y, []rune(spin(a.m.spinFrame()))[0], th.Green, kCube)
-			a.put(d.x, d.y, ' ', th.Green, kCube)
-		case waitsForYou(d.t):
-			a.put(d.x-1, d.y, '▲', th.Yellow, kCube)
-			a.put(d.x, d.y, ' ', th.Yellow, kCube)
-		}
-	}
-	return ds
-}
-
-func (m *model) floorCubeLook(t data.FactoryTask, place string) color.Color {
-	th := m.th
-	switch {
-	case t.Overtime:
-		return th.Red
-	case waitsForYou(t):
-		return th.Yellow
-	case place == "blocked":
-		return th.Red
-	case t.Phase == "motion" && t.Session == "working":
-		return th.Green
-	case t.Phase == "merged" || t.Phase == "settled":
-		return m.mergedColor()
-	}
-	return th.Muted
-}
-
-// labelFrom writes pieces from x, y if at least 8 cells (of at most limit) are free there, cut with … to what fits.
-func (a *floorArt) labelFrom(x, y, limit int, ps []lpiece) bool {
-	room := a.run(x, y, limit)
-	if room < 8 {
-		return false
-	}
-	for _, p := range fitPieces(ps, room) {
-		a.text(x, y, p.s, p.st, kLabel)
-		x += width(p.s)
-	}
-	return true
-}
-
-// drawLabels writes one label beside each resting cube: to its right, a faint leader then the slug and the elapsed
-// text; the BLOCKED cubes' under the pad, one a row, no wider than the pad. A cube with no room to its right (its station
-// is there) has its label on the left of the band instead; one with room on neither side has none.
-// The BLOCKED ones go first (blocked true) so that no sign takes their place.
-func (a *floorArt) drawLabels(ds []floorDrawn, blocked bool) {
-	l, m := a.l, a.m
-	faint := gstyle{fg: m.th.Faint}
-	for _, d := range ds {
-		if d.cube == nil || m.floor.moves[d.cube.key()] != nil || (d.place == "blocked") != blocked {
-			continue
-		}
-		c := *d.cube
-		ps := m.labelPieces(c, l.prefix)
-		if c.place == "blocked" {
-			if wait := cmp.Or(c.t.WaitsOn, rawPhase(c.t.Phase)); wait != "" {
-				ps = append(ps, lpiece{s: " · " + wait, st: faint, opt: true})
-			}
-		}
-		if x := elapsedText(c.t, false); x != "-" {
-			ps = append(ps, lpiece{s: "  " + x, st: faint, opt: true})
-		}
-		if c.place == "blocked" {
-			j := slices.IndexFunc(l.cubes, func(o floorCube) bool { return o.key() == c.key() }) - slices.IndexFunc(l.cubes, func(o floorCube) bool { return o.place == "blocked" })
-			a.labelFrom(1, l.padTop+5+j, 5*l.padCap+3, ps)
-		} else if !a.labelFrom(d.x+4, d.y, a.cv.w, append([]lpiece{{s: "─ ", st: faint}}, ps...)) {
-			a.labelLeft(d.x-4, d.y, append(ps, lpiece{s: " ─", st: faint}))
-		}
-	}
-}
-
-// labelLeft is the label of a cube with no room to its right (the machine of its station is there): it ends at x,
-// on the left of the band, with its leader on its right.
-func (a *floorArt) labelLeft(x, y int, ps []lpiece) {
-	room := 0
-	for room < x+1 && a.free(x-room, y) {
-		room++
-	}
-	if room <= x { // stopped by something drawn: keep one clear column before it
-		room--
-	}
-	if room < 8 {
-		return
-	}
-	fit := fitPieces(ps[:len(ps)-1], room-2)
-	total := 2
-	for _, p := range fit {
-		total += width(p.s)
-	}
-	x -= total - 1
-	for _, p := range append(fit, ps[len(ps)-1]) {
-		a.text(x, y, p.s, p.st, kLabel)
-		x += width(p.s)
-	}
-}
-
-// drawFloor draws the scene of l: the belt, the stations, the pad, the cubes, then the signs and labels, each
-// only where nothing stands. hud is the plate of the upper right, hudX its column.
-func (m *model) drawFloor(l *floorLayout, hud block, hudX int) *floorArt {
-	a := newFloorArt(m, l)
-	a.drawBelt()
-	a.drawLattice()
-	a.drawIntake()
-	for i := range floorStations {
-		a.drawStation(i)
-	}
-	a.drawPad()
-	for i := range hud {
-		for x := max(0, hudX-1); x < l.w; x++ {
-			if a.in(x, i) {
-				a.kind[i*l.w+x] = kPlate
-			}
-		}
-	}
-	ds := a.drawCubes()
-	a.drawLabels(ds, true)
-	for i, p := range floorStations {
-		a.signBeside(l.signText(p), a.machines[i+1], i%2 == 0, a.lamp(p))
-	}
-	a.drawLabels(ds, false)
-	return a
-}
-
-// rawPhase is the phase text of a task whose phase the floor does not know; empty for a known one.
-func rawPhase(phase string) string {
-	if slices.Contains(knownPhases, phase) {
-		return ""
-	}
-	return phase
-}
-
-// lpiece is a run of a label's text; opt says the label may do without it.
+// lpiece is a run of a crate's text; opt says the crate may do without it.
 type lpiece struct {
-	s   string
-	st  gstyle
-	opt bool
+	s          string
+	faint, opt bool
 }
 
 // fitPieces cuts pieces to w cells: an optional one stays only whole, the first that does
@@ -501,11 +40,260 @@ func fitPieces(ps []lpiece, w int) []lpiece {
 	return out
 }
 
-func (m *model) labelPieces(c floorCube, prefix bool) []lpiece {
-	th := m.th
-	var ps []lpiece
-	if prefix {
-		ps = append(ps, lpiece{s: c.repo + "/", st: gstyle{fg: th.Faint}})
+// rawPhase is the phase text of a task whose phase the floor does not know; empty for a known one.
+func rawPhase(phase string) string {
+	if slices.Contains(knownPhases, phase) {
+		return ""
 	}
-	return append(ps, lpiece{s: c.t.Slug, st: gstyle{fg: th.Text}})
+	return phase
+}
+
+// crateParts is the text of a crate after its mark: the slug (with the repository before it under the prefix rule, when the
+// slug keeps 6 cells), what a blocked task waits on, then the elapsed text; all cut to the widest crate, the last first.
+func (l *floorLayout) crateParts(ft floorTask) []lpiece {
+	room := l.capW - 4
+	var ps []lpiece
+	if l.prefix && width(ft.repo)+1+6 <= room {
+		ps = append(ps, lpiece{s: ft.repo + "/", faint: true})
+	}
+	ps = append(ps, lpiece{s: ft.t.Slug})
+	if floorPlace(ft.t.Phase) == "blocked" {
+		if wait := cmp.Or(ft.t.WaitsOn, rawPhase(ft.t.Phase)); wait != "" {
+			ps = append(ps, lpiece{s: " · " + wait, faint: true, opt: true})
+		}
+	}
+	if x := elapsedText(ft.t, false); x != "-" {
+		ps = append(ps, lpiece{s: "  " + x, faint: true, opt: true})
+	}
+	return fitPieces(ps, room)
+}
+
+// crateWidth is the cells of a crate: its two edges, its mark and a space, and its text.
+func (l *floorLayout) crateWidth(ft floorTask) int {
+	w := 4
+	for _, p := range l.crateParts(ft) {
+		w += width(p.s)
+	}
+	return w
+}
+
+// crateMark is the first cell of a crate: ▲ when its task waits on the human, ! when it is past its time, the spinner
+// when a session works, else a space.
+func (m *model) crateMark(t data.FactoryTask) (rune, color.Color) {
+	th := m.th
+	switch {
+	case waitsForYou(t):
+		return '▲', th.Yellow
+	case t.Overtime:
+		return '!', th.Red
+	case t.Session == "working":
+		return []rune(spin(m.spinFrame()))[0], th.Green
+	}
+	return ' ', th.Text
+}
+
+// floorLaneColor is the colour of a lane's junction and head tile: what phaseLook gives its phase.
+func (m *model) floorLaneColor(place string) color.Color {
+	phase := map[string]string{"blocked": "blocked", "build": "motion", "review": "review", "merged": "merged", "settled": "settled"}[place]
+	_, _, c := m.phaseLook(data.FactoryTask{Phase: phase}, false)
+	return c
+}
+
+type floorArt struct {
+	m  *model
+	l  *floorLayout
+	cv *canvas
+}
+
+// tile is how a lane's tile looks: its fill, the colour of its text and its glyph. Bright when the lane holds work or a task that
+// waits on the human; else the same hue mixed toward the background, and ▓ where █ would be (the goldens have no colour).
+func (a *floorArt) tile(place string) (bg, fg color.Color, g rune) {
+	th := a.m.th
+	c := a.m.floorLaneColor(place)
+	if a.l.active(place) {
+		return c, th.Bg, '█'
+	}
+	return mix(c, th.Bg, 0.7), th.Text, '▓'
+}
+
+func (a *floorArt) put(x, y int, r rune, fg color.Color) {
+	a.cv.put(x, y, r, fg, false)
+}
+
+// fill paints the cells of r with g, in the colour bg on bg: a solid block.
+func (a *floorArt) fill(r rect, g rune, bg color.Color) {
+	for y := r.y; y < r.y+r.h; y++ {
+		for x := r.x; x < r.x+r.w; x++ {
+			a.cv.putOn(x, y, g, gstyle{fg: bg, bg: bg})
+		}
+	}
+}
+
+// drawEdges is the lane edges and the walls at the ends. The edges of the siding are dashed, to read as off the line.
+func (a *floorArt) drawEdges() {
+	l, th := a.l, a.m.th
+	rows := []int{0}
+	for k := 1; k < 5; k++ {
+		rows = append(rows, l.lanes[k].top-1)
+	}
+	rows = append(rows, l.lanes[4].top+l.lanes[4].inner)
+	for i, y := range rows {
+		first, last, bar := '├', '┤', '─'
+		switch i {
+		case 0:
+			first, last = '┌', '┐'
+		case len(rows) - 1:
+			first, last = '└', '┘'
+		}
+		if i <= 1 {
+			bar = '╌'
+		}
+		for x := range l.w {
+			g := bar
+			switch x {
+			case 0:
+				g = first
+			case l.w - 1:
+				g = last
+			}
+			a.put(x, y, g, th.Border)
+		}
+	}
+	for k, ln := range l.lanes {
+		for y := ln.top; y < ln.top+ln.inner; y++ {
+			if k != 1 { // BUILD's left end is open: the intake
+				a.put(0, y, '│', th.Border)
+			}
+			a.put(l.w-1, y, '│', th.Border)
+		}
+	}
+	a.put(0, l.lanes[1].cy(), '›', a.m.floorLaneColor("build"))
+}
+
+// drawHeads is the head tile of each lane, with its name and count; what has no room for a crate is counted under the
+// name (after it when the lane has one inner row).
+func (a *floorArt) drawHeads() {
+	l := a.l
+	for k, place := range floorLanes {
+		r, ln := l.heads[k], l.lanes[k]
+		bg, fg, g := a.tile(place)
+		a.fill(rect{r.x, r.y, 1, r.h}, g, bg)
+		a.fill(rect{r.x + r.w - 1, r.y, 1, r.h}, g, bg)
+		for y := r.y; y < r.y+r.h; y++ {
+			for x := r.x + 1; x < r.x+r.w-1; x++ {
+				a.cv.putOn(x, y, ' ', gstyle{fg: fg, bg: bg})
+			}
+		}
+		st := gstyle{fg: fg, bg: bg, bold: true}
+		name, more, room := l.signName(place), "", r.w-4
+		if n := l.more[place]; n > 0 {
+			more = fmt.Sprintf("· %d more", n)
+		}
+		if ln.inner >= 2 {
+			a.cv.text(r.x+2, ln.cy(), trunc(name, room), st, r.x+r.w-2)
+			a.cv.text(r.x+2, ln.cy()+1, trunc(more, room), st, r.x+r.w-2)
+		} else {
+			a.cv.text(r.x+2, ln.cy(), trunc(cmp.Or(name+" "+more, name), room), st, r.x+r.w-2)
+		}
+	}
+}
+
+// drawJunctions is the solid blocks at the ends of the lanes, in the colour of the lane they lead into.
+func (a *floorArt) drawJunctions() {
+	for _, j := range a.l.junctions {
+		bg, _, g := a.tile(j.place)
+		a.fill(j.rect, g, bg)
+	}
+}
+
+// drawMarks is the flow marks along each lane's centre row, ›  or ‹ every 4 cells: in the lane's colour and stepping with the
+// belt on a lane with a working session, faint and standing still on the others. BLOCKED has none. A mark next to a crate is left out.
+func (a *floorArt) drawMarks() {
+	l, th := a.l, a.m.th
+	for k := 1; k < 5; k++ {
+		place, ln := floorLanes[k], l.lanes[k]
+		col, phase := th.Faint, 0
+		if l.work[place] {
+			col, phase = a.m.floorLaneColor(place), a.m.floor.belt
+		}
+		g, step := '‹', phase
+		if k%2 == 1 {
+			g, step = '›', -phase
+		}
+		x0 := l.heads[k].x + l.heads[k].w
+		for x := x0; x < l.w-floorGate; x++ {
+			beside := slices.ContainsFunc(l.crates, func(c floorCrate) bool {
+				return c.rect.y <= ln.cy() && ln.cy() < c.rect.y+c.rect.h && x >= c.rect.x-1 && x <= c.rect.x+c.rect.w
+			})
+			if ((x-x0+step)%4+4)%4 == 0 && !beside {
+				a.put(x, ln.cy(), g, col)
+			}
+		}
+	}
+}
+
+// drawCrate paints a crate of the task t at r: ▐ and ▌ at its sides, a tile tinted with its phase colour between them, and on the
+// middle row its mark, a space and the text. A crate of one row has only the middle one.
+func (a *floorArt) drawCrate(r rect, t data.FactoryTask, ps []lpiece) {
+	th := a.m.th
+	_, _, c := a.m.phaseLook(t, false)
+	tint := mix(c, th.Bg, 0.75)
+	for y := r.y; y < r.y+r.h; y++ {
+		a.cv.putOn(r.x, y, '▐', gstyle{fg: tint})
+		a.cv.putOn(r.x+r.w-1, y, '▌', gstyle{fg: tint})
+		for x := r.x + 1; x < r.x+r.w-1; x++ {
+			a.cv.putOn(x, y, ' ', gstyle{fg: th.Text, bg: tint})
+		}
+	}
+	mid := r.y + r.h/2
+	mark, mc := a.m.crateMark(t)
+	a.cv.putOn(r.x+1, mid, mark, gstyle{fg: mc, bg: tint, bold: true})
+	x := r.x + 3
+	for _, p := range ps {
+		fg := th.Text
+		if p.faint {
+			fg = th.Faint
+		}
+		x = a.cv.text(x, mid, p.s, gstyle{fg: fg, bg: tint}, r.x+r.w-2)
+	}
+}
+
+// drawCrates paints the crates at rest, then those on the way: a crate in transit is one row, its text short, at the cell of
+// the conveyor it has reached. They go over whatever they pass.
+func (a *floorArt) drawCrates() {
+	l, f := a.l, &a.m.floor
+	var moving []floorTask
+	var at []float64
+	for _, c := range l.crates {
+		if f.moves[c.key()] != nil {
+			moving, at = append(moving, c.floorTask), append(at, f.shown(c.key(), c.at))
+			continue
+		}
+		a.drawCrate(c.rect, c.t, l.crateParts(c.floorTask))
+	}
+	for _, g := range f.gone {
+		moving, at = append(moving, g.ft), append(at, lerp(g.from, g.to, float64(g.ago)/float64(floorMoveFor)))
+	}
+	for i, ft := range moving {
+		x, y := l.path.at(at[i])
+		ps := []lpiece{{s: trunc(ft.t.Slug, 8)}}
+		cw := 4 + width(ps[0].s)
+		a.drawCrate(rect{min(max(0, x-cw/2), l.w-cw), y, cw, 1}, ft.t, ps)
+	}
+}
+
+// signName is a lane's name and full count.
+func (l *floorLayout) signName(place string) string {
+	return fmt.Sprintf("%s %d", floorSigns[place], l.count[place])
+}
+
+// drawFloor draws the scene of l: the edges, the head tiles, the flow marks, the junctions, then the crates.
+func (m *model) drawFloor(l *floorLayout) *floorArt {
+	a := &floorArt{m: m, l: l, cv: newCanvas(l.w, l.h)}
+	a.drawEdges()
+	a.drawHeads()
+	a.drawMarks()
+	a.drawJunctions()
+	a.drawCrates()
+	return a
 }
