@@ -14,6 +14,7 @@ Type "export PS1='$ ' && cd $FLOOR_REPOS && clear && $BIN --projects-dir $FLOOR_
 Enter
 Sleep 2s
 Type "4"
+Sleep 500ms
 Show
 Sleep 24s
 Type "/"

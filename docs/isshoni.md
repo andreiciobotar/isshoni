@@ -441,7 +441,7 @@ only file it writes under `~/.claude` is the factory's settings, when you save t
 cap. It finds the Python package from `ISSHONI_ROOT`, else from the binary's own
 location. It needs a terminal of at least 60x16.
 
-The pictures here and in the README are recordings of this repository's own factory (`make pictures`, below); the checkout is in a directory named `ccmon`, which is why that name shows as the repository.
+The pictures here and in the README are recordings of this repository's own factory (`make pictures`, below), except the Factory floor, which `sh tools/floor.sh` records over the stub factory in `tests/fixtures/floor-root` with the invented repositories `alpha` and `delta-docs`; the checkout is in a directory named `ccmon`, which is why that name shows as the repository.
 
 <img src="../assets/tabs/dashboard.webp" alt="View 2, Sessions (shown as Dashboard when the picture was recorded): the cursor moves over the repository, its tasks and a session; the pane shows the selected row's agent and model mix, its dispatches and timeline; then the repository is folded">
 
