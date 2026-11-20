@@ -8,17 +8,17 @@
    2  Switch now and update both readers                                        
    3  Keep legacy now, switch next release                                      
                                                                                 
- Approve                                                                        
- demo-import · stale · 2h   https://github.com/example/demo/pull/9              
-                            its head changed after the approval; a fresh        
-                            approval is needed (the lander stopped it at        
-                            8c1f2a9)                                            
- demo-export · new · 25m    https://github.com/example/demo/pull/12             
+   Approve                                                                      
+   demo-import · stale · 2h   https://github.com/example/demo/pull/9            
+                              its head changed after the approval; a fresh      
+                              approval is needed (the lander stopped it at      
+                              8c1f2a9)                                          
+   demo-export · new · 25m    https://github.com/example/demo/pull/12           
                                                                                 
- History                                                                        
- 10:55  demo-task    site manager  extended 20 min to 11:05Z: landing left      
- 10:48  demo-export  lead          handed over: https://github.com/example/dem… 
- 10:30  demo-import  human         question: picked 2: Add retry now            
- 10:23  demo-import  lead          Retry lives in the importer, not the queue.… 
+   History                                                                      
+   10:55  demo-task    site manager  extended 20 min to 11:05Z: landing left    
+   10:48  demo-export  lead          handed over: https://github.com/example/d… 
+   10:30  demo-import  human         question: picked 2: Add retry now          
+   10:23  demo-import  lead          Retry lives in the importer, not the queu… 
  +66 more lines · ↓ to scroll                                                   
- ↑↓/jk move  ·  1–3 pick an option  ·  H all history  ·  ? help  ·  q quit      
+ ↑↓/jk move  ·  1–3 pick an option  ·  c edit cap  ·  ? help  ·  q quit         

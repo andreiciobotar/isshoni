@@ -10,6 +10,7 @@ import (
 )
 
 const (
+	noticeIndent   = 3                // the sections sit at the cards' indent
 	approveStale   = 10 * time.Minute // older approvals are labelled with their age
 	historyRecent  = 24 * time.Hour   // the history shows entries younger than this by default
 	historyDefault = 8                // and at most this many
@@ -34,7 +35,7 @@ func (m *model) approveSection(p paint, w int, items []data.FactoryApproval, asO
 	if age := m.now().Sub(asOf); age > approveStale {
 		label += " · as of " + ago(age)
 	}
-	lines := block{fit(p.sp(1)+p.t(label, th.Faint), w, p)}
+	lines := block{fit(p.sp(noticeIndent)+p.t(label, th.Faint), w, p)}
 	headW, urlW := 0, 0
 	ages := make([]string, len(items))
 	for i, it := range items {
@@ -42,7 +43,7 @@ func (m *model) approveSection(p paint, w int, items []data.FactoryApproval, asO
 		headW = max(headW, width(it.Slug+" · "+it.Why+" · "+ages[i]))
 		urlW = max(urlW, width(it.URL))
 	}
-	const lead = 1
+	const lead = noticeIndent
 	inline := lead+headW+3+urlW <= w // the URL is never cut: when it does not fit it moves under the entry
 	for i, it := range items {
 		why := th.Orange
@@ -50,7 +51,7 @@ func (m *model) approveSection(p paint, w int, items []data.FactoryApproval, asO
 			why = th.Yellow
 		}
 		dot := p.t(" · ", th.Faint)
-		row := p.sp(1)
+		row := p.sp(noticeIndent)
 		row += p.b(it.Slug, th.Text) + dot + p.t(it.Why, why) + dot + p.t(ages[i], th.Muted)
 		under := lead + 2
 		if inline {
@@ -91,17 +92,17 @@ func (m *model) historySection(p paint, w int, items []data.FactoryHistory) bloc
 		whenW = max(whenW, width(whens[i]))
 		slugW, byW = max(slugW, width(it.Slug)), max(byW, width(bys[i]))
 	}
-	textCol := 1 + whenW + 2 + slugW + 2 + byW + 2
-	lines := block{fit(p.sp(1)+p.t("History", th.Faint), w, p)}
+	textCol := noticeIndent + whenW + 2 + slugW + 2 + byW + 2
+	lines := block{fit(p.sp(noticeIndent)+p.t("History", th.Faint), w, p)}
 	for i, it := range shown {
-		row := p.sp(1)
+		row := p.sp(noticeIndent)
 		row += p.t(cell(whens[i], whenW, false), th.Muted) + p.sp(2) + p.b(cell(it.Slug, slugW, false), th.Text) + p.sp(2) +
 			p.t(cell(bys[i], byW, false), th.Blue) + p.sp(2)
 		text := strings.Join(strings.Fields(it.Text), " ")
 		lines = append(lines, fit(row+p.t(trunc(text, max(1, w-textCol-1)), th.Text), w, p))
 	}
 	if older := len(items) - len(shown); older > 0 {
-		lines = append(lines, fit(p.sp(1)+p.t(fmt.Sprintf("… %d older · H shows them", older), th.Faint), w, p))
+		lines = append(lines, fit(p.sp(noticeIndent)+p.t(fmt.Sprintf("… %d older · H shows them", older), th.Faint), w, p))
 	}
 	return append(lines, p.sp(w))
 }
