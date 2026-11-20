@@ -31,8 +31,14 @@ func (m *model) approveMessage(p paint, r inboxRow, w int) block {
 	}
 	title := p.b(a.Slug, th.Text) + dot + p.t("approve", th.Yellow) + dot + p.t(when, th.Muted)
 	for _, repo := range m.fac.repos {
-		if asOf := repo.st; repo.path == r.path && asOf != nil && m.now().Sub(asOf.Approvals.AsOf) > approveStale {
-			title += dot + p.t("as of "+ago(m.now().Sub(asOf.Approvals.AsOf)), th.Faint)
+		if repo.path != r.path || repo.st == nil {
+			continue
+		}
+		switch asOf := repo.st.Approvals.AsOf; {
+		case asOf.IsZero():
+			title += dot + p.t("as of unknown", th.Faint)
+		case m.now().Sub(asOf) > approveStale:
+			title += dot + p.t("as of "+ago(m.now().Sub(asOf)), th.Faint)
 		}
 	}
 	lines := block{title}

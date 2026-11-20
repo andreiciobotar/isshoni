@@ -47,9 +47,9 @@ func noticeRepos() []factoryRepo {
 	ago := func(d time.Duration) time.Time { return fakeNow.Add(-d) }
 	st := repos[0].st
 	st.Approvals = data.FactoryApprovals{AsOf: ago(2 * time.Minute), Items: []data.FactoryApproval{
-		{Slug: "demo-export", Number: 12, URL: "https://github.com/example/demo/pull/12", Why: "new", Since: ago(25 * time.Minute)},
 		{Slug: "demo-import", Number: 9, URL: "https://github.com/example/demo/pull/9", Why: "stale", Since: ago(2 * time.Hour),
 			Text: "its head changed after the approval; a fresh approval is needed (the lander stopped it at 8c1f2a9)"},
+		{Slug: "demo-export", Number: 12, URL: "https://github.com/example/demo/pull/12", Why: "new", Since: ago(25 * time.Minute)},
 	}}
 	st.History = []data.FactoryHistory{
 		{TS: ago(5 * time.Minute), Slug: "demo-task", By: "site-manager", Text: "extended 20 min to 11:05Z: landing left"},
@@ -528,6 +528,14 @@ func TestInboxRightPaneFollowsTheCursorOntoAnApprovalAndShowsItsURLWhole(t *test
 	}
 }
 
+func TestInboxFooterHasNoPickHintOnAnApprovalRow(t *testing.T) {
+	m := noticeModel(120, 30)
+	onApprove(m, 9)
+	if foot := strings.Split(plain(m), "\n")[29]; strings.Contains(foot, "pick an option") {
+		t.Errorf("footer on an approval: %q", foot)
+	}
+}
+
 func TestInboxApprovalURLWrapsInAPaneNarrowerThanIt(t *testing.T) {
 	const url = "https://github.com/example/demo/pull/9"
 	m := noticeModel(60, 60)
@@ -550,6 +558,10 @@ func TestInboxApprovalMessageLabelsOldDataOnlyPastTenMinutes(t *testing.T) {
 	m.fac.repos[0].st.Approvals.AsOf = fakeNow.Add(-14 * time.Minute)
 	if out := plain(m); !strings.Contains(out, "handed over 25m ago · as of 14m") {
 		t.Errorf("old data is labelled:\n%s", out)
+	}
+	m.fac.repos[0].st.Approvals.AsOf = time.Time{}
+	if out := plain(m); !strings.Contains(out, "handed over 25m ago · as of unknown") {
+		t.Errorf("no time is not an age:\n%s", out)
 	}
 }
 
@@ -577,7 +589,7 @@ func TestInboxCursorStaysOnItsPullRequestThroughARefreshThatReordersRows(t *test
 	onApprove(m, 12)
 	before := m.inbox.cursor
 	st := m.fac.repos[0].st
-	st.Approvals.Items = append(st.Approvals.Items, data.FactoryApproval{Slug: "demo-old", Number: 3, URL: "u", Why: "new", Since: fakeNow.Add(-5 * time.Hour)})
+	st.Approvals.Items = slices.Insert(st.Approvals.Items, 0, data.FactoryApproval{Slug: "demo-old", Number: 3, URL: "u", Why: "new", Since: fakeNow.Add(-5 * time.Hour)})
 	m.syncInbox()
 	if r := m.messages()[m.inbox.cursor]; r.app == nil || r.app.Number != 12 || m.inbox.cursor != before+1 {
 		t.Errorf("the cursor left pull request 12: row %d (was %d) %+v", m.inbox.cursor, before, r.app)

@@ -98,7 +98,11 @@ func (m *model) footerKeys() []key.Binding {
 	case m.view == viewInbox && m.inbox.pick != 0:
 		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept}
 	case m.view == viewInbox:
-		return []key.Binding{keys.Down, m.pickHint(), keys.CapEdit, keys.History, keys.Next, keys.Help, keys.Quit}
+		bs := []key.Binding{keys.Down, keys.CapEdit, keys.History, keys.Next, keys.Help, keys.Quit}
+		if rows := m.messages(); m.inbox.cursor >= len(rows) || rows[m.inbox.cursor].app == nil { // an approval has nothing to pick
+			bs = slices.Insert(bs, 1, m.pickHint())
+		}
+		return bs
 	case m.view == viewFactory:
 		return []key.Binding{keys.Down, keys.CapEdit, keys.Range, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewHanami:

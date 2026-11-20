@@ -117,10 +117,8 @@ func (m *model) messages() []inboxRow {
 			if r.path != path || r.st == nil {
 				continue
 			}
-			apps := slices.Clone(r.st.Approvals.Items)
-			slices.SortStableFunc(apps, func(a, b data.FactoryApproval) int { return a.Since.Compare(b.Since) })
-			for i := range apps {
-				rows = append(rows, inboxRow{inboxCard{name: r.name, path: path}, &apps[i]})
+			for i := range r.st.Approvals.Items {
+				rows = append(rows, inboxRow{inboxCard{name: r.name, path: path}, &r.st.Approvals.Items[i]})
 			}
 		}
 	}
