@@ -1,4 +1,4 @@
- Isshoni [1 ✉ ▲7] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
+ Isshoni [1 ✉ ▲6] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
  Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                   
  ▸ needs-an-answer · question · 45m                                                                 
    Should the export keep the legacy column order, or switch to the new one now? Switching breaks   
@@ -8,23 +8,23 @@
    3  Keep legacy now, switch next release                                                          
    [Accept]   Reject                                                                                
                                                                                                     
+   wide-ask · question · 30m                                                                        
+   Which environment's database credentials should the import use?                                  
+   1  The staging ones                                                                              
+   2  The production ones                                                                           
+   With the site manager since 10:50                                                                
+                                                                                                    
+   slow-import · question · 20m                                                                     
+   The import ran 3h of its 2h. Split it into two tasks, or let it finish?                          
+   The site manager handed it back: it turns on whether the second half may wait a release, which   
+   only you know.                                                                                   
+   1  Let it finish                                                                                 
+   2  Split it in two  (recommended)                                                                
+   L leave it to the lead · S to the site manager                                                   
+                                                                                                    
    stuck-on-keys · blocked · 1m                                                                     
    git push is refused: the deploy key is read-only. Run `git push origin worktree-stuck-on-keys`   
    by hand.                                                                                         
    1  Done, carry on                                                                                
-   2  Stop the task                                                                                 
-                                                                                                    
- ▲ Needs you  5                                                                                     
- ◆ alpha       api-rate-limits  review PR          3h00m  #42 https://github.com/o/alpha/pull/42    
- ▲ delta-docs  wide-ask         unblock            2h00m  データベースの接続情報が見つかりません。… 
- ◆ delta-docs  video-cut        see deliverable   30m00s  https://example.com/cut/v2                
- ▲ delta-docs  slow-import      decide: overtime   5m00s  ran 3h of 2h: split it?                   
- ◆ delta-docs  design-review    see deliverable        -  /r/delta/docs/design.md                   
-                                                                                                    
- worktree cap  5  per repo, 1 in reserve   c edit                   ~/.claude/factory/settings.toml 
-                                                                                                    
- alpha                                    in motion ▲●●●●●● 7/4+1   review 1   merged 2   settled 1 
-  SLUG               PHASE                       ELAPSED  PR                      FLAGS             
-  needs-an-answer    ▲ blocked, needs you         10m40s  example.com/design/doc                    
- +36 more lines · ↓ to scroll                                                                       
+ +49 more lines · ↓ to scroll                                                                       
  enter do the marked one  ·  ←→/hl mark accept · reject  ·  y n accept · reject                     

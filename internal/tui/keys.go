@@ -10,18 +10,18 @@ import (
 // footer and the help overlay read their text from it. A binding without help text
 // is a second key for the one documented before it.
 type keyMap struct {
-	Interrupt, Quit, Help                    key.Binding
-	Next, Prev, Inbox, Dash, Agents, Factory key.Binding
-	Kaizen, Ops                              key.Binding
-	Pick, Confirm, Mark, Accept, Reject      key.Binding
-	PageLeft, PageRight                      key.Binding
-	Down, Up, Top, Bottom, PageDown, PageUp  key.Binding
-	Fold, Unfold, Open, Back                 key.Binding
-	Range, Follow, Sort, Filter              key.Binding
-	FilterKeep, FilterClear, Erase, Wipe     key.Binding
-	CapEdit, CapSave, CapCancel              key.Binding
-	Hanami, Legend, Zen, Replay              key.Binding
-	Dispatcher                               key.Binding
+	Interrupt, Quit, Help                      key.Binding
+	Next, Prev, Inbox, Dash, Agents, Factory   key.Binding
+	Kaizen, Ops                                key.Binding
+	Pick, Leave, Confirm, Mark, Accept, Reject key.Binding
+	PageLeft, PageRight                        key.Binding
+	Down, Up, Top, Bottom, PageDown, PageUp    key.Binding
+	Fold, Unfold, Open, Back                   key.Binding
+	Range, Follow, Sort, Filter                key.Binding
+	FilterKeep, FilterClear, Erase, Wipe       key.Binding
+	CapEdit, CapSave, CapCancel                key.Binding
+	Hanami, Legend, Zen, Replay                key.Binding
+	Dispatcher                                 key.Binding
 }
 
 var keys = keyMap{
@@ -41,6 +41,7 @@ var keys = keyMap{
 
 	// the Inbox: a digit picks an option of the card under the cursor, then the pick is confirmed
 	Pick:    key.NewBinding(key.WithKeys("1", "2", "3", "4"), key.WithHelp("1-4", "pick an option")),
+	Leave:   key.NewBinding(key.WithKeys("L", "S"), key.WithHelp("L S", "leave it to lead · site manager")),
 	Confirm: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "do the marked one")),
 	Mark:    key.NewBinding(key.WithKeys("left", "right", "h", "l", "tab"), key.WithHelp("←→/hl", "mark accept · reject")),
 	Accept:  key.NewBinding(key.WithKeys("y"), key.WithHelp("y n", "accept · reject")),
@@ -92,10 +93,10 @@ func (m *model) footerKeys() []key.Binding {
 		return []key.Binding{keys.FilterKeep, keys.FilterClear}
 	case m.fac.editing:
 		return []key.Binding{keys.CapSave, keys.CapCancel}
-	case m.view == viewInbox && m.inbox.pick != 0:
+	case m.view == viewInbox && m.inbox.choice != "":
 		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept}
 	case m.view == viewInbox:
-		return []key.Binding{keys.Down, keys.Pick, keys.CapEdit, keys.Next, keys.Help, keys.Quit}
+		return []key.Binding{keys.Down, keys.Pick, keys.Leave, keys.CapEdit, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewFactory:
 		return []key.Binding{keys.Down, keys.CapEdit, keys.Range, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewHanami:
@@ -126,7 +127,7 @@ func (m *model) helpGroups() [][]key.Binding {
 		{keys.Help, keys.Quit},
 	}
 	if m.view == viewInbox {
-		groups = slices.Insert(groups, 2, []key.Binding{keys.Pick, keys.Confirm, keys.Mark, keys.Accept})
+		groups = slices.Insert(groups, 2, []key.Binding{keys.Pick, keys.Leave, keys.Confirm, keys.Mark, keys.Accept})
 	}
 	return groups
 }

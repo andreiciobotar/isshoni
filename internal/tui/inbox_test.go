@@ -18,10 +18,13 @@ import (
 const (
 	idQuestion = "3f9a1c2b4d5e"
 	idBlocked  = "7c0b9e1d2a46"
+	idBack     = "5d2e8a0c9b13" // handed back by the site manager
+	idParked   = "9a4f6b3e1c27" // with the site manager
 )
 
-// inboxRepos is the factory fixture with two open decisions: a question of alpha (three options, the
-// first recommended) and a blocked one of delta-docs. Both tasks wait on the human.
+// inboxRepos is the factory fixture with four open decisions: a question of alpha (three options, the
+// first recommended), and of delta-docs a blocked one, one the site manager handed back and one parked with
+// it. Every task waits on the human.
 func inboxRepos() []factoryRepo {
 	repos := waitingRepos()
 	repos[0].st.Decisions = []data.FactoryDecision{{
@@ -34,6 +37,17 @@ func inboxRepos() []factoryRepo {
 		ID: idBlocked, Slug: "stuck-on-keys", Kind: "blocked", TS: fakeNow.Add(-90 * time.Second),
 		Ask:     "git push is refused: the deploy key is read-only. Run `git push origin worktree-stuck-on-keys` by hand.",
 		Options: []string{"Done, carry on", "Stop the task"},
+	}, {
+		ID: idBack, Slug: "slow-import", Kind: "question", Recommend: 2, TS: fakeNow.Add(-20 * time.Minute),
+		Ask:      "The import ran 3h of its 2h. Split it into two tasks, or let it finish?",
+		Options:  []string{"Let it finish", "Split it in two"},
+		Returned: "it turns on whether the second half may wait a release, which only you know.",
+	}, {
+		ID: idParked, Slug: "wide-ask", Kind: "question", TS: fakeNow.Add(-30 * time.Minute),
+		Ask:       "Which environment's database credentials should the import use?",
+		Options:   []string{"The staging ones", "The production ones"},
+		With:      "site-manager",
+		WithSince: fakeNow.Add(-10 * time.Minute),
 	}}
 	return repos
 }
@@ -106,6 +120,7 @@ func TestGoldenInbox(t *testing.T) {
 		{"inbox-100x30", 100, 30, func(m *model) { setInbox(m, inboxRepos()...) }},
 		{"inbox-80x24", 80, 24, func(m *model) { setInbox(m, inboxRepos()...) }},
 		{"inbox-confirm-100x30", 100, 30, func(m *model) { setInbox(m, inboxRepos()...); send(m, "2") }},
+		{"inbox-confirm-lead-100x30", 100, 30, func(m *model) { setInbox(m, inboxRepos()...); send(m, "L") }},
 		{"inbox-empty-80x24", 80, 24, func(m *model) { setInbox(m, fakeFactoryRepos()...) }},
 	} {
 		t.Run(c.name, func(t *testing.T) { goldenCase(t, shots, c.name, c.w, c.h, c.set, true) })
@@ -135,11 +150,11 @@ func TestInboxShowsTheCardsOverTheFactoryLines(t *testing.T) {
 
 func TestInboxBandDoesNotRepeatATaskWithACard(t *testing.T) {
 	m := inboxModel(140, 40)
-	if out := plain(m); !strings.Contains(out, "▲ Needs you  5") || strings.Contains(out, "answer question") {
-		t.Errorf("seven wait, two have cards:\n%s", out)
+	if out := plain(m); !strings.Contains(out, "▲ Needs you  3") || strings.Contains(out, "answer question") {
+		t.Errorf("seven wait, four have cards:\n%s", out)
 	}
-	if got := len(m.waiting()); got != 7 {
-		t.Fatalf("the badge counts every waiting task: %d", got)
+	if got, all := m.waitingOnYou(), len(m.waiting()); got != 6 || all != 7 {
+		t.Fatalf("the badge leaves out the parked one: %d of %d", got, all)
 	}
 	m.view = viewFactory
 	if out := plain(m); !strings.Contains(out, "▲ Needs you  7") || !strings.Contains(out, "answer question") {
@@ -172,7 +187,7 @@ func TestInboxWithoutADecision(t *testing.T) {
 func TestInboxTabBadgeAndSubheader(t *testing.T) {
 	out := plain(inboxModel(140, 40))
 	lines := strings.Split(out, "\n")
-	if !strings.Contains(lines[0], "[1 Inbox ▲7]") || strings.Contains(lines[0], "Factory ▲") {
+	if !strings.Contains(lines[0], "[1 Inbox ▲6]") || strings.Contains(lines[0], "Factory ▲") {
 		t.Errorf("the badge is on the Inbox tab: %q", lines[0])
 	}
 	if !strings.HasPrefix(strings.TrimSpace(lines[1]), "Inbox") {
@@ -193,7 +208,7 @@ func TestInboxIsAFactoryPage(t *testing.T) {
 	}
 	m = inboxModel(80, 24)
 	send(m, "j", "j", "j", "j", "j", "j")
-	if m.inbox.cursor != 1 || m.inbox.top == 0 {
+	if m.inbox.cursor != 3 || m.inbox.top == 0 {
 		t.Fatalf("j walks the cards, then scrolls the page: cursor %d, top %d", m.inbox.cursor, m.inbox.top)
 	}
 	send(m, "k", "k", "k", "k", "k", "k", "k", "k", "k", "k", "k", "k")
@@ -211,14 +226,14 @@ func TestInboxIsAFactoryPage(t *testing.T) {
 func TestInboxDigitOpensTheConfirmOnAccept(t *testing.T) {
 	m := inboxModel(100, 30)
 	send(m, "2")
-	if m.view != viewInbox || m.inbox.pick != 2 || m.inbox.reject || m.inbox.id != idQuestion {
+	if m.view != viewInbox || m.inbox.choice != "2" || m.inbox.reject || m.inbox.id != idQuestion {
 		t.Fatalf("view %v, inbox %+v", m.view, m.inbox)
 	}
 	if out := plain(m); !strings.Contains(out, "[Accept]") || !strings.Contains(out, " Reject ") || !strings.Contains(out, "[2] Switch now") {
 		t.Errorf("the pick and Accept show:\n%s", out)
 	}
-	send(m, "n", "j", "1")
-	if m.inbox.pick != 1 || m.inbox.id != idBlocked {
+	send(m, "n", "j", "j", "j", "1")
+	if m.inbox.choice != "1" || m.inbox.id != idBlocked {
 		t.Fatalf("the second card picks for itself: %+v", m.inbox)
 	}
 	send(m, "n", "4") // the card has two options: 4 is the Factory tab
@@ -229,15 +244,19 @@ func TestInboxDigitOpensTheConfirmOnAccept(t *testing.T) {
 
 func TestInboxAnswerRunsTheScriptInTheRepository(t *testing.T) {
 	for _, c := range []struct {
-		keys []string
-		repo func(a, d string) string
-		id   string
-		n    int
+		keys   []string
+		repo   func(a, d string) string
+		id     string
+		choice string
 	}{
-		{[]string{"2", "enter"}, func(a, _ string) string { return a }, idQuestion, 2},
-		{[]string{"3", "y"}, func(a, _ string) string { return a }, idQuestion, 3},
-		{[]string{"j", "1", "y"}, func(_, d string) string { return d }, idBlocked, 1},
-		{[]string{"2", "right", "left", "enter"}, func(a, _ string) string { return a }, idQuestion, 2},
+		{[]string{"2", "enter"}, func(a, _ string) string { return a }, idQuestion, "2"},
+		{[]string{"3", "y"}, func(a, _ string) string { return a }, idQuestion, "3"},
+		{[]string{"j", "j", "1", "y"}, func(_, d string) string { return d }, idBack, "1"},
+		{[]string{"2", "right", "left", "enter"}, func(a, _ string) string { return a }, idQuestion, "2"},
+		{[]string{"L", "enter"}, func(a, _ string) string { return a }, idQuestion, "lead"},
+		{[]string{"S", "y"}, func(a, _ string) string { return a }, idQuestion, "site-manager"},
+		{[]string{"2", "S", "y"}, func(a, _ string) string { return a }, idQuestion, "site-manager"},
+		{[]string{"L", "3", "enter"}, func(a, _ string) string { return a }, idQuestion, "3"},
 	} {
 		calls, _ := answerScript(t)
 		m, alpha, delta := answerModel(t)
@@ -250,11 +269,11 @@ func TestInboxAnswerRunsTheScriptInTheRepository(t *testing.T) {
 		if len(got) != 1 || got[0].err != nil {
 			t.Fatalf("%v: %v", c.keys, msgs)
 		}
-		if want := fmt.Sprintf("%s decision answer %s %d\n", c.repo(alpha, delta), c.id, c.n); readCalls(calls) != want {
+		if want := fmt.Sprintf("%s decision answer %s %s\n", c.repo(alpha, delta), c.id, c.choice); readCalls(calls) != want {
 			t.Fatalf("%v: script ran as %q, want %q", c.keys, readCalls(calls), want)
 		}
 		m.Update(got[0])
-		if m.inbox.sending || m.inbox.pick != 0 || m.toast.err || !strings.HasPrefix(m.toast.text, "answered ") || !strings.HasSuffix(m.toast.text, fmt.Sprintf(": %d", c.n)) {
+		if m.inbox.sending || m.inbox.choice != "" || m.toast.err || !strings.HasPrefix(m.toast.text, "answered ") || !strings.HasSuffix(m.toast.text, ": "+c.choice) {
 			t.Fatalf("%v: after the answer: inbox %+v, toast %+v", c.keys, m.inbox, m.toast)
 		}
 	}
@@ -270,8 +289,8 @@ func TestInboxRejectAnswersNothing(t *testing.T) {
 				t.Fatalf("%v: %v ran something", keys, k)
 			}
 		}
-		if m.inbox.pick != 0 || m.inbox.sending || readCalls(calls) != "" {
-			t.Fatalf("%v: pick %d, calls %q", keys, m.inbox.pick, readCalls(calls))
+		if m.inbox.choice != "" || m.inbox.sending || readCalls(calls) != "" {
+			t.Fatalf("%v: choice %q, calls %q", keys, m.inbox.choice, readCalls(calls))
 		}
 	}
 }
@@ -280,7 +299,7 @@ func TestInboxConfirmIgnoresEveryOtherKey(t *testing.T) {
 	m, _, _ := answerModel(t)
 	send(m, "2")
 	before := m.inbox
-	for _, k := range []string{"x", "j", "k", "q", "?", "c", "d", "r", "4", "7", "pgdown", "G", "/"} { // 4: the card has three options
+	for _, k := range []string{"x", "j", "k", "q", "?", "c", "d", "r", "4", "7", "pgdown", "G", "/", "s"} { // 4: the card has three options
 		if cmd := upd(m, press(k)); len(cmd) != 0 {
 			t.Fatalf("%q ran something", k)
 		}
@@ -289,13 +308,21 @@ func TestInboxConfirmIgnoresEveryOtherKey(t *testing.T) {
 		}
 	}
 	send(m, "3")
-	if m.inbox.pick != 3 || m.inbox.reject {
+	if m.inbox.choice != "3" || m.inbox.reject {
 		t.Fatalf("a digit valid for the card changes the pick: %+v", m.inbox)
 	}
 	send(m, "tab")
 	send(m, "1")
-	if m.inbox.pick != 1 || m.inbox.reject {
+	if m.inbox.choice != "1" || m.inbox.reject {
 		t.Fatalf("a new pick marks Accept again: %+v", m.inbox)
+	}
+	send(m, "tab", "S")
+	if m.inbox.choice != "site-manager" || m.inbox.reject {
+		t.Fatalf("S changes the choice and marks Accept again: %+v", m.inbox)
+	}
+	send(m, "L")
+	if m.inbox.choice != "lead" {
+		t.Fatalf("L changes the choice: %+v", m.inbox)
 	}
 	_, cmd := m.Update(press("ctrl+c"))
 	if cmd == nil {
@@ -310,9 +337,12 @@ func TestInboxReadOnlyRefusesToPick(t *testing.T) {
 	calls, _ := answerScript(t)
 	m, _, _ := answerModel(t)
 	m.opts.ReadOnly = true
-	send(m, "2")
-	if m.inbox.pick != 0 || m.toast.text != "read-only: this key may not answer a decision" || !m.toast.err {
-		t.Fatalf("pick %d, toast %+v", m.inbox.pick, m.toast)
+	for _, k := range []string{"2", "L", "S"} {
+		m.toast.text = ""
+		send(m, k)
+		if m.inbox.choice != "" || m.toast.text != "read-only: this key may not answer a decision" || !m.toast.err {
+			t.Fatalf("%s: choice %q, toast %+v", k, m.inbox.choice, m.toast)
+		}
 	}
 	send(m, "enter", "y")
 	if readCalls(calls) != "" {
@@ -333,7 +363,7 @@ func TestInboxFailedAnswerShowsTheScriptsLineAndUnpicks(t *testing.T) {
 	}
 	m.Update(got[0])
 	want := "decision " + idQuestion + " is already answered"
-	if m.toast.text != want || !m.toast.err || m.inbox.pick != 0 || m.inbox.sending {
+	if m.toast.text != want || !m.toast.err || m.inbox.choice != "" || m.inbox.sending {
 		t.Fatalf("toast %+v, inbox %+v", m.toast, m.inbox)
 	}
 	if !strings.Contains(plain(m), "1  Keep the legacy order") || strings.Contains(plain(m), "[Accept]") {
@@ -350,14 +380,14 @@ func TestInboxPickIsDroppedWhenItsCardIsGone(t *testing.T) {
 	repos := inboxRepos()
 	repos[0].st.Decisions = nil
 	m.applyFactory(factoryMsg{repos: repos})
-	if m.inbox.pick != 0 {
+	if m.inbox.choice != "" {
 		t.Fatalf("the status says the card is gone: %+v", m.inbox)
 	}
 }
 
 func TestInboxFooterAndHelpNameThePickKeys(t *testing.T) {
 	m := inboxModel(120, 30)
-	if foot := plain(m); !strings.Contains(foot, "1-4 pick an option") {
+	if foot := plain(m); !strings.Contains(foot, "1-4 pick an option") || !strings.Contains(foot, "L S leave it to lead") {
 		t.Errorf("footer:\n%s", foot)
 	}
 	send(m, "2")
@@ -369,7 +399,7 @@ func TestInboxFooterAndHelpNameThePickKeys(t *testing.T) {
 	}
 	m = inboxModel(120, 40)
 	m.help = true
-	if out := plain(m); !strings.Contains(out, "1-4") || !strings.Contains(out, "pick an option") || !strings.Contains(out, "do the marked one") {
+	if out := plain(m); !strings.Contains(out, "1-4") || !strings.Contains(out, "pick an option") || !strings.Contains(out, "L S") || !strings.Contains(out, "leave it to lead · site manager") || !strings.Contains(out, "do the marked one") {
 		t.Errorf("help:\n%s", out)
 	}
 }
@@ -423,5 +453,52 @@ func TestInboxCardsAreOldestFirstAndAnUnknownAgeLast(t *testing.T) {
 	}
 	if strings.Join(got, " ") != "old new noage" {
 		t.Fatalf("order %v", got)
+	}
+}
+
+// ---- delegation, parked and handed-back cards --------------------------------------
+
+func TestInboxLeaveKeysOpenTheDelegationConfirm(t *testing.T) {
+	for key, want := range map[string]string{"L": "Leave it to the lead?", "S": "Leave it to the site manager?"} {
+		m := inboxModel(100, 60)
+		send(m, key)
+		out := plain(m)
+		if m.inbox.id != idQuestion || !strings.Contains(out, want) || !strings.Contains(out, "[Accept]") || !strings.Contains(out, " Reject ") {
+			t.Errorf("%s: choice %q:\n%s", key, m.inbox.choice, out)
+		}
+		if got := strings.Count(out, "L leave it to the lead"); got != 2 {
+			t.Errorf("%s: the hint stays on the cards without a choice only: %d", key, got)
+		}
+	}
+}
+
+func TestInboxHintOnACardAndNotOnAParkedOne(t *testing.T) {
+	out := plain(inboxModel(140, 40))
+	if got := strings.Count(out, "L leave it to the lead · S to the site manager"); got != 3 {
+		t.Errorf("the hint is on the three cards that are the human's: %d\n%s", got, out)
+	}
+	if !strings.Contains(out, "With the site manager since 10:50") || !strings.Contains(out, "The site manager handed it back: it turns on whether") {
+		t.Errorf("parked and handed-back lines:\n%s", out)
+	}
+}
+
+func TestInboxParkedCardTakesNoChoice(t *testing.T) {
+	calls, _ := answerScript(t)
+	m, _, _ := answerModel(t)
+	send(m, "j") // alpha's question, then the parked one
+	if c, _ := m.cursorCard(); c.d.ID != idParked {
+		t.Fatalf("cursor on %s, want the parked card", c.d.ID)
+	}
+	for _, k := range []string{"1", "L", "S"} {
+		if cmd := upd(m, press(k)); len(cmd) != 0 || m.inbox.choice != "" {
+			t.Fatalf("%s did something on a parked card: %q", k, m.inbox.choice)
+		}
+	}
+	send(m, "2")
+	if m.view != viewDashboard {
+		t.Fatalf("a digit that picks nothing on the card still switches the tab: %v", m.view)
+	}
+	if readCalls(calls) != "" {
+		t.Fatal("the script ran")
 	}
 }
