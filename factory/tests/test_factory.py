@@ -625,7 +625,8 @@ class AckTests(unittest.TestCase):
 
 
 DEFAULT_SETTINGS = {
-    "worktree_cap": 5, "reserve_percent": 10, "task_time_limit_hours": 2, "extension_minutes": 60, "lead_permission_mode": "auto",
+    "worktree_cap": 5, "reserve_percent": 10, "task_time_limit_hours": 2, "extension_minutes": 60, "overrun_stop_wait_minutes": 30,
+    "lead_permission_mode": "auto",
     "lean_start": True, "dispatchers": None, "lgtm_from_author": True, "review_hours": 1, "issues_repo": "", "monitor": None,
     "models": {"dispatcher": "fable", "lead": "fable", "explorer": "haiku", "coder": "sonnet", "reviewer": "opus",
                "lander": "sonnet", "ops_explorer": "haiku", "ops_watch": "sonnet", "site_manager": "opus", "kaizen_review": "fable",
@@ -707,6 +708,7 @@ tech_lead = "haiku"
 worktree_cap = 2
 reserve_percent = 25
 task_time_limit_hours = 0.5
+overrun_stop_wait_minutes = 45
 [sessions]
 lead_permission_mode = "plan"
 lean_start = false
@@ -721,6 +723,7 @@ monitor = "/bin/isshoni"
 ''')
         self.assertEqual(got, {
             "worktree_cap": 2, "reserve_percent": 25, "task_time_limit_hours": 0.5, "extension_minutes": 60,
+            "overrun_stop_wait_minutes": 45,
             "lead_permission_mode": "plan", "lean_start": False, "dispatchers": ["dispatcher-a"], "lgtm_from_author": False, "monitor": "/bin/isshoni",
             "review_hours": 3, "issues_repo": "me/widgets",
             "models": {"dispatcher": "opus", "lead": "claude-opus-4-1[1m]", "explorer": "sonnet", "coder": "haiku",
@@ -741,6 +744,7 @@ monitor = "/bin/isshoni"
                 ("limits", "task_time_limit_hours", "-1"), ("limits", "task_time_limit_hours", '"2"'),
                 ("limits", "task_time_limit_hours", "true"), ("limits", "reserve_percent", "true"),
                 ("limits", "reserve_percent", "-1"), ("limits", "reserve_percent", "101"), ("limits", "reserve_percent", "2.5"),
+                ("limits", "overrun_stop_wait_minutes", "0"), ("limits", "overrun_stop_wait_minutes", "2.5"),
                 ("limits", "reserve_percent", '"10"'), ("sessions", "lead_permission_mode", '"yolo"'),
                 ("sessions", "lean_start", '"yes"'), ("sessions", "lean_start", "1"),
                 ("sessions", "dispatchers", '"a"'), ("sessions", "dispatchers", "[1]"), ("sessions", "dispatchers", '[""]'),

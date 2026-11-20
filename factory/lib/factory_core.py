@@ -330,7 +330,9 @@ SETTINGS = (
     Setting("limits", "task_time_limit_hours", 2, positive_number,
             "Hours a task may run before it is overtime; a decimal is fine. Default 2.", toml_arg),
     Setting("limits", "extension_minutes", 60, positive_number,
-            "The most minutes the site manager may add to one task's limit in total; beyond it the human decides. Default 60.", toml_arg),
+            "The most minutes one continue adds to a task's limit, the site manager's or the script's, and what a human's `Continue` adds. Default 60.", toml_arg),
+    Setting("limits", "overrun_stop_wait_minutes", 30, int_in(1),
+            "Minutes a task runs on after the site manager recommends stopping it; if the human has not answered the card by then, the script pauses the task. Default 30.", toml_arg),
     Setting("sessions", "lead_permission_mode", "auto", permission_mode,
             f"The permission mode of every lead ({', '.join(PERMISSION_MODES)}). Default \"auto\"."),
     Setting("sessions", "lean_start", True, boolean,
@@ -3145,6 +3147,7 @@ RUN_SCHEMA = {"type": "object", "required": ["sent", "decisions"], "properties":
         "detail": {"type": "string", "description": "what you saw: the facts, one line"},
         "decision": {"type": "string", "enum": ["escalated", "suppressed", "paused", "extended", "told", "closed", "picked", "returned"]},
         "minutes": {"type": "integer", "minimum": 1},
+        "recommend": {"type": "integer", "description": "with paused on an overrun: the option to recommend, 2 (cut), 3 (split) or 4 (abandon)"},
         "option": {"type": "integer", "minimum": 1, "description": "with picked: the number of the option you pick for the human"},
         "superseded_by": {"type": "string", "description": "with closed: the task that took its work over"},
         "to": {"type": "string", "enum": ["dispatcher", "lead"]}, "reason": {"type": "string"},
@@ -4000,9 +4003,9 @@ def firing_for_run(p, f):
     elif path:
         out["task"] = {"worktree": path, "lead": lead, "pid": pid}
     if f["criterion"] in ASKS:
-        started, used, left = extension_state(p, f["slug"], session)
+        started, used = extension_state(p, f["slug"], session)
         out["runs"] = run_rows(p, f["slug"])
-        out["extended_minutes"], out["extension_left_minutes"] = used, left
+        out["extended_minutes"] = used
         out["limit_left_minutes"] = None if not row or started is None else int((started + row["limit"] - p["now"]) // 60)
     if path:
         paths = transcripts(session)
@@ -4016,10 +4019,9 @@ def firing_for_run(p, f):
 
 
 def extension_state(p, slug, session):
-    """(the task's start in epoch seconds or None, minutes granted to `slug` since, minutes still allowed)."""
+    """(the task's start in epoch seconds or None, minutes granted to `slug` since)."""
     started = task_start(p.get("events") or repo_log("events", p["repo"].root) or [], slug, session)
-    used = sum(e["minutes"] for e in extensions(extended(p["repo"]), slug, started))
-    return started, used, load_settings()["extension_minutes"] - used
+    return started, sum(e["minutes"] for e in extensions(extended(p["repo"]), slug, started))
 
 
 def reference_entries():
@@ -4158,11 +4160,11 @@ def site_manager_argv(p, firings, job="watch", look=None):
 
 def grant(p, slug, minutes):
     """The ISO times (from, until) an extension of `minutes` given now would run: from the later of now and the task's
-    deadline, for `minutes`; None when it is not allowed: not a positive integer, over what `limits.extension_minutes`
-    leaves, or no task start to count from."""
+    deadline, for `minutes`; None when it is not allowed: not a positive integer, over `limits.extension_minutes`, or no
+    task start to count from."""
     repo = p["repo"]
-    started, _, left = extension_state(p, slug, task_lead(p, slug)[2])
-    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 0 < minutes <= left or started is None:
+    started = extension_state(p, slug, task_lead(p, slug)[2])[0]
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 0 < minutes <= load_settings()["extension_minutes"] or started is None:
         return None
     branch = next((t["branch"] for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
     deadline = started + extended_limit(task_size(repo, branch), load_settings()["task_time_limit_hours"], started,
@@ -4173,20 +4175,21 @@ def grant(p, slug, minutes):
 
 def tell_decision(p, f, decision, reason, minutes=None, until=None):
     """The lines the script sends after a decision on an overrun, or a pause: to the lead, else to the dispatcher marked
-    undelivered, then once the dispatcher; on an escalated overrun the model's own message is the dispatcher's. Logs
+    undelivered, then once the dispatcher (never for an overrun: the inbox card is the human's). Logs
     on the firing who was told: `lead`, `dispatcher` or `nobody`."""
     repo, slug, clock = p["repo"], f["slug"], (until or "")[11:16] + "Z"
     if f.get("criterion") != "overrun" and not (decision == "paused" and f.get("criterion") in ASKS):
         return
+    inbox = f.get("criterion") == "overrun"
     said = {"extended": f"extended {minutes} min, limit now {clock}: {reason}",
-            "paused": f"paused: start no build run and end your turn; the human decides. {reason}",
-            "escalated": f"passed to the human: declare factory state blocked human and wait. {reason}"}[decision]
-    to = forward(repo, p["dispatcher"], slug, "SITE MANAGER", said)
+            "paused": (f"stop recommended: the human decides in the inbox; carry on meanwhile. Unanswered in "
+                       f"{load_settings()['overrun_stop_wait_minutes']} minutes, the script pauses the task. {reason}" if inbox
+                       else f"paused: start no build run and end your turn; the human decides. {reason}"),
+            "escalated": f"undecided: carry on; your ask is in the human's inbox. {reason}"}
+    to = forward(repo, p["dispatcher"], slug, "SITE MANAGER", said[decision])
     log_firing(repo, id=f["id"], told=to or "nobody")
-    heard = {"extended": ("SITE MANAGER", f"{slug}: extended {minutes} min to {clock}, no answer needed: {reason}"),
-             "paused": ("PAUSED", f"{slug}: paused by the site manager, for the human: {reason}")}.get(decision)
-    if heard and to in ("lead", "queued"):
-        forward(repo, p["dispatcher"], slug, *heard, lead=False)
+    if not inbox and to in ("lead", "queued"):
+        forward(repo, p["dispatcher"], slug, "PAUSED", f"{slug}: paused by the site manager, for the human: {reason}", lead=False)
 
 
 def close_decided(p, slug, reason, superseded_by):
@@ -4296,10 +4299,9 @@ def record_decisions(p, sent, result, run, look=None):
         superseded_by, closed = d.get("superseded_by") or None, None
         if decision == "closed" and (crit != "ended-undeclared" or not (closed := close_decided(p, f["slug"], reason, superseded_by))):
             continue
-        if decision == "escalated" and (to not in ("dispatcher", "lead") or result.get("sent") is not True
-                                        or (crit == "overrun" and to != "dispatcher")):
+        if decision == "escalated" and (to not in ("dispatcher", "lead") or result.get("sent") is not True):
             continue
-        if decision == "suppressed" and crit == "overrun":
+        if decision in ("suppressed", "escalated") and crit == "overrun":
             continue
         if decision == "paused" and ask:
             if waits != ["human"]:
@@ -4317,7 +4319,11 @@ def record_decisions(p, sent, result, run, look=None):
         seen.add(fid)
         logged += 1
         looked = d.get("looked")
-        if decision == "paused" and ask:
+        if crit == "overrun":
+            stop = decision == "paused"
+            post_overrun_card(p["repo"], f["slug"], reason.strip(), (d["recommend"] if d.get("recommend") in (2, 3, 4) else 2) if stop else 1,
+                              None if stop else minutes)
+        elif decision == "paused" and ask:
             declare(p["repo"], f["slug"], "site-manager", "blocked", waits_on=waits, paused=True)
             task_event("TaskPaused", p["repo"], f["slug"], waits_on=waits)
         log_firing(p["repo"], id=fid, decision=decision, reason=reason.strip(), by="site-manager", run=run,
@@ -4379,8 +4385,9 @@ def settle_collisions(p):
 
 def settle_asks(p, send, why):
     """An `overrun` or `decision` firing is cleared once the tick that sent it is over, so a later ask is a new firing. One
-    the site manager left undecided is decided here, once: closed as moot when its task is over (its decision is no longer
-    with it), else an overrun is escalated to the human, the lead and the dispatcher told, and a decision is returned to the human."""
+    the site manager left undecided is decided here, once: closed as moot when its task is over by now; a decision is returned
+    to the human; an overrun gets the limit extended by `limits.extension_minutes` (escalated when nothing can be granted) and the
+    ask posted to the human's inbox, the lead told."""
     repo = p["repo"]
     folded = {f["id"]: f for f in fold(repo_log("firings", repo.root) or [])[0]}
     for f in (f for f in send if f["criterion"] in TICK_ASKS):
@@ -4392,10 +4399,16 @@ def settle_asks(p, send, why):
                 log_firing(repo, id=f["id"], decision="returned", by="watch", reason=reason)
                 return_decision(repo, with_site_manager(repo.root, f["subject"]), reason, "watch")
             else:
-                log_firing(repo, id=f["id"], decision="escalated", by="watch", to="dispatcher", reason=reason)
-                tell_decision(p, f, "escalated", reason)
-                tell_lead(repo, p["dispatcher"], f["slug"], "ESCALATION", f"{f['slug']}: overrun undecided, the human decides: {f['detail']}",
-                          f"factory: {f['slug']} overrun undecided", lead=False)
+                minutes = load_settings()["extension_minutes"]
+                given = grant(p, f["slug"], minutes)
+                if given:
+                    log_firing(repo, id=f["id"], decision="extended", by="watch", reason=reason, minutes=minutes, **dict(zip(("from", "until"), given)))
+                    post_overrun_card(repo, f["slug"], f["detail"], granted=minutes)
+                    tell_decision(p, f, "extended", reason, minutes, given[1])
+                else:
+                    log_firing(repo, id=f["id"], decision="escalated", by="watch", reason=reason)
+                    post_overrun_card(repo, f["slug"], f["detail"])
+                    tell_decision(p, f, "escalated", reason)
         log_firing(repo, id=f["id"], cleared=True)
 
 
@@ -4938,6 +4951,8 @@ def cmd_lead(args):
 
 DECISION_KEYS = ("id", "slug", "kind", "ask", "options", "recommend", "ts", "with", "with_since", "returned")
 DELEGABLE = ("question", "blocked")  # the kinds the human may leave to the lead or the site manager
+ASK_WORDS = 60
+BLOCKED_ON_HUMAN = (None, "human", ["human"])  # the `waits_on` values of a task that waits for the human
 
 
 def last_answers(records):
@@ -4952,15 +4967,20 @@ def settled(answer):
 
 def open_decisions(root):
     """The open decisions of the repo at `root`, oldest first: an ask whose newest answer does not settle it (none, a hand-over
-    to the site manager, which adds `with` and `with_since`, or a hand-back, which adds `returned`), whose task's last state is
-    `blocked` on the human and not later than the ask, so any state the lead declares after asking closes it."""
+    to the site manager, which adds `with` and `with_since`, or a hand-back, which adds `returned`). Of a `question` or `blocked`
+    ask, whose task's last state is `blocked` on the human and not later than the ask, so any state the lead declares after
+    asking closes it. Of an `overrun` ask, the latest of its task, whose last state is `working` or `blocked`: it never
+    holds the task, and a hand-over closes it."""
     records = repo_log("decisions", root) or []
     answers = last_answers(records)
+    latest = {r["slug"]: r["id"] for r in records if r.get("kind") == "overrun"}
     tasks = read_tasks(root)
     found = []
     for r in records:
-        if "ask" not in r or settled(a := answers.get(r["id"])) or not (t := tasks.get(r["slug"])) \
-                or t["state"] != "blocked" or t.get("waits_on") not in (None, "human") or stamp(t) > stamp(r):
+        if "ask" not in r or settled(a := answers.get(r["id"])) or not (t := tasks.get(r["slug"])):
+            continue
+        if not ((t["state"] in ("working", "blocked") and latest[r["slug"]] == r["id"]) if r["kind"] == "overrun"
+                else t["state"] == "blocked" and t.get("waits_on") in BLOCKED_ON_HUMAN and stamp(t) <= stamp(r)):
             continue
         extra = {} if not a else {"returned": a["returned"]} if "returned" in a else {"with": "site-manager", "with_since": a["ts"]}
         found.append({**{k: r[k] for k in DECISION_KEYS if k in r}, **extra})
@@ -4987,22 +5007,62 @@ def decision_ask(args):
         raise Fail("decision ask: run it from inside a task worktree")
     repo = Repo()
     last = read_tasks(repo.root).get(slug, {})
-    if last.get("state") != "blocked" or last.get("waits_on") not in (None, "human"):
+    if last.get("state") != "blocked" or last.get("waits_on") not in BLOCKED_ON_HUMAN:
         raise Fail("decision ask: declare `factory state blocked human` first")
     ask, options = " ".join(args.text.split()), [" ".join(o.split()) for o in args.option]
-    for refused, why_not in ((not 1 <= len(ask.split()) <= 60, "the ask is 1 to 60 words"),
+    for refused, why_not in ((not 1 <= len(ask.split()) <= ASK_WORDS, f"the ask is 1 to {ASK_WORDS} words"),
                              (not 2 <= len(options) <= 4, "give 2 to 4 options"),
                              (any(not 1 <= len(o.split()) <= 15 for o in options), "each option is 1 to 15 words"),
                              (args.recommend is not None and not 1 <= args.recommend <= len(options),
                               f"--recommend names an option, 1 to {len(options)}")):
         if refused:
             raise Fail(f"decision ask: {why_not}")
-    rid = secrets.token_hex(6)
-    log("decisions", {**record(repo.root, slug, "lead", None, os.environ.get("CLAUDE_CODE_SESSION_ID")), "id": rid,
-                      "kind": args.kind, "ask": ask, "options": options,
-                      **({"recommend": args.recommend} if args.recommend else {})})
-    print(rid)
+    print(post_decision(repo, slug, "lead", args.kind, ask, options, args.recommend))
     return 0
+
+
+def post_decision(repo, slug, role, kind, ask, options, recommend=None, **extra):
+    """Log an ask for the inbox, the one writer of it; returns its id."""
+    rid = secrets.token_hex(6)
+    log("decisions", {**record(repo.root, slug, role, None, os.environ.get("CLAUDE_CODE_SESSION_ID")), "id": rid,
+                      "kind": kind, "ask": ask, "options": options,
+                      **({"recommend": recommend} if recommend else {}), **extra})
+    return rid
+
+
+OVERRUN_FLAG = 10  # unanswered overrun cards in a row, over the repository, that the card says so at
+
+
+def post_overrun_card(repo, slug, ask, recommend=None, granted=None):
+    """Post an overrun `ask` to the inbox (whitespace collapsed, cut to ASK_WORDS words) with the four fixed options; the task
+    runs on. `granted`: the minutes its limit was extended by already, so `Continue` extends nothing. Else `Continue` names
+    `limits.extension_minutes`, kept as `minutes` on the record for the pick to extend by. From OVERRUN_FLAG cards that no
+    pick on an overrun card has followed, the ask says so first."""
+    records = repo_log("decisions", repo.root) or []
+    overruns = {r["id"] for r in records if r.get("kind") == "overrun"}
+    answered = max((i for i, r in enumerate(records) if "choice" in r and r["id"] in overruns), default=-1)
+    count = 1 + sum(r.get("kind") == "overrun" for r in records[answered + 1:])
+    flag = f"{count} overruns in a row unanswered: limits or sizing look structurally wrong. " if count >= OVERRUN_FLAG else ""
+    words, minutes = (flag + ask).split(), load_settings()["extension_minutes"]
+    post_decision(repo, slug, "site-manager", "overrun",
+                  " ".join(words if len(words) <= ASK_WORDS else [*words[:ASK_WORDS - 1], "…"]),
+                  [f"Continue: keep going, the limit is already extended by {granted} minutes" if granted
+                   else f"Continue: {minutes} more minutes, then hand over or ask again",
+                   "Cut: hand over what works now, list what is left in the pull request",
+                   "Split: hand over the finished part, the rest becomes new tasks",
+                   "Abandon: stop work; the dispatcher closes the task"], recommend, **({} if granted else {"minutes": minutes}))
+
+
+def extend_for_human(repo, slug, rid, minutes):
+    """Log the human's `Continue` as a new overrun firing decided `extended` at birth.
+    Whether the limit moved: False without a task start to count from."""
+    given = grant({"repo": repo, "rows": None}, slug, minutes)
+    if given:
+        said = f"the human picked continue: decision {rid}"
+        f = fire(repo, {"criterion": "overrun", "slug": slug, "subject": slug, "detail": said})
+        log_firing(repo, id=f["id"], decision="extended", reason=said, by="human", minutes=minutes, **dict(zip(("from", "until"), given)))
+        log_firing(repo, id=f["id"], cleared=True)
+    return bool(given)
 
 
 def decision_list(args):
@@ -5019,12 +5079,22 @@ def decision_list(args):
 
 def apply_pick(repo, d, n, by=None, reason=None):
     """Record the pick of option `n` of the decision `d` (the human's, or `by` the site manager with its `reason`) and queue
-    it for the lead."""
+    it for the lead. A continue on an overrun card posted with `minutes` extends the limit now. Returns the notes the human
+    is told."""
     log("decisions", {"ts": now(), "repo": repo.root, "id": d["id"], "slug": d["slug"], "choice": n,
                       **({"by": by, "reason": reason} if by else {})})
+    notes = []
+    asked = next(r for r in repo_log("decisions", repo.root) if r.get("id") == d["id"] and "ask" in r)
+    if d["kind"] == "overrun" and n == 1 and "minutes" in asked:  # a continue card was extended when posted
+        granted = min(asked["minutes"], load_settings()["extension_minutes"])
+        if not extend_for_human(repo, d["slug"], d["id"], granted):
+            notes.append(f"the limit of {d['slug']} was not extended: no task start to count from")
+        elif granted < asked["minutes"]:
+            notes.append(f"the limit of {d['slug']} was extended by {granted} minutes, not {asked['minutes']}: limits.extension_minutes is {granted}")
     option = d["options"][n - 1]
     who = f"the site manager picked {n} for the human: {option}. {reason}" if by else f"the human picked {n}: {option}"
     outbox_put(repo, d["slug"], f"INBOX: {d['slug']}: decision {d['id']}: {who}")
+    return notes
 
 
 def return_decision(repo, d, reason, by):
@@ -5066,8 +5136,10 @@ def decision_answer(args):
         return 0
     if not args.choice.isdecimal() or not 1 <= int(args.choice) <= n:
         raise Fail(f"decision answer: the pick is 1 to {n}, lead or site-manager")
-    apply_pick(repo, found, int(args.choice))
+    notes = apply_pick(repo, found, int(args.choice))
     print(f"answered {found['slug']}: {args.choice}; the next tick delivers it")
+    for note in notes:
+        print(note)
     return 0
 
 
@@ -5094,6 +5166,21 @@ def with_dispatcher(p, fallback):
     found, p["dispatcher_why"] = ((None, "cannot list sessions") if p["sessions"] is None
                                   else find_dispatcher(p["sessions"], p["repo"].root, fallback))
     p["dispatcher"] = found and found["name"]
+
+
+def pause_unanswered_stops(p, repo):
+    """Pause, as the site manager's pause does, each task whose stop card (an open `overrun` card whose record has `recommend` 2, 3 or 4) has gone
+    `limits.overrun_stop_wait_minutes` unanswered and whose last record is `working` (a blocked task is not running, and a pause would replace
+    its own record): no decision record, the lead told, not the dispatcher."""
+    wait, tasks = load_settings()["overrun_stop_wait_minutes"] * 60, read_tasks(repo.root)
+    open_ids = {d["id"] for d in open_decisions(repo.root) if d["kind"] == "overrun"}
+    for r in repo_log("decisions", repo.root) or []:
+        if r["id"] in open_ids and "ask" in r and "minutes" in r and r.get("recommend") in (2, 3, 4) and tasks.get(r["slug"], {}).get("state") == "working" and p["now"] - (epoch(stamp(r)) or p["now"]) >= wait:
+            declare(repo, r["slug"], "site-manager", "blocked", waits_on=["human"], paused=True)
+            task_event("TaskPaused", repo, r["slug"], waits_on=["human"])
+            forward(repo, p["dispatcher"], r["slug"], "SITE MANAGER",
+                    f"paused: the human has not answered the stop recommended in the inbox. Start no build run and end your turn; "
+                    f"the answer arrives as INBOX: {r['slug']}.")
 
 
 def watch_tick(args, repo):
@@ -5163,6 +5250,7 @@ def watch_tick(args, repo):
             with_dispatcher(p, args.dispatcher)
         if p["dispatcher"]:
             p = {**gather(repo, args.dispatcher, p["sessions"]), "snap": snap}
+    pause_unanswered_stops(p, repo)
     orphaned = str(p["dispatcher_why"]).startswith("no dispatcher session")  # not a shared or missing name
     failure, undecided = None, "its decision was missing or not valid"
     if not woken:

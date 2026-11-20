@@ -406,7 +406,7 @@ func (m *model) message(p paint, c inboxCard, w int) block {
 			return p.t(" "+label+" ", th.Muted)
 		}
 		lines = append(lines, "", button("Accept", !in.reject, th.Green)+p.sp(2)+button("Reject", in.reject, th.Red))
-	default:
+	case c.d.Kind != "overrun": // an overrun card is not delegable
 		lines = append(lines, "")
 		for _, l := range wrapPlain("L leave it to the lead · S to the site manager", max(8, w)) {
 			lines = append(lines, p.t(l, th.Faint))

@@ -227,6 +227,14 @@ class DelegateTests(Delegation):
         self.assertEqual((self.outbox(), len(self.answers())), ([], 0))
         self.assertEqual(self.as_who(False, "decision", "answer", "ap1", "1")[0], 0)
 
+    def test_an_overrun_card_is_the_humans_alone(self):
+        self.seed("decisions", [{"ts": iso(NOW), "repo": ROOT, "id": "ov1", "slug": "x", "kind": "overrun", "ask": "Over its limit.",
+                                 "options": ["Continue", "Cut", "Split", "Abandon"]}])
+        for what in ("lead", "site-manager"):
+            code, _, err = self.as_who(False, "decision", "answer", "ov1", what)
+            self.assertEqual((code, err.strip()), (2, "factory: decision answer: a decision of kind overrun is the human's alone"))
+        self.assertEqual((self.outbox(), len(self.answers())), ([], 0))
+
     def test_a_lead_never_delegates(self):
         for what in ("lead", "site-manager"):
             code, _, err = self.as_who(True, "decision", "answer", self.rid, what)
@@ -323,5 +331,5 @@ class OtherCriterionTests(Overrun):
                 self.setUp()
                 self.ask()
                 self.watch({**word, "reason": "r"})
-                self.assertEqual([(d["decision"], d["by"]) for d in self.decisions()], [("escalated", "watch")])
-                self.assertEqual(self.records("decisions"), [])
+                self.assertEqual([(d["decision"], d["by"]) for d in self.decisions()], [("extended", "watch")])
+                self.assertEqual([r for r in self.records("decisions") if "choice" in r or "returned" in r], [])
