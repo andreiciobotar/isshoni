@@ -54,7 +54,7 @@ class Comments(Home):
     def seed(self, state):
         (self.store / "tasks.jsonl").write_text(json.dumps({"repo": ROOT, "slug": "t1", "state": state}) + "\n")
 
-    def tick(self, prs, lines=(), sessions=(LEAD, DISPATCHER_SESSION), permission=None, courier=SENT, gh=None, app=False,
+    def tick(self, prs, lines=(), sessions=(LEAD, DISPATCHER_SESSION), permission=None, courier=None, gh=None, app=False,
              whole=False, bots=(), rest=None):
         """`bots`: ids of the items whose author GitHub's REST lists record as a Bot; every other is a User. `rest`: answers by path."""
         listed = lambda xs: (0, json.dumps([[{"node_id": x["id"], "user": {"login": x["author"]["login"], "type": "Bot" if x["id"] in bots else "User"}}
@@ -64,7 +64,7 @@ class Comments(Home):
                    **{("gh", "api", "--paginate", "--slurp", path): answer for path, answer in (rest or {}).items()},
                    ("gh", "pr", "list"): gh or (0, json.dumps(prs), ""),
                    ("gh", "api", "--paginate", "--slurp", LINES): (0, json.dumps([list(lines)]), ""),
-                   ("claude", "agents"): (0, json.dumps(list(sessions)), ""), ("claude", "-p"): courier,
+                   ("claude", "agents"): (0, json.dumps(list(sessions)), ""), ("claude", "-p"): courier or self.takes(SENT, cwd=f"{WT}/t1"),
                    ("notify",): (0, "", "")}
         for login, level in (permission or {"andrei": "admin"}).items():
             answers[("gh", "api", PERMISSION % login)] = (0, json.dumps({"permission": level, "user": {"type": "Bot" if app else "User"}}), "")
@@ -105,7 +105,7 @@ class CourierModelTests(unittest.TestCase):
             with mock.patch.object(factory, "SETTINGS_PATH", path), \
                     mock.patch.object(factory, "run", lambda argv, **kw: calls.append(argv) or (0, "{}", "")):
                 factory.courier(SimpleNamespace(root=ROOT), "lead-x", "read the file")
-        self.assertEqual(calls[0][:4], ["claude", "-p", "--model", "sonnet"])
+        self.assertEqual(calls[0][:6], ["claude", "-p", "-n", "factory-courier", "--model", "sonnet"])  # pins the courier's argv
 
 
 class WatchCommentsTests(Comments):

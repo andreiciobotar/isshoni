@@ -32,6 +32,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
+from types import SimpleNamespace
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 PERMISSION_MODES = ("acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan")
@@ -2792,6 +2793,11 @@ def cmd_hook(args):
             file_feedback(lines, tag)
     except Exception:
         pass
+    try:  # the receipt of a line of the outbox: after the event is logged, so a failure here loses nothing
+        if mine and p.get("hook_event_name") == "UserPromptSubmit" and tag["role"] == "lead" and tag["slug"] and not p.get("agent_id"):
+            take(tag, str(p.get("prompt")))
+    except Exception:
+        pass
     try:
         follow_dispatcher(p)
     except Exception:
@@ -4060,7 +4066,7 @@ def look_row(p, r, folded, skip, queued):
         spent = costs(p).get(slug)
     except NotEvaluated as e:
         unpriced = f"unpriced: {e}"
-    messages = [known(("queued", age(epoch(m["queued"]), now)), ("tries", m["tries"]), ("why", m.get("why")), ("end", m.get("end")))
+    messages = [known(("queued", age(epoch(m["queued"]), now)), ("put in", m.get("sent") and age(epoch(m["sent"]), now)), ("tries", m["tries"]), ("why", m.get("why")), ("end", m.get("end")))
                 for m in queued if m["slug"] == slug and m.get("end") != "delivered" and (epoch(m["queued"]) or 0) >= (declared or 0)]
     calls = [known(("entry", f["criterion"]), ("decision", f["decision"]), ("to", f.get("to")), ("reason", f["reason"]),
                    ("decided", f["decided"] and age(epoch(f["decided"]), now)), ("outcome", f["outcome"]))
@@ -4173,7 +4179,7 @@ def tell_decision(p, f, decision, reason, minutes=None, until=None):
              "paused": ("PAUSED", f"{slug}: paused by the site manager, for the human: {reason}")}.get(decision)
     if inbox and decision != "extended":
         heard = None  # the card is the human's notice
-    if heard and to == "lead":
+    if heard and to in ("lead", "queued"):
         forward(repo, p["dispatcher"], slug, *heard, lead=False)
 
 
@@ -4903,7 +4909,7 @@ def cmd_lead(args):
         raise Fail(f"{args.slug} is not a task of this repository")
     if read_tasks(repo.root).get(args.slug, {}).get("state") == "closed":
         raise Fail(f"{args.slug} is closed")
-    outbox_put(repo, args.slug, args.message)
+    outbox_put(repo, args.slug, f"DISPATCHER: {args.slug}: {args.message}")
     print(f"queued for {args.slug}: the next tick delivers it")
     return 0
 
@@ -6689,7 +6695,7 @@ def write_batch(slug, pr, items, bots=False, more=0):
 def courier(repo, name, line):
     """None when a headless run sent `line` to the session `name` (the only way to put text into a live session), else why not:
     the first line of the run's reply or error, up to 200 characters."""
-    argv = ["claude", "-p", "--model", load_settings()["models"]["courier"], "--permission-mode", "dontAsk", "--allowedTools", "SendMessage",
+    argv = ["claude", "-p", "-n", "factory-courier", "--model", load_settings()["models"]["courier"], "--permission-mode", "dontAsk", "--allowedTools", "SendMessage",
             "ToolSearch", *session_flags(False), "--output-format", "json", COURIER.format(name=name, line=line)]
     rc, out, err = run(argv, cwd=repo.root, timeout=COMMENT_TIMEOUT, group=True)
     try:
@@ -6730,12 +6736,16 @@ def reach_lead(repo, sessions, slug, lines):
 
 
 OUTBOX_TRIES = 3
+TAKEN_WITHIN = 120  # seconds a line put in may wait for its receipt before the try counts as failed
+TAKEN_WAIT = 15  # seconds `forward` waits, after a put, for the receipt
+NOT_TAKEN = "not delivered to its lead: put in, not taken"
+OUTBOX_TAG = re.compile(r"\[outbox ([0-9a-f]{12})\]")
 
 
 def outbox(repo, slug=None):
-    """The pending rows (`id`, `slug`, `line`, `tries`) of the outbox of `repo`, oldest first: those of the task `slug`, else
-    all. A row is one record when made and one for each change: a failed try (`tries`, `why`), its `end` (`delivered`,
-    `dispatcher`)."""
+    """The pending rows (`id`, `slug`, `line`, `tries`, and `sent` once put in) of the outbox of `repo`, oldest first: those of
+    the task `slug`, else all. A row is one record when made and one for each change: a failed try (`tries`, `why`, `sent`
+    cleared), a put (`sent`, its ts), its `end` (`delivered` with the `session` that took it, `dispatcher`)."""
     return [r for r in outbox_rows(repo) if "end" not in r and slug in (None, r["slug"])]
 
 
@@ -6757,19 +6767,54 @@ def outbox_put(repo, slug, line):
     return rid
 
 
-def deliver(repo, sessions, slug):
-    """Put every pending line of `slug` into its lead's session, oldest first: (True, None) with the rows `delivered`, else
-    (False, why) with a failed try counted on each."""
-    rows = outbox(repo, slug)
-    ok, why = reach_lead(repo, sessions, slug, [r["line"] for r in rows])
-    for r in rows:
-        outbox_log(repo, r["id"], **({"end": "delivered"} if ok else {"tries": r["tries"] + 1, "why": why}))
-    return ok, why
+def take(tag, prompt):
+    """The receipt: each `[outbox <id>]` in the `prompt` of the lead session `tag` that is a row of its task not yet
+    `delivered` ends `delivered`. The only writer of that end."""
+    seen = set(OUTBOX_TAG.findall(prompt))
+    if not seen:
+        return
+    repo = SimpleNamespace(root=tag["repo"])
+    for r in outbox_rows(repo):
+        if r["id"] in seen and r["slug"] == tag["slug"] and r.get("end") != "delivered":
+            outbox_log(repo, r["id"], end="delivered", session=tag["session"])
+
+
+def deliver(repo, sessions, slug, wait=0):
+    """Put the pending lines of `slug`, each ending ` [outbox <id>]`, into its lead's session, oldest first, one batch at a
+    time (the lock `outbox-<slug>`), and wait up to `wait` seconds for the receipt: (result, why). `taken`: every row ended
+    `delivered` by the lead's hook. `waiting`: a put is in flight or awaits its receipt, nothing was put in. `failed`: a failed
+    try was counted on each row put in too long ago (nothing put in now; the next call puts the rows in again) or that could not
+    be put in, with its why."""
+    with repo_lock(repo, f"outbox-{slug}") as free:
+        if not free:
+            return "waiting", None
+        rows = outbox(repo, slug)
+        sent = [r for r in rows if r.get("sent")]
+        if any(time.time() - epoch(r["sent"]) < TAKEN_WITHIN for r in sent):
+            return "waiting", None
+        if sent:
+            for r in sent:
+                outbox_log(repo, r["id"], tries=r["tries"] + 1, why=NOT_TAKEN, sent=None)
+            return "failed", NOT_TAKEN
+        ok, why = reach_lead(repo, sessions, slug, [f"{r['line']} [outbox {r['id']}]" for r in rows])
+        for r in rows:
+            outbox_log(repo, r["id"], **({"sent": now()} if ok else {"tries": r["tries"] + 1, "why": why}))
+        if not ok:
+            return "failed", why
+        ids, deadline = {r["id"] for r in rows}, time.time() + wait
+        while any(r["id"] in ids for r in outbox(repo, slug)) and time.time() < deadline:
+            time.sleep(1)
+        return ("waiting" if any(r["id"] in ids for r in outbox(repo, slug)) else "taken"), None
 
 
 def hand_back(repo, fallback, slug, why, rows):
     """Hand the pending `rows` of `slug` to the dispatcher in one line, else the human; the rows end `dispatcher`. The head
-    follows `why` of `reach_lead`: NOT DELIVERED when the lead has a live session, else LEAD GONE."""
+    follows `why` of `reach_lead`: NOT DELIVERED when the lead has a live session, else LEAD GONE. A row the lead took meanwhile
+    stays `delivered` and is not in the line."""
+    pending = {r["id"] for r in outbox(repo, slug)}
+    rows = [r for r in rows if r["id"] in pending]
+    if not rows:
+        return "lead"
     for r in rows:
         outbox_log(repo, r["id"], end="dispatcher")
     said = f"{slug} ({why}): {len(rows)} line(s) not delivered, oldest first: " + " | ".join(r["line"] for r in rows)
@@ -6779,16 +6824,17 @@ def hand_back(repo, fallback, slug, why, rows):
 
 
 def drain_outbox(repo, fallback):
-    """Every tick: the pending lines of each lead are put into its session once more. After OUTBOX_TRIES failed tries
-    (the first is `forward`'s) the dispatcher gets one LEAD GONE or NOT DELIVERED line for the slug. Each failed try is printed."""
+    """Every tick: the pending lines of each lead are put into its session once more, unless a put awaits its receipt. After
+    OUTBOX_TRIES failed tries (the first is `forward`'s) the dispatcher gets one LEAD GONE or NOT DELIVERED line for the slug.
+    Each failed try is printed."""
     slugs = dict.fromkeys(r["slug"] for r in outbox(repo))
     sessions = list_sessions() if slugs else []
     if sessions is None:
         return print("outbox: sessions cannot be listed")
     for slug in slugs:
-        ok, why = deliver(repo, sessions, slug)
+        result, why = deliver(repo, sessions, slug)
         rows = outbox(repo, slug)
-        if ok:
+        if result != "failed" or not rows:
             continue
         tries = max(r["tries"] for r in rows)
         print(f"outbox: {slug}: try {tries} failed: {why}")
@@ -6798,7 +6844,8 @@ def drain_outbox(repo, fallback):
 
 def forward(repo, fallback, slug, head, said, lead=True):
     """Put `head: <slug>: said` into the session of the lead of `slug`, brought back if it was retired, with the lines it missed
-    (see `reach_lead`); "lead" when it got it, "queued" when a retired lead could not be resumed yet (the tick tries again).
+    (see `reach_lead`); "lead" when its session took it (the receipt, see `deliver`), "queued" when a retired lead could not be
+    resumed yet or the put awaits its receipt (the tick goes on).
     Else the dispatcher's, found as `find_dispatcher` does, with why it did not reach the lead; the role that got it, or None.
     Without `lead` only the dispatcher is tried, with `head: said`."""
     sessions = list_sessions()
@@ -6806,17 +6853,22 @@ def forward(repo, fallback, slug, head, said, lead=True):
         rid = outbox_put(repo, slug, f"{head}: {slug}: {said}")
         if sessions is None:  # not listed: not "gone"; the tick tries again
             return "queued"
-        ok, why = deliver(repo, sessions, slug)
-        if ok:
-            return "lead"
+        result, why = deliver(repo, sessions, slug, wait=TAKEN_WAIT)
+        if result != "failed":
+            return "lead" if result == "taken" else "queued"
         if why == CLOSED:
             return hand_back(repo, fallback, slug, why, outbox(repo, slug))
+        if why == NOT_TAKEN:  # an earlier put went unreceipted: the new line waits for the tick, which counts the tries
+            rows = outbox(repo, slug)
+            return hand_back(repo, fallback, slug, why, rows) if max(r["tries"] for r in rows) >= OUTBOX_TRIES else "queued"
         session = lead_session(sessions, repo, slug)
         if session and "pid" not in session:
             return "queued"
         older = [r for r in outbox(repo, slug) if r["id"] != rid]
         if older:
             hand_back(repo, fallback, slug, why, older)
+        if rid not in {r["id"] for r in outbox(repo, slug)}:  # taken meanwhile: stays delivered
+            return "lead"
         outbox_log(repo, rid, end="dispatcher")
         return forward(repo, fallback, slug, head, f"{slug} ({why}): {said}", lead=False)
     dispatcher, why = find_dispatcher(sessions or [], repo.root, fallback)
@@ -8365,7 +8417,7 @@ def send_back(repo, fallback, pr, slug, evidence):
                 f"#{pr['number']} went back to you: {evidence}. Fix it on your branch (merge {repo.remote}/{repo.default} in), "
                 "re-review what you change, and hand over again: it is then merged by itself.")
         to = tell_lead(repo, fallback, slug, "LANDER", said, f"factory: #{pr['number']} went back to {slug}")
-    told = "Started: a tech lead run." if to == "tech lead" else f"Told: the {to}."
+    told = "Started: a tech lead run." if to == "tech lead" else "Told: the lead (queued)." if to == "queued" else f"Told: the {to}."
     if failed := gh_step(repo, "pr", "comment", str(pr["number"]), "--body", f"Merge queue: back to draft: {evidence}. {told}"):
         print(f"#{pr['number']} comment not posted: {failed[1]}")
     return to
