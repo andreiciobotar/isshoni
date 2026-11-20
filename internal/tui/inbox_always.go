@@ -139,21 +139,3 @@ func (m *model) standingSet(msg standingMsg) tea.Cmd {
 	}
 	return m.refreshFactory(0)
 }
-
-// needsCount is what the Inbox tab's badge counts: the waiting tasks, except those whose only decisions are
-// picked: a picked one waits on a slot, not on the human.
-func (m *model) needsCount() int {
-	type task struct{ path, slug string }
-	picked, open := map[task]bool{}, map[task]bool{}
-	for _, c := range m.cards() {
-		t := task{c.path, c.d.Slug}
-		picked[t], open[t] = picked[t] || c.d.Picked != 0, open[t] || c.d.Picked == 0
-	}
-	n := 0
-	for _, it := range m.waiting() {
-		if t := (task{it.path, it.task.Slug}); !picked[t] || open[t] {
-			n++
-		}
-	}
-	return n
-}

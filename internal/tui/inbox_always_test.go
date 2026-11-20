@@ -220,8 +220,8 @@ func TestInboxPickedCardsAreNotCountedInTheBadge(t *testing.T) {
 	}
 	repos[0].st.Decisions = repos[0].st.Decisions[1:] // only the picked card remains on that task
 	setInbox(m, repos...)
-	if out := plain(m); !strings.Contains(out, "▲6") {
-		t.Fatalf("a task whose only card is picked is not counted (%s):\n%s", want, out)
+	if out := plain(m); !strings.Contains(out, "▲7") {
+		t.Fatalf("a blocked task whose only card is picked still counts (%s):\n%s", want, out)
 	}
 }
 

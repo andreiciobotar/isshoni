@@ -401,7 +401,7 @@ func TestInboxFooterAndHelpNameThePickKeys(t *testing.T) {
 	}
 	send(m, "2")
 	foot := strings.Split(plain(m), "\n")[29]
-	for _, want := range []string{"enter do the marked one", "←→/hl mark accept · reject", "y n accept · reject"} {
+	for _, want := range []string{"enter do the marked one", "←→/hl mark a button", "y n accept · reject"} {
 		if !strings.Contains(foot, want) {
 			t.Errorf("confirm footer lacks %q: %q", want, foot)
 		}

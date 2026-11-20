@@ -270,7 +270,7 @@ func (m *model) inboxPage(p paint, w, h int) (lines block, spans [][2]int) {
 		}
 	}
 	items := slices.DeleteFunc(m.waiting(), func(it waitItem) bool {
-		return slices.ContainsFunc(cs, func(c inboxCard) bool { return c.path == it.path && c.d.Slug == it.task.Slug })
+		return slices.ContainsFunc(cs, func(c inboxCard) bool { return c.d.Picked == 0 && c.path == it.path && c.d.Slug == it.task.Slug })
 	})
 	var band block
 	if len(items) > 0 || len(cs) == 0 {

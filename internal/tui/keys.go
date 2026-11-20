@@ -44,7 +44,7 @@ var keys = keyMap{
 	// the Inbox: a digit picks an option of the card under the cursor, then the pick is confirmed
 	Pick:    key.NewBinding(key.WithKeys("1", "2", "3", "4"), key.WithHelp("1-4", "pick an option")),
 	Confirm: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "do the marked one")),
-	Mark:    key.NewBinding(key.WithKeys("left", "right", "h", "l", "tab"), key.WithHelp("←→/hl", "mark accept · reject")),
+	Mark:    key.NewBinding(key.WithKeys("left", "right", "h", "l", "tab"), key.WithHelp("←→/hl", "mark a button")),
 	Accept:  key.NewBinding(key.WithKeys("y"), key.WithHelp("y n", "accept · reject")),
 	History: key.NewBinding(key.WithKeys("H"), key.WithHelp("H", "all history")),
 	Reject:  key.NewBinding(key.WithKeys("n", "esc")),

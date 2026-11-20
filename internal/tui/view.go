@@ -105,7 +105,7 @@ func (m *model) header(p paint) string {
 		}
 		badge := ""
 		if v == viewInbox {
-			if n := m.needsCount(); n > 0 {
+			if n := len(m.waiting()); n > 0 {
 				badge = fmt.Sprintf(" ▲%d", n)
 			}
 		}

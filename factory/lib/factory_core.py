@@ -1936,6 +1936,9 @@ def cmd_new(args):
             raise Fail(f"--lead-model{problem}")
         settings["models"]["lead"] = args.lead_model
     repo = Repo()
+    if args.base:
+        base_branch(repo, args.base)
+    refuse_existing(repo, args.slug)
     sessions = list_sessions()
     if sessions is None:
         raise Fail("cannot list sessions with `claude agents --json --all`")
