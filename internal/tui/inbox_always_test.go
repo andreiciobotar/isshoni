@@ -223,6 +223,9 @@ func TestInboxPickedCardsAreNotCountedInTheBadge(t *testing.T) {
 	if out := plain(m); !strings.Contains(out, "▲7") {
 		t.Fatalf("a blocked task whose only card is picked still counts (%s):\n%s", want, out)
 	}
+	if out := plain(m); !strings.Contains(out, "answer question") {
+		t.Fatalf("a blocked task whose only card is picked is still in Needs you:\n%s", out)
+	}
 }
 
 func TestInboxCardDrawsTheNoteUnderTheAskInFaint(t *testing.T) {
