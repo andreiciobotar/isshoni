@@ -711,7 +711,7 @@ class WatchTests(Harness):
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["to"]["enum"],
                          ["dispatcher", "lead"])
         self.assertEqual(schema["properties"]["decisions"]["items"]["properties"]["decision"]["enum"],
-                         ["escalated", "suppressed", "paused", "extended", "told", "closed"])
+                         ["escalated", "suppressed", "paused", "extended", "told", "closed", "picked", "returned"])
         head, _, body = argv[-1].partition("\n\n")
         self.assertEqual(head, f"Job: watch. Repo: {ROOT}. The dispatcher's session name is dispatcher-repo.")
         picture = json.loads(body)
@@ -1401,13 +1401,22 @@ class FiringsTests(Harness):
         self.assertEqual(len(doc["misses"]), 3)
         entries = doc["summary"].pop("entries")
         self.assertEqual(entries["ended-undeclared"], {"fired": 5, "to_lead": 0, "escalated": 3, "acted": 1, "ignored": 1, "no_outcome": 1,
-                                                       "suppressed": 1, "told": 0, "extended": 0, "paused": 0, "closed": 0, "missed": 1, "precision": 0.5})
+                                                       "suppressed": 1, "told": 0, "extended": 0, "paused": 0, "closed": 0, "picked": 0, "returned": 0, "missed": 1, "precision": 0.5})
         self.assertEqual(entries["unlisted"]["missed"], 2)
         self.assertEqual(doc["summary"], {"escalated": 3, "acted": 1, "ignored": 1, "no_outcome": 1, "suppressed": 1,
                                           "paused": 0, "extended": 0, "old_rule": 0, "kept": 0, "overran": 0, "missed": 3, "missed_suppressed": 1, "missed_never_fired": 2,
                                           "precision": 0.5, "recall": 0.25, "told": 0, "told_acted": 0, "told_noise": 0,
                                           "told_collided": 0, "told_no_outcome": 0, "told_undelivered": 0,
-                                          "closed": 0, "stood": 0, "reopened": 0})
+                                          "closed": 0, "stood": 0, "reopened": 0, "picked": 0, "returned": 0})
+
+    def test_a_decision_firing_picked_or_returned_is_counted(self):
+        self.seed("firings", [fired("p1", criterion="decision"), decided("p1", "picked") | {"option": 1, "by": "site-manager"},
+                              fired("r1", criterion="decision"), decided("r1", "returned") | {"by": "watch"}])
+        doc = json.loads(self.cli("firings", "--json")[1])["summary"]
+        self.assertEqual((doc["picked"], doc["returned"], doc["entries"]["decision"]["picked"], doc["entries"]["decision"]["returned"]), (1, 1, 1, 1))
+        out = self.cli("firings")[1]
+        self.assertIn("decision: fired 2; escalated 0 (acted 0, ignored 0, no outcome 0); to lead 0; suppressed 0; picked 1; returned 1;", out)
+        self.assertIn("no outcome 0); picked 1; returned 1; missed 0", out)
 
     def test_a_lead_message_shows_in_the_table_and_everything_in_the_json(self):
         self.seed("firings", [fired("l1"), decided("l1", "escalated") | {
