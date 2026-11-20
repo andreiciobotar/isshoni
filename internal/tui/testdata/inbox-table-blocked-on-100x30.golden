@@ -1,0 +1,30 @@
+ Isshoni [1 ✉ ▲7] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
+ Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                   
+  old-plumbing       ✓ merged, not cleaned         2h00m  #9                      [kept]            
+                     kept: uncommitted changes                                                      
+  release-notes      · settled, not cleaned       50m00s  release-notes.md                          
+                                                                                                    
+ beta-é日本語                                               in motion ●●● 3/2   review 0   merged 0 
+  SLUG               PHASE                       ELAPSED  PR                      FLAGS             
+  task-00            ⠋ in motion                   1m00s  -                                         
+  task-01            ⠋ in motion                   2m00s  -                                         
+  task-02            ⠋ in motion                   3m00s  -                                         
+                                                                                                    
+ gamma                                                                                              
+  ⚠ not inside a git repository                                                                     
+                                                                                                    
+ delta-docs                                            in motion ▲▲▲▲▲▲▲● 8/5   review 2   merged 0 
+  SLUG               PHASE                       ELAPSED  PR                      FLAGS             
+  docs-after-review  ▲ blocked on design-revie…        -  -                                         
+                     needs the design review to land first, then the docs can quote its final word… 
+  paused-fresh       ▲ paused 12m: waits login…        -  -                                         
+  paused-stale       ▲ paused 45m: waits login…        -  -                                         
+  pick-a-theme       ▲ blocked on dispatcher           -  -                                         
+                     the palette is still open: which brief decides it?                             
+  slow-import        ▲ blocked, needs you              -  -                                         
+  stuck-on-keys      ▲ blocked, needs you              -  -                                         
+  wide-ask           ▲ blocked, needs you              -  -                                         
+  rush-fix           ⠋ motion · prioritized 3m    10m00s  -                                         
+  design-review      ◆ waiting for review              -  design.md                                 
+  video-cut          ◆ waiting for review              -  example.com/cut/v2                        
+ ↑↓/jk move  ·  1-4 pick an option  ·  c edit cap  ·  tab next view  ·  ? help  ·  q quit           

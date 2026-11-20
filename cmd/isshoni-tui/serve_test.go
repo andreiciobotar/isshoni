@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -267,6 +268,9 @@ func (e *testEnv) view(addr string, o viewOpts) *viewer {
 		e.t.Fatal(err)
 	}
 	go func() { v.exited <- sess.Wait() }()
+	if !o.noPty {
+		io.WriteString(v.in, "2") // the dashboard starts on the Inbox; these tests read the sessions
+	}
 	return v
 }
 
@@ -477,7 +481,7 @@ func TestServeATerminalWithoutASizeGetsTheDefault(t *testing.T) {
 
 	v := e.view(addr, viewOpts{signer: s, noSize: true})
 	v.waitFor("zebrafish")
-	v.send("3")
+	v.send("4")
 	v.waitFor("INTAKE")
 	v.send("q")
 	if err := v.waitExit(); err != nil {
@@ -500,7 +504,7 @@ func TestServeAbruptDisconnectLeavesTheOthersRunning(t *testing.T) {
 	b := e.view(addr, viewOpts{signer: s})
 	a.waitFor("zebrafish")
 	b.waitFor("zebrafish")
-	a.send("3c")
+	a.send("4c")
 	a.waitFor("INTAKE")
 	a.sess.Close()
 	a.client.Close()
@@ -510,9 +514,9 @@ func TestServeAbruptDisconnectLeavesTheOthersRunning(t *testing.T) {
 	c := e.view(addr, viewOpts{signer: s})
 	c.waitFor("zebrafish")
 	// the server's own shutdown closes the window channel of the viewers still on the Factory view
-	b.send("3")
+	b.send("4")
 	b.waitFor("INTAKE")
-	c.send("3")
+	c.send("4")
 	c.waitFor("INTAKE")
 	if err := stop(); err != nil {
 		t.Fatal(err)
@@ -558,6 +562,43 @@ func TestServeColourFollowsTheClientTerminal(t *testing.T) {
 
 func settingsPath(e *testEnv) string {
 	return filepath.Join(e.home, ".claude", "factory", "settings.toml")
+}
+
+func TestServeOnlyAWriteKeyChangesTheCap(t *testing.T) {
+	e := newTestEnv(t)
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is missing")
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ISSHONI_ROOT", root)
+	requireTempFactoryHome(t)
+	ro, rw := newSigner(t), newSigner(t)
+	e.allow(keyLine(ro, ""), keyLine(rw, "write"))
+	addr, _ := e.start()
+
+	r := e.view(addr, viewOpts{signer: ro})
+	r.waitFor("zebrafish")
+	r.send("1c")
+	r.waitFor("read-only: this key may not change the cap")
+	r.send("6\r")
+	if _, err := os.Stat(settingsPath(e)); err == nil {
+		t.Fatal("a read-only key wrote the settings file")
+	}
+	waitFor(t, "the read-only mode in the log", func() bool { return strings.Contains(e.logs.String(), "read-only") })
+
+	w := e.view(addr, viewOpts{signer: rw})
+	w.waitFor("zebrafish")
+	w.send("1c\x7f6\r")
+	waitFor(t, "the cap in the settings file", func() bool {
+		b, _ := os.ReadFile(settingsPath(e))
+		return strings.Contains(string(b), "worktree_cap = 6\n")
+	})
+	if !strings.Contains(e.logs.String(), "write") {
+		t.Fatalf("the log does not say the session may write: %s", e.logs.String())
+	}
 }
 
 func TestServeQuitEndsOnlyThatViewer(t *testing.T) {
@@ -621,7 +662,7 @@ func TestServeRedrawsReachTheClientAsTheDashboardWroteThem(t *testing.T) {
 	v := e.view(addr, viewOpts{signer: s, w: 120, h: 36})
 	v.waitFor("zebrafish")
 	mark := v.out.Len()
-	for _, k := range []string{"j", "j", "j", "j", "3", "1"} {
+	for _, k := range []string{"j", "j", "j", "j", "4", "1"} {
 		v.send(k)
 	}
 	waitFor(t, "a redraw with a bare line feed", func() bool { return bareNewline.MatchString(v.out.String()[mark:]) })

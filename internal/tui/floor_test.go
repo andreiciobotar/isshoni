@@ -28,7 +28,7 @@ func rowsOf(repos []factoryRepo) (n int) {
 }
 
 func TestFloorPlacesEveryPhase(t *testing.T) {
-	m := factoryModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: fstatus(5,
+	m := floorModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: fstatus(5,
 		ftask("m", "motion"), ftask("b", "blocked"), ftask("v", "review"), ftask("g", "merged"), ftask("s", "settled"), ftask("u", "frozen"))})
 	got := floorCubes(m)
 	for slug, place := range map[string]string{"m": "build", "b": "blocked", "v": "review", "g": "merged", "s": "settled", "u": "blocked"} {
@@ -63,7 +63,7 @@ func TestFloorBuildOrder(t *testing.T) {
 		}
 		return x
 	}
-	m := factoryModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: fstatus(5,
+	m := floorModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: fstatus(5,
 		mk("c-none", 0, 0), mk("a-far", 90, 100), mk("d-nolimit", 50, 0), mk("b-near", 10, 100))})
 	got := floorCubes(m)
 	order := []string{"a-far", "b-near", "c-none", "d-nolimit"} // the nearest to REVIEW first; the unknown last, by slug
@@ -80,7 +80,7 @@ func TestFloorEveryTaskIsACubeOrCounted(t *testing.T) {
 		"waiting": waitingRepos(), "fake": fakeFactoryRepos(), "crowded": {crowded}, "none": nil, "one": {alpha()},
 	} {
 		for _, sz := range [][2]int{{80, 24}, {100, 30}, {140, 40}, {60, 16}} {
-			m := factoryModel(true, sz[0], sz[1], repos...)
+			m := floorModel(true, sz[0], sz[1], repos...)
 			l := m.floorNow()
 			n := len(l.cubes)
 			for _, c := range l.chips {
@@ -92,20 +92,20 @@ func TestFloorEveryTaskIsACubeOrCounted(t *testing.T) {
 			plain(m)
 		}
 	}
-	m := factoryModel(true, 80, 24, waitingRepos()...)
+	m := floorModel(true, 80, 24, waitingRepos()...)
 	if n := len(m.floorNow().cubes); n < 6 {
 		t.Errorf("80x24 holds at least 6 cubes, got %d", n)
 	}
-	if out := plain(factoryModel(true, 80, 24, crowded)); !strings.Contains(out, "BUILD 12") || !strings.Contains(out, "more") {
+	if out := plain(floorModel(true, 80, 24, crowded)); !strings.Contains(out, "BUILD 12") || !strings.Contains(out, "more") {
 		t.Errorf("a crowded station keeps its full count and a +N:\n%s", out)
 	}
 }
 
 func TestFloorLabelsNameTheRepositoryOnlyWhenSeveralHaveTasks(t *testing.T) {
-	if out := plain(factoryModel(true, 140, 40, waitingRepos()...)); !strings.Contains(out, "alpha/") {
+	if out := plain(floorModel(true, 140, 40, waitingRepos()...)); !strings.Contains(out, "alpha/") {
 		t.Errorf("several repositories: the label has the repository:\n%s", out)
 	}
-	if out := plain(factoryModel(true, 140, 40, alpha())); strings.Contains(out, "alpha/") {
+	if out := plain(floorModel(true, 140, 40, alpha())); strings.Contains(out, "alpha/") {
 		t.Errorf("one repository: no prefix:\n%s", out)
 	}
 }
@@ -113,7 +113,7 @@ func TestFloorLabelsNameTheRepositoryOnlyWhenSeveralHaveTasks(t *testing.T) {
 func TestFloorCubeMarks(t *testing.T) {
 	working, human, over := ftask("work", "motion"), ftask("ask", "blocked"), ftask("late", "motion")
 	working.Session, over.Overtime = "working", true
-	m := factoryModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: fstatus(5, working, human, over)})
+	m := floorModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: fstatus(5, working, human, over)})
 	out := plain(m)
 	if !strings.Contains(out, "▐▓⠋▒▒▌") || !strings.Contains(out, "▐▓▲▒▒▌") || !strings.Contains(out, "█▓▓▒▒█") {
 		t.Errorf("a working cube turns its spinner, a cube that waits on the human has a ▲, an overtime cube has heavy edges:\n%s", out)
@@ -123,7 +123,7 @@ func TestFloorCubeMarks(t *testing.T) {
 // transit: a cube moves for a second from its old place to its new one.
 func TestFloorCubesTravelBetweenPlaces(t *testing.T) {
 	a, b, gone := ftask("a", "motion"), ftask("b", "review"), ftask("gone", "settled")
-	m := factoryModel(true, 100, 30, factoryRepo{name: "r", path: "/r", st: fstatus(5, a, b, gone)})
+	m := floorModel(true, 100, 30, factoryRepo{name: "r", path: "/r", st: fstatus(5, a, b, gone)})
 	m.floorSync()
 	before := floorCubes(m)
 
@@ -170,7 +170,7 @@ func TestFloorFirstResultOnlyTakesTheCubesIn(t *testing.T) {
 }
 
 func TestFloorBeltTurnsOnlyWhileASessionWorks(t *testing.T) {
-	idle := factoryModel(true, 100, 30, factoryRepo{name: "r", path: "/r", st: fstatus(5, ftask("a", "motion"))})
+	idle := floorModel(true, 100, 30, factoryRepo{name: "r", path: "/r", st: fstatus(5, ftask("a", "motion"))})
 	before := plain(idle)
 	idle.step(time.Second)
 	if idle.floor.belt != 0 || plain(idle) != before {
@@ -178,7 +178,7 @@ func TestFloorBeltTurnsOnlyWhileASessionWorks(t *testing.T) {
 	}
 	busy := ftask("a", "motion")
 	busy.Session = "working"
-	m := factoryModel(true, 100, 30, factoryRepo{name: "r", path: "/r", st: fstatus(5, busy)})
+	m := floorModel(true, 100, 30, factoryRepo{name: "r", path: "/r", st: fstatus(5, busy)})
 	before = plain(m)
 	m.step(floorBeltEvery)
 	if m.floor.belt != 1 || plain(m) == before {
@@ -198,7 +198,7 @@ func TestFactoryRefreshesEveryTenSecondsOnTheTab(t *testing.T) {
 }
 
 func TestFloorFilter(t *testing.T) {
-	m := factoryModel(true, 100, 30, fakeFactoryRepos()...)
+	m := floorModel(true, 100, 30, fakeFactoryRepos()...)
 	send(m, "/")
 	out := plain(m)
 	for _, want := range []string{"repository", "all", "alpha", "beta-é日本語", "gamma", "enter choose"} {
@@ -265,16 +265,16 @@ func TestFloorHonesty(t *testing.T) {
 	if out := plain(loading); !strings.Contains(out, "reading the factory…") || strings.Contains(out, "No task on the floor") || !strings.Contains(out, "BUILD 0") {
 		t.Errorf("before the first result the floor is there with a plate:\n%s", out)
 	}
-	if out := plain(factoryModel(true, 100, 30)); !strings.Contains(out, "No task on the floor") || !strings.Contains(out, "REVIEW 0") || strings.Contains(out, "reading the factory") {
+	if out := plain(floorModel(true, 100, 30)); !strings.Contains(out, "No task on the floor") || !strings.Contains(out, "REVIEW 0") || strings.Contains(out, "reading the factory") {
 		t.Errorf("no task: the idle floor and a plate:\n%s", out)
 	}
-	m := factoryModel(true, 100, 30, fakeFactoryRepos()...)
+	m := floorModel(true, 100, 30, fakeFactoryRepos()...)
 	m.fac.repos[0].st.PRs.AsOf = ptr(float64(m.now().Add(-12 * time.Minute).Unix()))
 	out := plain(m)
 	if !strings.Contains(out, "⚠ gamma: not inside a git repository") || !strings.Contains(out, "alpha: pull requests as of 12m") {
 		t.Errorf("a failed repository and stale pull requests are said under the scene:\n%s", out)
 	}
-	if out := plain(factoryModel(true, 100, 30, fakeFactoryRepos()[1:]...)); !strings.Contains(out, "task-02") || !strings.Contains(out, "⚠ gamma") {
+	if out := plain(floorModel(true, 100, 30, fakeFactoryRepos()[1:]...)); !strings.Contains(out, "task-02") || !strings.Contains(out, "⚠ gamma") {
 		t.Errorf("the other repositories still draw:\n%s", out)
 	}
 	send(m, "/", "j", "j", "j", "enter")
@@ -286,7 +286,7 @@ func TestFloorHonesty(t *testing.T) {
 func TestFloorSurvivesAnyWindow(t *testing.T) {
 	for _, sz := range [][2]int{{60, 16}, {61, 17}, {80, 24}, {200, 60}} {
 		for _, repos := range [][]factoryRepo{nil, waitingRepos(), {{name: "busy", path: "/b", st: fstatus(99, manyTasks(60)...)}}} {
-			m := factoryModel(true, sz[0], sz[1], repos...)
+			m := floorModel(true, sz[0], sz[1], repos...)
 			send(m, "/", "j", "enter", "/", "esc")
 			for _, line := range strings.Split(plain(m), "\n") {
 				if w := len([]rune(line)); w > sz[0]+8 { // wide runes count twice in the width, once in runes
@@ -306,22 +306,22 @@ func TestGoldenFloor(t *testing.T) {
 		repos[0].st.PRs.AsOf = ptr(float64(m.now().Add(-12 * time.Minute).Unix()))
 		repos[0].fetchErr = "factory status timed out after 25s"
 		repos[1].st.PRs.AsOf = ptr(float64(m.now().Add(-3 * time.Minute).Unix()))
-		setFactory(m, repos...)
+		setFloor(m, repos...)
 	}
 	for _, c := range []struct {
 		name string
 		w, h int
 		set  func(m *model)
 	}{
-		{"floor-140x40", 140, 40, func(m *model) { setFactory(m, waitingRepos()...) }},
-		{"floor-100x30", 100, 30, func(m *model) { setFactory(m, waitingRepos()...) }},
-		{"floor-80x24", 80, 24, func(m *model) { setFactory(m, waitingRepos()...) }},
-		{"floor-empty-80x24", 80, 24, func(m *model) { setFactory(m) }},
+		{"floor-140x40", 140, 40, func(m *model) { setFloor(m, waitingRepos()...) }},
+		{"floor-100x30", 100, 30, func(m *model) { setFloor(m, waitingRepos()...) }},
+		{"floor-80x24", 80, 24, func(m *model) { setFloor(m, waitingRepos()...) }},
+		{"floor-empty-80x24", 80, 24, func(m *model) { setFloor(m) }},
 		{"floor-crowded-80x24", 80, 24, func(m *model) {
-			setFactory(m, factoryRepo{name: "busy", path: "/r/busy", st: fstatus(40, manyTasks(12)...)})
+			setFloor(m, factoryRepo{name: "busy", path: "/r/busy", st: fstatus(40, manyTasks(12)...)})
 		}},
-		{"floor-filter-open-100x30", 100, 30, func(m *model) { setFactory(m, waitingRepos()...); send(m, "/", "j") }},
-		{"floor-one-repo-100x30", 100, 30, func(m *model) { setFactory(m, waitingRepos()...); send(m, "/", "j", "enter") }},
+		{"floor-filter-open-100x30", 100, 30, func(m *model) { setFloor(m, waitingRepos()...); send(m, "/", "j") }},
+		{"floor-one-repo-100x30", 100, 30, func(m *model) { setFloor(m, waitingRepos()...); send(m, "/", "j", "enter") }},
 		{"floor-errors-100x30", 100, 30, stale},
 	} {
 		t.Run(c.name, func(t *testing.T) {

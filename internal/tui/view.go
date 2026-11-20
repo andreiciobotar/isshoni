@@ -15,7 +15,7 @@ import (
 const (
 	brand         = "Isshoni"
 	brandKanji    = "一緒に"
-	kanjiMinWidth = 136
+	kanjiMinWidth = 140
 )
 
 // View renders the current frame.
@@ -67,6 +67,8 @@ func (m *model) frame() []string {
 		body = m.agentsBody(p, w, bh)
 	case m.view == viewFactory:
 		body = m.floorBody(p, w, bh)
+	case m.view == viewInbox:
+		body = m.factoryBody(p, w, bh)
 	case m.view == viewKaizen:
 		body = m.kaizenBody(p, w, bh)
 	case m.view == viewOps:
@@ -104,7 +106,7 @@ func (m *model) header(p paint) string {
 			txt = fmt.Sprintf("%d %s", n, short)
 		}
 		badge := ""
-		if v == viewFactory {
+		if v == viewInbox {
 			if n := len(m.waiting()); n > 0 {
 				badge = fmt.Sprintf(" ▲%d", n)
 			}
@@ -130,7 +132,7 @@ func (m *model) header(p paint) string {
 		}
 		return bar.t(" "+txt, th.Muted) + bar.b(badge, th.Orange) + bar.t(" ", th.Muted)
 	}
-	tabs := tab(1, "Dashboard", viewDashboard, "Dash") + tab(2, "Agents", viewAgents, "Agents") + tab(3, "Factory", viewFactory, "Factory") + tab(4, "Kaizen", viewKaizen, "Kaizen") + tab(5, "Ops", viewOps, "◉") + tab(6, "Hanami", viewHanami, "✿") // an eye and a blossom below 110 columns, where the bar has no room for a fifth and a sixth word
+	tabs := tab(1, "Inbox", viewInbox, "✉") + tab(2, "Sessions", viewDashboard, "≡") + tab(3, "Agents", viewAgents, "Agent") + tab(4, "Factory", viewFactory, "Factory") + tab(5, "Kaizen", viewKaizen, "Kaizen") + tab(6, "Ops", viewOps, "◉") + tab(7, "Hanami", viewHanami, "✿") // an envelope, a list, an eye and a blossom below 110 columns, where the bar has no room for seven words
 
 	var chips []string
 	for i, r := range ranges {
@@ -175,6 +177,7 @@ func (m *model) header(p paint) string {
 		{rangeStr, liveStr, state},
 		{rangeStr, liveStr},
 		{rangeStr, liveShort},
+		{chips[m.rangeIdx], liveShort},
 		{rangeStr},
 		{chips[m.rangeIdx]},
 	}
@@ -208,9 +211,11 @@ func (m *model) subheader(p paint) string {
 		if s, _ := m.paneSession(); s != nil {
 			name = s.Label() + " › " + short8(s.ID)
 		}
-		left = p.t("Dashboard › ", th.Faint) + p.b(name, th.Text)
+		left = p.t("Sessions › ", th.Faint) + p.b(name, th.Text)
 	case m.view == viewFactory:
 		left = m.floorSubheader(p)
+	case m.view == viewInbox:
+		left = m.factorySubheader(p, "Inbox")
 	case m.view == viewKaizen:
 		left = m.kaizenSubheader(p)
 	case m.view == viewOps:

@@ -11,17 +11,17 @@ import (
 	"isshoni/internal/data"
 )
 
-func TestStartsOnTheDashboard(t *testing.T) {
+func TestStartsOnTheInbox(t *testing.T) {
 	for _, o := range []Options{{Static: true}, {Static: true, ReadOnly: true}} {
 		o.NoColor = true
 		m := New(o)
 		m.w, m.h = 140, 40                // wide enough for the full tab names
 		m.preload(nil, nil, fakeAgents()) // the first frame after the load; before it only the loading screen shows
-		if m.view != viewDashboard {
+		if m.view != viewInbox {
 			t.Fatalf("%+v starts on view %v", o, m.view)
 		}
-		if out := plain(m); !strings.Contains(out, "[1 Dashboard]") {
-			t.Fatalf("%+v: the first frame does not have the Dashboard tab active\n%s", o, out)
+		if out := plain(m); !strings.Contains(out, "[1 Inbox]") {
+			t.Fatalf("%+v: the first frame does not have the Inbox tab active\n%s", o, out)
 		}
 	}
 }

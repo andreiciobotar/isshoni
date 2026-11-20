@@ -391,7 +391,7 @@ func (m *model) floorMenuKey(msg tea.KeyPressMsg) tea.Cmd {
 
 // floorSubheader is the totals line with the chosen repository after it; the totals give way to keep the name whole.
 func (m *model) floorSubheader(p paint) string {
-	left := m.factorySubheader(p)
+	left := m.factorySubheader(p, "Factory")
 	want := m.floorRepo()
 	i := slices.IndexFunc(m.fac.repos, func(r factoryRepo) bool { return r.path == want })
 	if want == "" || i < 0 {

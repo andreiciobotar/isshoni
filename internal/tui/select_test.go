@@ -227,7 +227,7 @@ func TestPluginAgentsMergeIntoTheirRole(t *testing.T) {
 	if strings.Contains(out, "factory:coder") {
 		t.Fatal("a plugin agent keeps its own line")
 	}
-	send(m, "2")
+	send(m, "3")
 	out = plain(m)
 	if !strings.Contains(out, "factory:coder") || strings.Count(out, "coder") < 2 {
 		t.Fatalf("the Agents view lists both:\n%s", out)
@@ -393,12 +393,12 @@ func TestFoldRepository(t *testing.T) {
 		}
 	}
 	// only in the dashboard
-	send(m, "2", "left")
+	send(m, "3", "left")
 	if len(m.folded) != 0 {
 		t.Fatal("left folds outside the dashboard")
 	}
 	selectRow(m, "b1000000")
-	send(m, "1", "enter", "left")
+	send(m, "2", "enter", "left")
 	if len(m.folded) != 0 || !m.zoomed() {
 		t.Fatal("left folds inside the zoom")
 	}

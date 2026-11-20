@@ -105,6 +105,7 @@ func Snapshot(so SnapshotOptions) (string, error) {
 		}
 		return nil
 	}
+	m.view = viewDashboard // New starts on the Inbox
 	switch so.View {
 	case "session":
 		m.zoom = true
@@ -123,6 +124,8 @@ func Snapshot(so SnapshotOptions) (string, error) {
 		}
 	case "agents":
 		m.view = viewAgents
+	case "inbox":
+		m.view = viewInbox
 	case "factory":
 		m.view = viewFactory
 	case "ops":
