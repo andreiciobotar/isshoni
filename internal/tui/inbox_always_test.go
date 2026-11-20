@@ -21,7 +21,7 @@ func splitModel(t *testing.T) (m *model, alpha string) {
 		ID: idSplit, Slug: "demo-task", Kind: "split", Always: 1, TS: fakeNow.Add(-20 * time.Minute),
 		Ask: "The importer's retry is separable.", Options: []string{"Start demo-retry", "Do not start it"},
 	})
-	st.Standing = []data.FactoryStanding{{Kind: "split", Label: "start it", On: true, Uses: 4}, {Kind: "overrun", Label: "continue", On: true, Uses: 3, Limit: 10}}
+	st.Standing = []data.FactoryStanding{{Kind: "split", Label: "start it", On: true, Uses: 4}}
 	m.fixScroll()
 	return m, alpha
 }
@@ -105,21 +105,19 @@ func TestInboxAIgnoredOnAQuestionConfirm(t *testing.T) {
 	}
 }
 
-func TestInboxAlwaysLineShowsKindsThatAreOnOrLapsed(t *testing.T) {
+func TestInboxAlwaysLineShowsKindsThatAreOn(t *testing.T) {
 	m, _ := splitModel(t)
-	if out := plain(m); !strings.Contains(out, "Always   split → start it · 4 times     overrun → continue · 3 of 10") {
+	if out := plain(m); !strings.Contains(out, "Always   split → start it · 4 times") {
 		t.Fatalf("the line under the sub-header:\n%s", out)
 	}
 	list := m.fac.repos[0].st.Standing
 	list[0].Uses = 1
-	list[1] = data.FactoryStanding{Kind: "overrun", Label: "continue", Uses: 10, Limit: 10, Lapsed: true}
-	if out := plain(m); !strings.Contains(out, "Always   split → start it · 1 time     overrun → off after 10 times") {
-		t.Fatalf("a lapsed kind says so:\n%s", out)
+	if out := plain(m); !strings.Contains(out, "Always   split → start it · 1 time") {
+		t.Fatalf("one use reads 1 time:\n%s", out)
 	}
 	list[0].On = false // switched off by hand: not listed
-	list[1].Lapsed = false
 	if out := plain(m); strings.Contains(out, "Always ") {
-		t.Fatalf("no kind on or lapsed, no line:\n%s", out)
+		t.Fatalf("no kind on, no line:\n%s", out)
 	}
 }
 
@@ -127,10 +125,10 @@ func TestInboxAlwaysPickSwitchesOneOff(t *testing.T) {
 	calls, _ := answerScript(t)
 	m, alpha := splitModel(t)
 	send(m, "A")
-	if !m.inbox.always || !strings.Contains(plain(m), "1 split → start it · 4 times   2 overrun → continue · 3 of 10") {
+	if !m.inbox.always || !strings.Contains(plain(m), "1 split → start it · 4 times") {
 		t.Fatalf("A puts the line in pick mode:\n%s", plain(m))
 	}
-	send(m, "x", "3", "j", "q", "tab")
+	send(m, "x", "2", "j", "q", "tab")
 	if !m.inbox.always || m.inbox.cursor != 0 || m.view != viewInbox {
 		t.Fatalf("other keys and a digit past the kinds are ignored: %+v", m.inbox)
 	}
@@ -150,15 +148,15 @@ func TestInboxAlwaysPickSwitchesOneOff(t *testing.T) {
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Fatal("ctrl+c is a quit")
 	}
-	got := only[standingMsg](upd(m, press("2")))
-	if len(got) != 1 || got[0].err != nil || got[0].kind != "overrun" || m.inbox.always {
+	got := only[standingMsg](upd(m, press("1")))
+	if len(got) != 1 || got[0].err != nil || got[0].kind != "split" || m.inbox.always {
 		t.Fatalf("a digit runs the script and leaves the mode: %+v, %+v", got, m.inbox)
 	}
-	if want := fmt.Sprintf("%s decision always overrun off\n", alpha); readCalls(calls) != want {
+	if want := fmt.Sprintf("%s decision always split off\n", alpha); readCalls(calls) != want {
 		t.Fatalf("script ran as %q, want %q", readCalls(calls), want)
 	}
 	m.Update(got[0])
-	if m.toast.err || m.toast.text != "overrun: asks again from now" {
+	if m.toast.err || m.toast.text != "split: asks again from now" {
 		t.Fatalf("toast %+v", m.toast)
 	}
 }
@@ -198,7 +196,7 @@ func TestInboxFootersNameAlwaysKeys(t *testing.T) {
 		t.Fatalf("not offered, not named:\n%s", out)
 	}
 	send(m, "n", "A")
-	if out := plain(m); !strings.Contains(out, "1–2 switch one off") {
+	if out := plain(m); !strings.Contains(out, "1 switch it off") {
 		t.Fatalf("the pick mode footer:\n%s", out)
 	}
 	m.w, m.h = 100, 60

@@ -140,13 +140,12 @@ type FactoryStatus struct {
 }
 
 // FactoryStanding is one kind of decision the human may answer "always": its one option's label, whether it
-// is on, how often it stood in, the uses after which it switches itself off (0: never) and whether it did.
-// {"kind": "overrun", "label": "continue", "on": true, "uses": 3, "limit": 10 or null, "lapsed": false}
+// is on and how often it stood in.
+// {"kind": "split", "label": "start it", "on": true, "uses": 3}
 type FactoryStanding struct {
 	Kind, Label string
 	On          bool
-	Uses, Limit int
-	Lapsed      bool
+	Uses        int
 }
 
 // FactoryApprovals is the pull requests waiting for the human's approval. AsOf is when the watch last

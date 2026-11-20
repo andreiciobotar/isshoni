@@ -50,8 +50,8 @@ func times(n int) string {
 	return fmt.Sprintf("%d times", n)
 }
 
-// alwaysLine is the section line under the sub-header: each kind that is on or has switched itself off, with
-// its option and its uses. In pick mode the kinds that are on carry a number, and the hint goes on a line of
+// alwaysLine is the section line under the sub-header: each kind that is on, with its option and its
+// uses. In pick mode the kinds that are on carry a number, and the hint goes on a line of
 // its own when it does not fit beside them.
 func (m *model) alwaysLine(p paint, w int) block {
 	_, list := m.standingAnswers()
@@ -62,25 +62,17 @@ func (m *model) alwaysLine(p paint, w int) block {
 	}
 	row, n, num := p.sp(noticeIndent)+p.t("Always", th.Faint)+p.sp(3), alwaysCol, 0
 	for _, s := range list {
-		if !s.On && !s.Lapsed {
+		if !s.On {
 			continue
 		}
 		if n > alwaysCol {
 			row, n = row+p.sp(gap), n+gap
-		}
-		if s.Lapsed {
-			text := fmt.Sprintf("%s → off after %s", s.Kind, times(s.Limit))
-			row, n = row+p.t(text, th.Orange), n+width(text)
-			continue
 		}
 		if pick {
 			num++
 			row, n = row+p.b(fmt.Sprint(num), th.Purple)+p.sp(1), n+2
 		}
 		text := " → " + s.Label + " · " + times(s.Uses)
-		if s.Limit > 0 {
-			text = fmt.Sprintf(" → %s · %d of %d", s.Label, s.Uses, s.Limit)
-		}
 		row, n = row+p.t(s.Kind, th.Text)+p.t(text, th.Muted), n+width(s.Kind+text)
 	}
 	if n == alwaysCol {

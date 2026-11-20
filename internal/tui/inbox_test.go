@@ -40,7 +40,7 @@ func inboxRepos() []factoryRepo {
 }
 
 // noticeRepos is inboxRepos with a split decision of alpha (its parent was closed; "start it" may stand), the
-// standing answers (split on, overrun on with 3 of its 10 uses), two approve items (one new, one stale) and
+// standing answers (split on), two approve items (one new, one stale) and
 // 11 history entries from the four sources, one of them from yesterday: eight show by default, three are older.
 func noticeRepos() []factoryRepo {
 	repos := inboxRepos()
@@ -52,7 +52,7 @@ func noticeRepos() []factoryRepo {
 		Options: []string{"Start demo-retry", "Do not start it"},
 		Note:    "its parent demo-task was closed: start it or not is yours",
 	})
-	st.Standing = []data.FactoryStanding{{Kind: "split", Label: "start it", On: true, Uses: 4}, {Kind: "overrun", Label: "continue", On: true, Uses: 3, Limit: 10}}
+	st.Standing = []data.FactoryStanding{{Kind: "split", Label: "start it", On: true, Uses: 4}}
 	st.Approvals = data.FactoryApprovals{AsOf: ago(2 * time.Minute), Items: []data.FactoryApproval{
 		{Slug: "demo-export", Number: 12, URL: "https://github.com/example/demo/pull/12", Why: "new", Since: ago(25 * time.Minute)},
 		{Slug: "demo-import", Number: 9, URL: "https://github.com/example/demo/pull/9", Why: "stale", Since: ago(2 * time.Hour),

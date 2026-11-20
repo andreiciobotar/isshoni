@@ -569,8 +569,7 @@ func TestFactoryStatusDecodesDecisions(t *testing.T) {
 		{"id": "3f9a1c2b4d5e", "slug": "demo-task", "kind": "question", "ask": "Ship it?", "options": ["Ship", "Wait"], "recommend": 2, "ts": "2026-11-14T19:00:00Z"},
 		{"id": "7c0b9e1d2a46", "slug": "other-task", "kind": "blocked", "ask": "Push by hand.", "options": ["Done", "Stop"], "ts": "yesterday"},
 		{"id": "5a5a5a5a5a5a", "slug": "demo-task", "kind": "split", "ask": "Retry is separable.", "options": ["Start demo-retry", "Do not start it"], "always": 1, "picked": 1, "note": "starts by itself when it can: at the cap", "ts": "2026-11-14T19:05:00Z"}],
-		"standing": [{"kind": "split", "label": "start it", "on": true, "uses": 4, "limit": null, "lapsed": false},
-			{"kind": "overrun", "label": "continue", "on": false, "uses": 10, "limit": 10, "lapsed": true}]}`
+		"standing": [{"kind": "split", "label": "start it", "on": true, "uses": 4}]}`
 	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(doc), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -587,7 +586,7 @@ func TestFactoryStatusDecodesDecisions(t *testing.T) {
 	if !reflect.DeepEqual(st.Decisions, want) {
 		t.Fatalf("decisions %+v\nwant %+v", st.Decisions, want)
 	}
-	if want := []FactoryStanding{{Kind: "split", Label: "start it", On: true, Uses: 4}, {Kind: "overrun", Label: "continue", Uses: 10, Limit: 10, Lapsed: true}}; !reflect.DeepEqual(st.Standing, want) {
+	if want := []FactoryStanding{{Kind: "split", Label: "start it", On: true, Uses: 4}}; !reflect.DeepEqual(st.Standing, want) {
 		t.Fatalf("standing %+v\nwant %+v", st.Standing, want)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(`{"rows": []}`), 0o644); err != nil {
