@@ -19,10 +19,13 @@ import (
 const (
 	floorMoveFor   = time.Second            // a cube travels from its old place to its new one in this long
 	floorBeltEvery = 120 * time.Millisecond // one step of the belt's tread
-	floorStepX     = 7                      // cells from one belt slot to the next, across
+	floorStepX     = 4                      // cells from one belt slot to the next, across: the belt's 2 columns per row
 	floorStepY     = 2                      // and down
-	floorSideDX    = -8                     // the siding's slots stand this far left of the belt slot beside them
+	floorTop       = 1                      // rows the intake hopper takes above the first slot
+	floorBandW     = 8                      // columns between the belt's two edges
+	floorSideDX    = -6                     // the siding's slots stand this far left of the belt slot beside them
 	floorSideDY    = 5                      // and this far below it
+	floorPile      = 3                      // settled cubes stacked on a pallet before the next pile
 	floorMinScene  = 16                     // rows the scene keeps before notes under it are cut
 	floorCubeW     = 6
 	floorCubeH     = 3
@@ -58,13 +61,8 @@ type floorCube struct {
 	floorTask
 	place string
 	at    point
-}
-
-// floorChip stands in the last slot of a place that has more tasks than slots; n counts the tasks it hides.
-type floorChip struct {
-	place string
-	at    point
-	n     int
+	level int // cubes below it in its pile
+	pile  int // on the lowest one: the cubes above it
 }
 
 type floorLayout struct {
@@ -73,13 +71,13 @@ type floorLayout struct {
 	sideN    int            // slots of the siding
 	first    map[string]int // the belt slot of each station's first slot
 	count    map[string]int // tasks of each place, shown or not
+	more     map[string]int // tasks of each place that have no slot
 	cubes    []floorCube
-	chips    []floorChip
 	prefix   bool // labels name the repository
 }
 
 func (l *floorLayout) belt(slot int) point {
-	return point{float64(l.x0 + floorStepX*slot), float64(floorStepY * slot)}
+	return point{float64(l.x0 + floorStepX*slot), float64(floorTop + floorStepY*slot)}
 }
 
 func (l *floorLayout) side(slot int) point {
@@ -178,23 +176,14 @@ func floorOrder(place string) func(a, b floorTask) int {
 	}
 }
 
-// floorAlloc gives each station the slots it needs to show a cube and the chip of the rest
-// (one slot for a lone task, two for more) when room allows, else one slot; what room is
-// left goes one slot at a time to the station with most tasks still without one.
+// floorAlloc shares room belt slots between the stations in proportion to their demand
+// (Sainte-Lague), every station keeping at least one and none getting more than it needs.
 func floorAlloc(demand [4]int, room int) [4]int {
-	var n [4]int
-	total := 0
-	for i, d := range demand {
-		n[i] = min(max(d, 1), 2)
-		total += n[i]
-	}
-	if total > room {
-		n = [4]int{1, 1, 1, 1}
-	}
-	for left := room - n[0] - n[1] - n[2] - n[3]; left > 0; left-- {
+	n := [4]int{1, 1, 1, 1}
+	for left := room - 4; left > 0; left-- {
 		best := -1
 		for i := range n {
-			if demand[i] > n[i] && (best < 0 || demand[i]-n[i] > demand[best]-n[best]) {
+			if demand[i] > n[i] && (best < 0 || demand[i]*(2*n[best]+1) > demand[best]*(2*n[i]+1)) {
 				best = i
 			}
 		}
@@ -206,8 +195,8 @@ func floorAlloc(demand [4]int, room int) [4]int {
 	return n
 }
 
-// floorLayout places every shown task in a w x h scene: a cube in a slot, or counted by the
-// chip of the last slot of its place.
+// floorLayout places every shown task in a w x h scene: a cube in a slot (settled ones
+// stacked), or counted in its station's sign when its place has no slot left.
 func (m *model) floorLayout(w, h int) *floorLayout {
 	tasks := m.floorTasks()
 	byPlace := map[string][]floorTask{}
@@ -217,19 +206,20 @@ func (m *model) floorLayout(w, h int) *floorLayout {
 		byPlace[p] = append(byPlace[p], ft)
 		repos[ft.path] = true
 	}
-	l := &floorLayout{w: w, h: h, first: map[string]int{}, count: map[string]int{}, prefix: m.floorRepo() == "" && len(repos) > 1}
-	l.x0 = 14
+	l := &floorLayout{w: w, h: h, first: map[string]int{}, count: map[string]int{}, more: map[string]int{}, prefix: m.floorRepo() == "" && len(repos) > 1}
+	l.x0 = 20
 	if w >= 100 {
-		l.x0 = 22
+		l.x0 = 24
 	}
 	if w >= 140 {
-		l.x0 = 26
+		l.x0 = 30
 	}
 	var demand [4]int
 	for i, p := range floorStations {
 		demand[i] = len(byPlace[p])
 	}
-	room := max(len(floorStations), min((h-5)/floorStepY, (w-l.x0-16)/floorStepX))
+	demand[3] = (demand[3] + floorPile - 1) / floorPile
+	room := max(len(floorStations), min((h-floorTop-3)/floorStepY, (w-l.x0-27)/floorStepX))
 	n := floorAlloc(demand, room)
 	l.slots = 1
 	for i, p := range floorStations {
@@ -237,23 +227,32 @@ func (m *model) floorLayout(w, h int) *floorLayout {
 		l.slots += n[i]
 		l.fill(p, byPlace[p], n[i], func(slot int) point { return l.belt(l.first[p] + slot) })
 	}
-	l.sideN = min(max(1, len(byPlace["blocked"])), max(2, n[0]), max(1, (h-8)/floorStepY))
+	l.sideN = min(max(1, len(byPlace["blocked"])), max(2, n[0]), max(1, (h-floorTop-floorSideDY-5)/floorStepY))
 	l.fill("blocked", byPlace["blocked"], l.sideN, l.side)
 	return l
 }
 
 // fill puts a place's tasks into its n slots, the nearest to the next station in the last
-// slot. When there are more tasks than slots the first slot holds a chip.
+// slot; settled ones stack floorPile high on a pallet before the next slot. Tasks beyond
+// the slots are counted in l.more.
 func (l *floorLayout) fill(place string, tasks []floorTask, n int, at func(slot int) point) {
 	l.count[place] = len(tasks)
 	slices.SortFunc(tasks, floorOrder(place))
-	shown := min(len(tasks), n)
-	if len(tasks) > n {
-		shown = n - 1
-		l.chips = append(l.chips, floorChip{place, at(0), len(tasks) - shown})
+	per := 1
+	if place == "settled" {
+		per = floorPile
 	}
+	shown := min(len(tasks), n*per)
+	l.more[place] = len(tasks) - shown
 	for i, ft := range tasks[:shown] {
-		l.cubes = append(l.cubes, floorCube{ft, place, at(n - 1 - i)})
+		slot, level := n-1-i/per, i%per
+		pt := at(slot)
+		pt.y -= float64(floorStepY * level)
+		c := floorCube{floorTask: ft, place: place, at: pt, level: level}
+		if level == 0 {
+			c.pile = min(per, shown-i) - 1
+		}
+		l.cubes = append(l.cubes, c)
 	}
 }
 
@@ -389,7 +388,7 @@ func (m *model) floorMenuKey(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// floorSubheader is the totals line with the chosen repository after it; the totals give way to keep the name whole.
+// floorSubheader is the totals line with the chosen repository after it; the name gives way (cut, then left out) to keep the totals whole.
 func (m *model) floorSubheader(p paint) string {
 	left := m.factorySubheader(p)
 	want := m.floorRepo()
@@ -397,6 +396,9 @@ func (m *model) floorSubheader(p paint) string {
 	if want == "" || i < 0 {
 		return left
 	}
-	tag := p.t("  · filter ", m.th.Faint) + p.b(m.fac.repos[i].name, m.th.Purple)
-	return trunc(left, max(1, m.w-3-width(tag))) + tag
+	room := m.w - 3 - width(left) - 4
+	if room < 2 {
+		return left
+	}
+	return left + p.t("  · ", m.th.Faint) + p.b(trunc(m.fac.repos[i].name, room), m.th.Purple)
 }

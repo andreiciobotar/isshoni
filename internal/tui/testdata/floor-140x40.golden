@@ -1,40 +1,40 @@
  Isshoni 一緒に  1 Dashboard  2 Agents [3 Factory ▲7] 4 Kaizen  5 Ops  6 Hanami                                  24h [7d] 30d  all   ○ idle 
  Factory  18 in motion (8 blocked) · 3 waiting for review · 2 merged, not cleaned · 1 settled  · as of 11:00:00                             
-                          ╲▁▁▁▁╱ INTAKE                                                            ╭─ all repositories ───────────────────╮ 
-                           ╲  ╱ ╔ BUILD 10                                                         │ in motion ▲▲▲▲▲▲▲▲●●●●●●●●●● 18/11+1 │ 
-                            ╲╱  ║ ╭┄┄╮  ─ 2 more                                                   ╰──────────────────────────────────────╯ 
-                          ╪═══  ║┆ +2 ┆                                                                                                     
-                          ▔▔▔▔╪═╨ ╰┄┄╯   ▗▄▄▖  ─ beta-é日本語/task-00  1m00s                                                                
-                              ▔▔▔═╪══   ▐▓⠋▒▒▌                                                                                              
-                    ● BLOCKED 8  ▔▔▔▔═╪═ ▝▀▀▘   ▗▄▄▖  ─ delta-docs/rush-fix  10m00s                                                         
-                          ▗▄▄▖       ▔▔▔══╪═   ▐▓⠋▒▒▌                                                                                       
-                         ▐▓▲▒▒▌         ▔▔▔▔══╪ ▝▀▀▘   ▗▄▄▖  ─ alpha/rate-limit-docs                                                        
-     delta-docs/wide-ask  ▝▀▀▘   ▗▄▄▖       ▔▔▔═══╪   ▐▓▓▒▒▌                                                                                
-                         ╌╌╌╌╌╌ ▐▓▲▒▒▌         ▔▔▔▔═══ ▝▀▀▘   ▗▄▄▖  ─ alpha/stacked-on-login  1m35s                                         
-       delta-docs/stuck-on-keys  ▝▀▀▘   ▗▄▄▖       ▔▔▔╪═══   ▐▓▓▒▒▌                                                                         
-                                ╌╌╌╌╌╌ ▐▓▲▒▒▌         ▔▔▔▔╪══ ▝▀▀▘   ▗▄▄▖  ─ alpha/quiet-refactor  4m12s                                    
-                delta-docs/slow-import  ▝▀▀▘   ▗▄▄▖       ▔▔▔═╪══   ▐▓⠋▒▒▌                                                                  
-                                       ╌╌╌╌╌╌ ▐▓▓▒▒▌         ▔▔▔▔═╪═ ▝▀▀▘   ▗▄▄▖  ─ alpha/slow-export  41m00s                               
-         delta-docs/pick-a-theme · dispatcher  ▝▀▀▘   ▗▄▄▖       ▔▔▔══╪═   ▐▓⠋▒▒▌                                                           
-                                              ╌╌╌╌╌╌ ▐▓▓▒▒▌         ▔▔▔▔══╪ ▝▀▀▘   ▗▄▄▖  ─ alpha/login-flow  2h15m                          
-                delta-docs/paused-stale · login-flow  ▝▀▀▘   ▗▄▄▖       ▔▔▔═══╪   █▓⠋▒▒█                                                    
-                                                     ╌╌╌╌╌╌ ▐▓▓▒▒▌         ▔▔▔▔═══ ▝▀▀▘   ▗▄▄▖  ─ alpha/lost-its-lead  9h00m                
-             delta-docs/paused-fresh · login-flow, api-keys  ▝▀▀▘   ▗▄▄▖       ▔▔▔╪═══   ▐▓▓▒▒▌╔ REVIEW 3                                   
-                                                            ╌╌╌╌╌╌ ▐▓▲▒▒▌         ▔▔▔▔╪══ ▝▀▀▘ ║ ╭┄┄╮  ─ 2 more                             
-                                             alpha/needs-an-answer  ▝▀▀▘   ▗▄▄▖       ▔▔▔═╪══  ║┆ +2 ┆                                      
-                                                                   ╌╌╌╌╌╌ ▐▓▓▒▒▌         ▔▔▔▔═╪╨ ╰┄┄╯   ▗▄▄▖  ─ alpha/api-rate-limits  1h30m
-                     delta-docs/docs-after-review · design-review-of-docs  ▝▀▀▘              ▔▔▔══╪═   ▐▓▲▒▒▌╔ MERGE 2                      
-                                                                          ╌╌╌╌╌╌                ▔▔▔▔══╪ ▝▀▀▘ ║ ▗▄▄▖  ─ alpha/old-plumbing   
-                                                                                                    ▔▔▔═══╪  ║▐▓▓▒▒▌                        
-                                                                                                       ▔▔▔▔══╨ ▝▀▀▘   ▗▄▄▖  ─ alpha/old-exp…
-                                                                                                           ▔▔▔╪═══   ▐▓▓▒▒▌╔ SHIPPED 1      
-                                                                                                              ▔▔▔▔╪══ ▝▀▀▘ ║ ▗▄▄▖  ─ alpha/…
-                                                                                                                  ▔▔▔═╪══  ║▐▓▓▒▒▌          
-                                                                                                                     ▔▔▔▔═╪╨ ▝▀▀▘           
-                                                                                                                         ▔▔▔══╪═            
-                                                                                                                            ▔▔▔▔══          
-                                                                                                                                ▔▔          
-                                                                                                                                            
-                                                                                                                                            
+                            ╲▁▁▁▁▁▁╱  INTAKE                                                       ╭─ all repositories ───────────────────╮ 
+                             ╲▒▒▒▒╱                                                                │ in motion ▲▲▲▲▲▲▲▲●●●●●●●●●● 18/11+1 │ 
+                         ╔═════════╗╲ BUILD 10                                                     ╰──────────────────────────────────────╯ 
+                         ║ ╲╲┈┈┈┈┈◢░░░░◣ ─ beta-é日本語/task-02  3m00s                                                                      
+                         ║   ╲╲   ▒▒⠋▓▓▓╲                                                                                                   
+                               ╲╲ ◥▒▒▓◢░░░░◣ ─ beta-é日本語/task-01  2m00s                                                                  
+                                 ╲╲┈┈┈▒▒⠋▓▓▓╲                                                                                               
+                       ● BLOCKED 8 ╲╲ ◥▒▒▓◢░░░░◣ ─ beta-é日本語/task-00  1m00s                                                              
+                            ◢░░░░◣   ╲╲   ▒▒⠋▓▓▓╲                                                                                           
+                            ▒▒▲▓▓▓     ╲╲┈◥▒▒▓◢░░░░◣ ─ delta-docs/rush-fix  10m00s                                                          
+        delta-docs/wide-ask ◥▒▒▓◢░░░░◣   ╲╲   ▒▒⠋▓▓▓╲                                                                                       
+                            ╌╌╌╌▒▒▲▓▓▓     ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/rate-limit-docs                                                            
+       delta-docs/stuck-on-keys ◥▒▒▓◢░░░░◣   ╲╲┈┈┈▒▒▒▓▓▓╲                                                                                   
+                                ╌╌╌╌▒▒▲▓▓▓     ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/stacked-on-login  1m35s                                                
+             delta-docs/slow-import ◥▒▒▓◢░░░░◣   ╲╲   ▒▒▒▓▓▓╲                                                                               
+                                    ╌╌╌╌▒▒▒▓▓▓     ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/quiet-refactor  4m12s                                              
+   delta-docs/pick-a-theme · dispatcher ◥▒▒▓◢░░░░◣   ╲╲   ▒▒⠋▓▓▓╲                                                                           
+                                        ╌╌╌╌▒▒▒▓▓▓     ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/slow-export  41m00s                                            
+       delta-docs/paused-stale · login-flow ◥▒▒▓◢░░░░◣   ╲╲┈┈┈▒▒⠋▓▓▓╲                                                                       
+                                            ╌╌╌╌▒▒▒▓▓▓     ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/login-flow  2h15m                                          
+ delta-docs/paused-fresh · login-flow, api-keys ◥▒▒▓◢░░░░◣   ╲╲   █▒⠋▓▓█╲                                                                   
+                                                ╌╌╌╌▒▒▲▓▓▓     ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/lost-its-lead  9h00m                                   
+                              alpha/needs-an-answer ◥▒▒▓◢░░░░◣   ╔════▒▒▒▓▓▓╲ REVIEW 3                                                      
+                                                    ╌╌╌╌▒▒▒▓▓▓   ║ ╲╲ ◥▒▒▓◢░░░░◣ ─ delta-docs/video-cut                                     
+   delta-docs/docs-after-review · design-review-of-docs ◥▒▒▓▓◤   ║   ╲╲┈┈┈▒▒▲▓▓▓╲                                                           
+                                                        ╌╌╌╌╌╌         ╲╲ ◥▒▒▓◢░░░░◣ ─ delta-docs/design-review                             
+                                                                         ╲╲   ▒▒▲▓▓▓╲                                                       
+                                                                           ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/api-rate-limits  1h30m                     
+                                                                             ╔════▒▒▲▓▓▓╲ MERGE 2                                           
+                                                                             ║ ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/old-plumbing  2h00m                    
+                                                                             ║   ╲╲┈┈┈▒▒▒▓▓▓╲                                               
+                                                                                   ╲╲ ◥▒▒▓◢░░░░◣ ─ alpha/old-experiment  1m01s              
+                                                                                     ╔════▒▒▒▓▓▓╲ SHIPPED 1                                 
+                                                                                     ║ ╲╲┈◥▒▒▓◢░░░░◣ ─ alpha/release-notes  50m00s          
+                                                                                     ║   ╲╲   ▒▒▒▓▓▓╲                                       
+                                                                                           ╲╲ ◥▒▒▓▓◤ ╲╲                                     
  ⚠ gamma: not inside a git repository                                                                                                       
  / filter  ·  r range  ·  tab next view  ·  ? help  ·  q quit                                                                               

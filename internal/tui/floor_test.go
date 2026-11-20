@@ -83,8 +83,8 @@ func TestFloorEveryTaskIsACubeOrCounted(t *testing.T) {
 			m := factoryModel(true, sz[0], sz[1], repos...)
 			l := m.floorNow()
 			n := len(l.cubes)
-			for _, c := range l.chips {
-				n += c.n
+			for _, more := range l.more {
+				n += more
 			}
 			if want := rowsOf(repos); n != want {
 				t.Errorf("%s at %dx%d: %d cubes and counted, want %d rows", name, sz[0], sz[1], n, want)
@@ -92,12 +92,54 @@ func TestFloorEveryTaskIsACubeOrCounted(t *testing.T) {
 			plain(m)
 		}
 	}
-	m := factoryModel(true, 80, 24, waitingRepos()...)
-	if n := len(m.floorNow().cubes); n < 6 {
-		t.Errorf("80x24 holds at least 6 cubes, got %d", n)
+	l := factoryModel(true, 80, 24, waitingRepos()...).floorNow()
+	belt, siding := 0, 0
+	for _, c := range l.cubes {
+		if c.place == "blocked" {
+			siding++
+		} else {
+			belt++
+		}
 	}
-	if out := plain(factoryModel(true, 80, 24, crowded)); !strings.Contains(out, "BUILD 12") || !strings.Contains(out, "more") {
-		t.Errorf("a crowded station keeps its full count and a +N:\n%s", out)
+	if belt < 7 || siding < 2 {
+		t.Errorf("80x24 holds at least 7 cubes on the belt and 2 on the siding, got %d and %d", belt, siding)
+	}
+	if out := plain(factoryModel(true, 80, 24, crowded)); !strings.Contains(out, "BUILD 12 · ") || !strings.Contains(out, " more") {
+		t.Errorf("a crowded station keeps its full count and says how many have no slot:\n%s", out)
+	}
+}
+
+func TestFloorAllocSharesSlotsInProportionToDemand(t *testing.T) {
+	for _, c := range []struct {
+		demand [4]int
+		room   int
+		want   [4]int
+	}{
+		{[4]int{10, 3, 2, 1}, 8, [4]int{5, 1, 1, 1}},
+		{[4]int{10, 5, 2, 1}, 12, [4]int{7, 3, 1, 1}},
+		{[4]int{10, 3, 2, 1}, 3, [4]int{1, 1, 1, 1}}, // every station keeps a slot
+		{[4]int{1, 0, 0, 0}, 9, [4]int{1, 1, 1, 1}},  // none gets more than it needs
+		{[4]int{12, 0, 0, 0}, 7, [4]int{4, 1, 1, 1}},
+		{[4]int{6, 6, 6, 6}, 8, [4]int{2, 2, 2, 2}},
+	} {
+		if got := floorAlloc(c.demand, c.room); got != c.want {
+			t.Errorf("floorAlloc(%v, %d) = %v, want %v", c.demand, c.room, got, c.want)
+		}
+	}
+}
+
+func TestFloorStacksSettledCubesOnAPallet(t *testing.T) {
+	var tasks []data.FactoryTask
+	for _, s := range []string{"a", "b", "c", "d"} {
+		tasks = append(tasks, ftask(s, "settled"))
+	}
+	l := factoryModel(true, 100, 30, factoryRepo{name: "r", path: "/r", st: fstatus(5, tasks...)}).floorNow()
+	levels := map[int]int{}
+	for _, c := range l.cubes {
+		levels[c.level]++
+	}
+	if len(l.cubes) != 4 || levels[0] != 2 || levels[1] != 1 || levels[2] != 1 {
+		t.Errorf("4 settled cubes make a pile of %d and one more: %d cubes, levels %v", floorPile, len(l.cubes), levels)
 	}
 }
 
@@ -115,7 +157,7 @@ func TestFloorCubeMarks(t *testing.T) {
 	working.Session, over.Overtime = "working", true
 	m := factoryModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: fstatus(5, working, human, over)})
 	out := plain(m)
-	if !strings.Contains(out, "▐▓⠋▒▒▌") || !strings.Contains(out, "▐▓▲▒▒▌") || !strings.Contains(out, "█▓▓▒▒█") {
+	if !strings.Contains(out, "▒▒⠋▓▓▓") || !strings.Contains(out, "▒▒▲▓▓▓") || !strings.Contains(out, "█▒▒▓▓█") {
 		t.Errorf("a working cube turns its spinner, a cube that waits on the human has a ▲, an overtime cube has heavy edges:\n%s", out)
 	}
 }
@@ -219,7 +261,7 @@ func TestFloorFilter(t *testing.T) {
 		t.Fatalf("enter chooses beta: menu %v repo %q", m.floor.menu, m.floor.repo)
 	}
 	out = plain(m)
-	if !strings.Contains(out, "filter beta-é日本語") || strings.Contains(out, "alpha") || !strings.Contains(out, "task-01") {
+	if !strings.Contains(out, "· beta-é") || strings.Contains(out, "alpha") || !strings.Contains(out, "task-01") {
 		t.Errorf("the scene and the subheader follow the filter:\n%s", out)
 	}
 	if n := len(m.floorNow().cubes); n != 3 {

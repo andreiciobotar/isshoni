@@ -1,19 +1,19 @@
  Isshoni 1 Dash 2 Agents [3 Factory] 4 Kaizen 5 ◉ 6 ✿   24h [7d] 30d all ○ idle 
  Factory  as of 11:00:00                                                        
-              ╲▁▁▁▁╱ INTAKE                              ╭─ all repositories ─╮ 
-               ╲  ╱ ╔ BUILD 0                            │ no status yet      │ 
-                ╲╱  ║                                    ╰────────────────────╯ 
-              ╪═══  ║      ╔ REVIEW 0                                           
-              ▔▔▔▔╪═╨      ║                                                    
-                  ▔▔▔═╪══  ║      ╔ MERGE 0                                     
-        ● BLOCKED 0  ▔▔▔▔═╪╨      ║                                             
-                         ▔▔▔══╪═  ║      ╔ SHIPPED 0                            
+                  ╲▁▁▁▁▁▁╱  INTAKE                       ╭─ all repositories ─╮ 
+                   ╲▒▒▒▒╱                                │ no status yet      │ 
+               ╔═════════╗╲ BUILD 0                      ╰────────────────────╯ 
+               ║ ╲╲┈┈┈┈┈┈║┈╲╲                                                   
+               ║   ╔═════════╗╲ REVIEW 0                                        
+                   ║ ╲╲      ║ ╲╲                                               
+                   ║   ╔═════════╗╲ MERGE 0                                     
+             ● BLOCKED 0 ╲╲      ║ ╲╲                                           
              ╭───────────────────────────────────────────────────╮              
              │ No task on the floor                              │              
              │ No repository here has a task worktree.           │              
              │ A dispatcher starts leads with /factory:dispatch. │              
              ╰───────────────────────────────────────────────────╯              
-                                              ▔▔                                
+                                                                                
                                                                                 
                                                                                 
                                                                                 
