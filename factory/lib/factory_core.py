@@ -4100,13 +4100,13 @@ def site_manager_argv(p, firings, job="watch", look=None):
             "--append-system-prompt", f"{ROLE_PATH.read_text()}\n\n{GUIDANCE_PATH.read_text()}", prompt]
 
 
-def grant(p, slug, minutes):
+def grant(p, slug, minutes, capped=True):
     """The ISO times (from, until) an extension of `minutes` given now would run: from the later of now and the task's
     deadline, for `minutes`; None when it is not allowed: not a positive integer, over what `limits.extension_minutes`
-    leaves, or no task start to count from."""
+    leaves (unless not `capped`), or no task start to count from."""
     repo = p["repo"]
     started, _, left = extension_state(p, slug, task_lead(p, slug)[2])
-    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 0 < minutes <= left or started is None:
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 0 < minutes or (capped and minutes > left) or started is None:
         return None
     branch = next((t["branch"] for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
     deadline = started + extended_limit(task_size(repo, branch), load_settings()["task_time_limit_hours"], started,
@@ -4865,6 +4865,7 @@ def cmd_lead(args):
 
 
 DECISION_KEYS = ("id", "slug", "kind", "ask", "options", "recommend", "ts")
+ASK_WORDS = 60
 
 
 def open_decisions(root):
@@ -4875,7 +4876,7 @@ def open_decisions(root):
     tasks = read_tasks(root)
     return [{k: r[k] for k in DECISION_KEYS if k in r} for r in records
             if "ask" in r and r["id"] not in answered and (t := tasks.get(r["slug"]))
-            and t["state"] == "blocked" and t.get("waits_on") in (None, "human") and stamp(t) <= stamp(r)]
+            and t["state"] == "blocked" and t.get("waits_on") in (None, "human", ["human"]) and stamp(t) <= stamp(r)]
 
 
 def args_decision(parser):
@@ -4901,19 +4902,50 @@ def decision_ask(args):
     if last.get("state") != "blocked" or last.get("waits_on") not in (None, "human"):
         raise Fail("decision ask: declare `factory state blocked human` first")
     ask, options = " ".join(args.text.split()), [" ".join(o.split()) for o in args.option]
-    for refused, why_not in ((not 1 <= len(ask.split()) <= 60, "the ask is 1 to 60 words"),
+    for refused, why_not in ((not 1 <= len(ask.split()) <= ASK_WORDS, f"the ask is 1 to {ASK_WORDS} words"),
                              (not 2 <= len(options) <= 4, "give 2 to 4 options"),
                              (any(not 1 <= len(o.split()) <= 15 for o in options), "each option is 1 to 15 words"),
                              (args.recommend is not None and not 1 <= args.recommend <= len(options),
                               f"--recommend names an option, 1 to {len(options)}")):
         if refused:
             raise Fail(f"decision ask: {why_not}")
-    rid = secrets.token_hex(6)
-    log("decisions", {**record(repo.root, slug, "lead", None, os.environ.get("CLAUDE_CODE_SESSION_ID")), "id": rid,
-                      "kind": args.kind, "ask": ask, "options": options,
-                      **({"recommend": args.recommend} if args.recommend else {})})
-    print(rid)
+    print(post_decision(repo, slug, "lead", args.kind, ask, options, args.recommend))
     return 0
+
+
+def post_decision(repo, slug, role, kind, ask, options, recommend=None, **extra):
+    """Log an ask for the inbox, the one writer of it; returns its id."""
+    rid = secrets.token_hex(6)
+    log("decisions", {**record(repo.root, slug, role, None, os.environ.get("CLAUDE_CODE_SESSION_ID")), "id": rid,
+                      "kind": kind, "ask": ask, "options": options,
+                      **({"recommend": recommend} if recommend else {}), **extra})
+    return rid
+
+
+def overrun_to_human(repo, slug, ask):
+    """Declare `slug` blocked on the human, paused, and post its overrun `ask` to the inbox (whitespace collapsed, cut to
+    ASK_WORDS words) with the four fixed options; `Continue` names `limits.extension_minutes`, kept on the record."""
+    declare(repo, slug, "site-manager", "blocked", waits_on=["human"], paused=True)
+    task_event("TaskPaused", repo, slug, waits_on=["human"])
+    words, minutes = ask.split(), load_settings()["extension_minutes"]
+    post_decision(repo, slug, "site-manager", "overrun",
+                  " ".join(words if len(words) <= ASK_WORDS else [*words[:ASK_WORDS - 1], "…"]),
+                  [f"Continue: {minutes} more minutes, then hand over or ask again",
+                   "Cut: hand over what works now, list what is left in the pull request",
+                   "Split: hand over the finished part, the rest becomes new tasks",
+                   "Abandon: stop work; the dispatcher closes the task"], minutes=minutes)
+
+
+def extend_for_human(repo, slug, rid, minutes):
+    """Log the human's `Continue` as a new overrun firing decided `extended` at birth, outside the site manager's allowance.
+    Whether the limit moved: False without a task start to count from."""
+    given = grant({"repo": repo, "rows": None}, slug, minutes, capped=False)
+    if given:
+        said = f"the human picked continue: decision {rid}"
+        f = fire(repo, {"criterion": "overrun", "slug": slug, "subject": slug, "detail": said})
+        log_firing(repo, id=f["id"], decision="extended", reason=said, by="human", minutes=minutes, **dict(zip(("from", "until"), given)))
+        log_firing(repo, id=f["id"], cleared=True)
+    return bool(given)
 
 
 def decision_list(args):
@@ -4939,9 +4971,15 @@ def decision_answer(args):
     if not 1 <= args.n <= len(found["options"]):
         raise Fail(f"decision answer: the pick is 1 to {len(found['options'])}")
     log("decisions", {"ts": now(), "repo": repo.root, "id": args.id, "slug": found["slug"], "choice": args.n})
+    extended_it = True
+    if found["kind"] == "overrun" and args.n == 1:
+        minutes = next(r["minutes"] for r in repo_log("decisions", repo.root) if r.get("id") == args.id and "ask" in r)
+        extended_it = extend_for_human(repo, found["slug"], args.id, minutes)
     outbox_put(repo, found["slug"],
                f"INBOX: {found['slug']}: decision {args.id}: the human picked {args.n}: {found['options'][args.n - 1]}")
     print(f"answered {found['slug']}: {args.n}; the next tick delivers it")
+    if not extended_it:
+        print(f"the limit of {found['slug']} was not extended: no task start to count from")
     return 0
 
 

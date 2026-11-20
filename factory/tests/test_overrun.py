@@ -624,5 +624,111 @@ class RunStoppedTests(Overrun):
         return pic(repo=repo, declared={"x": {"state": state}})
 
 
+class InboxCardTests(Overrun):
+    """An overrun the human decides is a card in the inbox, and the human's `Continue` extends the limit."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed("events", [ev("x", "TaskStarted", ts=iso(STARTED))])
+        self.repo = SimpleNamespace(root=ROOT)
+
+    def post(self, ask=ASK, minutes=45):
+        load = factory.load_settings
+        with mock.patch.object(factory, "load_settings", lambda: {**load(), "extension_minutes": minutes}):
+            factory.overrun_to_human(self.repo, "x", ask)
+        return factory.open_decisions(ROOT)
+
+    def answer(self, rid, n):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            return self.cli("decision", "answer", rid, str(n), cwd=ROOT)
+
+    def human_extensions(self):
+        return [f for f in factory.extended(self.repo) if f["by"] == "human"]
+
+    def inbox_lines(self):
+        return [r["line"] for r in self.records("outbox") if "line" in r]
+
+    def test_the_helper_blocks_the_task_on_the_human_and_posts_the_card(self):
+        [d] = self.post()
+        last = factory.read_tasks(ROOT)["x"]
+        self.assertEqual((last["state"], last["paused"], last["waits_on"], last["role"]), ("blocked", True, ["human"], "site-manager"))
+        self.assertEqual([e["event"] for e in factory.read_log("events") if e["slug"] == "x"], ["TaskStarted", "TaskPaused"])
+        self.assertEqual((d["kind"], d["ask"], "recommend" in d), ("overrun", ASK, False))
+        self.assertEqual(d["options"], ["Continue: 45 more minutes, then hand over or ask again",
+                                        "Cut: hand over what works now, list what is left in the pull request",
+                                        "Split: hand over the finished part, the rest becomes new tasks",
+                                        "Abandon: stop work; the dispatcher closes the task"])
+        [ask] = [r for r in self.records("decisions") if "ask" in r]
+        self.assertEqual(ask["minutes"], 45)
+
+    def test_an_ask_of_70_words_is_cut_to_60_ending_in_an_ellipsis_and_one_of_60_is_whole(self):
+        words = [f"w{i}" for i in range(70)]
+        [d] = self.post("  ".join(words))
+        self.assertEqual(d["ask"], " ".join(words[:59]) + " …")
+        self.assertEqual(len(d["ask"].split()), 60)
+        factory.log("decisions", {"repo": ROOT, "id": d["id"], "slug": "x", "choice": 4, "ts": iso(NOW)})
+        self.assertEqual(self.post(" ".join(words[:60]))[0]["ask"], " ".join(words[:60]))
+
+    def test_continue_extends_by_the_minutes_on_the_card_as_a_new_firing_by_the_human(self):
+        self.seed("firings", [fired("e1", criterion="overrun", ts=NOW - 3600),
+                              {"ts": iso(NOW - 3500), "repo": ROOT, "id": "e1", "decision": "extended", "reason": "r", "by": "site-manager",
+                               "minutes": 5, "from": iso(NOW - 3500), "until": iso(NOW - 3200)}])
+        [d] = self.post(minutes=45)
+        code, out, err = self.answer(d["id"], 1)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, "answered x: 1; the next tick delivers it\n")
+        [f] = self.human_extensions()
+        self.assertEqual((f["criterion"], f["minutes"], f["decided"], f["cleared"]), ("overrun", 45, iso(NOW), True))
+        self.assertEqual((f["from"], f["until"]), (iso(NOW), iso(NOW + 45 * 60)))  # 10 minutes past the limit: from now
+        self.assertEqual(f["detail"], f"the human picked continue: decision {d['id']}")
+        self.assertEqual(STARTED + json.loads(self.cli("status", "--json")[1])["rows"][0]["limit"], NOW + 45 * 60)
+        self.assertEqual(factory.extension_state({"repo": self.repo}, "x", None)[1:], (50, 10))
+        self.assertEqual(self.inbox_lines(), [f"INBOX: x: decision {d['id']}: the human picked 1: {d['options'][0]}"])
+
+    def test_continue_before_the_limit_runs_from_the_limit(self):
+        self.seed("events", [ev("x", "TaskStarted", ts=iso(NOW - 110 * 60))])  # 10 minutes left
+        [d] = self.post(minutes=15)
+        self.assertEqual(self.answer(d["id"], 1)[0], 0)
+        [f] = self.human_extensions()
+        self.assertEqual((f["from"], f["until"]), (iso(NOW + 10 * 60), iso(NOW + 25 * 60)))
+
+    def test_continue_without_a_task_start_is_answered_but_the_limit_is_not_extended(self):
+        self.seed("tasks", [{"repo": ROOT, "slug": "z", "state": "blocked", "ts": iso(NOW - 60)}])
+        rid = factory.post_decision(self.repo, "z", "site-manager", "overrun", "a?", ["Continue: 1", "b"], minutes=1)
+        code, out, _ = self.answer(rid, 1)
+        self.assertEqual(code, 0)
+        self.assertIn("the limit of z was not extended", out)
+        self.assertEqual(self.human_extensions(), [])
+        self.assertEqual(len(self.inbox_lines()), 1)
+
+    def test_cut_split_and_abandon_send_the_line_and_extend_nothing(self):
+        for n in (2, 3, 4):
+            [d] = self.post()
+            self.assertEqual(self.answer(d["id"], n)[0], 0)
+            self.assertEqual(self.inbox_lines()[-1], f"INBOX: x: decision {d['id']}: the human picked {n}: {d['options'][n - 1]}")
+        self.assertEqual((self.human_extensions(), len(self.inbox_lines())), ([], 3))
+
+    def test_after_the_answer_the_leads_working_lets_the_build_start(self):
+        self.seed("tasks", [{"repo": ROOT, "slug": "xyz", "state": "working", "ts": iso(NOW - HOUR)}])
+        factory.overrun_to_human(self.repo, "xyz", ASK)
+        [d] = factory.open_decisions(ROOT)
+        self.answer(d["id"], 2)
+        spawned = []
+        with mock.patch.object(factory, "tech_lead_missing", lambda repo, slug: None), \
+                mock.patch.object(factory, "spawn", lambda argv, *a: spawned.append(argv)):
+            self.assertEqual((self.cli("build", "xyz", entries=["xyz"])[0], spawned), (1, []))
+            self.assertEqual(self.cli("state", "working", entries=["xyz"], cwd=f"{WT}/xyz")[0], 0)
+            self.assertEqual(self.cli("build", "xyz", entries=["xyz"])[0], 0)
+        self.assertEqual(len(spawned), 1)
+
+    def test_a_lead_cannot_post_an_overrun_card(self):
+        with self.assertRaises(SystemExit) as refused:
+            self.cli("decision", "ask", "--kind", "overrun", "a?", "--option", "b", "--option", "c")
+        self.assertEqual(refused.exception.code, 2)
+        self.assertEqual(self.records("decisions"), [])
+
+
+
 if __name__ == "__main__":
     unittest.main()

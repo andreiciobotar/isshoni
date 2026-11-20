@@ -125,8 +125,11 @@ Check the clock (`date -u`) every time a subagent returns and before each `facto
 - Past your limit, or before it when the task is not converging (the same issue back from review a third time, a plan that keeps growing, a fix that keeps moving the problem), run `factory overrun '<what is done; what is left; why it is slow; what you would do with more time>'` once. It is not a message to the dispatcher and declares no state.
 - While waiting, finish the step in hand and carry on with what is left of assessment and hand-over; start no build run until the answer. The answer is a `SITE MANAGER: <slug>` line within a few minutes:
   - `extended`: work to the new limit; a second overrun is a new ask.
-  - `paused`: the script declared the task blocked on the human. End your turn; when the human answers, `factory state working`.
-  - `passed to the human`: `factory state blocked human`, end your turn.
+  - `paused`: the script declared the task blocked on the human and put your ask in the inbox with four options. Declare no state (a declaration closes the card) and end your turn. The answer is an `INBOX:` line (The inbox): `factory state working`, then by the option picked:
+    - Continue: the script extended your limit by the minutes the option names; work to it; a later overrun is a new ask.
+    - Cut: hand over what works now, with what is left on the pull request's "Not verified / risks" line.
+    - Split: `SPLIT:` to the dispatcher with one brief per part you drop, and hand over the part you keep.
+    - Abandon: stop every background command and probe session, `factory state blocked dispatcher`, send `BLOCKED: <slug>: abandoned by the human in the inbox`, end your turn.
 
 ## What comes back
 After hand-over you are not woken for a conflict or a red check at merge time. A tech lead (a fresh session in your worktree, Opus by default) merges the default branch in, fixes what is mechanical, commits (its script checks the result and pushes it), notes on the pull request what it did (a comment starting `Tech lead:`) and hands over again (30 minutes, 5 USD): read its notes when you are next awake for another reason. You hear only a `TECH LEAD:` line that asks for a decision.
