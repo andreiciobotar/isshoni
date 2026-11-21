@@ -586,8 +586,10 @@ func TestFactoryStatusDecodesDecisions(t *testing.T) {
 	doc := `{"rows": [], "decisions": [
 		{"id": "3f9a1c2b4d5e", "slug": "demo-task", "kind": "question", "ask": "Ship it?", "options": ["Ship", "Wait"], "recommend": 2, "ts": "2026-11-14T19:00:00Z"},
 		{"id": "7c0b9e1d2a46", "slug": "other-task", "kind": "blocked", "ask": "Push by hand.", "options": ["Done", "Stop"], "ts": "yesterday"},
+		{"id": "5a5a5a5a5a5a", "slug": "demo-task", "kind": "split", "ask": "Retry is separable.", "options": ["Start demo-retry", "Do not start it"], "always": 1, "picked": 1, "note": "starts by itself when it can: at the cap", "ts": "2026-11-14T19:05:00Z"},
 		{"id": "a1", "slug": "parked", "kind": "question", "ask": "?", "options": ["x"], "ts": "2026-11-14T19:00:00Z", "with": "site-manager", "with_since": "2026-11-14T19:30:00Z"},
-		{"id": "b2", "slug": "back", "kind": "question", "ask": "?", "options": ["x"], "returned": "needs the human's taste"}]}`
+		{"id": "b2", "slug": "back", "kind": "question", "ask": "?", "options": ["x"], "returned": "needs the human's taste"}],
+		"standing": [{"kind": "split", "label": "start it", "on": true, "uses": 4}]}`
 	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(doc), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -598,11 +600,16 @@ func TestFactoryStatusDecodesDecisions(t *testing.T) {
 	want := []FactoryDecision{
 		{ID: "3f9a1c2b4d5e", Slug: "demo-task", Kind: "question", Ask: "Ship it?", Options: []string{"Ship", "Wait"}, Recommend: 2, TS: time.Date(2026, 11, 14, 19, 0, 0, 0, time.UTC)},
 		{ID: "7c0b9e1d2a46", Slug: "other-task", Kind: "blocked", Ask: "Push by hand.", Options: []string{"Done", "Stop"}},
+		{ID: "5a5a5a5a5a5a", Slug: "demo-task", Kind: "split", Ask: "Retry is separable.", Options: []string{"Start demo-retry", "Do not start it"}, Always: 1, Picked: 1,
+			Note: "starts by itself when it can: at the cap", TS: time.Date(2026, 11, 14, 19, 5, 0, 0, time.UTC)},
 		{ID: "a1", Slug: "parked", Kind: "question", Ask: "?", Options: []string{"x"}, TS: time.Date(2026, 11, 14, 19, 0, 0, 0, time.UTC), With: "site-manager", WithSince: time.Date(2026, 11, 14, 19, 30, 0, 0, time.UTC)},
 		{ID: "b2", Slug: "back", Kind: "question", Ask: "?", Options: []string{"x"}, Returned: "needs the human's taste"},
 	}
 	if !reflect.DeepEqual(st.Decisions, want) {
 		t.Fatalf("decisions %+v\nwant %+v", st.Decisions, want)
+	}
+	if want := []FactoryStanding{{Kind: "split", Label: "start it", On: true, Uses: 4}}; !reflect.DeepEqual(st.Standing, want) {
+		t.Fatalf("standing %+v\nwant %+v", st.Standing, want)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(`{"rows": []}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -612,13 +619,50 @@ func TestFactoryStatusDecodesDecisions(t *testing.T) {
 	}
 }
 
+func TestFactoryStatusDecodesApprovalsAndHistory(t *testing.T) {
+	r, dir := factoryStub(t)
+	doc := `{"rows": [],
+		"approvals": {"as_of": "2026-11-20T10:42:00Z", "items": [
+			{"slug": "demo-export", "number": 12, "url": "https://github.com/example/demo/pull/12", "why": "new", "since": "2026-11-20T10:17:00Z"},
+			{"slug": "demo-import", "number": 9, "url": "https://github.com/example/demo/pull/9", "why": "stale", "text": "its head changed", "since": "2026-11-20T08:00:00Z"}]},
+		"history": [{"ts": "2026-11-20T10:42:00Z", "slug": "demo-task", "by": "site-manager", "text": "extended 20 min to 11:05Z: landing left"},
+			{"ts": "soon", "slug": "demo-import", "by": "human", "text": "question: picked 2: Add retry now"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.FactoryStatus(context.Background(), t.TempDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(h, m int) time.Time { return time.Date(2026, 11, 20, h, m, 0, 0, time.UTC) }
+	wantA := FactoryApprovals{AsOf: at(10, 42), Items: []FactoryApproval{
+		{"demo-export", 12, "https://github.com/example/demo/pull/12", "new", "", at(10, 17)},
+		{"demo-import", 9, "https://github.com/example/demo/pull/9", "stale", "its head changed", at(8, 0)},
+	}}
+	wantH := []FactoryHistory{
+		{at(10, 42), "demo-task", "site-manager", "extended 20 min to 11:05Z: landing left"},
+		{time.Time{}, "demo-import", "human", "question: picked 2: Add retry now"},
+	}
+	if !reflect.DeepEqual(st.Approvals, wantA) || !reflect.DeepEqual(st.History, wantH) {
+		t.Fatalf("approvals %+v\nhistory %+v", st.Approvals, st.History)
+	}
+	for _, doc := range []string{`{"rows": []}`, `{"rows": [], "approvals": {"as_of": null, "items": []}, "history": []}`} {
+		if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if st, err = r.FactoryStatus(context.Background(), t.TempDir(), true); err != nil || !st.Approvals.AsOf.IsZero() || len(st.Approvals.Items) != 0 || len(st.History) != 0 {
+			t.Fatalf("absent or empty keys give empty values: %+v, %v", st, err)
+		}
+	}
+}
+
 func TestAnswerDecisionRunsTheFactoryCommandInTheRepository(t *testing.T) {
 	dir := stubFactory(t, "")
 	repo, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := AnswerDecision(context.Background(), repo, "3f9a1c2b4d5e", "2"); err != nil {
+	if err := AnswerDecision(context.Background(), repo, "3f9a1c2b4d5e", "2", false); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "args")); string(b) != "decision answer 3f9a1c2b4d5e 2\n" {
@@ -628,12 +672,35 @@ func TestAnswerDecisionRunsTheFactoryCommandInTheRepository(t *testing.T) {
 		t.Fatalf("ran in %q, want the repository %q", b, repo)
 	}
 	stubFactory(t, "factory: decision 3f9a1c2b4d5e is already answered")
-	if err := AnswerDecision(context.Background(), repo, "3f9a1c2b4d5e", "1"); err == nil || err.Error() != "decision 3f9a1c2b4d5e is already answered" {
+	if err := AnswerDecision(context.Background(), repo, "3f9a1c2b4d5e", "1", false); err == nil || err.Error() != "decision 3f9a1c2b4d5e is already answered" {
 		t.Fatalf("the command's last stderr line is the error: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := AnswerDecision(ctx, repo, "3f9a1c2b4d5e", "1"); err == nil {
+	if err := AnswerDecision(ctx, repo, "3f9a1c2b4d5e", "1", false); err == nil {
 		t.Fatal("a cancelled context stops the call")
+	}
+}
+
+func TestAnswerDecisionAlwaysAndSetStandingRunTheFactoryCommand(t *testing.T) {
+	dir := stubFactory(t, "")
+	repo := t.TempDir()
+	if err := AnswerDecision(context.Background(), repo, "3f9a1c2b4d5e", "1", true); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "args")); string(b) != "decision answer 3f9a1c2b4d5e 1 --always\n" {
+		t.Fatalf("arguments: %q", b)
+	}
+	for on, want := range map[bool]string{true: "decision always split on\n", false: "decision always split off\n"} {
+		if err := SetStanding(context.Background(), repo, "split", on); err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := os.ReadFile(filepath.Join(dir, "args")); string(b) != want {
+			t.Fatalf("arguments: %q, want %q", b, want)
+		}
+	}
+	stubFactory(t, "factory: split is not a kind")
+	if err := SetStanding(context.Background(), repo, "x", true); err == nil || err.Error() != "split is not a kind" {
+		t.Fatalf("the command's last stderr line is the error: %v", err)
 	}
 }
