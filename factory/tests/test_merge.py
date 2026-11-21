@@ -1334,6 +1334,21 @@ class SyncDraftTests(World):
                 _, out, _ = self.cli("status", answers=answers, sessions=sessions, entries=slugs)
                 self.assertEqual([l for l in out.splitlines() if l.startswith("waiting on")], [line])
 
+    def test_status_and_the_rows_say_that_a_head_waits_its_turn(self):
+        text = "waiting behind #12: conflicts with main in a.txt"
+        cases = {"this head": ({"head": SHA, "kind": "in-line", "text": text}, text, f"waiting its turn: t1 https://x/pull/1: {text}"),
+                 "another head": ({"head": "old", "kind": "in-line", "text": text}, None, "waiting on the human: t1 https://x/pull/1"),
+                 "another kind": ({"head": SHA, "kind": "conflict", "text": text}, None, "waiting on the human: t1 https://x/pull/1")}
+        for label, (record, in_line, line) in cases.items():
+            with self.subTest(label):
+                self.setUp()
+                factory.repo_state(ROOT, "lander", "json").write_text(json.dumps({"stopped": {"1": record}}))
+                answers, sessions, slugs = self.world([pr(1)])
+                _, out, _ = self.cli("status", answers=answers, sessions=sessions, entries=slugs)
+                self.assertEqual([l for l in out.splitlines() if l.startswith("waiting")], [line])
+                _, out, _ = self.cli("status", "--json", answers=answers, sessions=sessions, entries=slugs)
+                self.assertEqual([r["in_line"] for r in json.loads(out)["rows"]], [in_line])
+
     def test_the_draft_flag_of_a_pull_request_that_is_not_the_recorded_one_is_left_alone(self):
         for label, kw in {"a draft that would be marked ready": dict(prs=[pr(1), namesake(draft=True)]),
                           "a ready one that would go back to draft": dict(prs=[pr(1, draft=True), namesake()], state="working")}.items():
