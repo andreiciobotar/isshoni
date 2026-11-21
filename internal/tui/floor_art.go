@@ -60,8 +60,7 @@ func (l *floorLayout) crateParts(ft floorTask) []lpiece {
 		ps = append(ps, lpiece{s: ft.repo + "/", faint: true})
 	}
 	ps = append(ps, lpiece{s: ft.t.Slug})
-	switch {
-	case floorPlace(ft.t) == "blocked":
+	if floorPlace(ft.t) == "blocked" {
 		if wait := cmp.Or(ft.t.WaitsOn, rawPhase(ft.t.Phase)); wait != "" {
 			ps = append(ps, lpiece{s: " · " + wait, faint: true, opt: true})
 		}

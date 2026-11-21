@@ -102,7 +102,7 @@ type floorLayout struct {
 	lanes     [5]floorLane
 	hw        int // width of a head tile
 	x0, x1    int // crates stand in [x0, x1)
-	capW      int // the widest crate
+	capW      int // the widest crate that is not held (a held crate gets two)
 	xl, xr    int // the columns the conveyor turns at, inside the left and right junctions
 	path      *floorPath
 	start     [5]int // arc length where each lane starts
