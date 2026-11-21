@@ -8455,11 +8455,11 @@ def line_order(repo, snap):
 
 
 def front_of_line(repo, snap):
-    """The pull request of `snap` that the lander sends back first, or None: that of a prioritized task, else the first of
+    """The pull request of `snap` that the lander sends back first, or None: that of a prioritized task when it has one, else the first of
     the line (open, on the default branch, its task handed over once) that the lander is not keeping back itself: a paused
     task's, or one held as `not-ours`."""
-    if first := queue_holders(repo):
-        return next((pr for pr in snap if task_slug(repo, pr) in first), None)
+    if (first := queue_holders(repo)) and (prioritized := next((pr for pr in snap if task_slug(repo, pr) in first), None)):
+        return prioritized
     place, paused, held = first_handovers(repo), paused_rows(repo), held_prs(read_lander(repo))
     return next((pr for pr in line_order(repo, snap) if pr["baseRefName"] == repo.default and task_slug(repo, pr) in place
                  and task_slug(repo, pr) not in paused and str(pr["number"]) not in held), None)

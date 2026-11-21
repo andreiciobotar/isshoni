@@ -618,6 +618,25 @@ class LineTests(Loop):
         self.assertEqual(self.sent_back(), ["t2"])
         self.assertEqual(self.lander_json()["stopped"]["1"]["text"], "waiting behind #2: conflicts with main in a.txt")
 
+    def test_a_prioritized_task_with_no_open_pull_request_leaves_the_front_of_the_line_to_the_first_in_it(self):
+        self.handed(1, 2)
+        factory.write_lander(SimpleNamespace(root=ROOT), {"prioritized": {"t3": iso(NOW - 60)}})
+        for n in (1, 2, 3):
+            self.sim.add(n, approved=False, conflicts=["a.txt"])
+        self.sim.merged = [3]  # t3 is open, its pull request is not
+        self.go("lander", at=NOW, extra={("git", "merge-base", "--is-ancestor"): (1, "", "")})
+        self.assertEqual((self.sent_back(), len(self.waits())), (["t1"], 1))
+
+    def test_a_task_closed_and_handed_over_again_stands_behind_one_handed_over_between(self):
+        self.seed("tasks", [{"repo": ROOT, "slug": "t1", "state": "handed-over", "ts": iso(NOW - 9000)},
+                            {"repo": ROOT, "slug": "t2", "state": "handed-over", "ts": iso(NOW - 8900)},
+                            {"repo": ROOT, "slug": "t1", "state": "closed", "ts": iso(NOW - 8800)},
+                            {"repo": ROOT, "slug": "t1", "state": "handed-over", "ts": iso(NOW - 8700)}])
+        self.sim.add(1, approved=False, conflicts=["a.txt"])
+        self.sim.add(2, approved=False, conflicts=["a.txt"])
+        self.go("lander", at=NOW)
+        self.assertEqual((self.sent_back(), len(self.waits())), (["t2"], 1))
+
     def test_a_second_pass_posts_nothing_again_and_a_new_front_is_named_without_a_new_comment(self):
         for n in range(1, 4):
             self.sim.add(n, approved=False, conflicts=["a.txt"])
