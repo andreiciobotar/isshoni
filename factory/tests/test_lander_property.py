@@ -236,7 +236,7 @@ class Rig(Loop):
                     self.seed("tasks", sim.apply(("handover", n, False, False), self.clock + 1))
                     moved = True
             for n in live:
-                if sim.state[n] == "handed-over" and sim.approved_on.get(n) != sim.prs[n]["head"]:
+                if sim.state[n] == "handed-over" and not sim.reached(n, sim.prs[n]["head"]):
                     sim.apply(("approve", n), self.clock + 1)
                     moved = True
             if failure := self.lander():
@@ -291,7 +291,8 @@ def hunt(seed, runs):
     for index in range(runs):
         events, failure = fresh((), random.Random(f"{seed}/{index}"))
         if failure:
-            return Failure(failure[0], failure[1], shrink(events, failure[0]), seed, index, len(events))
+            shrunk = shrink(events, failure[0])
+            return Failure(failure[0], fresh(shrunk)[1][1], shrunk, seed, index, len(events))
 
 
 class PropertyTests(unittest.TestCase):
