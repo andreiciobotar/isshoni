@@ -81,11 +81,6 @@ func (a hrgb) lit(l hrgb) hrgb {
 	return hrgb{math.Min(255, a.r+l.r), math.Min(255, a.g+l.g), math.Min(255, a.b+l.b)}
 }
 
-// over is what a exceeds b by, channel by channel: the light a colour adds to a background.
-func (a hrgb) over(b hrgb) hrgb {
-	return hrgb{math.Max(0, a.r-b.r), math.Max(0, a.g-b.g), math.Max(0, a.b-b.b)}
-}
-
 func (a hrgb) times(k float64) hrgb { return hrgb{a.r * k, a.g * k, a.b * k} }
 
 // stepped rounds each channel to a multiple of n.

@@ -599,24 +599,10 @@ func ReadDispatchers(path string) ([]string, error) {
 // the dashboard runs from (LocateRoot): the factory is the only writer of its settings file, and `factory` is on
 // the PATH only inside Claude Code sessions. Its one-line complaint is the error.
 func WriteWorktreeCap(n int) error {
-	root, err := LocateRoot()
-	if err != nil {
-		return err
-	}
-	script := filepath.Join(root, "factory", "bin", "factory")
-	if _, err := os.Stat(script); err != nil {
-		return fmt.Errorf("factory command not found: %s", script)
-	}
-	var se bytes.Buffer
-	cmd := exec.Command(script, "settings", "set", "limits.worktree_cap", strconv.Itoa(n))
-	cmd.Stderr = &se
-	if err := cmd.Run(); err != nil {
-		return stderrLine(se.String(), err)
-	}
-	return nil
+	return runFactory(context.Background(), "", "settings", "set", "limits.worktree_cap", strconv.Itoa(n))
 }
 
-// answerTimeout bounds `factory decision answer` and `decision always`, which write log lines and never leave the machine.
+// answerTimeout bounds the factory commands the dashboard runs (`decision answer`, `decision always`, `settings set`), which write local files and never leave the machine.
 const answerTimeout = 10 * time.Second
 
 // AnswerDecision runs `<root>/factory/bin/factory decision answer id choice` in the repository at repoPath (root as
