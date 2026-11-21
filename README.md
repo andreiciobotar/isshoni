@@ -61,7 +61,7 @@ Describe a task. A reviewed pull request comes back.
 
 - **Hand it work.** Tell the dispatcher what you want. Each task gets its own worktree; five run at once per repository.
 - **Watch.** Ask the dispatcher for progress, or run `make up`: the Inbox shows the pull request that waits for you, then every task, and the Factory view draws the tasks as a floor.
-- **Decide.** A lead asks only what it cannot decide itself; its question waits in the dashboard's Inbox, where you pick an option by number. Comment on its pull request and it answers or acts. Approve with a review or a comment `lgtm`; the lander merges approved pull requests in order. Nothing merges without you.
+- **Decide.** A lead asks only what it cannot decide itself; its question waits in the dashboard's Inbox, where you pick an option by number; the Inbox also lists the pull requests waiting for your approval and what was decided. Comment on its pull request and it answers or acts. Approve with a review or a comment `lgtm`; the lander merges approved pull requests in order. Nothing merges without you.
 - **Improve.** Every task leaves feedback and a retrospective. A review reads them and files each proposal as an issue; you decide ([kaizen](docs/factory.md#kaizen-review)).
 - **Production.** Tasks can read logs and metrics through read-only MCP tools you grant ([reading](docs/factory.md#reading-production-the-ops-explorer)); an ops watch checks a running system on a schedule ([watching](docs/factory.md#watching-production-the-ops-watch)).
 
