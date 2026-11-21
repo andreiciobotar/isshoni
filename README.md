@@ -60,13 +60,13 @@ Describe a task. A reviewed pull request comes back.
 ## Day to day
 
 - **Hand it work.** Tell the dispatcher what you want. Each task gets its own worktree; five run at once per repository.
-- **Watch.** Ask the dispatcher for progress, or run `make up`: the Factory view shows the pull request that waits for you, then every task.
+- **Watch.** Ask the dispatcher for progress, or run `make up`: the Inbox shows the pull request that waits for you, then every task, and the Factory view draws the tasks as a floor.
 - **Decide.** A lead asks only what it cannot decide itself; its question waits in the dashboard's Inbox, where you pick an option by number; the Inbox also lists the pull requests waiting for your approval and what was decided. Comment on its pull request and it answers or acts. Approve with a review or a comment `lgtm`; the lander merges approved pull requests in order. Nothing merges without you.
 - **Improve.** Every task leaves feedback and a retrospective. A review reads them and files each proposal as an issue; you decide ([kaizen](docs/factory.md#kaizen-review)).
 - **Production.** Tasks can read logs and metrics through read-only MCP tools you grant ([reading](docs/factory.md#reading-production-the-ops-explorer)); an ops watch checks a running system on a schedule ([watching](docs/factory.md#watching-production-the-ops-watch)).
 
 <p align="center">
-  <img src="assets/tabs/factory.webp" alt="The Factory view: the pull request that waits for you, then every task with its phase, elapsed time and pull request, against the cap and its reserve">
+  <img src="assets/tabs/factory.gif" alt="The Factory view: a top view of a factory floor in lanes, lanes for BUILD, REVIEW, MERGE and SHIPPED named on coloured head tiles and joined by junction blocks, one crate per task moving lane to lane, blocked tasks on their own lane, then the / filter narrowing it to one repository">
 </p>
 
 ## Settings

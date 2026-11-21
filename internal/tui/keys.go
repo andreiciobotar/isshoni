@@ -22,6 +22,7 @@ type keyMap struct {
 	Range, Follow, Sort, Filter                key.Binding
 	FilterKeep, FilterClear, Erase, Wipe       key.Binding
 	CapEdit, CapSave, CapCancel                key.Binding
+	MenuChoose, MenuClose                      key.Binding
 	Hanami, Legend, Zen, Replay                key.Binding
 	Dispatcher                                 key.Binding
 }
@@ -81,9 +82,11 @@ var keys = keyMap{
 
 	Dispatcher: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "dispatcher")),
 
-	CapEdit:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "edit cap")),
-	CapSave:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "save")),
-	CapCancel: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+	CapEdit:    key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "edit cap")),
+	CapSave:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "save")),
+	CapCancel:  key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+	MenuChoose: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "choose")),
+	MenuClose:  key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "close")),
 
 	// the Hanami tab's own keys: its footer shows them; the help overlay has no row left for them at 24 rows
 	Legend: key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "legend")),
@@ -99,6 +102,8 @@ func (m *model) footerKeys() []key.Binding {
 		return []key.Binding{keys.FilterKeep, keys.FilterClear}
 	case m.fac.editing:
 		return []key.Binding{keys.CapSave, keys.CapCancel}
+	case m.floor.menu:
+		return []key.Binding{keys.Down, keys.MenuChoose, keys.MenuClose}
 	case m.view == viewInbox && m.inbox.always:
 		digits, what := switchOffWords(len(m.switchable()))
 		return []key.Binding{key.NewBinding(key.WithHelp(digits, what)), keys.CapCancel}
@@ -108,23 +113,25 @@ func (m *model) footerKeys() []key.Binding {
 		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept}
 	case m.view == viewInbox:
 		cs, i := m.cards(), m.inbox.tbl.Cursor()
-		onCard := i >= 0 && i < len(cs)
-		offered := !onCard || (cs[i].app == nil && cs[i].d.With == "") // an approval, or a decision with the site manager, has nothing to pick or leave
+		offered := true
+		if i >= 0 && i < len(cs) {
+			offered = cs[i].app == nil && cs[i].d.With == "" // an approval, or a decision with the site manager, has nothing to pick or leave
+		}
 		bs := []key.Binding{keys.Down}
 		if offered {
 			bs = append(bs, m.pickHint())
 		}
 		bs = append(bs, keys.CapEdit)
-		if offered && (!onCard || delegable(cs[i].d.Kind)) {
+		if c, ok := m.cursorCard(); offered && (!ok || delegable(c.d.Kind)) {
 			bs = append(bs, keys.Leave)
 		}
-		bs = append(bs, keys.History)
+		bs = append(bs, keys.Next, keys.History)
 		if len(m.switchable()) > 0 {
-			bs = append(bs, keys.AlwaysOff) // after History: the footer drops the keys next to Next first
+			bs = append(bs, keys.AlwaysOff) // after History: the footer drops the keys from the right first
 		}
-		return append(bs, keys.Next, keys.Help, keys.Quit)
+		return append(bs, keys.Help, keys.Quit)
 	case m.view == viewFactory:
-		return []key.Binding{keys.Down, keys.CapEdit, keys.Range, keys.Next, keys.Help, keys.Quit}
+		return []key.Binding{keys.Filter, keys.Range, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewHanami:
 		return []key.Binding{keys.Legend, keys.Zen, keys.Replay, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewKaizen:

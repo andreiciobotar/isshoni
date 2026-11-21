@@ -43,7 +43,6 @@ type factoryState struct {
 	busy   bool // a refresh is in flight
 	again  bool // asked for another while one was in flight
 	doneAt time.Time
-	top    int // first visible body line
 
 	cap     int    // worktree cap shown on the settings line; 0 until known
 	reserve int    // slots of the cap held in reserve, from status; 0 when unknown
@@ -126,7 +125,7 @@ func (m *model) refreshFactory(minAge time.Duration) tea.Cmd {
 		f.again = f.again || minAge == 0
 		return nil
 	}
-	if !m.onFloor() {
+	if !m.showsFactory() {
 		if !m.loaded {
 			return nil
 		}
@@ -144,7 +143,7 @@ func (m *model) refreshFactory(minAge time.Duration) tea.Cmd {
 // whose pull request data is missing or older than data.PRFloor and that has none in
 // flight. Only the factory view asks GitHub.
 func (m *model) dueFetches() []func() factoryFetchMsg {
-	if !m.onFloor() || m.runner == nil {
+	if !m.showsFactory() || m.runner == nil {
 		return nil
 	}
 	r, ctx, now := m.runner, m.ctx, float64(m.now().UnixNano())/1e9

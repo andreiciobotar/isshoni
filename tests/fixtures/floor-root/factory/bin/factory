@@ -1,0 +1,54 @@
+"""Stand-in for `factory status --json [--cached | --max-age N]`, for the recording tools/floor.tape.
+
+The tasks of the repository in the working directory change phase every 10 s of wall clock, counted from the first call
+(kept as the time of $FLOOR_REPOS/.t0), so each 10 s refresh of the Factory floor shows a move.
+"""
+import json
+import os
+import sys
+import time
+
+if sys.argv[1:2] != ["status"]:
+    sys.exit("factory: this stub only prints `status --json`")
+base = os.environ["FLOOR_REPOS"]
+t0 = os.path.join(base, ".t0")
+if not os.path.exists(t0):
+    open(t0, "w").close()
+step = int((time.time() - os.path.getmtime(t0)) // 10)
+
+
+def row(slug, elapsed, size, *moves, first="motion"):
+    """The task in the phase of this step: moves are (from step, phase, extra fields); the last one reached wins."""
+    _, phase, more = [m for m in ((0, first, {}),) + moves if m[0] <= step][-1]
+    pr = {"review": "open", "merged": "merged", "settled": "merged"}.get(phase, "")
+    return {"slug": slug, "phase": phase, "base": "main", "elapsed": elapsed * 60, "overtime": False, "nearing": False,
+            "size": size, "limit": 40 * 60, "stale": False, "pr_state": pr, "pr_url": "", "pr_draft": False,
+            "session": "working" if phase == "motion" else "idle", "deliverable": None, "waited": None,
+            "stop_kind": None, "stop_summary": None, "waits_on": None, **more}
+
+
+ASK = {"stop_kind": "QUESTION", "stop_summary": "which eviction policy", "waits_on": "human", "waited": 60}
+rows = {
+    "alpha": [
+        row("parser", 31, "medium", (1, "review", {})),
+        row("cache", 12, "large", (2, "blocked", ASK)),
+        row("lint-rules", 22, "small"),
+        row("retry", 4, "small"),
+        row("tracing", 55, "medium", first="settled"),
+        row("schema", 70, "large", first="merged"),
+    ],
+    "delta-docs": [
+        row("api-ref", 18, "medium"),
+        row("readme", 35, "small", (2, "settled", {}), first="review"),
+        row("changelog", 90, "small", first="settled"),
+    ],
+}.get(os.path.basename(os.getcwd()), [])
+
+
+def count(phase):
+    return sum(r["phase"] == phase for r in rows)
+
+
+print(json.dumps({"rows": rows, "cap": 5, "reserve": 1, "in_motion": count("motion") + count("blocked"), "blocked": count("blocked"),
+                  "in_review": count("review"), "merged": count("merged"), "settled": count("settled"),
+                  "prs": {"as_of": time.time(), "error": None}, "decisions": []}))

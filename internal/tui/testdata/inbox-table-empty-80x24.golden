@@ -1,12 +1,19 @@
- Isshoni 1 ✉ 2 ≡ 3 Agent [4 Factory] 5 Kaizen 6 ◉ 7 ✿   24h [7d] 30d all ○ idle 
- Factory  2 motion · 0 review · 0 merged  · as of 11:00:00                      
- ✓ nothing waits on you                                                         
+ Isshoni [1 ✉] 2 ≡ 3 Agent 4 Factory 5 Kaizen 6 ◉ 7 ✿   24h [7d] 30d all ○ idle 
+ Inbox  as of 11:00:00                                                          
+ Nothing to decide.                                                             
+                                                                                
  worktree cap  5  per repo   c edit             ~/.claude/factory/settings.toml 
                                                                                 
- calm                                 in motion ●●○○○ 2/5   review 0   merged 0 
-  SLUG     PHASE     ELAPSED  PR  BASE  FLAGS                                   
-  task-00  ⠋ motion    1m00s  -   main                                          
-  task-01  ⠋ motion    2m00s  -   main                                          
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+             No factory tasks here yet                                          
+                                                                                
+             Tasks appear when a dispatcher starts leads with                   
+             /factory:dispatch in a repository seen in this range.              
                                                                                 
                                                                                 
                                                                                 
@@ -14,11 +21,4 @@
                                                                                 
                                                                                 
                                                                                 
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
- ↑↓/jk move  ·  c edit cap  ·  r range  ·  tab next view  ·  ? help  ·  q quit  
+ ↑↓/jk move  ·  1-4 pick an option  ·  c edit cap  ·  ? help  ·  q quit         

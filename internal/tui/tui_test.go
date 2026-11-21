@@ -620,7 +620,7 @@ func checkFrame(t *testing.T, name string, m *model, noColor bool) {
 func TestRenderAllViewsAllSizes(t *testing.T) {
 	for _, sz := range sizes {
 		for _, nc := range []bool{false, true} {
-			for _, view := range []string{"dashboard", "session", "agents", "factory", "kaizen", "ops", "help", "detail", "filter", "follow"} {
+			for _, view := range []string{"dashboard", "session", "agents", "factory", "floor", "kaizen", "ops", "help", "detail", "filter", "follow"} {
 				m := fakeModel(nc, sz[0], sz[1])
 				switch view {
 				case "session":
@@ -629,6 +629,8 @@ func TestRenderAllViewsAllSizes(t *testing.T) {
 					m.view = viewAgents
 				case "factory":
 					setFactory(m, fakeFactoryRepos()...)
+				case "floor":
+					setFloor(m, fakeFactoryRepos()...)
 				case "kaizen":
 					setKaizen(m, kaizenDoc(t), pagePulse)
 				case "ops":

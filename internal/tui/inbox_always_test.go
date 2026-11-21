@@ -185,7 +185,7 @@ func TestInboxReadOnlyRefusesToSwitchAnAlwaysOff(t *testing.T) {
 
 func TestInboxFootersNameAlwaysKeys(t *testing.T) {
 	m, _ := splitModel(t)
-	m.w = 120
+	m.w = 140
 	send(m, "j") // the split card: the footer has room for A beside the base's keys
 	if out := plain(m); !strings.Contains(strings.Split(out, "\n")[len(strings.Split(out, "\n"))-1], "A always off") {
 		t.Fatalf("the footer names A while the line shows:\n%s", out)

@@ -225,8 +225,8 @@ func TestInboxBandDoesNotRepeatATaskWithACard(t *testing.T) {
 		t.Fatalf("the badge leaves out the parked one: %d of %d", got, all)
 	}
 	m.view = viewFactory
-	if out := plain(m); !strings.Contains(out, "▲ Needs you  7") || !strings.Contains(out, "answer question") {
-		t.Errorf("the Factory view stays as it was:\n%s", out)
+	if out := plain(m); !strings.Contains(out, "SHIPPED ") || strings.Contains(out, "Needs you") {
+		t.Errorf("the Factory tab draws the floor, not the table with its band:\n%s", out)
 	}
 	only := inboxRepos()[0]
 	only.st = fstatus(5, only.st.Rows[:0]...)
@@ -295,8 +295,8 @@ func TestInboxIsAFactoryPage(t *testing.T) {
 		t.Fatalf("k comes back: cursor %d, top %d", m.inbox.tbl.Cursor(), m.inbox.top)
 	}
 	send(m, "G")
-	if m.inbox.top == 0 || m.fac.top != 0 {
-		t.Fatalf("G scrolls the Inbox, and only the Inbox: top %d, factory top %d", m.inbox.top, m.fac.top)
+	if m.inbox.top == 0 {
+		t.Fatalf("G scrolls the Inbox: top %d", m.inbox.top)
 	}
 }
 
@@ -689,7 +689,7 @@ func TestInboxCursorStaysOnItsPullRequestThroughARefreshThatReordersRows(t *test
 	}
 }
 
-func TestInboxBandLeavesOutAnApproveRowsReviewPRButTheFactoryTabKeepsIt(t *testing.T) {
+func TestInboxBandLeavesOutAnApproveRowsReviewPR(t *testing.T) {
 	repos := noticeRepos()
 	repos[0].st.Rows = append(repos[0].st.Rows, data.FactoryTask{Slug: "demo-export", Phase: "review", PRURL: "https://github.com/example/demo/pull/12"})
 	m := fakeModel(true, 140, 60)
@@ -705,10 +705,10 @@ func TestInboxBandLeavesOutAnApproveRowsReviewPRButTheFactoryTabKeepsIt(t *testi
 	if inBand() {
 		t.Errorf("the Inbox band repeats the approve row's task:\n%s", plain(m))
 	}
-	m.view = viewFactory
-	m.fixScroll()
+	m.fac.repos[0].st.Approvals = data.FactoryApprovals{}
+	m.syncInbox()
 	if !inBand() {
-		t.Errorf("the Factory tab's band keeps it:\n%s", plain(m))
+		t.Errorf("without the approve row the band lists the task:\n%s", plain(m))
 	}
 }
 
@@ -821,7 +821,7 @@ func TestInboxWithoutApprovalsOrHistoryHasNoSections(t *testing.T) {
 }
 
 func TestInboxNamesTheHistoryKey(t *testing.T) {
-	if foot := plain(noticeModel(140, 40)); !strings.Contains(foot, "H all history") {
+	if foot := plain(noticeModel(160, 40)); !strings.Contains(foot, "H all history") {
 		t.Errorf("footer:\n%s", foot)
 	}
 	m := noticeModel(120, 50)
@@ -939,6 +939,60 @@ func TestInboxFooterNamesTheCardsOptionRange(t *testing.T) {
 	send(m, "j")
 	if out := plain(m); !strings.Contains(out, "1–2 pick an option") {
 		t.Errorf("two options:\n%s", out)
+	}
+}
+
+func TestInboxHoldCardRendersItsOneOptionAndTakesPick1(t *testing.T) {
+	repos := inboxRepos()
+	repos[0].st.Decisions = []data.FactoryDecision{{
+		ID: "hh00", Slug: "stacked-task", Kind: "hold", TS: fakeNow.Add(-5 * time.Minute),
+		Ask:     "stacked-task is held: its base base-task is working, so no build run starts. It is released when base-task hands over.",
+		Options: []string{"Release: build now on base-task as it stands"},
+	}}
+	m := fakeModel(true, 120, 40)
+	setInbox(m, repos...)
+	send(m, "j", "j", "j") // past delta-docs' three rows
+	out := plain(m)
+	for _, want := range []string{"hold", "stacked-task is held", "1  Release: build now on base-task as it stands", "1–1 pick an option"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the card shows %q:\n%s", want, out)
+		}
+	}
+	send(m, "1")
+	if m.inbox.pick != "1" || m.inbox.id != "hh00" || m.inbox.mark != 0 {
+		t.Fatalf("pick 1 opens the confirm: %+v", m.inbox)
+	}
+	send(m, "n", "2") // the card has one option: 2 is the Sessions tab
+	if m.view != viewDashboard {
+		t.Fatalf("a digit beyond the one option switches the tab: %v", m.view)
+	}
+}
+
+func TestInboxHoldCardIsNotDelegable(t *testing.T) {
+	repos := inboxRepos()
+	repos[0].st.Decisions = []data.FactoryDecision{{
+		ID: "hh00", Slug: "stacked-task", Kind: "hold", TS: fakeNow.Add(-5 * time.Minute),
+		Ask:     "stacked-task is held.",
+		Options: []string{"Release: build now on base-task as it stands"},
+	}}
+	m := fakeModel(true, 120, 40)
+	setInbox(m, repos...)
+	send(m, "j", "j", "j")
+	out := plain(m)
+	for _, not := range []string{"leave it to the lead", "L S"} {
+		if strings.Contains(out, not) {
+			t.Errorf("a hold card shows %q:\n%s", not, out)
+		}
+	}
+	for _, want := range []string{"H all history", "1–1 pick an option"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("a hold card's footer lacks %q:\n%s", want, out)
+		}
+	}
+	send(m, "L")
+	send(m, "S")
+	if m.inbox.pick != "" {
+		t.Fatalf("L and S do not open a confirm on a hold card: %+v", m.inbox)
 	}
 }
 
