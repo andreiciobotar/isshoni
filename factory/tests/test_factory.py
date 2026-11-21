@@ -2092,6 +2092,24 @@ class NewTests(unittest.TestCase):
         self.assertIn("Your base branch is worktree-alpha (remote origin).", launch[-1])
         self.assertFalse(fake.ran("git", "worktree", "remove"))
 
+    def test_base_prints_held_from_the_start_only_while_the_base_is_still_changing(self):
+        for state, line in (("working", "held from the start: base alpha is working; its lead writes the spec, a build run starts when alpha hands over"),
+                            ("handed-over", None)):
+            answers = self.answers([task_entry("alpha")], (), {("git", "worktree", "add"): (0, "", ""), ("git", "config"): (0, "", "")}, self.OK)
+            code, out, err, _ = invoke(self.ARGS + ["--base", "alpha"], answers,
+                                       tasks=[{"repo": ROOT, "slug": "alpha", "state": state, "ts": "2026-03-01T00:00:00Z"}])
+            self.assertEqual(code, 0, err)
+            self.assertEqual(line in out.splitlines(), line is not None, (state, out))
+            self.assertEqual("held from the start" in out, line is not None)
+
+    def test_base_with_no_commit_of_its_own_is_still_held_from_the_start(self):
+        answers = self.answers([task_entry("alpha")], (), {("git", "worktree", "add"): (0, "", ""), ("git", "config"): (0, "", ""),
+                                                            ("git", "merge-base", "--is-ancestor"): (0, "", "")}, self.OK)
+        code, out, err, _ = invoke(self.ARGS + ["--base", "alpha"], answers,
+                                   tasks=[{"repo": ROOT, "slug": "alpha", "state": "working", "ts": "2026-03-01T00:00:00Z"}])
+        self.assertEqual(code, 0, err)
+        self.assertIn("held from the start: base alpha is working", out)
+
     def test_base_uses_the_base_tasks_actual_branch(self):
         code, _, err, fake = self.stacked(self.OK, (f"{WT}/alpha", "feature/odd", False))
         self.assertEqual(code, 0, err)
