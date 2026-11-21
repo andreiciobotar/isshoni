@@ -49,7 +49,7 @@ func rawPhase(phase string) string {
 }
 
 // crateParts is the text of a crate after its mark: the slug (with the repository before it under the prefix rule, when the
-// slug keeps 6 cells), what a blocked task waits on, then the elapsed text; all cut to the widest crate, the last first.
+// slug keeps 6 cells), what a blocked task waits on or the base a task is held on, then the elapsed text; all cut to the widest crate, the last first.
 func (l *floorLayout) crateParts(ft floorTask) []lpiece {
 	room := l.capW - 4
 	var ps []lpiece
@@ -57,7 +57,10 @@ func (l *floorLayout) crateParts(ft floorTask) []lpiece {
 		ps = append(ps, lpiece{s: ft.repo + "/", faint: true})
 	}
 	ps = append(ps, lpiece{s: ft.t.Slug})
-	if floorPlace(ft.t.Phase) == "blocked" {
+	switch {
+	case ft.t.StackHold != nil:
+		ps = append(ps, lpiece{s: " · held on " + ft.t.StackHold.Base, faint: true, opt: true})
+	case floorPlace(ft.t) == "blocked":
 		if wait := cmp.Or(ft.t.WaitsOn, rawPhase(ft.t.Phase)); wait != "" {
 			ps = append(ps, lpiece{s: " · " + wait, faint: true, opt: true})
 		}
@@ -77,13 +80,15 @@ func (l *floorLayout) crateWidth(ft floorTask) int {
 	return w
 }
 
-// crateMark is the first cell of a crate: ▲ when its task waits on the human, ! when it is past its time, the spinner
-// when a session works, else a space.
+// crateMark is the first cell of a crate: ▲ when its task waits on the human, ‖ when it is held on its base, ! when it is
+// past its time, the spinner when a session works, else a space.
 func (m *model) crateMark(t data.FactoryTask) (rune, color.Color) {
 	th := m.th
 	switch {
 	case waitsForYou(t):
 		return '▲', th.Yellow
+	case t.StackHold != nil:
+		return '‖', th.Teal
 	case t.Overtime:
 		return '!', th.Red
 	case t.Session == "working":
@@ -240,6 +245,9 @@ func (a *floorArt) drawMarks() {
 func (a *floorArt) drawCrate(r rect, t data.FactoryTask, ps []lpiece) {
 	th := a.m.th
 	_, _, c := a.m.phaseLook(t, false)
+	if t.StackHold != nil {
+		c = th.Teal
+	}
 	tint := mix(c, th.Bg, 0.75)
 	for y := r.y; y < r.y+r.h; y++ {
 		a.cv.putOn(r.x, y, '▐', gstyle{fg: tint})

@@ -598,6 +598,96 @@ func TestFloorSurvivesAnyWindow(t *testing.T) {
 	}
 }
 
+// ---- held on its base ---------------------------------------------------------------
+
+// heldTask is a task in motion that the site manager holds on the task base.
+func heldTask(slug, base string) data.FactoryTask {
+	t := ftask(slug, "motion")
+	t.StackHold = &data.FactoryStackHold{Base: base}
+	t.Elapsed = ptr(int64(252))
+	return t
+}
+
+// heldRepos is the held fixture: api-v2 held on api-v1, which builds; a task that waits on the human and one that waits on a task.
+func heldRepos() []factoryRepo {
+	base, ask, ci := ftask("api-v1", "motion"), ftask("needs-an-answer", "blocked"), ftask("waits-for-schema", "blocked")
+	base.Session, base.Elapsed, base.Limit = "working", ptr(int64(2700)), ptr(int64(5400))
+	ask.Elapsed, ask.WaitsOn, ask.StopKind = ptr(int64(640)), "human", "QUESTION"
+	ci.Elapsed, ci.WaitsOn = ptr(int64(1500)), "schema-v2"
+	review, shipped := ftask("api-docs", "review"), ftask("old-endpoints", "settled")
+	review.Elapsed, review.PRState, review.PRURL = ptr(int64(5400)), "open", "https://github.com/o/alpha/pull/7"
+	shipped.Elapsed = ptr(int64(3000))
+	return []factoryRepo{
+		{name: "alpha", path: "/r/alpha", st: fstatus(5, base, heldTask("api-v2", "api-v1"), ask, ci, review, shipped)},
+		{name: "delta-docs", path: "/r/delta-docs", st: fstatus(5, ftask("changelog", "settled"))},
+	}
+}
+
+func TestFloorHeldTaskStandsOnTheSidingWithItsOwnLook(t *testing.T) {
+	held, plainTask, blocked := heldTask("api-v2", "api-v1"), ftask("api-v2", "motion"), ftask("api-v2", "blocked")
+	if floorPlace(held) != "blocked" || floorPlace(plainTask) != "build" {
+		t.Errorf("a held task stands on the siding, the same task unheld on BUILD: %q, %q", floorPlace(held), floorPlace(plainTask))
+	}
+	m := floorModel(true, 100, 30, factoryRepo{name: "r", path: "/r", st: fstatus(5, held)})
+	l := m.floorNow()
+	c := floorCrates(m)["api-v2"]
+	if c.place != "blocked" || floorLanes[laneOf(l, c)] != "blocked" || l.count["blocked"] != 1 || l.count["build"] != 0 {
+		t.Errorf("the held crate is on the siding and counted there: %+v", c)
+	}
+	if l.waits["blocked"] {
+		t.Error("a held task does not wait on the human: the siding is not lit")
+	}
+	if out := plain(m); !strings.Contains(out, "‖ api-v2 · held on api-v1  "+elapsedText(held, false)) || strings.Contains(out, "▲") {
+		t.Errorf("the held crate reads like the spec and has no ▲:\n%s", out)
+	}
+	if r, col := m.crateMark(held); r != '‖' || key24(col) != key24(m.th.Teal) {
+		t.Errorf("mark %q in %v, want ‖ in the held colour", r, col)
+	}
+	tint := func(t data.FactoryTask) uint32 {
+		a := m.drawFloor(l)
+		a.drawCrate(rect{2, 2, 20, 1}, t, nil)
+		return key24(a.cv.g[2*l.w+3].st.bg)
+	}
+	if h, b, p := tint(held), tint(blocked), tint(plainTask); h == b || h == p {
+		t.Errorf("the held tint %x differs from the blocked %x and the motion %x ones", h, b, p)
+	}
+	waiting := held
+	waiting.Phase, waiting.WaitsOn = "blocked", "human"
+	if r, _ := m.crateMark(waiting); r != '▲' {
+		t.Errorf("▲ wins over ‖: %q", r)
+	}
+}
+
+func TestFloorSidingOrderIsHumanThenHeldThenTheRest(t *testing.T) {
+	ask, other := ftask("z-ask", "blocked"), ftask("a-other", "blocked")
+	ask.WaitsOn, other.WaitsOn = "human", "ci"
+	m := floorModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: fstatus(5, other, heldTask("m-held", "b"), ask)})
+	got := floorCrates(m)
+	if !(got["z-ask"].rect.x < got["m-held"].rect.x && got["m-held"].rect.x < got["a-other"].rect.x) {
+		t.Errorf("the siding orders the human's first, then the held, then the rest: %v", got)
+	}
+}
+
+func TestFloorHeldCrateDropsElapsedBeforeTheBase(t *testing.T) {
+	elapsed := elapsedText(heldTask("x", "y"), false)
+	for _, c := range []struct {
+		w, h       int
+		slug, want string
+	}{
+		{140, 40, "a", "a · held on x  " + elapsed},
+		{100, 30, "ab", "ab · held on x"},
+	} {
+		m := floorModel(true, c.w, c.h, factoryRepo{name: "r", path: "/r", st: fstatus(5, heldTask(c.slug, "x"))})
+		var got string
+		for _, p := range m.floorNow().crateParts(floorCrates(m)[c.slug].floorTask) {
+			got += p.s
+		}
+		if got != c.want {
+			t.Errorf("at %dx%d the held crate reads %q, want %q", c.w, c.h, got, c.want)
+		}
+	}
+}
+
 // ---- goldens ------------------------------------------------------------------------
 
 func TestGoldenFloor(t *testing.T) {
@@ -617,6 +707,8 @@ func TestGoldenFloor(t *testing.T) {
 		{"floor-140x40", 140, 40, func(m *model) { setFloor(m, waitingRepos()...) }},
 		{"floor-100x30", 100, 30, func(m *model) { setFloor(m, waitingRepos()...) }},
 		{"floor-80x24", 80, 24, func(m *model) { setFloor(m, waitingRepos()...) }},
+		{"floor-held-100x30", 100, 30, func(m *model) { setFloor(m, heldRepos()...) }},
+		{"floor-held-80x24", 80, 24, func(m *model) { setFloor(m, heldRepos()...) }},
 		{"floor-empty-80x24", 80, 24, func(m *model) { setFloor(m) }},
 		{"floor-single-100x30", 100, 30, func(m *model) {
 			one := ftask("quiet-refactor", "motion")
