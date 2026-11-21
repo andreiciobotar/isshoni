@@ -184,8 +184,8 @@ func TestInboxBandDoesNotRepeatATaskWithACard(t *testing.T) {
 		t.Fatalf("the badge leaves out the parked one: %d of %d", got, all)
 	}
 	m.view = viewFactory
-	if out := plain(m); !strings.Contains(out, "▲ Needs you  7") || !strings.Contains(out, "answer question") {
-		t.Errorf("the Factory view stays as it was:\n%s", out)
+	if out := plain(m); !strings.Contains(out, "SHIPPED ") || strings.Contains(out, "Needs you") {
+		t.Errorf("the Factory tab draws the floor, not the table with its band:\n%s", out)
 	}
 	only := inboxRepos()[0]
 	only.st = fstatus(5, only.st.Rows[:0]...)
@@ -254,8 +254,8 @@ func TestInboxIsAFactoryPage(t *testing.T) {
 		t.Fatalf("k comes back: cursor %d, top %d", m.inbox.tbl.Cursor(), m.inbox.top)
 	}
 	send(m, "G")
-	if m.inbox.top == 0 || m.fac.top != 0 {
-		t.Fatalf("G scrolls the Inbox, and only the Inbox: top %d, factory top %d", m.inbox.top, m.fac.top)
+	if m.inbox.top == 0 {
+		t.Fatalf("G scrolls the Inbox: top %d", m.inbox.top)
 	}
 }
 

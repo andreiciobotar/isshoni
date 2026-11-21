@@ -1,5 +1,5 @@
- Isshoni  1 ✉ ▲7  2 ≡  3 Agent [4 Factory] 5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
- Factory  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                 
+ Isshoni [1 ✉ ▲7] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
+ Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                   
   old-plumbing       ✓ merged, not cleaned         2h00m  #9                      [kept]            
                      kept: uncommitted changes                                                      
   release-notes      · settled, not cleaned       50m00s  release-notes.md                          
@@ -27,4 +27,4 @@
   rush-fix           ⠋ motion · prioritized 3m    10m00s  -                                         
   design-review      ◆ waiting for review              -  design.md                                 
   video-cut          ◆ waiting for review              -  example.com/cut/v2                        
- ↑↓/jk move  ·  c edit cap  ·  r range  ·  tab next view  ·  ? help  ·  q quit                      
+ ↑↓/jk move  ·  1-4 pick an option  ·  c edit cap  ·  ? help  ·  q quit                             

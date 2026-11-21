@@ -65,7 +65,9 @@ func (m *model) frame() []string {
 		body = m.sessionBody(p, w, bh)
 	case m.view == viewAgents:
 		body = m.agentsBody(p, w, bh)
-	case m.onFloor():
+	case m.view == viewFactory:
+		body = m.floorBody(p, w, bh)
+	case m.view == viewInbox:
 		body = m.factoryBody(p, w, bh)
 	case m.view == viewKaizen:
 		body = m.kaizenBody(p, w, bh)
@@ -211,7 +213,7 @@ func (m *model) subheader(p paint) string {
 		}
 		left = p.t("Sessions › ", th.Faint) + p.b(name, th.Text)
 	case m.view == viewFactory:
-		left = m.factorySubheader(p, "Factory")
+		left = m.floorSubheader(p)
 	case m.view == viewInbox:
 		left = m.factorySubheader(p, "Inbox")
 	case m.view == viewKaizen:

@@ -155,8 +155,8 @@ func fakeFactoryRepos() []factoryRepo {
 	}
 }
 
-// setFactory puts the model on the factory view holding repos as the last result.
-func setFactory(m *model, repos ...factoryRepo) {
+// setFloor puts the model on the Factory tab (the floor) holding repos as the last result.
+func setFloor(m *model, repos ...factoryRepo) {
 	m.view = viewFactory
 	m.fac.repos, m.fac.doneAt, m.fac.cap = repos, m.now(), 5
 	for _, r := range repos {
@@ -168,9 +168,22 @@ func setFactory(m *model, repos ...factoryRepo) {
 	m.fixScroll()
 }
 
+// setFactory puts the model on the Inbox, the page of the factory table, holding repos as the last result.
+func setFactory(m *model, repos ...factoryRepo) {
+	setFloor(m, repos...)
+	m.view = viewInbox
+	m.fixScroll()
+}
+
 func factoryModel(noColor bool, w, h int, repos ...factoryRepo) *model {
 	m := fakeModel(noColor, w, h)
 	setFactory(m, repos...)
+	return m
+}
+
+func floorModel(noColor bool, w, h int, repos ...factoryRepo) *model {
+	m := fakeModel(noColor, w, h)
+	setFloor(m, repos...)
 	return m
 }
 
@@ -362,8 +375,8 @@ func TestFactoryTableColumnsAndPhaseLabels(t *testing.T) {
 	if strings.Contains(out, "origin/") {
 		t.Errorf("the origin/ prefix of a base is dropped:\n%s", out)
 	}
-	short := plain(factoryModel(true, 80, 24, alpha()))
-	if strings.Contains(short, "waiting for review") || !strings.Contains(short, "◆ review ") || !strings.Contains(short, "⠋ motion") || !strings.Contains(short, "Factory  7 motion (1 blocked) · 1 review · 2 merged · 1 settled") || !strings.Contains(short, "▲ blocked ") || strings.Contains(short, "blocked, needs you") {
+	short := plain(factoryModel(true, 80, 40, alpha()))
+	if strings.Contains(short, "waiting for review") || !strings.Contains(short, "◆ review ") || !strings.Contains(short, "⠋ motion") || !strings.Contains(short, "Inbox  7 motion (1 blocked) · 1 review · 2 merged · 1 settled") || !strings.Contains(short, "▲ blocked ") || strings.Contains(short, "blocked, needs you") {
 		t.Errorf("below 100 columns the labels are short:\n%s", short)
 	}
 	narrow := plain(factoryModel(true, 60, 20, alpha()))
@@ -520,7 +533,8 @@ func TestFactoryBandLeavesOutTasksBlockedOnSomeoneElse(t *testing.T) {
 func TestFactoryTaskRowNamesWhomABlockedTaskWaitsOn(t *testing.T) {
 	for _, w := range []int{80, 100, 140} {
 		m := factoryModel(true, w, 60, delta())
-		plain := ansi.Strip(strings.Join(m.factoryLines(m.th.on(m.th.Bg), w, 60), "\n"))
+		page := m.inboxPage(m.th.on(m.th.Bg), w, 60)
+		plain := ansi.Strip(strings.Join(page, "\n"))
 		lines := strings.Split(plain, "\n")
 		for _, l := range lines {
 			if width(l) > w {
@@ -839,14 +853,15 @@ func TestFactoryWaitingWhatAndDo(t *testing.T) {
 
 func TestFactoryBandWhenNothingWaitsIsOneLineBeforeTheSettings(t *testing.T) {
 	lines := strings.Split(plain(factoryModel(true, 100, 30, factoryRepo{name: "calm", st: fstatus(5, ftask("a", "motion"))})), "\n")
-	if !strings.HasPrefix(lines[2], " ✓ nothing waits on you") || !strings.HasPrefix(lines[3], " worktree cap") {
-		t.Fatalf("one line, then the settings line:\n%s", strings.Join(lines[:5], "\n"))
+	i := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, " ✓ nothing waits on you") })
+	if i < 0 || !strings.HasPrefix(lines[i+1], " worktree cap") {
+		t.Fatalf("one line, then the settings line:\n%s", strings.Join(lines[:7], "\n"))
 	}
 	if out := plain(factoryModel(true, 100, 30)); strings.Contains(out, "nothing waits") || strings.Contains(out, "Needs you") {
 		t.Errorf("no repositories, no band:\n%s", out)
 	}
 	m := fakeModel(true, 100, 30)
-	m.view = viewFactory
+	m.view = viewInbox
 	if out := plain(m); strings.Contains(out, "nothing waits") {
 		t.Errorf("no band while loading:\n%s", out)
 	}
@@ -978,7 +993,7 @@ func TestFactoryEmptyAndFirstResult(t *testing.T) {
 		}
 	}
 	m = fakeModel(true, 100, 30)
-	m.view = viewFactory
+	m.view = viewInbox
 	if out := plain(m); !strings.Contains(out, "asking the factory…") || strings.Contains(out, "No factory tasks") {
 		t.Errorf("before the first result:\n%s", out)
 	}
@@ -987,7 +1002,7 @@ func TestFactoryEmptyAndFirstResult(t *testing.T) {
 func TestFactorySubheaderAndSettingsLine(t *testing.T) {
 	m := factoryModel(true, 140, 40, fakeFactoryRepos()...)
 	out := plain(m)
-	for _, want := range []string{"Factory  10 in motion (1 blocked) · 1 waiting for review · 2 merged, not cleaned · 1 settled  · as of 11:00:00", "worktree cap  5  per repo", "⚠ not inside a git repository", "in motion ●●● 3/2"} {
+	for _, want := range []string{"Inbox  10 in motion (1 blocked) · 1 waiting for review · 2 merged, not cleaned · 1 settled  · as of 11:00:00", "worktree cap  5  per repo", "⚠ not inside a git repository", "in motion ●●● 3/2"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("lacks %q:\n%s", want, out)
 		}
@@ -1012,12 +1027,12 @@ func TestFactoryScroll(t *testing.T) {
 		t.Fatalf("a cut body says so:\n%s", out)
 	}
 	send(m, "j")
-	if m.fac.top != 1 {
-		t.Fatalf("j scrolls one line, top=%d", m.fac.top)
+	if m.inbox.top != 1 {
+		t.Fatalf("j scrolls one line, top=%d", m.inbox.top)
 	}
 	send(m, "k", "k")
-	if m.fac.top != 0 {
-		t.Fatalf("top stays at 0, got %d", m.fac.top)
+	if m.inbox.top != 0 {
+		t.Fatalf("top stays at 0, got %d", m.inbox.top)
 	}
 	send(m, "G")
 	out := plain(m)
@@ -1025,18 +1040,18 @@ func TestFactoryScroll(t *testing.T) {
 		t.Fatalf("G shows the end:\n%s", out)
 	}
 	send(m, "j")
-	if want := m.factoryPositions() - 1; m.fac.top != want {
-		t.Fatalf("scrolling stops at the end: top=%d want %d", m.fac.top, want)
+	if want := m.factoryPositions() - 1; m.inbox.top != want {
+		t.Fatalf("scrolling stops at the end: top=%d want %d", m.inbox.top, want)
 	}
 	send(m, "g")
-	if m.fac.top != 0 {
+	if m.inbox.top != 0 {
 		t.Fatal("g goes to the top")
 	}
 	m.w, m.h = 80, 60
-	m.fac.top = 3
+	m.inbox.top = 3
 	m.fixScroll()
-	if m.fac.top != 0 {
-		t.Fatalf("a taller window pulls the scroll back, top=%d", m.fac.top)
+	if m.inbox.top != 0 {
+		t.Fatalf("a taller window pulls the scroll back, top=%d", m.inbox.top)
 	}
 }
 
@@ -1111,12 +1126,21 @@ func TestHeaderKeepsTheActiveRangeChipAtSixtyColumns(t *testing.T) {
 }
 
 func TestFactoryHelpAndFooter(t *testing.T) {
-	m := factoryModel(true, 120, 40, alpha())
+	m := factoryModel(true, 140, 40, alpha())
 	foot := plain(m)
-	for _, want := range []string{"↑↓/jk move", "c edit cap", "r range", "tab next view", "? help", "q quit"} {
+	for _, want := range []string{"↑↓/jk move", "c edit cap", "tab next view", "? help", "q quit"} {
 		if !strings.Contains(foot, want) {
 			t.Errorf("footer lacks %q", want)
 		}
+	}
+	floor := plain(floorModel(true, 120, 40, alpha()))
+	for _, want := range []string{"/ filter", "r range", "tab next view", "? help", "q quit"} {
+		if !strings.Contains(floor, want) {
+			t.Errorf("the Factory tab's footer lacks %q", want)
+		}
+	}
+	if strings.Contains(floor, "edit cap") {
+		t.Errorf("the Factory tab has no cap key:\n%s", floor)
 	}
 	m.fac.editing = true
 	if foot := plain(m); !strings.Contains(foot, "enter save  ·  esc cancel") {
@@ -1133,7 +1157,7 @@ func TestFactoryHelpAndFooter(t *testing.T) {
 
 // ---- goldens and screenshots ------------------------------------------------------
 
-func TestGoldenFactory(t *testing.T) {
+func TestGoldenInboxTable(t *testing.T) {
 	shots := os.Getenv("ISSHONI_SHOT_DIR")
 	for _, c := range []struct {
 		name string
@@ -1141,24 +1165,24 @@ func TestGoldenFactory(t *testing.T) {
 		set  func(m *model)
 		gold bool
 	}{
-		{"factory-140x40", 140, 40, func(m *model) { setFactory(m, waitingRepos()...) }, true},
-		{"factory-100x30", 100, 30, func(m *model) { setFactory(m, waitingRepos()...) }, true},
-		{"factory-80x24", 80, 24, func(m *model) { setFactory(m, waitingRepos()...) }, true},
-		{"factory-blocked-on-100x30", 100, 30, func(m *model) { setFactory(m, waitingRepos()...); m.fac.top = 1 << 10; m.fixScroll() }, true},
-		{"factory-blocked-on-80x24", 80, 24, func(m *model) { setFactory(m, waitingRepos()...); m.fac.top = 1 << 10; m.fixScroll() }, true},
-		{"factory-quiet-80x24", 80, 24, func(m *model) {
+		{"inbox-table-140x40", 140, 40, func(m *model) { setFactory(m, waitingRepos()...) }, true},
+		{"inbox-table-100x30", 100, 30, func(m *model) { setFactory(m, waitingRepos()...) }, true},
+		{"inbox-table-80x24", 80, 24, func(m *model) { setFactory(m, waitingRepos()...) }, true},
+		{"inbox-table-blocked-on-100x30", 100, 30, func(m *model) { setFactory(m, waitingRepos()...); m.inbox.top = 1 << 10; m.fixScroll() }, true},
+		{"inbox-table-blocked-on-80x24", 80, 24, func(m *model) { setFactory(m, waitingRepos()...); m.inbox.top = 1 << 10; m.fixScroll() }, true},
+		{"inbox-table-quiet-80x24", 80, 24, func(m *model) {
 			setFactory(m, factoryRepo{name: "calm", path: "/r/calm", st: fstatus(5, manyTasks(2)...)})
 		}, true},
-		{"factory-prs-stale-100x30", 100, 30, func(m *model) {
+		{"inbox-table-prs-stale-100x30", 100, 30, func(m *model) {
 			repos := fakeFactoryRepos()
 			repos[0].st.PRs.AsOf = ptr(float64(m.now().Add(-12 * time.Minute).Unix()))
 			repos[0].fetchErr = "factory status timed out after 25s"
 			repos[1].st.PRs.AsOf = ptr(float64(m.now().Add(-3 * time.Minute).Unix()))
 			setFactory(m, repos...)
 		}, true},
-		{"factory-empty-80x24", 80, 24, func(m *model) { setFactory(m) }, true},
-		{"factory-edit-100x30", 100, 30, func(m *model) { setFactory(m, fakeFactoryRepos()...); m.fac.editing, m.fac.field = true, "12" }, false},
-		{"factory-busy-140x40", 140, 40, func(m *model) {
+		{"inbox-table-empty-80x24", 80, 24, func(m *model) { setFactory(m) }, true},
+		{"inbox-table-edit-100x30", 100, 30, func(m *model) { setFactory(m, fakeFactoryRepos()...); m.fac.editing, m.fac.field = true, "12" }, false},
+		{"inbox-table-busy-140x40", 140, 40, func(m *model) {
 			busy := alpha()
 			busy.name = "isshoni"
 			setFactory(m, busy, factoryRepo{name: "agent", path: "/r/agent", st: fstatus(5, manyTasks(7)...)}, factoryRepo{name: "zahn-os", path: "/r/z", st: fstatus(40, manyTasks(12)...)})
@@ -1227,7 +1251,7 @@ func factoryCalls(t *testing.T, dir string) int { return calls(t, dir, "factory 
 
 func TestFactoryEnteringStartsOneRefresh(t *testing.T) {
 	m, dir, _ := factoryStubModel(t)
-	got := only[factoryMsg](upd(m, press("4")))
+	got := only[factoryMsg](upd(m, press("1")))
 	if len(got) != 1 || !m.fac.busy || factoryCalls(t, dir) != 2 {
 		t.Fatalf("entering asks each repository with a worktrees directory once: %d results, busy=%v, %d calls", len(got), m.fac.busy, factoryCalls(t, dir))
 	}
@@ -1240,7 +1264,7 @@ func TestFactoryEnteringStartsOneRefresh(t *testing.T) {
 	if more := upd(m, press("2")); len(more) != 0 {
 		t.Fatal("leaving starts nothing")
 	}
-	if more := upd(m, press("4")); len(only[factoryMsg](more)) != 0 || factoryCalls(t, dir) != 2 {
+	if more := upd(m, press("1")); len(only[factoryMsg](more)) != 0 || factoryCalls(t, dir) != 2 {
 		t.Fatal("one refresh in flight at most")
 	}
 	upd(m, got[0])
@@ -1251,7 +1275,7 @@ func TestFactoryEnteringStartsOneRefresh(t *testing.T) {
 
 func TestFactoryCadence(t *testing.T) {
 	m, dir, now := factoryStubModel(t)
-	upd(m, only[factoryMsg](upd(m, press("4")))[0])
+	upd(m, only[factoryMsg](upd(m, press("1")))[0])
 	if got := only[factoryMsg](upd(m, tickMsg{})); len(got) != 0 {
 		t.Fatal("a tick right after a result starts nothing")
 	}
@@ -1271,7 +1295,7 @@ func TestFactoryCadence(t *testing.T) {
 
 	send(m, "2")
 	*now = now.Add(time.Hour)
-	if got := only[factoryMsg](upd(m, press("4"))); len(got) != 1 {
+	if got := only[factoryMsg](upd(m, press("1"))); len(got) != 1 {
 		t.Fatal("entering after a long time refreshes")
 	}
 }
@@ -1322,22 +1346,22 @@ func TestFactoryQuietLineSaysWhenARepositoryDidNotAnswer(t *testing.T) {
 
 func TestFactorySecondEntryWithinFiveSeconds(t *testing.T) {
 	m, _, now := factoryStubModel(t)
-	upd(m, only[factoryMsg](upd(m, press("4")))[0])
+	upd(m, only[factoryMsg](upd(m, press("1")))[0])
 	send(m, "2")
 	*now = now.Add(4 * time.Second)
-	if got := only[factoryMsg](upd(m, press("4"))); len(got) != 0 {
+	if got := only[factoryMsg](upd(m, press("1"))); len(got) != 0 {
 		t.Fatal("a result younger than 5 s is kept")
 	}
 	send(m, "2")
 	*now = now.Add(2 * time.Second)
-	if got := only[factoryMsg](upd(m, press("4"))); len(got) != 1 {
+	if got := only[factoryMsg](upd(m, press("1"))); len(got) != 1 {
 		t.Fatal("an older one is refreshed")
 	}
 }
 
 func TestFactoryResultForAChangedRepositoryListIsAppliedWhole(t *testing.T) {
 	m, _, _ := factoryStubModel(t)
-	upd(m, only[factoryMsg](upd(m, press("4")))[0])
+	upd(m, only[factoryMsg](upd(m, press("1")))[0])
 	upd(m, factoryMsg{repos: []factoryRepo{{name: "other", path: "/x/other", st: fstatus(9)}}, cap: 5})
 	if len(m.fac.repos) != 1 || m.fac.repos[0].name != "other" || m.fac.cap != 9 {
 		t.Fatalf("applied whole: %+v", m.fac)
@@ -1346,7 +1370,7 @@ func TestFactoryResultForAChangedRepositoryListIsAppliedWhole(t *testing.T) {
 
 func TestFactoryRangeChangeRefreshesWhenTheSessionsArrive(t *testing.T) {
 	m, dir, _ := factoryStubModel(t)
-	upd(m, only[factoryMsg](upd(m, press("4")))[0])
+	upd(m, only[factoryMsg](upd(m, press("1")))[0])
 	before := factoryCalls(t, dir)
 	res := &data.SessionsResult{}
 	for _, s := range m.sessions {
@@ -1360,7 +1384,7 @@ func TestFactoryRangeChangeRefreshesWhenTheSessionsArrive(t *testing.T) {
 func TestFactoryErrorsAreOneLinePerRepository(t *testing.T) {
 	m, dir, _ := factoryStubModel(t)
 	os.WriteFile(filepath.Join(dir, "fail"), nil, 0o644)
-	upd(m, only[factoryMsg](upd(m, press("4")))[0])
+	upd(m, only[factoryMsg](upd(m, press("1")))[0])
 	for _, r := range m.fac.repos {
 		if r.st != nil || r.err != "not inside a git repository" {
 			t.Fatalf("%+v", r)
@@ -1503,6 +1527,20 @@ func TestCapFieldEscLeavesTheFileUntouched(t *testing.T) {
 	}
 }
 
+func TestTheFactoryTabHasNoCapKeyAndNoScroll(t *testing.T) {
+	m := floorModel(true, 100, 30, factoryRepo{name: "busy", path: "/r", st: fstatus(40, manyTasks(30)...)})
+	before := plain(m)
+	send(m, "c", "j", "G", "pgdown")
+	if m.fac.editing || m.inbox.top != 0 || m.toast.text != "" || plain(m) != before {
+		t.Fatalf("c and the scroll keys do nothing on the floor: editing=%v inbox top=%d toast=%q", m.fac.editing, m.inbox.top, m.toast.text)
+	}
+	m.view = viewInbox
+	send(m, "c")
+	if !m.fac.editing {
+		t.Fatal("c opens the cap field on the Inbox")
+	}
+}
+
 func TestCapFieldSwallowsOtherKeys(t *testing.T) {
 	m, _ := capModel(t, "")
 	send(m, "c")
@@ -1510,7 +1548,7 @@ func TestCapFieldSwallowsOtherKeys(t *testing.T) {
 		if cmd := m.handleKey(press(k)); cmd != nil {
 			t.Fatalf("%s did something while the field is open", k)
 		}
-		if m.view != viewFactory || !m.fac.editing || m.help {
+		if m.view != viewInbox || !m.fac.editing || m.help {
 			t.Fatalf("%s changed the screen: view=%v editing=%v help=%v", k, m.view, m.fac.editing, m.help)
 		}
 	}
@@ -1563,7 +1601,7 @@ func TestCapSaveWritesTheFileAndRefreshes(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# mine\n[limits]\nworktree_cap = 3 # three\n[models]\nlead = \"fable\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m.view = viewFactory
+	m.view = viewInbox
 	send(m, "c", "backspace", "backspace", "8")
 	got := only[factoryMsg](upd(m, press("enter")))
 	b, _ := os.ReadFile(path)
@@ -1581,7 +1619,7 @@ func TestCapSaveWritesTheFileAndRefreshes(t *testing.T) {
 func TestCapSaveDuringARefreshFollowsIt(t *testing.T) {
 	m, dir, _ := factoryStubModel(t)
 	realFactory(t)
-	first := only[factoryMsg](upd(m, press("4")))
+	first := only[factoryMsg](upd(m, press("1")))
 	send(m, "c", "6")
 	if got := only[factoryMsg](upd(m, press("enter"))); len(got) != 0 {
 		t.Fatal("one refresh in flight at most")
@@ -1598,34 +1636,43 @@ func TestCapSaveDuringARefreshFollowsIt(t *testing.T) {
 // ---- snapshot ---------------------------------------------------------------------
 
 func TestSnapshotFactory(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("STUBDIR", dir)
-	t.Setenv("HOME", t.TempDir())
-	repo := filepath.Join(t.TempDir(), "proj")
-	if err := os.MkdirAll(filepath.Join(repo, ".claude", "worktrees"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	sessions := fmt.Sprintf(`{"sessions":[{"id":"s1","project":"proj","repo":"proj","repo_path":%q}],"malformed":0}`, repo)
-	status, err := os.ReadFile("../data/testdata/factory-status.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.WriteFile(filepath.Join(dir, "sessions.json"), []byte(sessions), 0o644)
-	os.WriteFile(filepath.Join(dir, "status.json"), status, 0o644)
-	py, _ := filepath.Abs("../data/testdata/fakepy.sh")
-	root, _ := filepath.Abs("../..")
-	r := &data.Runner{Root: root, Python: py, ProjectsDir: dir, Timeout: 5 * time.Second}
-	out, err := Snapshot(SnapshotOptions{Options: Options{Runner: r, NoColor: true, Range: "all", Now: func() time.Time { return goldenNow }}, View: "factory", W: 100, H: 30})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := fetchCount(t, dir); n != 1 {
-		t.Fatalf("the snapshot runs the fetch pass once, after the cached one: %d", n)
-	}
-	for _, want := range []string{"proj", "stacked", "cost-in-money", "in motion ▲▲●●○○◌ 4/6+1", "held 7h5m · ended-undeclared · its replacement", "kept: uncommitted changes", "paused 12m: waits nee", "Needs the login task to land first.", "write-up.md", "needs-an-answer", "worktree cap  7", "1 ✉ ▲2", "[4 Factory]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("snapshot lacks %q:\n%s", want, out)
-		}
+	table := []string{"proj", "stacked", "cost-in-money", "in motion ▲▲●●○○◌ 4/6+1", "held 7h5m · ended-undeclared · its replacement", "kept: uncommitted changes", "paused 12m: waits nee", "Needs the login task to land first.", "write-up.md", "needs-an-answer", "worktree cap  7", "[1 ✉ ▲2]", "▲ Needs you  2", "review PR", "1h30m", "answer question", "Which database should it use?"}
+	floor := []string{"stacked", "write-up", "needs-an-answer", "BUILD 2", "REVIEW 1", "MERGE 1", "SHIPPED 1", "BLOCKED 2", "in motion ▲▲●●○○◌ 4/6+1", "1 ✉ ▲2", "[4 Factory]"}
+	for _, c := range []struct {
+		view string
+		want []string
+	}{{"inbox", table}, {"factory", floor}} {
+		t.Run(c.view, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("STUBDIR", dir)
+			t.Setenv("HOME", t.TempDir())
+			repo := filepath.Join(t.TempDir(), "proj")
+			if err := os.MkdirAll(filepath.Join(repo, ".claude", "worktrees"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			sessions := fmt.Sprintf(`{"sessions":[{"id":"s1","project":"proj","repo":"proj","repo_path":%q}],"malformed":0}`, repo)
+			status, err := os.ReadFile("../data/testdata/factory-status.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			os.WriteFile(filepath.Join(dir, "sessions.json"), []byte(sessions), 0o644)
+			os.WriteFile(filepath.Join(dir, "status.json"), status, 0o644)
+			py, _ := filepath.Abs("../data/testdata/fakepy.sh")
+			root, _ := filepath.Abs("../..")
+			r := &data.Runner{Root: root, Python: py, ProjectsDir: dir, Timeout: 5 * time.Second}
+			out, err := Snapshot(SnapshotOptions{Options: Options{Runner: r, NoColor: true, Range: "all", Now: func() time.Time { return goldenNow }}, View: c.view, W: 100, H: 30})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := fetchCount(t, dir); n != 1 {
+				t.Fatalf("the snapshot runs the fetch pass once, after the cached one: %d", n)
+			}
+			for _, want := range c.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("snapshot lacks %q:\n%s", want, out)
+				}
+			}
+		})
 	}
 }
 
