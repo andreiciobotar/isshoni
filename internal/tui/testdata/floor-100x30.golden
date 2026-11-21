@@ -1,9 +1,9 @@
  Isshoni  1 ✉ ▲7  2 ≡  3 Agent [4 Factory] 5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
  Factory  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                 
 ┌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ all repositories  in motion ███████████████ 18/11+1 ╌╌┐
-│   █            █   ▐                  ▌   ▐                  ▌   ▐              ▌                │
-│   █ BLOCKED 8  █   ▐  docs-after-revi…▌   ▐▲ alpha/needs-an-…▌   ▐  paused-fresh▌                │
-│   █ · 5 more   █   ▐                  ▌   ▐                  ▌   ▐              ▌                │
+│   █            █   ▐                  ▌   ▐             ▌   ▐               ▌   ▐          ▌     │
+│   █ BLOCKED 8  █   ▐▲ alpha/needs-an-…▌   ▐▲ slow-import▌   ▐▲ stuck-on-keys▌   ▐▲ wide-ask▌     │
+│   █ · 4 more   █   ▐                  ▌   ▐             ▌   ▐               ▌   ▐          ▌     │
 │   █            █                                                                                 │
 ████╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
     █            █   ▐                  ▌   ▐                  ▌   ▐                  ▌         ████

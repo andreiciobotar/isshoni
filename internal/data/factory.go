@@ -61,6 +61,13 @@ type FactoryTask struct {
 
 	Kept string       `json:"kept"` // why cleanup keeps a task whose work is over; empty when null
 	Held *FactoryHeld `json:"held"` // the site manager's standing call on it; nil when none, or from a script before the field
+
+	StackHold *FactoryStackHold `json:"stack_hold"` // a stacked task held on its base; nil when not, or from a script before the field
+}
+
+// FactoryStackHold is the base a stacked task is held on: {"base": "api-v1", "since": "..."}; since is not read.
+type FactoryStackHold struct {
+	Base string `json:"base"` // the base task's slug
 }
 
 // FactoryExtension is one grant of more time on a task's limit.

@@ -563,6 +563,24 @@ func TestFactoryStatusHeldWithABadSinceKeepsTheRow(t *testing.T) {
 	}
 }
 
+func TestFactoryStatusDecodesStackHold(t *testing.T) {
+	r, dir := factoryStub(t)
+	doc := `{"rows": [
+		{"slug": "api-v2", "phase": "motion", "stack_hold": {"base": "api-v1", "since": "2026-11-14T19:00:00Z"}},
+		{"slug": "api-v1", "phase": "motion", "stack_hold": null},
+		{"slug": "old", "phase": "motion"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.FactoryStatus(context.Background(), t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := st.Rows[0].StackHold; h == nil || h.Base != "api-v1" || st.Rows[1].StackHold != nil || st.Rows[2].StackHold != nil {
+		t.Fatalf("held on a base, none for null and for a script before the field: %+v", st.Rows)
+	}
+}
+
 func TestFactoryStatusDecodesDecisions(t *testing.T) {
 	r, dir := factoryStub(t)
 	doc := `{"rows": [], "decisions": [

@@ -49,15 +49,18 @@ func rawPhase(phase string) string {
 }
 
 // crateParts is the text of a crate after its mark: the slug (with the repository before it under the prefix rule, when the
-// slug keeps 6 cells), what a blocked task waits on, then the elapsed text; all cut to the widest crate, the last first.
+// slug keeps 6 cells), what a blocked task waits on or the base a task is held on, then the elapsed text; all cut to the widest crate, the last first.
 func (l *floorLayout) crateParts(ft floorTask) []lpiece {
+	if ft.t.StackHold != nil {
+		return heldParts(ft.t.Slug, ft.t.StackHold.Base, 2*l.capW-4)
+	}
 	room := l.capW - 4
 	var ps []lpiece
 	if l.prefix && width(ft.repo)+1+6 <= room {
 		ps = append(ps, lpiece{s: ft.repo + "/", faint: true})
 	}
 	ps = append(ps, lpiece{s: ft.t.Slug})
-	if floorPlace(ft.t.Phase) == "blocked" {
+	if floorPlace(ft.t) == "blocked" {
 		if wait := cmp.Or(ft.t.WaitsOn, rawPhase(ft.t.Phase)); wait != "" {
 			ps = append(ps, lpiece{s: " · " + wait, faint: true, opt: true})
 		}
@@ -66,6 +69,24 @@ func (l *floorLayout) crateParts(ft floorTask) []lpiece {
 		ps = append(ps, lpiece{s: "  " + x, faint: true, opt: true})
 	}
 	return fitPieces(ps, room)
+}
+
+// heldParts is the text of a held crate, `<slug> · held on <base>`, in room cells (two crates wide, no repository, no elapsed
+// text). When the names do not fit, the fixed middle stays and they share the rest: half each, the slug the odd cell, a short
+// name lending what it does not use to the other.
+func heldParts(slug, base string, room int) []lpiece {
+	const mid = " · held on "
+	names := room - width(mid)
+	hs, hb := (names+1)/2, names/2
+	switch {
+	case width(slug)+width(base) <= names:
+		hs, hb = width(slug), width(base)
+	case width(slug) < hs:
+		hs, hb = width(slug), names-width(slug)
+	case width(base) < hb:
+		hs, hb = names-width(base), width(base)
+	}
+	return []lpiece{{s: trunc(slug, hs)}, {s: mid, faint: true}, {s: trunc(base, max(hb, 0))}}
 }
 
 // crateWidth is the cells of a crate: its two edges, its mark and a space, and its text.
@@ -77,13 +98,15 @@ func (l *floorLayout) crateWidth(ft floorTask) int {
 	return w
 }
 
-// crateMark is the first cell of a crate: ▲ when its task waits on the human, ! when it is past its time, the spinner
-// when a session works, else a space.
+// crateMark is the first cell of a crate: ▲ when its task waits on the human, ‖ when it is held on its base, ! when it is
+// past its time, the spinner when a session works, else a space.
 func (m *model) crateMark(t data.FactoryTask) (rune, color.Color) {
 	th := m.th
 	switch {
 	case waitsForYou(t):
 		return '▲', th.Yellow
+	case t.StackHold != nil:
+		return '‖', th.Teal
 	case t.Overtime:
 		return '!', th.Red
 	case t.Session == "working":
@@ -240,6 +263,9 @@ func (a *floorArt) drawMarks() {
 func (a *floorArt) drawCrate(r rect, t data.FactoryTask, ps []lpiece) {
 	th := a.m.th
 	_, _, c := a.m.phaseLook(t, false)
+	if t.StackHold != nil {
+		c = th.Teal
+	}
 	tint := mix(c, th.Bg, 0.75)
 	for y := r.y; y < r.y+r.h; y++ {
 		a.cv.putOn(r.x, y, '▐', gstyle{fg: tint})
