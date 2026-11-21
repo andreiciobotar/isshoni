@@ -239,7 +239,7 @@ func (m *model) inboxPage(p paint, w, h int) (lines block) {
 	if len(items) > 0 || len(cs) == 0 {
 		band = m.needsYou(p, w, items)
 	}
-	return append(lines, m.floor(p, w, h-len(lines), band)...)
+	return append(lines, m.table(p, w, h-len(lines), band)...)
 }
 
 // panes is the list of decisions (about 40% of the width, at least 30 columns), a rule, and the cursor

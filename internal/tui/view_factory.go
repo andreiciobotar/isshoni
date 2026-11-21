@@ -24,30 +24,15 @@ const (
 	bandDoLeast = 30               // cells the band's do cell needs to stay on its row
 )
 
-// factoryBody is the factory view: what waits on the human, the settings line, then one
-// section per repository, scrolled when it is taller than the window. The Inbox shows the
-// same lines under its decision cards.
+// factoryBody is the Inbox's page, scrolled when it is taller than the window: the decision
+// cards, then the factory table (what waits on the human, the settings line, one section per
+// repository).
 func (m *model) factoryBody(p paint, w, h int) block {
-	return scrolled(p, m.floorLines(p, w, h), *m.floorTop(), w, h)
+	return scrolled(p, m.inboxPage(p, w, h), m.inbox.top, w, h)
 }
 
-// onFloor says the view shows the factory's lines: the Factory view and the Inbox.
-func (m *model) onFloor() bool { return m.view == viewFactory || m.view == viewInbox }
-
-// floorLines are the lines of the view shown; floorTop is where each of the two keeps its scroll.
-func (m *model) floorLines(p paint, w, h int) block {
-	if m.view == viewInbox {
-		return m.inboxPage(p, w, h)
-	}
-	return m.factoryLines(p, w, h)
-}
-
-func (m *model) floorTop() *int {
-	if m.view == viewInbox {
-		return &m.inbox.top
-	}
-	return &m.fac.top
-}
+// showsFactory says the view reads the factory's status: the Factory tab and the Inbox.
+func (m *model) showsFactory() bool { return m.view == viewFactory || m.view == viewInbox }
 
 // scrolled shows h of the lines from top, the last of them saying how many more there are.
 func scrolled(p paint, lines block, top, w, h int) block {
@@ -66,15 +51,12 @@ func (m *model) factoryPositions() int {
 		return 1
 	}
 	h := m.h - 3
-	return max(1, len(m.floorLines(m.th.on(m.th.Bg), m.w, h))-h+1)
+	lines := m.inboxPage(m.th.on(m.th.Bg), m.w, h)
+	return max(1, len(lines)-h+1)
 }
 
-func (m *model) factoryLines(p paint, w, h int) block {
-	return m.floor(p, w, h, m.needsYou(p, w, m.waiting()))
-}
-
-// floor is the factory's lines under band: the settings line, then the repositories.
-func (m *model) floor(p paint, w, h int, band block) block {
+// table is the factory table under band: the settings line, then the repositories.
+func (m *model) table(p paint, w, h int, band block) block {
 	th := m.th
 	f := &m.fac
 	lines := block{m.settingsLine(p, w), p.sp(w)}
@@ -149,6 +131,11 @@ type waitItem struct {
 	task       data.FactoryTask
 }
 
+// waitsForYou is whether the task waits on the human: a ready pull request in review, or a task blocked on them.
+func waitsForYou(t data.FactoryTask) bool {
+	return (t.Phase == "review" && !t.PRDraft) || t.WaitsOnHuman()
+}
+
 // waiting lists the waiting tasks of every repository, the longest waiting first (an
 // unknown wait last), then by repository and slug.
 func (m *model) waiting() []waitItem {
@@ -158,7 +145,7 @@ func (m *model) waiting() []waitItem {
 			continue
 		}
 		for _, t := range r.st.Rows {
-			if (t.Phase == "review" && !t.PRDraft) || t.WaitsOnHuman() {
+			if waitsForYou(t) {
 				items = append(items, waitItem{r.name, r.path, t})
 			}
 		}

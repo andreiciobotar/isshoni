@@ -1,5 +1,7 @@
- Isshoni  1 ✉ ▲2  2 ≡  3 Agent [4 Factory] 5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
- Factory  10 motion (1 blocked) · 1 review · 2 merged · 1 settled  · as of 11:00:00                 
+ Isshoni [1 ✉ ▲2] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
+ Inbox  10 motion (1 blocked) · 1 review · 2 merged · 1 settled  · as of 11:00:00                   
+ Nothing to decide.                                                                                 
+                                                                                                    
  ▲ Needs you  2                                                                                     
  ◆ alpha  api-rate-limits  review PR         3h00m  #42 https://github.com/o/alpha/pull/42          
  ▲ alpha  needs-an-answer  answer question  45m00s  Should the export keep the legacy column order? 
@@ -24,7 +26,5 @@
   release-notes     · settled, not cleaned   50m00s  release-notes.md                               
                                                                                                     
  beta-é日本語                                               in motion ●●● 3/2   review 0   merged 0 
-  pull requests as of 3m ago                                                                        
-  SLUG              PHASE                   ELAPSED  PR                      FLAGS                  
- +6 more lines · ↓ to scroll                                                                        
- ↑↓/jk move  ·  c edit cap  ·  r range  ·  tab next view  ·  ? help  ·  q quit                      
+ +8 more lines · ↓ to scroll                                                                        
+ ↑↓/jk move  ·  1-4 pick an option  ·  c edit cap  ·  ? help  ·  q quit                             
