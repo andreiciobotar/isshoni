@@ -85,7 +85,7 @@ PROMPT_FROM = (("<agent-message", "subagent"), ("<cross-session-message", "sessi
                ("<task-notification", "notification"))
 
 COMMANDS = {}  # name -> (help, options, function), filled by @command where each command is defined
-COMMAND_ORDER = ("new", "ci", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "guard-hook", "retro", "env",
+COMMAND_ORDER = ("new", "split", "ci", "status", "clean", "state", "overrun", "commands", "ack", "close", "hook", "ops-hook", "guard-hook", "retro", "env",
                  "feedback", "review", "log", "health", "watch", "ops", "mcp", "digest", "firing", "miss", "firings",
                  "pauses", "lead", "decision", "merge", "lander", "tech-lead", "build", "land", "overlap", "scratch", "rerun", "schedule",
                  "dispatcher", "settings", "wizard", "uninstall")  # `factory --help` order; a name not here follows, by name
@@ -106,6 +106,13 @@ class Fail(Exception):
     def __init__(self, message, code=2):
         super().__init__(message)
         self.code = code
+
+
+class StartFailed(Fail):
+    """`start_task` failed after it began to make the task (from `git worktree add` on), unlike a refusal, which is a plain Fail."""
+
+    def __init__(self, message, code=1):
+        super().__init__(message, code)
 
 
 def why(e):
@@ -1922,6 +1929,25 @@ def require_dispatcher(repo, sessions, fallback=None, command="factory new"):
     return caller
 
 
+def base_branch(repo, slug):
+    """The branch of the open task `slug` to stack a new task on; Fail when it is not open or has no branch."""
+    task = next((t for t in repo.tasks if os.path.basename(t["path"]) == slug), None)
+    if not task:
+        raise Fail(f"--base {slug} is not an open task")
+    if not task["branch"]:
+        raise Fail(f"--base {slug} has a detached HEAD, no branch to stack on")
+    return task["branch"]
+
+
+def refuse_existing(repo, slug):
+    """Fail when the worktree or the local branch of a task `slug` exists."""
+    path, branch = repo.worktree_path(slug), f"worktree-{slug}"
+    if os.path.exists(path) or any(t["path"] == path for t in repo.tasks):
+        raise Fail(f"worktree already exists: {path}")
+    if repo.git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")[0] == 0:
+        raise Fail(f"branch already exists: {branch}")
+
+
 @command("new", "start a lead for a task", args_new)
 def cmd_new(args):
     validate_slug(args.slug)
@@ -1939,32 +1965,31 @@ def cmd_new(args):
         if problem := a_model(args.lead_model):
             raise Fail(f"--lead-model{problem}")
         settings["models"]["lead"] = args.lead_model
-    size = brief_size(brief)
     repo = Repo()
-    branch = f"worktree-{args.slug}"
-    path = repo.worktree_path(args.slug)
-    base = repo.default
     if args.base:
-        task = next((t for t in repo.tasks if os.path.basename(t["path"]) == args.base), None)
-        if not task:
-            raise Fail(f"--base {args.base} is not an open task")
-        if not task["branch"]:
-            raise Fail(f"--base {args.base} has a detached HEAD, no branch to stack on")
-        base = task["branch"]
-    if os.path.exists(path) or any(t["path"] == path for t in repo.tasks):
-        raise Fail(f"worktree already exists: {path}")
-    if repo.git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")[0] == 0:
-        raise Fail(f"branch already exists: {branch}")
+        base_branch(repo, args.base)
+    refuse_existing(repo, args.slug)
     sessions = list_sessions()
     if sessions is None:
         raise Fail("cannot list sessions with `claude agents --json --all`")
     caller = require_dispatcher(repo, sessions, args.dispatcher)
-    dispatcher = caller["name"]
-    if any(s.get("name") == args.slug for s in sessions) or sessions_in(sessions, repo.root, path):
-        raise Fail(f"a session named {args.slug} or inside {path} already exists")
+    return start_task(repo, sessions, caller["name"], args.slug, brief, args.base, args.critical, settings)
+
+
+def start_task(repo, sessions, dispatcher, slug, brief, base_slug, critical, settings):
+    """Start the lead of a new task `slug` with `brief` under the dispatcher named `dispatcher`, stacked on the open task
+    `base_slug` if given: the refusals of `factory new` (limit, cap, existing worktree, branch, session or pull request, no CI),
+    each a Fail; from `git worktree add` on, a failure is a StartFailed. `factory new` and the watch tick's start of a split are its two callers."""
+    size = brief_size(brief)
+    branch = f"worktree-{slug}"
+    path = repo.worktree_path(slug)
+    base = base_branch(repo, base_slug) if base_slug else repo.default
+    refuse_existing(repo, slug)
+    if any(s.get("name") == slug for s in sessions) or sessions_in(sessions, repo.root, path):
+        raise Fail(f"a session named {slug} or inside {path} already exists")
     cap = settings["worktree_cap"]
     held_back = reserve(cap, settings["reserve_percent"])
-    limit = cap if args.critical else cap - held_back
+    limit = cap if critical else cap - held_back
     if len(repo.tasks) >= limit:
         declared = read_tasks(repo.root)
         held = []
@@ -1996,56 +2021,59 @@ def cmd_new(args):
     elif state == "none":
         raise Fail(f"{no_ci_line(repo)}; run factory ci for the way out")
     setup = config_value(repo, "factory.setup")
-    if args.base:
+    if base_slug:
         for argv in (["worktree", "add", "-b", branch, path, base],
                      ["config", f"branch.{branch}.factoryBase", base]):
             rc, _, err = repo.git(*argv)
             if rc != 0:
                 if argv[0] == "config":
                     remove_stacked(repo, path, branch)
-                raise Fail(f"git {' '.join(argv)} failed: {err.strip()}", code=1)
+                raise StartFailed(f"git {' '.join(argv)} failed: {err.strip()}")
     elif setup:
         if (fetched := act_git(repo.root, "fetch", repo.remote, repo.default, timeout=GH_TIMEOUT))[0] != 0:
             sys.stderr.write(f"factory: warning: cannot fetch {repo.default} from {repo.remote}: {fetched[2].strip()}; continuing\n")
         rc, _, err = repo.git("worktree", "add", "--no-track", "-b", branch, path, f"{repo.remote}/{repo.default}")
         if rc != 0:
-            raise Fail(f"git worktree add failed: {err.strip()}", code=1)
-    made = bool(args.base or setup)
+            raise StartFailed(f"git worktree add failed: {err.strip()}")
+    made = bool(base_slug or setup)
     sentence = ""
     if setup:
-        sentence, line = run_setup(setup, path, tech_lead_paths(repo, args.slug)[1].with_suffix(".setup.log"))
+        sentence, line = run_setup(setup, path, tech_lead_paths(repo, slug)[1].with_suffix(".setup.log"))
         print(line)
     role_skills(repo.root, "tech-lead")  # the tech lead starts later: the one warning for its record is this one
     try:  # before the launch: the lead's first hook finds its task declared (see `factory_session`)
-        declare(repo, args.slug, "dispatcher", "working")
+        declare(repo, slug, "dispatcher", "working")
     except (OSError, ValueError, KeyError) as e:
-        sys.stderr.write(f"factory: warning: cannot declare {args.slug} ({e}); its lead will count as a session outside the factory\n")
-    rc, out, err = run(build_launch_argv(args.slug, dispatcher, brief, settings, base, repo.remote, time.time(),
-                                         task_limit(size, settings["task_time_limit_hours"]), repo.root, sentence),
-                       cwd=repo.root)
+        sys.stderr.write(f"factory: warning: cannot declare {slug} ({e}); its lead will count as a session outside the factory\n")
+    try:
+        argv = build_launch_argv(slug, dispatcher, brief, settings, base, repo.remote, time.time(),
+                                 task_limit(size, settings["task_time_limit_hours"]), repo.root, sentence)
+    except Fail as e:  # the worktree exists and the task is declared: a refusal here is a failed start
+        raise StartFailed(str(e), e.code) from e
+    rc, out, err = run(argv, cwd=repo.root)
     match = BACKGROUNDED_RE.search(f"{out}\n{err}")
     if rc != 0 and not match:
         if made:
             remove_stacked(repo, path, branch)
         sys.stderr.write(err or out)
         try:
-            declare(repo, args.slug, "dispatcher", "closed", reason="claude did not start the session")
+            declare(repo, slug, "dispatcher", "closed", reason="claude did not start the session")
         except (OSError, ValueError, KeyError):
             pass
-        raise Fail("claude did not start the session", code=1)
+        raise StartFailed("claude did not start the session")
     if rc != 0 or not match:
         sys.stderr.write(f"{out}{err}")
         what = "without a `backgrounded` line" if not match else "after printing a `backgrounded` line"
-        raise Fail(f"claude exited {rc} {what}; the session may be running, nothing was removed", code=1)
+        raise StartFailed(f"claude exited {rc} {what}; the session may be running, nothing was removed")
     print(f"started {match.group(2).strip()} (session {match.group(1)})")
-    if args.base and (held := held_on(repo, args.slug, base)):
+    if base_slug and (held := held_on(repo, slug, base)):
         print(f"held from the start: base {held} is {read_tasks(repo.root)[held]['state']}; its lead writes the spec, a build run starts when {held} hands over")
     if size:
         rc, _, err = repo.git("config", f"branch.{branch}.factorySize", size)
         if rc != 0:
             sys.stderr.write(f"factory: warning: cannot record the size of {branch}: {err.strip()}\n")
     # mode: a record for `isshoni kaizen --modes`, which compares these tasks with those started before the team (`single`).
-    task_event("TaskStarted", repo, args.slug, base=base, lead_model=settings["models"]["lead"], mode="team",
+    task_event("TaskStarted", repo, slug, base=base, lead_model=settings["models"]["lead"], mode="team",
                models=agent_models(settings["models"]), commit=copy_commit(), **({"size": size} if size else {}))
     return 0
 
@@ -2244,7 +2272,9 @@ def cmd_status(args):
         doc = {"rows": rows, "cap": cap, "reserve": held_back, "open": len(rows), **counts,
                "leftover_agent_worktrees": repo.leftover, "outside_worktrees": repo.outside, "identity": bot or None,
                "repository_selection": stored and stored.get("repository_selection"),
-               "prs": {"as_of": as_of, "error": pr_error}, "decisions": open_decisions(repo.root)}
+               "prs": {"as_of": as_of, "error": pr_error}, "decisions": open_decisions(repo.root),
+               "history": history(repo.root), "approvals": read_approvals(repo.root, rows),
+               "standing": list(standing(all_decisions()).values())}
         print(json.dumps(doc, indent=2))
         return 0
     now = time.time()
@@ -4230,11 +4260,12 @@ def close_decided(p, slug, reason, superseded_by):
 
 
 def tell_closed(p, fid, label, slug, reason, superseded_by, closed):
-    """Tell the dispatcher once, in a line of the script's own, that the site manager closed `slug`: removed and nothing to
-    answer, or kept and why (an escalation for the human). `label` is the criterion or entry. Logs on the firing who was told."""
+    """Tell the dispatcher once, in a line of the script's own, that the site manager closed `slug` but kept it, and why (an
+    escalation for the human); a removed one is told to the inbox's history only. `label` is the criterion or entry. Logs on
+    the firing who was told."""
     what = f"closed ({reason.strip()}{f'; superseded by {superseded_by}' if superseded_by else ''})"
     if closed[0] == "removed":
-        to = forward(p["repo"], p["dispatcher"], slug, "SITE MANAGER", f"{slug}: {what} and removed, no answer needed", lead=False)
+        to = "inbox"
     else:
         kept = closed[1] or "its removal failed, see the watch log"
         to = forward(p["repo"], p["dispatcher"], slug, "ESCALATION", f"{fid} {label} {slug}: {what}; kept: {kept}", lead=False)
@@ -4978,16 +5009,73 @@ DECISION_KEYS = ("id", "slug", "kind", "ask", "options", "recommend", "ts", "wit
 DELEGABLE = ("question", "blocked")  # the kinds the human may leave to the lead or the site manager
 ASK_WORDS = 60
 BLOCKED_ON_HUMAN = (None, "human", ["human"])  # the `waits_on` values of a task that waits for the human
+# kind -> the one option that may stand, its label, whether it stands with no record
+STANDING = {"split": {"choice": 1, "label": "start it", "default": True}}
 
 
 def last_answers(records):
-    """The newest answer record (`choice` or `returned`) of each decision id."""
-    return {r["id"]: r for r in records if "choice" in r or "returned" in r}
+    """The newest answer record (`choice` or `returned`) of each decision id; a `failed` start of a split voids the answers before it."""
+    found = {}
+    for r in records:
+        if "choice" in r or "returned" in r:
+            found[r["id"]] = r
+        elif "failed" in r:
+            found.pop(r["id"], None)
+    return found
 
 
 def settled(answer):
     """Whether the newest answer closes the decision: a pick or a lead's, not a hand-over to the site manager or a hand-back."""
     return bool(answer) and "returned" not in answer and answer["choice"] != "site-manager"
+
+
+def all_decisions():
+    """The decision records of every repository, oldest first."""
+    return sorted(read_log("decisions"), key=stamp)
+
+
+def standing(records):
+    """{kind: the `standing` entry of `status --json`} from the `records` of every repository. On: the newest `always` record
+    of the kind, else the table's default. Uses: the standing answers to asks of the kind after the newest `always: true`
+    record."""
+    found = {}
+    for kind, row in STANDING.items():
+        flags = [i for i, r in enumerate(records) if r.get("kind") == kind and "always" in r]
+        newest = records[flags[-1]] if flags else None
+        since = next((i for i in reversed(flags) if records[i]["always"]), -1)
+        asked = {r["id"] for r in records if "ask" in r and r.get("kind") == kind}
+        found[kind] = {"kind": kind, "label": row["label"], "on": newest["always"] if newest else row["default"],
+                       "uses": sum(1 for r in records[since + 1:] if r.get("by") == "standing" and r.get("id") in asked)}
+    return found
+
+
+def pending_splits(records):
+    """The split asks in `records` that have no `started` record and whose newest answer is not 2, oldest first."""
+    answers, started = last_answers(records), {r["id"] for r in records if "started" in r}
+    return [r for r in records if "ask" in r and r["kind"] == "split" and r["id"] not in started
+            and answers.get(r["id"], {}).get("choice") != 2]
+
+
+def split_waits(root):
+    """{decision id: why its split is not started yet}, as the last tick left it."""
+    try:
+        data = json.loads(repo_state(root, "splits", "json").read_text())
+    except (OSError, ValueError):
+        return {}
+    waits = data.get("waits") if isinstance(data, dict) else None
+    return waits if isinstance(waits, dict) else {}
+
+
+def decision_note(r, answer, task, waits, entry, failed):
+    """The one line that says why the open decision `r` is as it is, or "": a split whose start failed (`failed`: id -> reason),
+    a split waiting for a slot, a split whose parent `task` was closed."""
+    if r["id"] in failed and not answer:
+        return f"the start failed: {failed[r['id']]}; pick Start to try again"
+    if r["kind"] == "split" and answer and r["id"] in waits:
+        return f"starts by itself when it can: {waits[r['id']]}" + (f" (always: {entry['label']})" if answer.get("by") == "standing" else "")
+    if r["kind"] == "split" and not answer and (task or {}).get("state") == "closed":
+        return f"its parent {r['slug']} was closed: start it or not is yours"
+    return ""
 
 
 def open_decisions(root):
@@ -4996,22 +5084,85 @@ def open_decisions(root):
     ask, whose task's last state is `blocked` on the human and not later than the ask, so any state the lead declares after
     asking closes it. Of an `overrun` ask, the latest of its task, whose last state is `working` or `blocked`: it never
     holds the task, and a hand-over closes it. Of a `hold` ask (`settle_holds`), whose task's last state is `working` or `blocked`.
-    A `released` record closes a `hold` ask."""
+    A `released` record closes a `hold` ask. A split ask is open until it is started or its newest answer is 2, whatever its
+    task's state, and is never left to the lead or the site manager; answered 1 it is `picked`, waiting for a slot. A kind in
+    STANDING has `always`, the option that may stand; a `note` says why one is as it is, when it is."""
     records = repo_log("decisions", root) or []
     answers, released = last_answers(records), {r["id"] for r in records if "released" in r}
+    splits = {r["id"] for r in pending_splits(records)}
     latest = {r["slug"]: r["id"] for r in records if r.get("kind") == "overrun"}
-    tasks = read_tasks(root)
+    tasks, waits, state = read_tasks(root), split_waits(root), standing(all_decisions())
+    failed = {r["id"]: r["failed"] for r in records if "failed" in r}
     found = []
     for r in records:
-        if "ask" not in r or r["id"] in released or settled(a := answers.get(r["id"])) or not (t := tasks.get(r["slug"])):
+        if "ask" not in r:
             continue
-        if not ((t["state"] in ("working", "blocked") and latest[r["slug"]] == r["id"]) if r["kind"] == "overrun"
-                else t["state"] in ("working", "blocked") if r["kind"] == "hold"
-                else t["state"] == "blocked" and t.get("waits_on") in BLOCKED_ON_HUMAN and stamp(t) <= stamp(r)):
-            continue
-        extra = {} if not a else {"returned": a["returned"]} if "returned" in a else {"with": "site-manager", "with_since": a["ts"]}
-        found.append({**{k: r[k] for k in DECISION_KEYS if k in r}, **extra})
+        a, t = answers.get(r["id"]), tasks.get(r["slug"])
+        if r["kind"] == "split":
+            if r["id"] not in splits:
+                continue
+            extra = {"picked": a["choice"]} if a else {}
+        else:
+            if r["id"] in released or settled(a) or not t:
+                continue
+            if not ((t["state"] in ("working", "blocked") and latest[r["slug"]] == r["id"]) if r["kind"] == "overrun"
+                    else t["state"] in ("working", "blocked") if r["kind"] == "hold"
+                    else t["state"] == "blocked" and t.get("waits_on") in BLOCKED_ON_HUMAN and stamp(t) <= stamp(r)):
+                continue
+            extra = {} if not a else {"returned": a["returned"]} if "returned" in a else {"with": "site-manager", "with_since": a["ts"]}
+        note = decision_note(r, a, t, waits, state.get(r["kind"]), failed)
+        found.append({**{k: r[k] for k in DECISION_KEYS if k in r}, **extra,
+                      **({"always": STANDING[r["kind"]]["choice"]} if r["kind"] in STANDING else {}), **({"note": note} if note else {})})
     return found
+
+
+HISTORY_DAYS = 7
+HISTORY_MAX = 100
+PAUSE_PAIR_SECONDS = 5
+
+
+def history(root):
+    """What was decided in the repo at `root` in the last HISTORY_DAYS days, newest first, at most HISTORY_MAX, read from the
+    logs that hold it: the picks (the human's, or the site manager's for a decision left to it; a decision left to the lead is one human entry,
+    beside the lead's own recorded decision), the site manager's `extended`, `paused` (an overrun's is a recommendation to stop)
+    and `closed`, the script's own pause of an unanswered stop recommendation, the hand-overs and the leads' key decisions.
+    The human's `extended` is left out: its answer is the entry. Each entry is {ts, slug, by, text}, the text on one line."""
+    answers = repo_log("decisions", root) or []
+    asks = {r["id"]: r for r in answers if "ask" in r}
+    entries = [(r["ts"], r["slug"], r.get("by", "human"), f"{a['kind']}: picked {r['choice']}: {a['options'][r['choice'] - 1]}")
+               for r in answers if isinstance(r.get("choice"), int) and (a := asks.get(r["id"])) and (a["kind"], r["choice"]) != ("split", 1)]
+    entries += [(r["ts"], r["slug"], "human", f"{a['kind']}: left to the lead")
+                for r in answers if r.get("choice") == "lead" and (a := asks.get(r["id"]))]
+    latest = last_answers(answers)
+    entries += [(r["ts"], r["started"], latest[r["id"]].get("by", "human"),
+                 f"started from a split of {r['slug']}; undo: factory close {r['started']} --reason '<why>'")
+                for r in answers if "started" in r and r["id"] in latest]
+    entries += [(r["ts"], "", r["by"], f"always {STANDING[r['kind']]['label']} on {r['kind']}" if r["always"] else f"asks again on {r['kind']}")
+                for r in answers if "always" in r]
+    entries += [(r["ts"], asks[r["id"]]["new"], "script", f"start from a split of {r['slug']} failed: {r['failed']}")
+                for r in answers if "failed" in r and r["id"] in asks]
+    firings = fold(repo_log("firings", root) or [])[0]
+    # The site manager's pause writes its `tasks` declaration just before its firing's decision: a `paused` firing with one
+    # within PAUSE_PAIR_SECONDS did pause; one without (an overrun's recommendation) did not; a declaration with no such
+    # firing is the script's (`pause_unanswered_stops`).
+    declared = [r for r in read_log("tasks") if r.get("repo") == root and r.get("role") == "site-manager" and r.get("state") == "blocked"
+                and r.get("paused") is True and r.get("waits_on") == ["human"]]
+    paused = [f for f in firings if f["decision"] == "paused"]
+    pair = lambda r, f: r["slug"] == f["slug"] and 0 <= epoch(f["decided"]) - epoch(r["ts"]) <= PAUSE_PAIR_SECONDS
+    said = {"extended": lambda f: f"extended {f['minutes']} min to {f['until'][11:16]}Z: {f['reason']}",
+            "paused": lambda f: f"{'paused' if f['criterion'] != 'overrun' or any(pair(r, f) for r in declared) else 'stop recommended'}: {f['reason']}",
+            "closed": lambda f: f"closed: {f['reason']}"}
+    entries += [(f["decided"], f["slug"], f["by"], said[f["decision"]](f))
+                for f in firings if f["decision"] in said and f["by"] != "human"]
+    entries += [(r["ts"], r["slug"], "script", "paused: the human has not answered the stop recommended")
+                for r in declared if not any(pair(r, f) for f in paused)]
+    entries += [(r.get("ts", ""), r["slug"], r.get("role", ""), "handed over" + (f": {r['deliverable']}" if r.get("deliverable") else ""))
+                for r in read_log("tasks") if r.get("repo") == root and r.get("state") == "handed-over"]
+    entries += [(e["ts"], e["slug"] or "", e["role"], e["text"].removeprefix(DECISION))
+                for e in read_feedback() if e["kind"] == "decision" and e.get("repo") == root]
+    since = iso(time.time() - HISTORY_DAYS * 86400)
+    return [{"ts": ts, "slug": slug, "by": by, "text": " ".join(text.split())}
+            for ts, slug, by, text in sorted((e for e in entries if e[0] >= since), key=lambda e: e[0], reverse=True)[:HISTORY_MAX]]
 
 
 def args_decision(parser):
@@ -5026,6 +5177,10 @@ def args_decision(parser):
     answer = actions.add_parser("answer", help="record the human's pick, or leave it to the lead or the site manager (never a lead)")
     answer.add_argument("id")
     answer.add_argument("choice", help="an option number, `lead` or `site-manager`")
+    answer.add_argument("--always", action="store_true", help="and answer every later decision of this kind the same way (split)")
+    always = actions.add_parser("always", help="switch the standing answer of a kind on or off (never a lead)")
+    always.add_argument("kind")
+    always.add_argument("state", choices=("on", "off"))
 
 
 def decision_ask(args):
@@ -5105,13 +5260,18 @@ def decision_list(args):
 
 
 def apply_pick(repo, d, n, by=None, reason=None):
-    """Record the pick of option `n` of the decision `d` (the human's, or `by` the site manager with its `reason`) and queue
-    it for the lead. A continue on an overrun card posted with `minutes` extends the limit now. Returns the notes the human
-    is told."""
+    """Record the pick of option `n` of the decision `d` (the human's, or `by` the site manager with its `reason`, or the script's
+    `by` a standing answer, worded as the human's) and queue it for the lead. A split's answer 2 tells its parent lead; its answer 1
+    queues nothing: the start does. A continue on an overrun card posted with `minutes` extends the limit now. Returns the notes
+    the human is told."""
     log("decisions", {"ts": now(), "repo": repo.root, "id": d["id"], "slug": d["slug"], "choice": n,
-                      **({"by": by, "reason": reason} if by else {})})
+                      **({"by": by} if by else {}), **({"reason": reason} if reason is not None else {})})
     notes = []
     asked = next(r for r in repo_log("decisions", repo.root) if r.get("id") == d["id"] and "ask" in r)
+    if d["kind"] == "split":
+        if n == 2:
+            outbox_put(repo, d["slug"], f"INBOX: {d['slug']}: split {asked['new']} declined by the human: it is not started")
+        return notes
     if d["kind"] == "overrun" and n == 1 and "minutes" in asked:  # a continue card was extended when posted
         granted = min(asked["minutes"], load_settings()["extension_minutes"])
         if not extend_for_human(repo, d["slug"], d["id"], granted):
@@ -5119,7 +5279,7 @@ def apply_pick(repo, d, n, by=None, reason=None):
         elif granted < asked["minutes"]:
             notes.append(f"the limit of {d['slug']} was extended by {granted} minutes, not {asked['minutes']}: limits.extension_minutes is {granted}")
     option = d["options"][n - 1]
-    who = f"the site manager picked {n} for the human: {option}. {reason}" if by else f"the human picked {n}: {option}"
+    who = f"the site manager picked {n} for the human: {option}. {reason}" if reason is not None else f"the human picked {n}: {option}"
     outbox_put(repo, d["slug"], f"INBOX: {d['slug']}: decision {d['id']}: {who}")
     return notes
 
@@ -5158,21 +5318,78 @@ def decision_answer(args):
     if to:
         if found["kind"] not in DELEGABLE:
             raise Fail(f"decision answer: a decision of kind {found['kind']} is the human's alone")
+        if args.always:
+            raise Fail("decision answer: --always goes with an option number")
         delegate(repo, found, to)
         print(f"answered {found['slug']}: left to the {to.replace('-', ' ')}; " + ("the next tick delivers it" if to == "lead" else "it decides on the next tick"))
         return 0
     if not args.choice.isdecimal() or not 1 <= int(args.choice) <= n:
         raise Fail(f"decision answer: the pick is 1 to {n}, lead or site-manager")
-    notes = apply_pick(repo, found, int(args.choice))
-    print(f"answered {found['slug']}: {args.choice}; the next tick delivers it")
+    pick = int(args.choice)
+    if found.get("picked") == pick:
+        raise Fail(f"decision answer: {args.id} is already answered")
+    if args.always:
+        if found.get("always") != pick:
+            raise Fail(f"decision answer: --always is for the one option a standing answer repeats; a {found['kind']} decision has "
+                       + (f"{found['always']}" if "always" in found else "none"))
+        log("decisions", {"ts": now(), "repo": repo.root, "kind": found["kind"], "always": True, "by": "human"})
+    notes = apply_pick(repo, found, pick)
+    print(f"answered {found['slug']}: {pick}; the next tick delivers it")
     for note in notes:
         print(note)
     return 0
 
 
-@command("decision", "decisions for the human: a lead asks (ask), the inbox lists them (list), the human answers (answer)", args_decision)
+def decision_always(args):
+    if tags()["slug"]:
+        raise Fail("decision always: only the human switches it, from outside a task worktree")
+    if args.kind not in STANDING:
+        raise Fail(f"decision always: {args.kind} has no standing answer; the kinds are {', '.join(STANDING)}")
+    on = args.state == "on"
+    log("decisions", {"ts": now(), "repo": Repo().root, "kind": args.kind, "always": on, "by": "human"})
+    print(f"{args.kind}: always {STANDING[args.kind]['label']}" if on else f"{args.kind}: asks again from now")
+    return 0
+
+
+@command("decision", "decisions for the human: a lead asks (ask), the inbox lists them (list), the human answers (answer, always)", args_decision)
 def cmd_decision(args):
-    return {"ask": decision_ask, "list": decision_list, "answer": decision_answer}[args.action](args)
+    return {"ask": decision_ask, "list": decision_list, "answer": decision_answer, "always": decision_always}[args.action](args)
+
+
+def args_split(parser):
+    parser.add_argument("slug", metavar="NEW-SLUG")
+    parser.add_argument("--brief-file", required=True, metavar="PATH", help="the new task's whole brief")
+    parser.add_argument("--base", help="slug of an open task to stack the new task on")
+    parser.add_argument("text", metavar="ASK", help="1 to 60 words: what the new task delivers and why it is separate")
+
+
+@command("split", "a lead offers part of its work as a new task: the human decides, the watch tick starts it", args_split)
+def cmd_split(args):
+    parent = tags()["slug"]
+    if not parent:
+        raise Fail("split: run it from inside a task worktree")
+    validate_slug(args.slug)
+    try:
+        brief = Path(args.brief_file).read_text()
+    except OSError as e:
+        raise Fail(f"cannot read brief file: {e}")
+    if not brief.strip():
+        raise Fail("the brief is empty")
+    ask = " ".join(args.text.split())
+    if not 1 <= len(ask.split()) <= 60:
+        raise Fail("split: the ask is 1 to 60 words")
+    repo = Repo()
+    if args.base:
+        base_branch(repo, args.base)
+    refuse_existing(repo, args.slug)
+    if any(r["new"] == args.slug for r in pending_splits(repo_log("decisions", repo.root) or [])):
+        raise Fail(f"split: a split of {args.slug} is neither started nor declined")
+    rid = secrets.token_hex(6)
+    log("decisions", {**record(repo.root, parent, "lead", None, os.environ.get("CLAUDE_CODE_SESSION_ID")), "id": rid, "kind": "split",
+                      "ask": ask, "options": [f"Start {args.slug}", "Do not start it"], "new": args.slug, "brief": brief,
+                      **({"base": args.base} if args.base else {})})
+    print(rid)
+    return 0
 
 
 def tick_picture(repo, fallback):
@@ -5195,6 +5412,41 @@ def with_dispatcher(p, fallback):
     p["dispatcher"] = found and found["name"]
 
 
+def inbox_tick(repo, fallback):
+    """Answer the open decisions of the repo whose kind stands (not a split whose parent was closed or whose start failed); then
+    start each split answered "start", oldest first: a refusal is a wait, kept in the state file `splits`; a failure is logged
+    once as `failed`, and the split is open again for the human."""
+    state, tasks = standing(all_decisions()), read_tasks(repo.root)
+    failed = {r["id"] for r in repo_log("decisions", repo.root) or [] if "failed" in r}
+    for d in open_decisions(repo.root):
+        kind = d["kind"]
+        if kind not in STANDING or d.get("picked") or not state[kind]["on"] or d["id"] in failed \
+                or (kind == "split" and tasks.get(d["slug"], {}).get("state") == "closed"):
+            continue
+        apply_pick(repo, d, STANDING[kind]["choice"], by="standing")
+        state[kind]["uses"] += 1
+    records = repo_log("decisions", repo.root) or []
+    waits = {}
+    for r in (r for r in pending_splits(records) if r["id"] in last_answers(records)):
+        try:
+            sessions = list_sessions()
+            if sessions is None:
+                raise Fail("cannot list sessions with `claude agents --json --all`")
+            found, reason = find_dispatcher(sessions, repo.root, fallback)
+            if not found:
+                raise Fail(f"no dispatcher session: {reason}")
+            start_task(Repo(repo.root), sessions, found["name"], r["new"], r["brief"], r.get("base"), False, load_settings())
+        except StartFailed as e:
+            log("decisions", {"ts": now(), "repo": repo.root, "id": r["id"], "slug": r["slug"], "failed": " ".join(str(e).split())})
+            continue
+        except Fail as e:
+            waits[r["id"]] = str(e)
+            continue
+        log("decisions", {"ts": now(), "repo": repo.root, "id": r["id"], "slug": r["slug"], "started": r["new"]})
+        outbox_put(repo, r["slug"], f"INBOX: {r['slug']}: split {r['new']} started")
+    write_json(repo_state(repo.root, "splits", "json"), {"as_of": now(), "waits": waits})
+
+
 def pause_unanswered_stops(p, repo):
     """Pause, as the site manager's pause does, each task whose stop card (an open `overrun` card whose record has `recommend` 2, 3 or 4) has gone
     `limits.overrun_stop_wait_minutes` unanswered and whose last record is `working` (a blocked task is not running, and a pause would replace
@@ -5202,7 +5454,7 @@ def pause_unanswered_stops(p, repo):
     wait, tasks = load_settings()["overrun_stop_wait_minutes"] * 60, read_tasks(repo.root)
     open_ids = {d["id"] for d in open_decisions(repo.root) if d["kind"] == "overrun"}
     for r in repo_log("decisions", repo.root) or []:
-        if r["id"] in open_ids and "ask" in r and "minutes" in r and r.get("recommend") in (2, 3, 4) and tasks.get(r["slug"], {}).get("state") == "working" and p["now"] - (epoch(stamp(r)) or p["now"]) >= wait:
+        if "ask" in r and r["id"] in open_ids and "minutes" in r and r.get("recommend") in (2, 3, 4) and tasks.get(r["slug"], {}).get("state") == "working" and p["now"] - (epoch(stamp(r)) or p["now"]) >= wait:
             declare(repo, r["slug"], "site-manager", "blocked", waits_on=["human"], paused=True)
             task_event("TaskPaused", repo, r["slug"], waits_on=["human"])
             forward(repo, p["dispatcher"], r["slug"], "SITE MANAGER",
@@ -5222,6 +5474,10 @@ def watch_tick(args, repo):
     os.utime(repo_state(repo.root, "watch", "lock"), (t, t))  # the tick's age, read by `health` and by `drain`
     print(f"{now()} watch {os.path.basename(repo.root)}", flush=True)
     snap = cheap_tick(repo, args.dispatcher)
+    try:
+        inbox_tick(repo, args.dispatcher)
+    except Exception as e:  # the tick goes on without it
+        print(f"inbox: {why(e)}")
     state = read_lander(repo)
     full = time.time() - state["health"] >= HEALTH_SECONDS
     if full:
@@ -8323,6 +8579,7 @@ POLL = 20
 # kind of a stop -> (patience in seconds before it is reported, whether it keeps the loop polling meanwhile, who is told)
 # `refused`: GitHub refused a merge and nothing it shows says why. `settle` keeps the first one of a head in `waiting` (nothing
 # told: the next pass calls merge again), a second at the same head is told once, no tech lead.
+APPROVAL_STOPS = ("stale", "unapproved")  # lander stops that wait for the human's approval: the inbox shows them, nobody is told
 STOP_POLICY = {"pending": (1800, True, "dispatcher"), "handover": (600, False, "dispatcher"), "conflict": (0, False, "lead"),
                "not-ours": (0, False, "dispatcher"), "refused": (1, False, "dispatcher"), "no-ci": (180, True, "dispatcher")}
 NOT_OURS_HOURS = 24
@@ -8470,6 +8727,40 @@ def in_line(stops, front):
     return {n: (pr, "in-line", f"waiting behind #{front['number']}: {text}")
             if front and n != front["number"] and stop_policy(kind, text)[2] == "lead" else (pr, kind, text)
             for n, (pr, kind, text) in stops.items()}
+
+
+def approve_items(repo, snap):
+    """The approve items of `snap`, oldest first: open pull requests, not draft, whose task is handed over and that carry no
+    approval at all (`new`, since the hand-over) or whose current head has a stop in APPROVAL_STOPS (`stale`, since the stop)."""
+    declared, stopped, items = read_tasks(repo.root), read_lander(repo)["stopped"], []
+    for pr in snap:
+        slug = task_slug(repo, pr)
+        task, stop = declared.get(slug), stopped.get(str(pr["number"])) or {}
+        if pr["isDraft"] or not task or task["state"] != "handed-over":
+            continue
+        if not approved_at(pr):
+            why = {"why": "new", "since": task["ts"]}
+        elif stop.get("kind") in APPROVAL_STOPS and stop.get("head") == pr["headRefOid"]:
+            why = {"why": "stale", "text": stop["text"], "since": stop["ts"]}
+        else:
+            continue
+        items.append({"slug": slug, "number": pr["number"], "url": pr["url"], **why})
+    return sorted(items, key=lambda i: i["since"])
+
+
+def write_approvals(repo, snap):
+    write_json(repo_state(repo.root, "approve", "json"), {"as_of": now(), "items": approve_items(repo, snap)})
+
+
+def read_approvals(root, rows):
+    """The approve file's items whose task is still handed over in `rows`; `as_of` None without a file."""
+    try:
+        data = json.loads(repo_state(root, "approve", "json").read_text())
+    except (OSError, ValueError):
+        data = None
+    data = data if isinstance(data, dict) else {}
+    handed = {r["slug"] for r in rows if r["state"] == "handed-over"}
+    return {"as_of": data.get("as_of"), "items": [i for i in data.get("items") or [] if i["slug"] in handed]}
 
 
 def lander_queue(repo, snap, word):
@@ -9084,6 +9375,8 @@ def report_stop(repo, fallback, pr, kind, line):
         if kind != "conflict":
             end_priority(repo, slug, "sent-back")
         to = send_back(repo, fallback, pr, slug, evidence(repo, n, kind, line))
+    elif kind in APPROVAL_STOPS:
+        to = "inbox"
     else:
         to = forward(repo, fallback, slug, "LANDER", f"#{n} stopped {kind}: {line}", lead=False)
     held = {k: v for k, v in getattr(line, "extra", {}).items() if k in ("tests", "checks")}
@@ -9560,7 +9853,12 @@ def cheap_tick(repo, fallback):
 
 def watch_snapshot(repo, fallback, snap):
     """Give the open pull requests `snap` to the comment forwarder; with a task handed over (or a task's pull request that
-    is ready for review while its task is not: it goes back to draft), also set the draft flags."""
+    is ready for review while its task is not: it goes back to draft), also set the draft flags. The approve items are
+    written from the lander's state as the last pass left it: a stop it reports shows one tick later."""
+    try:
+        write_approvals(repo, snap)
+    except Exception as e:  # the tick goes on without it
+        print(f"approve: {why(e)}")
     try:
         watch_comments(repo, fallback, snap)
     except Exception as e:  # the tick goes on without it

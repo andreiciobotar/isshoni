@@ -116,7 +116,7 @@ class Overrun(Harness):
 
 
 class AskTests(Overrun):
-    def test_an_ask_is_a_firing_the_site_manager_decides_on_the_next_tick_and_the_script_tells_both(self):
+    def test_an_ask_is_a_firing_the_site_manager_decides_on_the_next_tick_and_the_script_tells_the_lead(self):
         code, out, _ = self.ask()
         self.assertEqual(code, 0)
         self.assertIn("SITE MANAGER: x", out)
@@ -137,6 +137,9 @@ class AskTests(Overrun):
         self.assertEqual((d["id"], d["decision"], d["minutes"], d["from"], d["until"], d["by"], d["reason"], d["looked"]),
                          (ask["id"], "extended", 20, iso(NOW), iso(until), "site-manager", "landing left", ["factory status"]))
         self.assertEqual(self.lines(), [("x", f"SITE MANAGER: x: extended 20 min, limit now {clock(until)}: landing left")])
+        [entry] = json.loads(self.cli("status", "--json", "--cached")[1])["history"]
+        self.assertEqual((entry["ts"], entry["slug"], entry["by"], entry["text"]),
+                         (iso(NOW), "x", "site-manager", f"extended 20 min to {clock(until)}: landing left"))
         self.assertIn({"repo": ROOT, "id": ask["id"], "cleared": True, "ts": iso(NOW)}, self.records())
         after = json.loads(self.cli("status", "--json")[1])["rows"][0]
         self.assertEqual((after["limit"], after["overtime"]), (until - STARTED, False))
@@ -175,6 +178,9 @@ class IdleLeadTests(Overrun):
         until = clock(NOW + 20 * 60)
         self.assertEqual(self.lines(), [("x", f"SITE MANAGER: x: extended 20 min, limit now {until}: landing left")])
         self.assertEqual(self.told(), ["lead"])
+        [entry] = json.loads(self.cli("status", "--json", "--cached")[1])["history"]
+        self.assertEqual((entry["ts"], entry["slug"], entry["by"], entry["text"]),
+                         (iso(NOW), "x", "site-manager", f"extended 20 min to {until}: landing left"))
 
     def test_a_stop_recommendation_reaches_an_idle_lead_and_tells_only_it(self):
         self.ask()
@@ -213,6 +219,9 @@ class IdleLeadTests(Overrun):
         self.assertRegex(resume[4], rf"^SITE MANAGER: x: extended 20 min, limit now {until}: landing left \[outbox [0-9a-f]{{12}}\]$")
         self.assertEqual(self.lines(), [])
         self.assertEqual(self.told(), ["lead"])
+        [entry] = json.loads(self.cli("status", "--json", "--cached")[1])["history"]
+        self.assertEqual((entry["ts"], entry["slug"], entry["by"], entry["text"]),
+                         (iso(NOW), "x", "site-manager", f"extended 20 min to {until}: landing left"))
 
     def test_a_retired_lead_that_cannot_be_resumed_is_queued_and_the_dispatcher_hears_nothing(self):
         self.assertEqual(len(self.retired((1, "", "boom"))), 1)

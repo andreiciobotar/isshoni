@@ -136,20 +136,97 @@ type FactoryStatus struct {
 	PRs      FactoryPRs    `json:"prs"`
 
 	Decisions []FactoryDecision `json:"decisions"` // open decisions of the repository, oldest first; nil from a script before the field
+	Approvals FactoryApprovals  `json:"approvals"` // pull requests waiting for the human's approval; empty from a script before the field
+	History   []FactoryHistory  `json:"history"`   // what was decided and by whom, newest first; nil from a script before the field
+	Standing  []FactoryStanding `json:"standing"`  // the standing answers, global, in the script's table order; nil from a script before the field
+}
+
+// FactoryStanding is one kind of decision the human may answer "always": its one option's label, whether it
+// is on and how often it stood in.
+// {"kind": "split", "label": "start it", "on": true, "uses": 3}
+type FactoryStanding struct {
+	Kind, Label string
+	On          bool
+	Uses        int
+}
+
+// FactoryApprovals is the pull requests waiting for the human's approval. AsOf is when the watch last
+// computed them, zero when it has not (or its timestamp does not parse).
+type FactoryApprovals struct {
+	AsOf  time.Time
+	Items []FactoryApproval
+}
+
+// FactoryApproval is one such pull request: Why is "new" (nobody approved it) or "stale" (its head changed
+// after the approval; Text says what the lander reported), Since when it has waited.
+type FactoryApproval struct {
+	Slug   string
+	Number int
+	URL    string
+	Why    string
+	Text   string
+	Since  time.Time
+}
+
+// FactoryHistory is one entry of the history: a decision, who took it, and its one line.
+type FactoryHistory struct {
+	TS   time.Time
+	Slug string
+	By   string
+	Text string
+}
+
+// UnmarshalJSON reads {"as_of": "2026-11-20T10:42:00Z" or null, "items": [{"slug": "demo-export",
+// "number": 12, "url": "https://github.com/example/demo/pull/12", "why": "new", "text": "..." (absent for new),
+// "since": "2026-11-20T10:17:00Z"}]}; a bad timestamp is the zero time.
+func (a *FactoryApprovals) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		AsOf  string `json:"as_of"`
+		Items []struct {
+			Slug, URL, Why, Text, Since string
+			Number                      int
+		}
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	a.AsOf, _ = time.Parse(time.RFC3339, raw.AsOf)
+	a.Items = nil
+	for _, it := range raw.Items {
+		since, _ := time.Parse(time.RFC3339, it.Since)
+		a.Items = append(a.Items, FactoryApproval{it.Slug, it.Number, it.URL, it.Why, it.Text, since})
+	}
+	return nil
+}
+
+// UnmarshalJSON reads {"ts": "2026-11-20T10:42:00Z", "slug": "demo-task", "by": "site-manager", "text": "..."};
+// a bad ts is the zero time.
+func (h *FactoryHistory) UnmarshalJSON(b []byte) error {
+	var raw struct{ TS, Slug, By, Text string }
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	ts, _ := time.Parse(time.RFC3339, raw.TS)
+	*h = FactoryHistory{ts, raw.Slug, raw.By, raw.Text}
+	return nil
 }
 
 // FactoryDecision is an open decision a lead posted for the human: the ask and its numbered options.
 // Recommend is the 1-based option the lead would take, 0 when it named none. TS is the zero time when
-// the script's timestamp does not parse: the decision then shows without an age. With is "site-manager" while the
-// human has left it there (WithSince is when, zero when it does not parse); Returned is the reason the site
-// manager handed it back.
+// the script's timestamp does not parse: the decision then shows without an age. Always is the option that may
+// stand as an answer (0: none), Picked the option a split was answered with and waits on a slot for (0: none),
+// Note one line the script adds under the ask. With is "site-manager" while the human has left it there
+// (WithSince is when, zero when it does not parse); Returned is the reason the site manager handed it back.
 type FactoryDecision struct {
 	ID        string
 	Slug      string
-	Kind      string // question or blocked
+	Kind      string // question, blocked or split
 	Ask       string
 	Options   []string
 	Recommend int
+	Always    int
+	Picked    int
+	Note      string
 	TS        time.Time
 	With      string
 	WithSince time.Time
@@ -157,15 +234,16 @@ type FactoryDecision struct {
 }
 
 // UnmarshalJSON reads {"id": "3f9a1c2b4d5e", "slug": "demo-task", "kind": "question", "ask": "...",
-// "options": ["a", "b"], "recommend": 1, "ts": "2026-11-14T19:00:00Z", "with": "site-manager",
-// "with_since": "2026-11-14T19:30:00Z", "returned": "why"}; recommend, with, with_since and returned may be
-// absent and a bad ts or with_since leaves the time zero rather than failing the status.
+// "options": ["a", "b"], "recommend": 1, "always": 1, "picked": 1, "note": "...", "ts": "2026-11-14T19:00:00Z",
+// "with": "site-manager", "with_since": "2026-11-14T19:30:00Z", "returned": "why"}; recommend, always, picked, note,
+// with, with_since and returned may be absent and a bad ts or with_since leaves the time zero rather than failing the status.
 func (d *FactoryDecision) UnmarshalJSON(b []byte) error {
 	var raw struct {
 		ID, Slug, Kind, Ask string
 		Options             []string
 		Recommend           int
-		TS, With            string
+		Always, Picked      int
+		Note, TS, With      string
 		WithSince           string `json:"with_since"`
 		Returned            string
 	}
@@ -174,7 +252,7 @@ func (d *FactoryDecision) UnmarshalJSON(b []byte) error {
 	}
 	ts, _ := time.Parse(time.RFC3339, raw.TS)
 	since, _ := time.Parse(time.RFC3339, raw.WithSince)
-	*d = FactoryDecision{ID: raw.ID, Slug: raw.Slug, Kind: raw.Kind, Ask: raw.Ask, Options: raw.Options, Recommend: raw.Recommend, TS: ts,
+	*d = FactoryDecision{ID: raw.ID, Slug: raw.Slug, Kind: raw.Kind, Ask: raw.Ask, Options: raw.Options, Recommend: raw.Recommend, Always: raw.Always, Picked: raw.Picked, Note: raw.Note, TS: ts,
 		With: raw.With, WithSince: since, Returned: raw.Returned}
 	return nil
 }
@@ -531,13 +609,28 @@ func WriteWorktreeCap(n int) error {
 	return nil
 }
 
-// answerTimeout bounds `factory decision answer`, which writes two log lines and never leaves the machine.
+// answerTimeout bounds `factory decision answer` and `decision always`, which write log lines and never leave the machine.
 const answerTimeout = 10 * time.Second
 
 // AnswerDecision runs `<root>/factory/bin/factory decision answer id choice` in the repository at repoPath (root as
 // for WriteWorktreeCap); choice is what the script takes: an option number, "lead" or "site-manager". The factory
-// queues the human's answer. Its one-line complaint is the error.
-func AnswerDecision(ctx context.Context, repoPath, id, choice string) error {
+// queues the human's answer. With always the pick also becomes the standing answer of its kind (`--always`). Its
+// one-line complaint is the error.
+func AnswerDecision(ctx context.Context, repoPath, id, choice string, always bool) error {
+	args := []string{"decision", "answer", id, choice}
+	if always {
+		args = append(args, "--always")
+	}
+	return runFactory(ctx, repoPath, args...)
+}
+
+// SetStanding runs `factory decision always <kind> on|off` in the repository at repoPath, the way AnswerDecision
+// runs its command.
+func SetStanding(ctx context.Context, repoPath, kind string, on bool) error {
+	return runFactory(ctx, repoPath, "decision", "always", kind, map[bool]string{true: "on", false: "off"}[on])
+}
+
+func runFactory(ctx context.Context, repoPath string, args ...string) error {
 	root, err := LocateRoot()
 	if err != nil {
 		return err
@@ -549,11 +642,11 @@ func AnswerDecision(ctx context.Context, repoPath, id, choice string) error {
 	ctx, cancel := context.WithTimeout(ctx, answerTimeout)
 	defer cancel()
 	var se bytes.Buffer
-	cmd := groupCmd(ctx, script, "decision", "answer", id, choice)
+	cmd := groupCmd(ctx, script, args...)
 	cmd.Dir, cmd.Stderr = repoPath, &se
 	if err := cmd.Run(); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("answering timed out after %s", answerTimeout)
+			return fmt.Errorf("factory %s timed out after %s", args[1], answerTimeout)
 		}
 		return stderrLine(se.String(), err)
 	}

@@ -1,0 +1,30 @@
+ Isshoni [1 ✉ ▲6] 2 ≡  3 Agent  4 Factory  5 Kaizen  6 ◉  7 ✿            24h [7d] 30d  all   ○ idle 
+ Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · as of 11:00:00                   
+REPO          TASK            ASK    AGE │ demo-task · ⑂ split · asked 20m ago                      
+alpha       ? needs-an-answer Shou…  45m │ alpha                                                    
+          > ⑂ demo-task       The …  20m │                                                          
+            ◆ demo-import     stale   2h │ The importer's retry is separable: it needs the queue    
+            ◆ demo-export     new    25m │ change first.                                            
+delta-do…   … wide-ask        Whic…  30m │ its parent demo-task was closed: start it or not is      
+            ? slow-import     The …  20m │ yours                                                    
+            ▲ stuck-on-keys   git …   1m │                                                          
+                                         │ [1] Start demo-retry                                     
+                                         │ 2  Do not start it                                       
+                                         │                                                          
+                                         │ [Accept]   Always    Reject                              
+ Always   split → start it · 4 times                                                                
+                                                                                                    
+ History                                                                                            
+ TIME   TASK         BY            WHAT                                                             
+ 10:55  demo-task    site manager  extended 20 min to 11:05Z: landing left                          
+ 10:48  demo-export  lead          handed over: https://github.com/example/demo/pull/12             
+ 10:30  demo-import  human         question: picked 2: Add retry now                                
+ 10:23  demo-import  lead          Retry lives in the importer, not the queue. Why: one owner       
+ 10:10  demo-sync    site manager  closed: its pull request merged and the worktree is clean        
+ 09:00  demo-sync    lead          handed over: https://github.com/example/demo/pull/7              
+ 08:00  demo-docs    site manager  paused: waits on demo-sync                                       
+ 06:00  demo-docs    lead          Docs stay in one file until a second reader asks for more. Long… 
+ … 3 older · H shows them                                                                           
+                                                                                                    
+ +46 more lines · ↓ to scroll                                                                       
+ enter do the marked one  ·  ←→/hl mark a button  ·  y n accept · reject  ·  a always               

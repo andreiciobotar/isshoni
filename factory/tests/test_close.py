@@ -394,7 +394,7 @@ class SiteManagerTests(CloseBase):
     def folded(self):
         return factory.fold(self.records("firings"))[0]
 
-    def test_a_closed_decision_closes_removes_and_tells_the_dispatcher_nothing_is_needed(self):
+    def test_a_closed_decision_closes_removes_and_leaves_the_dispatcher_out_of_it(self):
         f = self.firing()
         logged, _ = self.decide(f, superseded_by="t1-finish")
         self.assertEqual(logged, 1)
@@ -404,8 +404,10 @@ class SiteManagerTests(CloseBase):
         self.assertEqual((closed["role"], closed["reason"], closed["superseded_by"]), ("site-manager", "replaced", "t1-finish"))
         self.assertEqual(self.event_names(), ["TaskClosed", "TaskRemoved"])
         self.assertFalse(self.wt.exists())
-        self.assertEqual(self.told, [("t1", "SITE MANAGER", "t1: closed (replaced; superseded by t1-finish) and removed, no answer needed", False)])
-        self.assertIn({"ts": mock.ANY, "repo": str(self.root), "id": f["id"], "told": "dispatcher"}, self.records("firings"))
+        self.assertEqual(self.told, [])
+        self.assertIn({"ts": mock.ANY, "repo": str(self.root), "id": f["id"], "told": "inbox"}, self.records("firings"))
+        self.assertEqual([(e["slug"], e["by"], e["text"]) for e in factory.history(str(self.root))],
+                         [("t1", "site-manager", "closed: replaced")])
 
     def test_a_close_that_keeps_the_worktree_is_an_escalation_naming_what_would_be_lost(self):
         sha = self.own_commit("the only copy")
@@ -438,7 +440,9 @@ class SiteManagerTests(CloseBase):
         self.assertIn(f"{f['id']}  merged-not-cleaned  t1  closed", out.getvalue())
         self.assertEqual(self.states()[-1], ("t1", "closed"))
         self.assertFalse(self.wt.exists())
-        self.assertEqual(self.told, [("t1", "SITE MANAGER", "t1: closed (replaced; superseded by t1-finish) and removed, no answer needed", False)])
+        self.assertEqual(self.told, [])
+        self.assertEqual([(e["slug"], e["by"], e["text"]) for e in factory.history(str(self.root))],
+                         [("t1", "site-manager", "closed: replaced")])
 
     def test_a_call_of_his_own_that_is_kept_says_so_under_its_entry(self):
         sha = self.own_commit("the only copy")
