@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime, timezone
 
 from isshoni import cli, friction, kaizen
-from tests.test_kaizen import ALPHA, BETA, assistant, came_back, ev, loose, session
+from tests.test_kaizen import ALPHA, assistant, came_back, ev, loose, session
 from tests.test_pulse import NOW, PulseStore
 
 DAY = "2026-11-10"

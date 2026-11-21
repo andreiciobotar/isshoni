@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import factory_core
-import factory_setup  # a module's commands register when it is imported: this list is the one place that names modules
+import factory_setup as factory_setup  # a module's commands register when it is imported: this list is the one place that names modules
 
 if __name__ == "__main__":
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):

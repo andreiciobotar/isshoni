@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from test_factory import factory
-from test_wizard import APP, INSTALLATION, FakeGitHub, routes
+from test_wizard import APP, FakeGitHub, routes
 
 import factory_setup
 

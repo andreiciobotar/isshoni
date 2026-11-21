@@ -9,7 +9,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from test_factory import BIN, LEAN_SETTINGS, NO_ATTRIBUTION, factory, porcelain
+from test_factory import BIN, NO_ATTRIBUTION, factory, porcelain
 from test_tech_lead import DEFAULT, ISOLATED_SETTINGS, N, OLD, Case, Machine, SLUG, URL
 
 HEAD = "d" * 40
