@@ -291,8 +291,17 @@ func (m *model) floorTasks() []floorTask {
 }
 
 // floorOrder sorts a place's tasks from the head tile on. BUILD goes by Elapsed/Limit, the
-// furthest along first, tasks without both last; the siding puts the held first; the rest by slug. An order, not a measurement.
+// furthest along first, tasks without both last; the siding puts what waits on the human first, then the held; the rest by slug. An order, not a measurement.
 func floorOrder(place string) func(a, b floorTask) int {
+	rank := func(t data.FactoryTask) int { // the siding: waits on the human, then held, then the rest
+		switch {
+		case waitsForYou(t):
+			return 0
+		case t.StackHold != nil:
+			return 1
+		}
+		return 2
+	}
 	ratio := func(t data.FactoryTask) (float64, bool) {
 		if t.Elapsed == nil || t.Limit == nil || *t.Limit <= 0 {
 			return 0, false
@@ -300,11 +309,10 @@ func floorOrder(place string) func(a, b floorTask) int {
 		return float64(*t.Elapsed) / float64(*t.Limit), true
 	}
 	return func(a, b floorTask) int {
-		if place == "blocked" && (a.t.StackHold != nil) != (b.t.StackHold != nil) {
-			if a.t.StackHold != nil {
-				return -1
+		if place == "blocked" {
+			if c := cmp.Compare(rank(a.t), rank(b.t)); c != 0 {
+				return c
 			}
-			return 1
 		}
 		if place == "build" {
 			ra, oka := ratio(a.t)

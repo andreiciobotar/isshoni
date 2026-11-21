@@ -663,13 +663,13 @@ func TestFloorHeldTaskStandsOnTheSidingWithItsOwnLook(t *testing.T) {
 	}
 }
 
-func TestFloorSidingOrderIsHeldThenTheRest(t *testing.T) {
+func TestFloorSidingOrderIsHumanThenHeldThenTheRest(t *testing.T) {
 	ask, other := ftask("z-ask", "blocked"), ftask("a-other", "blocked")
 	ask.WaitsOn, other.WaitsOn = "human", "ci"
 	m := floorModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: fstatus(5, other, heldTask("m-held", "b"), ask)})
 	got := floorCrates(m)
-	if !(got["m-held"].rect.x < got["a-other"].rect.x && got["a-other"].rect.x < got["z-ask"].rect.x) {
-		t.Errorf("the siding puts the held first, then the rest by slug: %v", got)
+	if !(got["z-ask"].rect.x < got["m-held"].rect.x && got["m-held"].rect.x < got["a-other"].rect.x) {
+		t.Errorf("the siding puts what waits on the human first, then the held, then the rest: %v", got)
 	}
 }
 
