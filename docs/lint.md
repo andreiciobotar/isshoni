@@ -16,7 +16,7 @@ Rules left out of ruff, and why:
 | `B904`, `B905` | `raise` without `from` and `zip` without `strict=` are the style here |
 | `PLW2901`, `E741`, `E731` | not selected: the loop variable is normalised on purpose, and short names and assigned lambdas are fine |
 
-There is no `# noqa` and no `//lint:ignore`: fix the finding, or leave the rule out in `ruff.toml` with its reason.
+Add no `# noqa` or `//lint:ignore`: fix the finding, or leave the rule out in `ruff.toml` with its reason.
 
 ## How the tools arrive
 

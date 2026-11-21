@@ -4,6 +4,7 @@ The release archive for this platform is fetched once into ${XDG_CACHE_HOME:-~/.
 checked against the SHA-256 below. Bump VERSION and SHA256 together (the values are in the release's .sha256 files).
 """
 import hashlib
+import http.client
 import io
 import os
 import platform
@@ -11,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -39,7 +41,13 @@ def download(name):
         try:
             with urllib.request.urlopen(URL.format(name), timeout=TIMEOUT) as r:
                 return r.read()
-        except OSError as e:  # URLError and timeouts
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                sys.exit(f"isshoni: fetching ruff {VERSION} from {URL.format(name)} returned HTTP {e.code}; check VERSION.")
+            last = e
+            if attempt < ATTEMPTS:
+                time.sleep(2)
+        except (OSError, http.client.HTTPException) as e:  # URLError, timeouts, a cut read
             last = e
             if attempt < ATTEMPTS:
                 time.sleep(2)
