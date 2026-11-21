@@ -973,6 +973,11 @@ func TestInboxHoldCardIsNotDelegable(t *testing.T) {
 			t.Errorf("a hold card shows %q:\n%s", not, out)
 		}
 	}
+	for _, want := range []string{"H all history", "1–1 pick an option"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("a hold card's footer lacks %q:\n%s", want, out)
+		}
+	}
 	send(m, "L")
 	send(m, "S")
 	if m.inbox.pick != "" {

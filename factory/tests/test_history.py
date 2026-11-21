@@ -5,6 +5,7 @@ from unittest import mock
 
 from test_decisions import Decisions, Delegation
 from test_factory import ROOT, WT, factory
+from test_hold import CARD_OPTION, Hold
 from test_health import HOUR, NOW, Harness, decided, fired, iso
 from test_lander import Loop
 from test_overrun import Card
@@ -100,6 +101,26 @@ class StopHistoryTests(Card):
         self.assertEqual(self.answer(d["id"], 1)[0], 0)
         self.assertEqual(len(self.human_extensions()), 1)  # the firing exists, and the history leaves it out
         self.assertEqual(self.entries(), [("x", "human", f"overrun: picked 1: {d['options'][0]}")])
+
+
+class HoldHistoryTests(Hold):
+    def bet_history(self):
+        return [(e["slug"], e["by"], e["text"]) for e in json.loads(self.cli("status", "--json", "--cached")[1])["history"] if e["slug"] == "bet"]
+
+    def test_a_hold_pick_is_one_human_entry_and_the_base_handing_over_after_it_adds_none(self):
+        self.tick()
+        [card] = self.cards()
+        self.assertEqual(self.answer(card["id"], 1)[0], 0)
+        self.move("alp", "handed-over")
+        self.tick()
+        self.assertEqual(self.bet_history(), [("bet", "human", f"hold: picked 1: {CARD_OPTION}")])
+
+    def test_a_hold_card_released_unanswered_is_no_entry(self):
+        self.tick()
+        self.move("alp", "handed-over")
+        self.tick()
+        self.assertEqual(self.released(), ["base alp handed over"])
+        self.assertEqual(self.bet_history(), [])
 
 
 class DelegatedTests(Delegation):
