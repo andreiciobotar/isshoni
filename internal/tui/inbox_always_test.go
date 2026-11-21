@@ -185,8 +185,13 @@ func TestInboxReadOnlyRefusesToSwitchAnAlwaysOff(t *testing.T) {
 
 func TestInboxFootersNameAlwaysKeys(t *testing.T) {
 	m, _ := splitModel(t)
-	m.w = 140
-	send(m, "j") // the split card: the footer has room for A beside the base's keys
+	m.w = 120
+	send(m, "j") // the split card
+	lines := strings.Split(plain(m), "\n")
+	if last := lines[len(lines)-1]; strings.Contains(last, "A always off") || !strings.Contains(last, "H all history") || !strings.Contains(last, "tab next view") {
+		t.Fatalf("short of room, A is the hint that goes: %q", last)
+	}
+	m.w = 140 // the footer has room for A beside the base's keys
 	if out := plain(m); !strings.Contains(strings.Split(out, "\n")[len(strings.Split(out, "\n"))-1], "A always off") {
 		t.Fatalf("the footer names A while the line shows:\n%s", out)
 	}
