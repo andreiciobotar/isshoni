@@ -931,6 +931,55 @@ func TestInboxFooterNamesTheCardsOptionRange(t *testing.T) {
 	}
 }
 
+func TestInboxHoldCardRendersItsOneOptionAndTakesPick1(t *testing.T) {
+	repos := inboxRepos()
+	repos[0].st.Decisions = []data.FactoryDecision{{
+		ID: "hh00", Slug: "stacked-task", Kind: "hold", TS: fakeNow.Add(-5 * time.Minute),
+		Ask:     "stacked-task is held: its base base-task is working, so no build run starts. It is released when base-task hands over.",
+		Options: []string{"Release: build now on base-task as it stands"},
+	}}
+	m := fakeModel(true, 120, 40)
+	setInbox(m, repos...)
+	send(m, "j", "j", "j") // past delta-docs' three rows
+	out := plain(m)
+	for _, want := range []string{"hold", "stacked-task is held", "1  Release: build now on base-task as it stands", "1–1 pick an option"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the card shows %q:\n%s", want, out)
+		}
+	}
+	send(m, "1")
+	if m.inbox.pick != "1" || m.inbox.id != "hh00" || m.inbox.reject {
+		t.Fatalf("pick 1 opens the confirm: %+v", m.inbox)
+	}
+	send(m, "n", "2") // the card has one option: 2 is the Sessions tab
+	if m.view != viewDashboard {
+		t.Fatalf("a digit beyond the one option switches the tab: %v", m.view)
+	}
+}
+
+func TestInboxHoldCardIsNotDelegable(t *testing.T) {
+	repos := inboxRepos()
+	repos[0].st.Decisions = []data.FactoryDecision{{
+		ID: "hh00", Slug: "stacked-task", Kind: "hold", TS: fakeNow.Add(-5 * time.Minute),
+		Ask:     "stacked-task is held.",
+		Options: []string{"Release: build now on base-task as it stands"},
+	}}
+	m := fakeModel(true, 120, 40)
+	setInbox(m, repos...)
+	send(m, "j", "j", "j")
+	out := plain(m)
+	for _, not := range []string{"leave it to the lead", "L S"} {
+		if strings.Contains(out, not) {
+			t.Errorf("a hold card shows %q:\n%s", not, out)
+		}
+	}
+	send(m, "L")
+	send(m, "S")
+	if m.inbox.pick != "" {
+		t.Fatalf("L and S do not open a confirm on a hold card: %+v", m.inbox)
+	}
+}
+
 func TestEscFromAnotherTopLevelViewGoesToTheInbox(t *testing.T) {
 	m := inboxModel(100, 30)
 	for _, v := range []viewID{viewAgents, viewFactory, viewKaizen} {

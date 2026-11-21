@@ -108,6 +108,9 @@ func (m *model) footerKeys() []key.Binding {
 		if i >= 0 && i < len(cs) && (cs[i].app != nil || cs[i].d.With != "") { // an approval, or a decision with the site manager, has nothing to pick or leave
 			return []key.Binding{keys.Down, keys.CapEdit, keys.Next, keys.History, keys.Help, keys.Quit}
 		}
+		if c, ok := m.cursorCard(); ok && !delegable(c.d.Kind) {
+			return []key.Binding{keys.Down, m.pickHint(), keys.CapEdit, keys.Next, keys.History, keys.Help, keys.Quit}
+		}
 		return []key.Binding{keys.Down, m.pickHint(), keys.CapEdit, keys.Leave, keys.Next, keys.History, keys.Help, keys.Quit}
 	case m.view == viewFactory:
 		return []key.Binding{keys.Filter, keys.Range, keys.Next, keys.Help, keys.Quit}
