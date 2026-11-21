@@ -22,6 +22,7 @@ type keyMap struct {
 	Range, Follow, Sort, Filter                key.Binding
 	FilterKeep, FilterClear, Erase, Wipe       key.Binding
 	CapEdit, CapSave, CapCancel                key.Binding
+	MenuChoose, MenuClose                      key.Binding
 	Hanami, Legend, Zen, Replay                key.Binding
 	Dispatcher                                 key.Binding
 }
@@ -78,9 +79,11 @@ var keys = keyMap{
 
 	Dispatcher: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "dispatcher")),
 
-	CapEdit:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "edit cap")),
-	CapSave:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "save")),
-	CapCancel: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+	CapEdit:    key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "edit cap")),
+	CapSave:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "save")),
+	CapCancel:  key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+	MenuChoose: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "choose")),
+	MenuClose:  key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "close")),
 
 	// the Hanami tab's own keys: its footer shows them; the help overlay has no row left for them at 24 rows
 	Legend: key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "legend")),
@@ -96,16 +99,18 @@ func (m *model) footerKeys() []key.Binding {
 		return []key.Binding{keys.FilterKeep, keys.FilterClear}
 	case m.fac.editing:
 		return []key.Binding{keys.CapSave, keys.CapCancel}
+	case m.floor.menu:
+		return []key.Binding{keys.Down, keys.MenuChoose, keys.MenuClose}
 	case m.view == viewInbox && m.inbox.pick != "":
 		return []key.Binding{keys.Confirm, keys.Mark, keys.Accept}
 	case m.view == viewInbox:
 		cs, i := m.cards(), m.inbox.tbl.Cursor()
 		if i >= 0 && i < len(cs) && (cs[i].app != nil || cs[i].d.With != "") { // an approval, or a decision with the site manager, has nothing to pick or leave
-			return []key.Binding{keys.Down, keys.CapEdit, keys.History, keys.Next, keys.Help, keys.Quit}
+			return []key.Binding{keys.Down, keys.CapEdit, keys.Next, keys.History, keys.Help, keys.Quit}
 		}
-		return []key.Binding{keys.Down, m.pickHint(), keys.CapEdit, keys.Leave, keys.History, keys.Next, keys.Help, keys.Quit}
+		return []key.Binding{keys.Down, m.pickHint(), keys.CapEdit, keys.Leave, keys.Next, keys.History, keys.Help, keys.Quit}
 	case m.view == viewFactory:
-		return []key.Binding{keys.Down, keys.CapEdit, keys.Range, keys.Next, keys.Help, keys.Quit}
+		return []key.Binding{keys.Filter, keys.Range, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewHanami:
 		return []key.Binding{keys.Legend, keys.Zen, keys.Replay, keys.Next, keys.Help, keys.Quit}
 	case m.view == viewKaizen:

@@ -171,6 +171,8 @@ type model struct {
 	pick    []string // the dispatchers on offer while the picker is open
 	pickCur int
 
+	floor floorState // the Factory tab: repository filter, crates in transit, the flow marks
+
 	tickOn   bool
 	tickGen  int           // a tick carrying an older generation was superseded
 	tickD    time.Duration // delay of the pending tick
@@ -841,7 +843,9 @@ func (m *model) animating() bool {
 	switch m.view {
 	case viewDashboard:
 		return len(m.nowRunning()) > 0
-	case viewFactory, viewInbox:
+	case viewFactory:
+		return m.fac.busy || m.floorWorking() || m.floor.moving()
+	case viewInbox:
 		return m.fac.busy || m.factoryWorking()
 	case viewKaizen:
 		return m.kaizenMoving()
@@ -1221,7 +1225,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.agentsDirty && !m.agentsBusy && now.Sub(m.agentsAt) >= agentsEvery {
 			cmds = append(cmds, m.loadAgentsCmd())
 		}
-		cmds = append(cmds, m.refreshFactory(factoryEvery), m.loadOps(m.opsTickEvery()))
+		every := factoryEvery
+		if m.view == viewFactory {
+			every = floorEvery
+		}
+		cmds = append(cmds, m.refreshFactory(every), m.loadOps(m.opsTickEvery()))
 
 	case attachMsg:
 		if msg.err != nil {
@@ -1246,6 +1254,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	m.syncOrder(false)
 	m.fixScroll()
+	m.floorSync()
 	cmds = append(cmds, m.hanamiSync(), m.ensureTick())
 	return m, tea.Batch(cmds...)
 }
@@ -1287,6 +1296,7 @@ func (m *model) step(dt time.Duration) {
 	if m.toast.text != "" && !m.toast.until.After(now) {
 		m.toast = toast{}
 	}
+	m.floorStep(dt)
 }
 
 // settle jumps every animation to its end state (snapshots).
@@ -1308,6 +1318,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.capKey(msg)
 	case m.pick != nil:
 		return m.pickKey(msg)
+	case m.floor.menu:
+		return m.floorMenuKey(msg)
 	case m.view == viewInbox && m.inbox.pick != "" && !m.help:
 		return m.confirmKey(msg)
 	case m.help:
@@ -1399,11 +1411,13 @@ func (m *model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	case key.Matches(msg, keys.Filter):
 		if m.view == viewDashboard && !m.zoom {
 			m.filterIn = true
+		} else if m.view == viewFactory {
+			m.floorOpenMenu()
 		}
 	case key.Matches(msg, keys.CapEdit):
-		if m.onFloor() && m.opts.ReadOnly {
+		if m.view == viewInbox && m.opts.ReadOnly {
 			m.setToast("read-only: this key may not change the cap", true)
-		} else if m.onFloor() {
+		} else if m.view == viewInbox {
 			m.openCap()
 		}
 	}
@@ -1627,7 +1641,7 @@ func (m *model) listLen() int {
 		if m.agents != nil {
 			return len(m.agents.Agents)
 		}
-	case viewFactory, viewInbox:
+	case viewInbox:
 		return m.factoryPositions()
 	case viewKaizen:
 		return m.kaizenPositions()
@@ -1657,8 +1671,8 @@ func (m *model) move(delta int) {
 		}
 	case viewAgents:
 		cur = m.acursor
-	case viewFactory, viewInbox:
-		cur = *m.floorTop()
+	case viewInbox:
+		cur = m.inbox.top
 	case viewKaizen:
 		cur = m.kz.top[m.kz.page]
 	case viewOps:
@@ -1687,8 +1701,8 @@ func (m *model) moveTo(i int) {
 		}
 	case viewAgents:
 		m.acursor = i
-	case viewFactory, viewInbox:
-		*m.floorTop() = i
+	case viewInbox:
+		m.inbox.top = i
 	case viewKaizen:
 		m.kz.top[m.kz.page] = i
 	case viewOps:
@@ -1728,8 +1742,8 @@ func (m *model) fixScroll() {
 	m.atop = keep(m.acursor, m.atop, m.agentRows())
 	m.top = min(m.top, max(0, len(rows)-n))
 	switch m.view {
-	case viewFactory, viewInbox:
-		t := m.floorTop()
+	case viewInbox:
+		t := &m.inbox.top
 		*t = min(*t, m.factoryPositions()-1)
 	case viewKaizen:
 		m.kz.top[m.kz.page] = min(m.kz.top[m.kz.page], m.kaizenPositions()-1)

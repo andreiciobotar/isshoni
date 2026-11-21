@@ -214,8 +214,8 @@ func TestInboxBandDoesNotRepeatATaskWithACard(t *testing.T) {
 		t.Fatalf("the badge leaves out the parked one: %d of %d", got, all)
 	}
 	m.view = viewFactory
-	if out := plain(m); !strings.Contains(out, "▲ Needs you  7") || !strings.Contains(out, "answer question") {
-		t.Errorf("the Factory view stays as it was:\n%s", out)
+	if out := plain(m); !strings.Contains(out, "SHIPPED ") || strings.Contains(out, "Needs you") {
+		t.Errorf("the Factory tab draws the floor, not the table with its band:\n%s", out)
 	}
 	only := inboxRepos()[0]
 	only.st = fstatus(5, only.st.Rows[:0]...)
@@ -284,8 +284,8 @@ func TestInboxIsAFactoryPage(t *testing.T) {
 		t.Fatalf("k comes back: cursor %d, top %d", m.inbox.tbl.Cursor(), m.inbox.top)
 	}
 	send(m, "G")
-	if m.inbox.top == 0 || m.fac.top != 0 {
-		t.Fatalf("G scrolls the Inbox, and only the Inbox: top %d, factory top %d", m.inbox.top, m.fac.top)
+	if m.inbox.top == 0 {
+		t.Fatalf("G scrolls the Inbox: top %d", m.inbox.top)
 	}
 }
 
@@ -678,7 +678,7 @@ func TestInboxCursorStaysOnItsPullRequestThroughARefreshThatReordersRows(t *test
 	}
 }
 
-func TestInboxBandLeavesOutAnApproveRowsReviewPRButTheFactoryTabKeepsIt(t *testing.T) {
+func TestInboxBandLeavesOutOnlyAnApproveRowsReviewPR(t *testing.T) {
 	repos := noticeRepos()
 	repos[0].st.Rows = append(repos[0].st.Rows, data.FactoryTask{Slug: "demo-export", Phase: "review", PRURL: "https://github.com/example/demo/pull/12"})
 	m := fakeModel(true, 140, 60)
@@ -694,10 +694,10 @@ func TestInboxBandLeavesOutAnApproveRowsReviewPRButTheFactoryTabKeepsIt(t *testi
 	if inBand() {
 		t.Errorf("the Inbox band repeats the approve row's task:\n%s", plain(m))
 	}
-	m.view = viewFactory
-	m.fixScroll()
+	m.fac.repos[0].st.Approvals = data.FactoryApprovals{}
+	m.syncInbox()
 	if !inBand() {
-		t.Errorf("the Factory tab's band keeps it:\n%s", plain(m))
+		t.Errorf("without the approve row the band lists the task:\n%s", plain(m))
 	}
 }
 
@@ -810,7 +810,7 @@ func TestInboxWithoutApprovalsOrHistoryHasNoSections(t *testing.T) {
 }
 
 func TestInboxNamesTheHistoryKey(t *testing.T) {
-	if foot := plain(noticeModel(140, 40)); !strings.Contains(foot, "H all history") {
+	if foot := plain(noticeModel(160, 40)); !strings.Contains(foot, "H all history") {
 		t.Errorf("footer:\n%s", foot)
 	}
 	m := noticeModel(120, 50)

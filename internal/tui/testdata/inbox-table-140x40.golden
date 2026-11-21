@@ -1,5 +1,7 @@
- Isshoni 一緒に  1 Inbox ▲7  2 Sessions  3 Agents [4 Factory] 5 Kaizen  6 Ops  7 Hanami                          24h [7d] 30d  all   ○ idle 
- Factory  18 in motion (8 blocked) · 3 waiting for review · 2 merged, not cleaned · 1 settled  · as of 11:00:00                             
+ Isshoni 一緒に [1 Inbox ▲7] 2 Sessions  3 Agents  4 Factory  5 Kaizen  6 Ops  7 Hanami                          24h [7d] 30d  all   ○ idle 
+ Inbox  18 in motion (8 blocked) · 3 waiting for review · 2 merged, not cleaned · 1 settled  · as of 11:00:00                               
+ Nothing to decide.                                                                                                                         
+                                                                                                                                            
  ▲ Needs you  7                                                                                                                             
  ◆ alpha       api-rate-limits  review PR          3h00m  #42 https://github.com/o/alpha/pull/42                                            
  ▲ delta-docs  wide-ask         unblock            2h00m  データベースの接続情報が見つかりません。どの環境のものを使えばよいですか？ 本番…  
@@ -34,7 +36,5 @@
   task-02            ⠋ in motion                                       3m00s  -       -                       main                          
                                                                                                                                             
  gamma                                                                                                                                      
-  ⚠ not inside a git repository                                                                                                             
-                                                                                                                                            
- +14 more lines · ↓ to scroll                                                                                                               
- ↑↓/jk move  ·  c edit cap  ·  r range  ·  tab next view  ·  ? help  ·  q quit                                                              
+ +16 more lines · ↓ to scroll                                                                                                               
+ ↑↓/jk move  ·  1-4 pick an option  ·  c edit cap  ·  L S leave it to lead · site manager  ·  tab next view  ·  ? help  ·  q quit           

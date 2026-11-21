@@ -482,7 +482,7 @@ func TestServeATerminalWithoutASizeGetsTheDefault(t *testing.T) {
 	v := e.view(addr, viewOpts{signer: s, noSize: true})
 	v.waitFor("zebrafish")
 	v.send("4")
-	v.waitFor("worktree cap")
+	v.waitFor("SHIPPED")
 	v.send("q")
 	if err := v.waitExit(); err != nil {
 		t.Fatal(err)
@@ -504,8 +504,10 @@ func TestServeAbruptDisconnectLeavesTheOthersRunning(t *testing.T) {
 	b := e.view(addr, viewOpts{signer: s})
 	a.waitFor("zebrafish")
 	b.waitFor("zebrafish")
-	a.send("4c")
-	a.waitFor("worktree cap")
+	a.send("1c")
+	a.waitFor("per repo") // the cap editor is open on the Inbox
+	b.send("4")
+	b.waitFor("SHIPPED")
 	a.sess.Close()
 	a.client.Close()
 	waitFor(t, "A's session to end", func() bool { return strings.Contains(e.logs.String(), "session end") })
@@ -515,9 +517,9 @@ func TestServeAbruptDisconnectLeavesTheOthersRunning(t *testing.T) {
 	c.waitFor("zebrafish")
 	// the server's own shutdown closes the window channel of the viewers still on the Factory view
 	b.send("4")
-	b.waitFor("worktree cap")
+	b.waitFor("SHIPPED")
 	c.send("4")
-	c.waitFor("worktree cap")
+	c.waitFor("SHIPPED")
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +583,7 @@ func TestServeOnlyAWriteKeyChangesTheCap(t *testing.T) {
 
 	r := e.view(addr, viewOpts{signer: ro})
 	r.waitFor("zebrafish")
-	r.send("4c")
+	r.send("1c")
 	r.waitFor("read-only: this key may not change the cap")
 	r.send("6\r")
 	if _, err := os.Stat(settingsPath(e)); err == nil {
@@ -591,7 +593,7 @@ func TestServeOnlyAWriteKeyChangesTheCap(t *testing.T) {
 
 	w := e.view(addr, viewOpts{signer: rw})
 	w.waitFor("zebrafish")
-	w.send("4c\x7f6\r")
+	w.send("1c\x7f6\r")
 	waitFor(t, "the cap in the settings file", func() bool {
 		b, _ := os.ReadFile(settingsPath(e))
 		return strings.Contains(string(b), "worktree_cap = 6\n")

@@ -1,5 +1,5 @@
- Isshoni 1 ✉ ▲7 2 ≡ 3 Agent [4 Factory] 5 Kaizen 6 ◉ 7 ✿     24h [7d] 30d all ○ 
- Factory  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · 11:00:00   
+ Isshoni [1 ✉ ▲7] 2 ≡ 3 Agent 4 Factory 5 Kaizen 6 ◉ 7 ✿     24h [7d] 30d all ○ 
+ Inbox  18 motion (8 blocked) · 3 review · 2 merged · 1 settled  · 11:00:00     
   task-00            ⠋ motion                      1m00s                        
   task-01            ⠋ motion                      2m00s                        
   task-02            ⠋ motion                      3m00s                        
@@ -21,4 +21,4 @@
   rush-fix           ⠋ motion · prioritized 3m    10m00s                        
   design-review      ◆ review                          -                        
   video-cut          ◆ review                          -                        
- ↑↓/jk move  ·  c edit cap  ·  r range  ·  tab next view  ·  ? help  ·  q quit  
+ ↑↓/jk move  ·  1-4 pick an option  ·  c edit cap  ·  ? help  ·  q quit         
