@@ -1723,6 +1723,33 @@ func TestFactoryKeptAndHeldPills(t *testing.T) {
 	}
 }
 
+func TestFactoryInLinePillAndDetailLine(t *testing.T) {
+	const text = "waiting behind #12: conflicts with main in README.md"
+	waiting, held, kept, plain := ftask("a", "review"), heldBy("suppressed", "", 0), ftask("c", "merged"), ftask("d", "review")
+	waiting.InLine, held.InLine, kept.InLine, kept.Kept = text, text, text, "uncommitted changes"
+	m := factoryModel(true, 140, 40, factoryRepo{name: "m", st: fstatus(5, waiting, held, kept, plain)})
+	p, rows := m.th.on(m.th.Bg), m.fac.repos[0].st.Rows
+	for i, want := range []string{"[behind #12]", "[held] [behind #12]", "[kept] [behind #12]", ""} {
+		if got := flagPills(p, rows[i]); got != want {
+			t.Errorf("row %d: pills %q, want %q", i, got, want)
+		}
+	}
+	for i, want := range []string{text, "held · ended-undeclared", "kept: uncommitted changes", ""} {
+		row := m.taskRow(p, m.factoryCols(p, 140, rows), rows[i], 140)
+		got := ""
+		if len(row) > 1 {
+			got = strings.TrimSpace(row[1])
+		}
+		if got != want {
+			t.Errorf("row %d: detail line %q, want %q", i, got, want)
+		}
+	}
+	m = factoryModel(false, 140, 40, factoryRepo{name: "m", st: fstatus(5, waiting)})
+	if got, want := flagPills(m.th.on(m.th.Bg), m.fac.repos[0].st.Rows[0]), m.th.on(m.th.Bg).pill("behind #12", m.th.Muted); got != want {
+		t.Errorf("the pill is %q, want the muted one of the held pill: %q", got, want)
+	}
+}
+
 func TestFactoryKeptAndHeldDetailLine(t *testing.T) {
 	keptOnly, both := ftask("a", "merged"), heldBy("suppressed", "its  replacement\nis in review", 9*time.Hour)
 	keptOnly.Kept, both.Kept = "uncommitted changes", "uncommitted changes"

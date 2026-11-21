@@ -563,6 +563,21 @@ func TestFactoryStatusHeldWithABadSinceKeepsTheRow(t *testing.T) {
 	}
 }
 
+func TestFactoryStatusDecodesInLine(t *testing.T) {
+	r, dir := factoryStub(t)
+	doc := `{"rows": [{"slug": "a", "phase": "review", "in_line": "waiting behind #12: conflicts with main in a.txt"}, {"slug": "b", "phase": "review", "in_line": null}, {"slug": "c", "phase": "review"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "status.json"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.FactoryStatus(context.Background(), t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{st.Rows[0].InLine, st.Rows[1].InLine, st.Rows[2].InLine}; got[0] != "waiting behind #12: conflicts with main in a.txt" || got[1] != "" || got[2] != "" {
+		t.Fatalf("in_line %q: the text, then empty for null and for absent", got)
+	}
+}
+
 func TestFactoryStatusDecodesStackHold(t *testing.T) {
 	r, dir := factoryStub(t)
 	doc := `{"rows": [

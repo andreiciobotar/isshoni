@@ -521,6 +521,10 @@ func flagPills(p paint, t data.FactoryTask) string {
 	if t.Kept != "" {
 		ps = append(ps, p.pill("kept", p.th.Muted))
 	}
+	if t.InLine != "" {
+		word, _, _ := strings.Cut(strings.TrimPrefix(t.InLine, "waiting "), ":") // "behind #12"
+		ps = append(ps, p.pill(word, p.th.Muted))
+	}
 	return strings.Join(ps, p.sp(1))
 }
 
@@ -728,6 +732,8 @@ func (m *model) taskRow(p paint, c factoryCols, t data.FactoryTask, w int) block
 	}
 	if standing(t) {
 		detail = standingLine(t, m.now())
+	} else if t.InLine != "" {
+		detail = t.InLine
 	}
 	if detail != "" {
 		indent := 2 + c.slug + 2

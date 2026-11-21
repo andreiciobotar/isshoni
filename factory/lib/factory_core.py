@@ -1452,7 +1452,9 @@ def collect(repo, sessions, limit_hours, prs=None, deep=False):
     if prs is None:  # not through the cache: what GitHub says now, 'unknown' when it cannot say
         needed = needed_branches(repo)
         prs = (ask_pull_requests(repo, needed)[0] if needed else {}) or {b: UNKNOWN_PR for b in needed}
-    prioritized = read_lander(repo)["prioritized"]
+    lander = read_lander(repo)
+    prioritized = lander["prioritized"]
+    turn = {r["head"]: r["text"] for r in lander["stopped"].values() if r.get("kind") == "in-line"}
     granted = extended(repo)
     holds, tasks_log = repo_log("decisions", repo.root) or [], list(read_log("tasks"))
     firings = fold(repo_log("firings", repo.root) or [])[0]
@@ -1489,6 +1491,7 @@ def collect(repo, sessions, limit_hours, prs=None, deep=False):
         ts, _, row["head"] = out.strip().partition(" ")
         row["last_commit"] = int(ts) if rc == 0 and ts.isdigit() else None
         row["pr_state"], row["pr_url"], row["pr_head"], row["pr_base"], row["pr_draft"] = prs.get(branch, UNKNOWN_PR)
+        row["in_line"] = turn.get(row["pr_head"])
         row["deliverable"] = declared.get(slug, {}).get("deliverable")
         waits = declared.get(slug, {}).get("waits_on") or "human"
         row["waits_on"] = (", ".join(waits) if isinstance(waits, list) else waits) if row["state"] == "blocked" else None
@@ -2321,7 +2324,9 @@ def cmd_status(args):
     for r in rows:
         if r["phase"] == "review":
             where = f"{r['slug']} {r['deliverable'] or r['pr_url'] or '-'}"
-            if r["pr_head"] in refused:
+            if r["in_line"]:
+                print(f"waiting its turn: {where}: {r['in_line']}")
+            elif r["pr_head"] in refused:
                 print(f"waiting on GitHub: {where}: {refused[r['pr_head']][len(REFUSED):].split('; ')[0]}")
             else:
                 print(f"waiting on {'checks' if r['pr_draft'] else 'the human'}: {where}")
@@ -8685,6 +8690,45 @@ def candidates(repo, snap):
     return [pr for pr in snap if approved_at(pr) and declared.get(task_slug(repo, pr), {}).get("state") == "handed-over"]
 
 
+def first_handovers(repo):
+    """{slug: ts of the first hand-over of its current life}: the first `handed-over` record after the slug's last record in a
+    closed state (`STATES[3:]`), which ends a life; a later hand-over does not move it."""
+    first = {}
+    for r in sorted(read_log("tasks"), key=stamp):
+        if r.get("repo") == repo.root and r.get("state") in (*STATES[3:], "handed-over"):
+            if r["state"] == "handed-over":
+                first.setdefault(r.get("slug"), stamp(r))
+            else:
+                first.pop(r.get("slug"), None)
+    return first
+
+
+def line_order(repo, snap):
+    """The pull requests of `snap` by their place in the line: the first hand-over of their task, then number; one with no
+    place (never handed over) after those with one."""
+    place = first_handovers(repo)
+    slug = lambda pr: task_slug(repo, pr)
+    return sorted(snap, key=lambda pr: (slug(pr) not in place, place.get(slug(pr), ""), pr["number"]))
+
+
+def front_of_line(repo, snap):
+    """The pull request of `snap` that the lander sends back first, or None: that of a prioritized task when it has one, else the first of
+    the line (open, on the default branch, its task handed over once) that the lander is not keeping back itself: a paused
+    task's, or one held as `not-ours`."""
+    if (first := queue_holders(repo)) and (prioritized := next((pr for pr in snap if task_slug(repo, pr) in first), None)):
+        return prioritized
+    place, paused, held = first_handovers(repo), paused_rows(repo), held_prs(read_lander(repo))
+    return next((pr for pr in line_order(repo, snap) if pr["baseRefName"] == repo.default and task_slug(repo, pr) in place
+                 and task_slug(repo, pr) not in paused and str(pr["number"]) not in held), None)
+
+
+def in_line(stops, front):
+    """`stops` with each one that would send a pull request back, while it is not `front`, made `in-line`: it waits its turn."""
+    return {n: (pr, "in-line", f"waiting behind #{front['number']}: {text}")
+            if front and n != front["number"] and stop_policy(kind, text)[2] == "lead" else (pr, kind, text)
+            for n, (pr, kind, text) in stops.items()}
+
+
 def approve_items(repo, snap):
     """The approve items of `snap`, oldest first: open pull requests, not draft, whose task is handed over and that carry no
     approval at all (`new`, since the hand-over) or whose current head has a stop in APPROVAL_STOPS (`stale`, since the stop)."""
@@ -8720,7 +8764,7 @@ def read_approvals(root, rows):
 
 
 def lander_queue(repo, snap, word):
-    """[(pr, permission)] of the pull requests of `snap` to work through, by number: those approved on GitHub (permission
+    """[(pr, permission)] of the pull requests of `snap` to work through, in line order: those approved on GitHub (permission
     `{}`) and those on the human's word (`None`): every handed-over one while the window is open, and each number given.
     A pull request whose base is the head of an open one waits for its base, silently. While a task is prioritized
     (released from a pause, inside RELEASE_HOLD_MINUTES) only its pull request is in the line, or nothing."""
@@ -8728,7 +8772,7 @@ def lander_queue(repo, snap, word):
     handed = {pr["number"] for pr in snap if declared.get(task_slug(repo, pr), {}).get("state") == "handed-over"}
     spoken = {int(n) for n in word["prs"]} | (handed if word["all"] else set())
     ready = spoken | {pr["number"] for pr in candidates(repo, snap)}
-    line = [(pr, None if pr["number"] in spoken else {}) for pr in sorted(snap, key=lambda pr: pr["number"])
+    line = [(pr, None if pr["number"] in spoken else {}) for pr in line_order(repo, snap)
             if pr["number"] in ready and pr["baseRefName"] not in heads]
     first = queue_holders(repo)
     return [x for x in line if task_slug(repo, x[0]) in first] if first else line
@@ -9315,8 +9359,14 @@ def delivery_gap(repo, slug, branch, git):
 
 def report_stop(repo, fallback, pr, kind, line):
     """Tell of one stop, once: a firing of lgtm-blocked, then the lead (the pull request goes back to it), or the dispatcher, else the
-    human, as its kind says."""
+    human, as its kind says. An `in-line` stop tells nobody: a queue record, a comment on the pull request, a line."""
     n, slug = pr["number"], task_slug(repo, pr)
+    if kind == "in-line":
+        log_queue(repo, n, slug, pr["headRefOid"], "in-line", kind=kind, text=line)
+        body = f"{line}. It is brought up to date once, when it is first in line; red or conflicting until then is expected, and nobody needs to act on it."
+        if failed := gh_step(repo, "pr", "comment", str(n), "--body", f"Merge queue: {body}"):
+            print(f"#{n} comment not posted: {failed[1]}")
+        return print(f"#{n} waits {line.removeprefix('waiting ')}")
     firing = fire(repo, {"criterion": "lgtm-blocked", "slug": slug, "subject": f"#{n}/{kind}",
                          "detail": f"#{n} stopped {kind}: {line}"})
     sent_back = stop_policy(kind, line)[2] == "lead"
@@ -9360,7 +9410,7 @@ def settle(repo, fallback, stops):
         since, head = waiting_since(state, n, pr, kind), pr["headRefOid"]
         old = state["stopped"].get(str(n)) or {}
         if kind == "handover" and old.get("head") == head or (old.get("head"), old.get("kind")) == (head, kind):
-            stopped[str(n)] = old
+            stopped[str(n)] = {**old, "text": line} if kind == "in-line" else old  # the front may have changed: no new comment
         elif time.time() - since < max(stop_policy(kind, line)[0], CHURN_PATIENCE if awaits_decision(repo, pr, kind) else 0):
             waiting[str(n)] = {"head": head, "kind": kind, "since": since}
         else:
@@ -9679,6 +9729,7 @@ def lander_pass(repo, fallback, p, snap, line, updated):
             log_queue(repo, n, task_slug(repo, pr), pr["headRefOid"], "updated", tip=updated[n])
             print(f"#{n} brought up to date, waiting for its checks")
             flight.add(n)
+    stops = in_line(stops, front_of_line(repo, snap))
     settle(repo, fallback, stops)
     return False, stops, flight
 
