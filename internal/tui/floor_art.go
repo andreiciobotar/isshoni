@@ -51,6 +51,9 @@ func rawPhase(phase string) string {
 // crateParts is the text of a crate after its mark: the slug (with the repository before it under the prefix rule, when the
 // slug keeps 6 cells), what a blocked task waits on or the base a task is held on, then the elapsed text; all cut to the widest crate, the last first.
 func (l *floorLayout) crateParts(ft floorTask) []lpiece {
+	if ft.t.StackHold != nil {
+		return heldParts(ft.t.Slug, ft.t.StackHold.Base, 2*l.capW-4)
+	}
 	room := l.capW - 4
 	var ps []lpiece
 	if l.prefix && width(ft.repo)+1+6 <= room {
@@ -58,8 +61,6 @@ func (l *floorLayout) crateParts(ft floorTask) []lpiece {
 	}
 	ps = append(ps, lpiece{s: ft.t.Slug})
 	switch {
-	case ft.t.StackHold != nil:
-		ps = append(ps, lpiece{s: " · held on " + ft.t.StackHold.Base, faint: true, opt: true})
 	case floorPlace(ft.t) == "blocked":
 		if wait := cmp.Or(ft.t.WaitsOn, rawPhase(ft.t.Phase)); wait != "" {
 			ps = append(ps, lpiece{s: " · " + wait, faint: true, opt: true})
@@ -69,6 +70,24 @@ func (l *floorLayout) crateParts(ft floorTask) []lpiece {
 		ps = append(ps, lpiece{s: "  " + x, faint: true, opt: true})
 	}
 	return fitPieces(ps, room)
+}
+
+// heldParts is the text of a held crate, `<slug> · held on <base>`, in room cells (two crates wide, no repository, no elapsed
+// text). When the names do not fit, the fixed middle stays and they share the rest: half each, the slug the odd cell, a short
+// name lending what it does not use to the other.
+func heldParts(slug, base string, room int) []lpiece {
+	const mid = " · held on "
+	names := room - width(mid)
+	hs, hb := (names+1)/2, names/2
+	switch {
+	case width(slug)+width(base) <= names:
+		hs, hb = width(slug), width(base)
+	case width(slug) < hs:
+		hs, hb = width(slug), names-width(slug)
+	case width(base) < hb:
+		hs, hb = names-width(base), width(base)
+	}
+	return []lpiece{{s: trunc(slug, hs)}, {s: mid, faint: true}, {s: trunc(base, max(hb, 0))}}
 }
 
 // crateWidth is the cells of a crate: its two edges, its mark and a space, and its text.

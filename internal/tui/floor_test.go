@@ -85,7 +85,7 @@ func TestFloorBuildOrder(t *testing.T) {
 func TestFloorEveryTaskIsACrateOrCounted(t *testing.T) {
 	crowded := factoryRepo{name: "busy", path: "/r/busy", st: fstatus(40, manyTasks(12)...)}
 	for name, repos := range map[string][]factoryRepo{
-		"waiting": waitingRepos(), "fake": fakeFactoryRepos(), "crowded": {crowded}, "none": nil, "one": {alpha()},
+		"waiting": waitingRepos(), "fake": fakeFactoryRepos(), "crowded": {crowded}, "none": nil, "one": {alpha()}, "held": heldRepos(heldTask("a-held-task-on-the-floor", "site-manager-holds-work")),
 	} {
 		for _, sz := range [][2]int{{80, 24}, {100, 30}, {140, 40}, {60, 16}} {
 			m := floorModel(true, sz[0], sz[1], repos...)
@@ -118,9 +118,10 @@ func TestFloorEveryTaskIsACrateOrCounted(t *testing.T) {
 func floorGeometryCases(f func(name string, w, h int, m *model)) {
 	for _, sz := range [][2]int{{80, 24}, {100, 30}, {140, 40}} {
 		for name, repos := range map[string][]factoryRepo{
-			"one": {{name: "r", path: "/r", st: fstatus(5, ftask("a", "motion"))}},
-			"20":  {{name: "r", path: "/r", st: fstatus(40, manyTasks(20)...)}},
-			"all": waitingRepos(),
+			"one":  {{name: "r", path: "/r", st: fstatus(5, ftask("a", "motion"))}},
+			"20":   {{name: "r", path: "/r", st: fstatus(40, manyTasks(20)...)}},
+			"all":  waitingRepos(),
+			"held": heldRepos(heldTask("a-held-task-on-the-floor", "site-manager-holds-work")),
 		} {
 			f(name, sz[0], sz[1], floorModel(true, sz[0], sz[1], repos...))
 		}
@@ -609,7 +610,8 @@ func heldTask(slug, base string) data.FactoryTask {
 }
 
 // heldRepos is the held fixture: api-v2 held on api-v1, which builds; a task that waits on the human and one that waits on a task.
-func heldRepos() []factoryRepo {
+// More tasks may be added to the repository alpha.
+func heldRepos(more ...data.FactoryTask) []factoryRepo {
 	base, ask, ci := ftask("api-v1", "motion"), ftask("needs-an-answer", "blocked"), ftask("waits-for-schema", "blocked")
 	base.Session, base.Elapsed, base.Limit = "working", ptr(int64(2700)), ptr(int64(5400))
 	ask.Elapsed, ask.WaitsOn, ask.StopKind = ptr(int64(640)), "human", "QUESTION"
@@ -618,7 +620,7 @@ func heldRepos() []factoryRepo {
 	review.Elapsed, review.PRState, review.PRURL = ptr(int64(5400)), "open", "https://github.com/o/alpha/pull/7"
 	shipped.Elapsed = ptr(int64(3000))
 	return []factoryRepo{
-		{name: "alpha", path: "/r/alpha", st: fstatus(5, base, heldTask("api-v2", "api-v1"), ask, ci, review, shipped)},
+		{name: "alpha", path: "/r/alpha", st: fstatus(5, append([]data.FactoryTask{base, heldTask("api-v2", "api-v1"), ask, ci, review, shipped}, more...)...)},
 		{name: "delta-docs", path: "/r/delta-docs", st: fstatus(5, ftask("changelog", "settled"))},
 	}
 }
@@ -637,8 +639,11 @@ func TestFloorHeldTaskStandsOnTheSidingWithItsOwnLook(t *testing.T) {
 	if l.waits["blocked"] {
 		t.Error("a held task does not wait on the human: the siding is not lit")
 	}
-	if out := plain(m); !strings.Contains(out, "‖ api-v2 · held on api-v1  "+elapsedText(held, false)) || strings.Contains(out, "▲") {
+	if out := plain(m); !strings.Contains(out, "‖ api-v2 · held on api-v1") || strings.Contains(out, "held on api-v1  ") || strings.Contains(out, "▲") {
 		t.Errorf("the held crate reads like the spec and has no ▲:\n%s", out)
+	}
+	if width("‖") != 1 {
+		t.Error("‖ is one cell wide in the grid")
 	}
 	if r, col := m.crateMark(held); r != '‖' || key24(col) != key24(m.th.Teal) {
 		t.Errorf("mark %q in %v, want ‖ in the held colour", r, col)
@@ -658,32 +663,52 @@ func TestFloorHeldTaskStandsOnTheSidingWithItsOwnLook(t *testing.T) {
 	}
 }
 
-func TestFloorSidingOrderIsHumanThenHeldThenTheRest(t *testing.T) {
+func TestFloorSidingOrderIsHeldThenTheRest(t *testing.T) {
 	ask, other := ftask("z-ask", "blocked"), ftask("a-other", "blocked")
 	ask.WaitsOn, other.WaitsOn = "human", "ci"
 	m := floorModel(true, 140, 40, factoryRepo{name: "r", path: "/r", st: fstatus(5, other, heldTask("m-held", "b"), ask)})
 	got := floorCrates(m)
-	if !(got["z-ask"].rect.x < got["m-held"].rect.x && got["m-held"].rect.x < got["a-other"].rect.x) {
-		t.Errorf("the siding orders the human's first, then the held, then the rest: %v", got)
+	if !(got["m-held"].rect.x < got["a-other"].rect.x && got["a-other"].rect.x < got["z-ask"].rect.x) {
+		t.Errorf("the siding puts the held first, then the rest by slug: %v", got)
 	}
 }
 
-func TestFloorHeldCrateDropsElapsedBeforeTheBase(t *testing.T) {
-	elapsed := elapsedText(heldTask("x", "y"), false)
+func TestFloorHeldCrateIsTwoCratesWide(t *testing.T) {
+	text := func(m *model, slug string) (got string, w int) {
+		l := m.floorNow()
+		for _, p := range l.crateParts(floorCrates(m)[slug].floorTask) {
+			got += p.s
+		}
+		return got, l.crateWidth(floorCrates(m)[slug].floorTask)
+	}
+	long := heldTask("held-task-name-of-20", "base-task-name-of-20")
+	m := floorModel(true, 80, 24, factoryRepo{name: "r", path: "/r", st: fstatus(5, long, ftask("plain-crate-with-a-long-name", "blocked"))})
+	got, w := text(m, long.Slug)
+	capW := m.floorNow().capW
+	if want := "held-tas… · held on base-ta…"; got != want || w > 2*capW || w <= capW {
+		t.Errorf("a long held crate at 80 columns reads %q in %d cells, want %q within (%d, %d]", got, w, want, capW, 2*capW)
+	}
+	if _, w := text(m, "plain-crate-with-a-long-name"); w > capW {
+		t.Errorf("a crate that is not held is at most %d wide, got %d", capW, w)
+	}
+	short := floorModel(true, 80, 24, factoryRepo{name: "r", path: "/r", st: fstatus(5, heldTask("api-v2", "api-v1"))})
+	if got, _ := text(short, "api-v2"); got != "api-v2 · held on api-v1" {
+		t.Errorf("short names render whole, with no elapsed text: %q", got)
+	}
 	for _, c := range []struct {
-		w, h       int
-		slug, want string
+		slug, base, want string
+		room             int
 	}{
-		{140, 40, "a", "a · held on x  " + elapsed},
-		{100, 30, "ab", "ab · held on x"},
+		{"a-long-slug-name", "b", "a-long-slug-name · held on b", 28},
+		{"a", "a-long-base-name-here", "a · held on a-long-base-name-here", 36},
+		{"aaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbb", "aaaaaaaa… · held on bbbbbbb…", 28},
 	} {
-		m := floorModel(true, c.w, c.h, factoryRepo{name: "r", path: "/r", st: fstatus(5, heldTask(c.slug, "x"))})
 		var got string
-		for _, p := range m.floorNow().crateParts(floorCrates(m)[c.slug].floorTask) {
+		for _, p := range heldParts(c.slug, c.base, c.room) {
 			got += p.s
 		}
 		if got != c.want {
-			t.Errorf("at %dx%d the held crate reads %q, want %q", c.w, c.h, got, c.want)
+			t.Errorf("heldParts(%q, %q, %d) = %q, want %q", c.slug, c.base, c.room, got, c.want)
 		}
 	}
 }
@@ -708,7 +733,9 @@ func TestGoldenFloor(t *testing.T) {
 		{"floor-100x30", 100, 30, func(m *model) { setFloor(m, waitingRepos()...) }},
 		{"floor-80x24", 80, 24, func(m *model) { setFloor(m, waitingRepos()...) }},
 		{"floor-held-100x30", 100, 30, func(m *model) { setFloor(m, heldRepos()...) }},
-		{"floor-held-80x24", 80, 24, func(m *model) { setFloor(m, heldRepos()...) }},
+		{"floor-held-80x24", 80, 24, func(m *model) {
+			setFloor(m, heldRepos(heldTask("a-held-task-on-the-floor", "site-manager-holds-work"))...)
+		}},
 		{"floor-empty-80x24", 80, 24, func(m *model) { setFloor(m) }},
 		{"floor-single-100x30", 100, 30, func(m *model) {
 			one := ftask("quiet-refactor", "motion")

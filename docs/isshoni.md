@@ -584,8 +584,8 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
   its time, else a space), then the slug with the repository name before it when several
   repositories have tasks, and the elapsed time. A blocked crate adds what it waits on,
   and one whose phase the view does not know shows the raw phase there. A task held on its
-  base stands on the siding with `‖`, its own colour and `held on <base>`, and moves to BUILD
-  when released. A crate is as wide
+  base stands on the siding with `‖`, its own colour and `<slug> · held on <base>`, two
+  crates wide, first on the siding and without elapsed time, and moves to BUILD when released. A crate is as wide
   as its text up to about 24 cells (16 at 80 columns); the slug is cut with `…` and the
   elapsed time dropped first. Crates queue from the head tile of the lane of their phase:
   in motion in BUILD, in review in REVIEW, merged (not cleaned up) in MERGE, settled in
