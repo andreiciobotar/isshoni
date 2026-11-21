@@ -678,7 +678,7 @@ func TestInboxCursorStaysOnItsPullRequestThroughARefreshThatReordersRows(t *test
 	}
 }
 
-func TestInboxBandLeavesOutOnlyAnApproveRowsReviewPR(t *testing.T) {
+func TestInboxBandLeavesOutAnApproveRowsReviewPR(t *testing.T) {
 	repos := noticeRepos()
 	repos[0].st.Rows = append(repos[0].st.Rows, data.FactoryTask{Slug: "demo-export", Phase: "review", PRURL: "https://github.com/example/demo/pull/12"})
 	m := fakeModel(true, 140, 60)

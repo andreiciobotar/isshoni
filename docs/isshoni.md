@@ -483,7 +483,7 @@ and prices, `--range all` and times in UTC, so `--row N` is the golden test's ro
 | `f` | follow the most recently active session (off until pressed or `--follow`; any cursor key turns it off) |
 | `←` `→`, `h` `l` | kaizen view: previous and next page (Pulse, Flow, Anatomy, Board) |
 | `c` | Inbox: edit the cap (digits or `↑` `↓`, `enter` saves, `esc` cancels) |
-| `H` | inbox: toggle the History between the last day's first 8 entries and every entry the status carries |
+| `H` | Inbox: toggle the History between the last day's first 8 entries and every entry the status carries |
 | `d` | over SSH with a `write` key only: open the dispatcher's conversation on this connection ([Over SSH](#over-ssh)) |
 | `?`, `q` | help, quit |
 
