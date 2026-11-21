@@ -360,12 +360,16 @@ class MergeInOrderTests(Loop):
 
     def test_the_queue_records_a_send_back_with_who_was_told_and_the_conflicting_files(self):
         self.sim.add(1, conflicts=["a.txt", "b.txt"])
-        self.sim.add(2, behind=False, checks=[RED])
         self.go("lander")
-        self.assertEqual(sorted(self.queued("sent-back"), key=lambda r: r["pr"]), [
+        self.assertEqual(self.queued("sent-back"), [
             {"repo": ROOT, "slug": "t1", "pr": 1, "head": "h1", "step": "sent-back", "kind": "conflict",
-             "text": "conflicts with main in a.txt, b.txt", "told": "lead", "files": ["a.txt", "b.txt"]},
-            {"repo": ROOT, "slug": "t2", "pr": 2, "head": "h2", "step": "sent-back", "kind": "ci",
+             "text": "conflicts with main in a.txt, b.txt", "told": "lead", "files": ["a.txt", "b.txt"]}])
+
+    def test_the_queue_records_a_red_send_back_with_who_was_told(self):
+        self.sim.add(1, behind=False, checks=[RED])
+        self.go("lander")
+        self.assertEqual(self.queued("sent-back"), [
+            {"repo": ROOT, "slug": "t1", "pr": 1, "head": "h1", "step": "sent-back", "kind": "ci",
              "text": "failed or cancelled checks: test; no rerun: test double", "told": "lead"}])
         self.assertEqual(self.queued("rerun"), [])
 
@@ -450,13 +454,14 @@ class MergeInOrderTests(Loop):
         self.assertEqual(code, 1)
         self.assertIn("#2 stopped ci: failed or cancelled checks: test; no rerun: test double (told lead)\n", out)
 
-    def test_a_conflict_is_sent_back_in_the_first_pass_with_no_push(self):
+    def test_a_conflict_waits_in_line_with_no_push_and_is_sent_back_only_when_those_before_it_have_merged(self):
         for n in range(1, 6):
             self.sim.add(n, conflicts=["a.txt", "b.txt"] if n == 4 else ())
         code, out, _ = self.go("lander")
         self.assertEqual(self.sim.merged, [1, 2, 3, 5])
         self.assertEqual(self.sim.pushes(), [1, 2, 3, 5])
-        self.assertLess(out.index("#4 stopped conflict: conflicts with main in a.txt, b.txt"), out.index("#1 merged"))
+        self.assertLess(out.index("#4 waits behind #1: conflicts with main in a.txt, b.txt"), out.index("#1 merged"))
+        self.assertLess(out.index("#3 merged"), out.index("#4 stopped conflict: conflicts with main in a.txt, b.txt"))
         [line] = [l for l in self.sim.lead_lines() if "#4" in l]
         self.assertTrue(line.startswith("LANDER: t4: #4 went back to you: it conflicts with main in a.txt, b.txt."))
 
@@ -528,6 +533,121 @@ class MergeInOrderTests(Loop):
         self.assertEqual((code, seen), (0, [(factory.POLL, [("edit", 2)], "pending")]))
         self.assertEqual(self.sim.events("edit", "merge"), [("edit", 2), ("merge", 2)])
         self.assertEqual((self.sim.lines, self.lander_json()["stopped"], self.lander_json()["waiting"]), ([], {}, {}))
+
+
+class LineTests(Loop):
+    """Only the pull request at the front of the line is sent back; the others wait, `in-line`."""
+
+    def handed(self, *order):
+        """The first hand-over of each task, in this order, before the ones `go` seeds at NOW - 3600."""
+        self.seed("tasks", [{"repo": ROOT, "slug": f"t{n}", "state": "handed-over", "ts": iso(NOW - 9000 + 100 * i)}
+                            for i, n in enumerate(order)])
+
+    def sent_back(self):
+        """The tasks the lander sent back, in order, one entry per lead line."""
+        return [re.match(r"LANDER: (t\d+):", line)[1] for line in self.sim.lead_lines()]
+
+    def waits(self):
+        return [c for c in self.sim.comments if c.startswith("Merge queue: waiting behind")]
+
+    def test_each_of_four_pull_requests_on_one_file_is_sent_back_once_in_hand_over_order_and_the_others_wait(self):
+        self.handed(3, 1, 4, 2)
+        for n in range(1, 5):
+            self.sim.add(n, approved=False, conflicts=[] if n == 3 else ["a.txt"])
+        self.go("lander", at=NOW)
+        self.assertEqual((self.sent_back(), self.sim.merged), ([], []))
+        self.assertEqual(len(self.waits()), 3)
+        self.sim.prs[3]["approved"] = True
+        for k, (merging, next_front) in enumerate(((3, "t1"), (1, "t4"), (4, "t2")), start=1):
+            self.go("lander", at=NOW + 1000 * k)
+            self.assertEqual(self.sim.merged[-1], merging)
+            self.assertEqual(self.sent_back()[-1], next_front)
+            self.assertEqual(self.sent_back(), ["t1", "t4", "t2"][:k])  # nobody but the front is told
+            front = int(next_front[1:])
+            self.sim.prs[front].update(conflicts=[], draft=False, head=f"h{front}.fixed")
+            self.seed("tasks", [{"repo": ROOT, "slug": next_front, "state": "handed-over", "ts": iso(NOW + 1000 * k + 500)}])
+            self.go("lander", at=NOW + 1000 * k + 600)  # handed over again, not yet approved: still the front, the next is not sent back
+            self.assertEqual((self.sim.merged[-1], self.sent_back()), (merging, ["t1", "t4", "t2"][:k]))
+            self.sim.prs[front]["approved"] = True
+        self.go("lander", at=NOW + 5000)
+        self.assertEqual(self.sim.merged, [3, 1, 4, 2])
+        self.assertEqual(self.sent_back(), ["t1", "t4", "t2"])
+        self.assertEqual(len(self.waits()), 3)
+        self.assertTrue(all(c.startswith("Merge queue: waiting behind #3: conflicts with main in a.txt. It is brought up to date once") for c in self.waits()))
+
+    def test_a_red_pull_request_that_is_not_the_front_waits_and_tells_nobody(self):
+        self.handed(1, 2)
+        self.sim.add(1, approved=False, behind=False)
+        self.sim.add(2, behind=False, checks=[RED])
+        code, out, _ = self.go("lander")
+        text = "waiting behind #1: failed or cancelled checks: test; no rerun: test double"
+        self.assertEqual((code, self.sim.lead_lines(), self.sim.events("undo"), self.sim.merged), (1, [], [], []))
+        self.assertIn(f"#2 waits {text[len('waiting '):]}\n", out)
+        self.assertEqual(self.lander_json()["stopped"]["2"]["text"], text)
+        self.assertEqual(self.lander_json()["stopped"]["2"]["kind"], "in-line")
+        self.assertEqual(self.queued("in-line"), [{"repo": ROOT, "slug": "t2", "pr": 2, "head": "h2", "step": "in-line", "kind": "in-line", "text": text}])
+        self.assertEqual(self.queued("sent-back", "stopped"), [])
+        self.assertEqual(self.waits(), [f"Merge queue: {text}. It is brought up to date once, when it is first in line; "
+                                        "red or conflicting until then is expected, and nobody needs to act on it."])
+        self.assertEqual(factory.read_tasks(ROOT)["t2"]["state"], "handed-over")
+
+    def test_a_paused_front_is_skipped_and_the_next_in_line_is_sent_back(self):
+        self.handed(1, 2, 3)
+        self.seed("tasks", [{"repo": ROOT, "slug": "t1", "state": "blocked", "paused": True, "waits_on": ["human"], "ts": iso(NOW - 60)}])
+        self.sim.add(1, approved=False, conflicts=["a.txt"])
+        self.sim.add(2, approved=False, conflicts=["a.txt"])
+        self.sim.add(3, approved=False, conflicts=["a.txt"])
+        self.go("lander", at=NOW)
+        self.assertEqual((self.sent_back(), len(self.waits())), (["t2"], 1))
+
+    def test_a_front_held_as_not_ours_is_skipped_and_the_next_in_line_is_sent_back(self):
+        self.handed(1, 2, 3)
+        factory.write_lander(SimpleNamespace(root=ROOT), {"stopped": {"1": {"head": "h1", "kind": "not-ours", "text": "held", "ts": iso(NOW)}}})
+        self.sim.add(1, behind=False, checks=[RED])
+        self.sim.add(2, approved=False, conflicts=["a.txt"])
+        self.sim.add(3, approved=False, conflicts=["a.txt"])
+        self.go("lander", at=NOW)
+        self.assertEqual((self.sent_back(), len(self.waits())), (["t2"], 1))
+
+    def test_the_prioritized_task_is_the_front_though_later_in_line(self):
+        self.handed(1, 2)
+        factory.write_lander(SimpleNamespace(root=ROOT), {"prioritized": {"t2": iso(NOW - 60)}})
+        self.sim.add(1, approved=False, conflicts=["a.txt"])
+        self.sim.add(2, approved=False, conflicts=["a.txt"])
+        self.go("lander", at=NOW, extra={("git", "merge-base", "--is-ancestor"): (1, "", "")})  # no task is merged
+        self.assertEqual(self.sent_back(), ["t2"])
+        self.assertEqual(self.lander_json()["stopped"]["1"]["text"], "waiting behind #2: conflicts with main in a.txt")
+
+    def test_a_prioritized_task_with_no_open_pull_request_leaves_the_front_of_the_line_to_the_first_in_it(self):
+        self.handed(1, 2)
+        factory.write_lander(SimpleNamespace(root=ROOT), {"prioritized": {"t3": iso(NOW - 60)}})
+        for n in (1, 2, 3):
+            self.sim.add(n, approved=False, conflicts=["a.txt"])
+        self.sim.merged = [3]  # t3 is open, its pull request is not
+        self.go("lander", at=NOW, extra={("git", "merge-base", "--is-ancestor"): (1, "", "")})
+        self.assertEqual((self.sent_back(), len(self.waits())), (["t1"], 1))
+
+    def test_a_task_closed_and_handed_over_again_stands_behind_one_handed_over_between(self):
+        self.seed("tasks", [{"repo": ROOT, "slug": "t1", "state": "handed-over", "ts": iso(NOW - 9000)},
+                            {"repo": ROOT, "slug": "t2", "state": "handed-over", "ts": iso(NOW - 8900)},
+                            {"repo": ROOT, "slug": "t1", "state": "closed", "ts": iso(NOW - 8800)},
+                            {"repo": ROOT, "slug": "t1", "state": "handed-over", "ts": iso(NOW - 8700)}])
+        self.sim.add(1, approved=False, conflicts=["a.txt"])
+        self.sim.add(2, approved=False, conflicts=["a.txt"])
+        self.go("lander", at=NOW)
+        self.assertEqual((self.sent_back(), len(self.waits())), (["t2"], 1))
+
+    def test_a_second_pass_posts_nothing_again_and_a_new_front_is_named_without_a_new_comment(self):
+        for n in range(1, 4):
+            self.sim.add(n, approved=False, conflicts=["a.txt"])
+        self.go("lander", at=NOW)
+        self.go("lander", at=NOW + 120)
+        self.assertEqual((self.sent_back(), len(self.waits()), len(self.queued("in-line"))), (["t1"], 2, 2))
+        self.assertEqual(self.lander_json()["stopped"]["3"]["text"], "waiting behind #1: conflicts with main in a.txt")
+        self.sim.merged.append(1)
+        self.go("lander", at=NOW + 240)
+        self.assertEqual((self.sent_back(), len(self.waits()), len(self.queued("in-line"))), (["t1", "t2"], 2, 2))
+        self.assertEqual(self.lander_json()["stopped"]["3"]["text"], "waiting behind #2: conflicts with main in a.txt")
 
 
 class RetargetTests(Loop):

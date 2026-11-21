@@ -62,6 +62,8 @@ type FactoryTask struct {
 	Kept string       `json:"kept"` // why cleanup keeps a task whose work is over; empty when null
 	Held *FactoryHeld `json:"held"` // the site manager's standing call on it; nil when none, or from a script before the field
 
+	InLine string `json:"in_line"` // why its pull request waits its turn, "waiting behind #12: conflicts with main in a.txt"; empty when null, or from a script before the field
+
 	StackHold *FactoryStackHold `json:"stack_hold"` // a stacked task held on its base; nil when not, or from a script before the field
 }
 
