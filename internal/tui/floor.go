@@ -32,12 +32,16 @@ var floorLanes = []string{"blocked", "build", "review", "merged", "settled"}
 
 var floorSigns = map[string]string{"build": "BUILD", "review": "REVIEW", "merged": "MERGE", "settled": "SHIPPED", "blocked": "BLOCKED"}
 
-func floorPlace(phase string) string {
-	switch phase {
+// floorPlace is the lane a task stands in. A task held on its base is on the siding whatever its phase.
+func floorPlace(t data.FactoryTask) string {
+	if t.StackHold != nil {
+		return "blocked"
+	}
+	switch t.Phase {
 	case "motion":
 		return "build"
 	case "review", "merged", "settled":
-		return phase
+		return t.Phase
 	}
 	return "blocked"
 }
@@ -98,7 +102,7 @@ type floorLayout struct {
 	lanes     [5]floorLane
 	hw        int // width of a head tile
 	x0, x1    int // crates stand in [x0, x1)
-	capW      int // the widest crate
+	capW      int // the widest crate that is not held (a held crate gets two)
 	xl, xr    int // the columns the conveyor turns at, inside the left and right junctions
 	path      *floorPath
 	start     [5]int // arc length where each lane starts
@@ -182,7 +186,7 @@ func (m *model) floorLayout(w, h int) *floorLayout {
 	repos := map[string]bool{}
 	l := newFloorLayout(w, h)
 	for _, ft := range m.floorTasks() {
-		p := floorPlace(ft.t.Phase)
+		p := floorPlace(ft.t)
 		byPlace[p] = append(byPlace[p], ft)
 		repos[ft.path] = true
 		l.work[p] = l.work[p] || ft.t.Session == "working"
@@ -287,8 +291,17 @@ func (m *model) floorTasks() []floorTask {
 }
 
 // floorOrder sorts a place's tasks from the head tile on. BUILD goes by Elapsed/Limit, the
-// furthest along first, tasks without both last; the rest by slug. An order, not a measurement.
+// furthest along first, tasks without both last; the siding puts what waits on the human first, then the held; the rest by slug. An order, not a measurement.
 func floorOrder(place string) func(a, b floorTask) int {
+	rank := func(t data.FactoryTask) int { // the siding: waits on the human, then held, then the rest
+		switch {
+		case waitsForYou(t):
+			return 0
+		case t.StackHold != nil:
+			return 1
+		}
+		return 2
+	}
 	ratio := func(t data.FactoryTask) (float64, bool) {
 		if t.Elapsed == nil || t.Limit == nil || *t.Limit <= 0 {
 			return 0, false
@@ -296,6 +309,11 @@ func floorOrder(place string) func(a, b floorTask) int {
 		return float64(*t.Elapsed) / float64(*t.Limit), true
 	}
 	return func(a, b floorTask) int {
+		if place == "blocked" {
+			if c := cmp.Compare(rank(a.t), rank(b.t)); c != 0 {
+				return c
+			}
+		}
 		if place == "build" {
 			ra, oka := ratio(a.t)
 			rb, okb := ratio(b.t)
