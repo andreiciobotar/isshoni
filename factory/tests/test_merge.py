@@ -71,10 +71,11 @@ class World(Harness):
 
 
     def world(self, prs, *, checks=GREEN, mergeable="MERGEABLE", state="handed-over", tasks=None, local=SHA,
-              extra=None):
+              extra=None, seed_tasks=True):
         slugs = [f"t{p['number']}" for p in prs if not p["isCrossRepository"]] if tasks is None else tasks
         states = {s: (state[s] if isinstance(state, dict) else state) for s in slugs}
-        self.seed("tasks", [{"repo": ROOT, "slug": s, "state": st, "ts": iso(NOW - 3600)} for s, st in states.items()])
+        if seed_tasks:
+            self.seed("tasks", [{"repo": ROOT, "slug": s, "state": st, "ts": iso(NOW - 3600)} for s, st in states.items()])
         answers = {
             ("git", "status"): (0, "", ""), ("git", "rev-list"): (0, "0\t1\n", ""), ("git", "fetch"): (0, "", ""),
             ("git", "merge-base", "--is-ancestor"): lambda: (1, "", "") if self.tip_moved_in_last_fetch() else (0, "", ""),
