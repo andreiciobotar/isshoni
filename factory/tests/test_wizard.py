@@ -18,7 +18,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from test_factory import ROOT, FakeRun, factory, repo_answers
+from test_factory import FakeRun, factory, repo_answers
 
 import factory_setup
 

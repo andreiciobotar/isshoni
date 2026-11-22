@@ -1,0 +1,57 @@
+# One line per file that keeps findings: <rule> <path> <count>. An allowance only goes down (docs/lint.md).
+
+# The two calls outside tests:
+# ssh() is bounded by SSH_OPTS and carries commands that legitimately run long; `claude setup-token` waits for a human at a browser.
+timeout-py isshoni/host.py 2
+
+# The sleeps and the calls without a timeout below predate the check. They are not judged legitimate; fix them and lower the count.
+
+sleep-go cmd/isshoni-tui/serve_test.go 2
+sleep-go docker/start_test.go 1
+sleep-go internal/data/data_test.go 3
+sleep-go internal/data/events_test.go 2
+sleep-go internal/data/factory_test.go 1
+sleep-go internal/data/share_test.go 3
+sleep-go internal/tui/update_test.go 3
+
+sleep-py factory/tests/live_build_foreground.py 1
+sleep-py factory/tests/live_mcp_roles.py 3
+sleep-py factory/tests/live_ops_watch.py 1
+sleep-py factory/tests/live_receipt.py 1
+sleep-py factory/tests/test_factory.py 2
+sleep-py factory/tests/test_land.py 1
+sleep-py factory/tests/test_lander.py 2
+sleep-py factory/tests/test_shutdown.py 3
+sleep-py tests/test_events.py 5
+sleep-py tests/test_noleft.py 7
+sleep-py tests/test_start.py 1
+
+timeout-go docker/start_test.go 2
+timeout-go internal/data/factory_test.go 1
+timeout-go internal/tui/attach_test.go 1
+timeout-go internal/tui/group_test.go 1
+
+timeout-py factory/tests/live_build_foreground.py 1
+timeout-py factory/tests/live_land.py 2
+timeout-py factory/tests/live_lander_stops.py 1
+timeout-py factory/tests/live_mcp_roles.py 1
+timeout-py factory/tests/live_ops_watch.py 1
+timeout-py factory/tests/live_pause_churning.py 1
+timeout-py factory/tests/live_site_manager.py 2
+timeout-py factory/tests/live_skills_roles.py 1
+timeout-py factory/tests/live_tech_lead.py 2
+timeout-py factory/tests/live_undelivered.py 1
+timeout-py factory/tests/test_build.py 1
+timeout-py factory/tests/test_collision.py 1
+timeout-py factory/tests/test_commands.py 1
+timeout-py factory/tests/test_copy_behind.py 2
+timeout-py factory/tests/test_factory.py 13
+timeout-py factory/tests/test_guard.py 1
+timeout-py factory/tests/test_home.py 2
+timeout-py factory/tests/test_land.py 5
+timeout-py factory/tests/test_lander.py 2
+timeout-py factory/tests/test_mcp_roles.py 1
+timeout-py factory/tests/test_merge.py 3
+timeout-py factory/tests/test_tech_lead.py 1
+timeout-py factory/tests/test_telemetry.py 1
+timeout-py factory/tests/test_wizard.py 1

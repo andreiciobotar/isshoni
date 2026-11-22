@@ -1,0 +1,10 @@
+# Python lint rules; docs/lint.md says why. Run through tools/ruff.py, which pins the version.
+extend-include = ["bin/isshoni", "factory/bin/factory"]
+
+[lint]
+select = ["F", "B"]
+ignore = [
+    "B023", # each lambda in the code is called inside its own iteration; none escapes
+    "B904", # `raise` inside `except` without `from` is the style here
+    "B905", # `zip` without `strict=` is the style here
+]

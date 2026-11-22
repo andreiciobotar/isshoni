@@ -3,8 +3,8 @@ import json
 from unittest import mock
 
 from test_decisions import Decisions
-from test_factory import ROOT, WT, factory, task_entry
-from test_health import HOUR, NOW, iso
+from test_factory import ROOT, WT, factory
+from test_health import NOW, iso
 
 ASK = "The importer's retry is separable: it needs the queue change first."
 BRIEF = "Add retry to the importer.\nExpected size: Small"

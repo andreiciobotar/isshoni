@@ -5,7 +5,7 @@ import os
 import re
 import tomllib
 
-from .transcript import EPOCH, TOKEN_CLASSES, Usage, sum_usage
+from .transcript import EPOCH, Usage, sum_usage
 
 ALIASES = ("haiku", "sonnet", "opus", "fable")
 EXPLORER_TYPES = ("explorer", "Explore")
