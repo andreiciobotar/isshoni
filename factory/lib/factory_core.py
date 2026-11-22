@@ -3070,9 +3070,13 @@ def cmd_retro(args):
                    f"a class ({'|'.join(DEFECT_CLASSES)}) and optionally a cause ({'|'.join(CAUSES)}) and a path")
     tree = os.path.join(tag["repo"], ".claude", "worktrees", tag["slug"])
     for path in (d["path"] for d in defects if "path" in d):
-        if not (isinstance(path, str) and path and path == os.path.normpath(path) and not os.path.isabs(path)
-                and not path.startswith("..") and run(["git", "cat-file", "-e", f"HEAD:{path}"], cwd=tree)[0] == 0):
-            raise Fail(f"retro: path {path!r} must be a path of the repository at HEAD, relative to its root")
+        rc, err = 1, ""
+        if (isinstance(path, str) and path and path == os.path.normpath(path) and not os.path.isabs(path)
+                and not path.startswith("..")):
+            rc, _, err = run(["git", "cat-file", "-e", f"HEAD:{path}"], cwd=tree)
+        if rc:
+            raise Fail(f"retro: path {path!r} must be a path of the repository at HEAD, relative to its root"
+                       + (f" ({err.strip()})" if err.strip() else ""))
     log("retros", {**tag, **doc})
     print(f"retro: stored for {tag['slug']}")
     return 0
