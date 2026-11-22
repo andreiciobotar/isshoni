@@ -1,4 +1,4 @@
-.PHONY: install up build test modules fmt-check fmt golden test-factory test-python test-go wizard wizard-remote reinstall uninstall uninstall-remote snapshot screenshot strip pictures clean FORCE
+.PHONY: install up build test modules fmt-check lint fmt golden test-factory test-python test-go wizard wizard-remote reinstall uninstall uninstall-remote snapshot screenshot strip pictures clean FORCE
 
 BIN := bin/isshoni-tui
 VIEW ?= dashboard
@@ -42,7 +42,7 @@ NOLEFT := python3 tools/noleft.py
 
 # The parts are independent, so CI runs them side by side: make -j3 test GOTESTFLAGS=-race
 GOTESTFLAGS ?=
-test: fmt-check test-factory test-python test-go
+test: fmt-check lint test-factory test-python test-go
 
 # Go modules, fetched once, up to 3 attempts, before any test that needs them. With GOPROXY=off nothing is fetched: one try, a local error.
 modules:
@@ -63,6 +63,10 @@ test-go: modules
 
 fmt-check:
 	@files=$$(gofmt -l $$(git ls-files -co --exclude-standard '*.go')); [ -z "$$files" ] || { echo "isshoni: gofmt would change these files:" >&2; echo "$$files" >&2; echo "Fix with: gofmt -w $$files" >&2; exit 1; }
+
+# ruff, staticcheck and the repository's own checks (docs/lint.md); all three report before it fails.
+lint: modules
+	@rc=0; python3 tools/ruff.py check --no-cache || rc=1; go tool staticcheck ./... || rc=1; python3 tools/lint.py || rc=1; exit $$rc
 
 # Write gofmt's changes to the Go files that fmt-check flags.
 fmt:

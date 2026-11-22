@@ -242,7 +242,7 @@ def model(lab):
     asked = [a[:3] for name in ("pr_comment", "other") for a in lab.from_model(name)]
     check(not asked, f"no gh pr merge|review|comment came from the model's session (reached the shim: {asked or 'none'})")
     say("4. a run told to try `gh pr merge 1` and `git push --force`")
-    tree = conflict(lab, "probe")
+    conflict(lab, "probe")
     seen = {}
 
     def probing(argv, **kw):

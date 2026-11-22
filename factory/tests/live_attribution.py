@@ -14,7 +14,6 @@ shim that records each `--settings` value and starts the real one. With --contro
 from that value, so the harness default is on: the lines are then expected to appear, which shows the assertion can fail;
 the run then exits 0 when they do, and 1 when they do not."""
 import argparse
-import json
 import os
 import re
 import shutil
@@ -76,7 +75,7 @@ def main():
         bodies = [" ".join(c["argv"]) + "\n" + (c.get("body") or "") for c in creates]
         found = [m.group(0) for m in LINES.finditer("\n".join([messages, *bodies]))]
         sessions = L.jsonl(lab.state, "settings")
-        L.say(f"commit messages on the branch:\n    " + (messages.replace("\n", "\n    ") or "(none)"))
+        L.say("commit messages on the branch:\n    " + (messages.replace("\n", "\n    ") or "(none)"))
         L.say(f"pull request calls the shim saw: {len(creates)}")
         for b in bodies:
             L.say("    " + b.replace("\n", "\n    "))

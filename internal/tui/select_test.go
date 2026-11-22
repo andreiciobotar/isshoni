@@ -25,15 +25,6 @@ func pluginModel(w, h int) *model {
 	return m
 }
 
-func rowByKey(m *model, key string) treeRow {
-	for _, r := range m.rows() {
-		if r.key == key {
-			return r
-		}
-	}
-	return treeRow{}
-}
-
 // rowNamed finds a group row (no session) by kind and name.
 func rowNamed(t *testing.T, m *model, kind rowKind, name string) treeRow {
 	t.Helper()

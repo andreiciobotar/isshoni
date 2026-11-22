@@ -15,7 +15,7 @@ from unittest import mock
 
 from test_factory import BIN, ROOT, WT, FakeRun, factory, invoke, porcelain, repo_answers
 from test_factory import DISPATCHER
-from test_health import HOUR, NOW, SID, Harness, check, choice, decided, ended, fired, iso, lead, pic, register, reply
+from test_health import HOUR, NOW, Harness, choice, decided, ended, fired, iso, lead, register, reply
 
 FAKE_CLAUDE = """#!/bin/sh
 case "$1" in

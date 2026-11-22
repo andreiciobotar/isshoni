@@ -688,7 +688,7 @@ class LandTests(unittest.TestCase):
         self.assertIn("the lander run timed out", out.getvalue())
 
     def test_a_merge_that_fails_without_a_conflict_is_a_stop_with_no_model(self):
-        wt = self.task("t1")
+        self.task("t1")
         self.advance_main(1, "main line", "b.txt")
         hook = self.repo / ".git" / "hooks" / "pre-merge-commit"
         hook.write_text("#!/bin/sh\necho refused by hook >&2\nexit 1\n")
@@ -727,7 +727,7 @@ class LandTests(unittest.TestCase):
         self.assertIn("`origin/worktree-base`", self.gh_calls()[0]["body"])
 
     def test_a_merged_base_already_in_the_head_only_retargets(self):
-        base = self.task("base", line=3, text="base line", state="working")
+        self.task("base", line=3, text="base line", state="working")
         wt = self.task("t1", line=25, text="task line", base="worktree-base", start="worktree-base")
         self.git("pull", "-q", "--ff-only", cwd=self.other)
         self.git("fetch", "-q", "origin", "worktree-base", cwd=self.other)
@@ -764,7 +764,7 @@ class LandTests(unittest.TestCase):
         self.assertEqual((wt / "extra.txt").read_text(), "in the merge\n")
 
     def test_a_failed_retarget_after_the_push_is_reported_with_one_comment(self):
-        wt = self.task("t1", line=25, base="worktree-gone")
+        self.task("t1", line=25, base="worktree-gone")
         self.advance_main(1, "main line", "b.txt")
         self.git("branch", "worktree-gone", "main")
         self.git("config", "branch.worktree-t1.factoryBase", "worktree-gone")

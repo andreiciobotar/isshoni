@@ -732,7 +732,8 @@ func TestServeHostKeyIsCreatedOnceAndReused(t *testing.T) {
 
 func TestLimiter(t *testing.T) {
 	l := limiter{total: 3, perAddress: 2, byAddr: map[string]int{}}
-	if !l.acquire("a") || !l.acquire("a") {
+	first, second := l.acquire("a"), l.acquire("a")
+	if !first || !second {
 		t.Fatal("two from one address fit")
 	}
 	if l.acquire("a") {

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_factory import DISPATCHER, ROOT, WT, factory
-from test_health import FINISHED, HOUR, NOW, Harness, Home, choice, decided, ev, fired, iso, lead, look, pic, reply, row
+from test_health import HOUR, NOW, Harness, Home, choice, decided, ev, fired, iso, lead, look, pic, row
 from test_merge import pr
 
 ENTRIES = ["overrun", "collision", "review-loops", "unlisted"]
@@ -310,7 +310,7 @@ class OwnCalls(Harness):
         self.assertEqual((n, forward.called, "to" in self.records()[1]), (1, False, False))
 
     def test_what_is_refused(self):
-        for label, item, look in (("an unknown entry", self.own(entry="nope"), None), ("no entry", {**self.own(), "entry": None}, None),
+        for label, item, picture in (("an unknown entry", self.own(entry="nope"), None), ("no entry", {**self.own(), "entry": None}, None),
                                   ("a slug that is not in the picture", self.own(slug="z"), None),
                                   ("paused needs a firing", self.own(decision="paused", waits_on=["y"]), None),
                                   ("told needs a firing", self.own(decision="told", tell=["x"]), None),
@@ -320,7 +320,7 @@ class OwnCalls(Harness):
                                   ("a lead told of this entry before", self.own(to="lead"),
                                    {"tasks": [{"slug": "x", "lead": "x", "calls": [{"entry": "review-loops", "to": "lead"}]}]})):
             with self.subTest(label):
-                n, forward = self.call(item, look=look)
+                n, forward = self.call(item, look=picture)
                 self.assertEqual((n, forward.called, self.records()), (0, False, []))
 
     def test_a_lead_told_of_another_entry_can_be_told_again(self):
