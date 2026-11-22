@@ -84,7 +84,7 @@ Your run ends the moment you end a turn: the harness then demands your answer, a
 ```
 - `Result`: one line: the pull request URL, the reviewed head SHA, the range `<merge-base>..<head>`; for a report task, the report's path.
 - `Rounds`: one line per coder round and per review: SHA, who, verdict, issue counts by level.
-- `Defects`: every defect found before this hand-over, one per line as `caught_by: what`, with `caught_by` one of `tests`, `reviewer`, `tech-lead`, `ci`. The lead copies these into the retrospective.
+- `Defects`: every defect found before this hand-over, one per line as `caught_by: what (path)`, the file it was in, omitted when there is none, with `caught_by` one of `tests`, `reviewer`, `tech-lead`, `ci`. The lead copies these into the retrospective.
 - `Ran`: each command and what it showed; the lander's result line and what the base changed.
 - `Not verified`: what nobody ran or could run, as plainly as a failure.
 - `Decisions`: each choice you made that the spec did not dictate, and why; each reviewer issue rejected or deferred, and why.
