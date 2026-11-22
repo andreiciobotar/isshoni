@@ -76,6 +76,8 @@ DECISION = "DECISION:"
 DECISION_MAX = 200
 CAUGHT_BY = ("tests", "reviewer", "lead", "ci", "human")
 CAUSES = ("spec", "brief", "conflict", "scope", "code")
+DEFECT_CLASSES = ("docs-stale", "rule-text", "vacuous-test", "spec-fact", "input-shape", "state-order", "lint", "visual",
+                   "scope", "env-time", "conflict", "logic", "other")
 RETRO_LISTS = ("slowed", "rules_missing", "rules_dead_weight", "brief_questions")
 COPIED = {"SessionStart": ("source",), "SessionEnd": ("reason",), "SubagentStart": ("agent_id",),
           "SubagentStop": ("agent_id",), "Notification": ("notification_type", "message"),
@@ -3061,11 +3063,16 @@ def cmd_retro(args):
             raise Fail(f"retro: {key} must be a list of non-empty strings")
     defects = doc["defects"]
     if not isinstance(defects, list) or not all(
-            isinstance(d, dict) and {"caught_by", "what"} <= set(d) <= {"caught_by", "what", "cause"}
+            isinstance(d, dict) and {"caught_by", "what", "class"} <= set(d) <= {"caught_by", "what", "class", "cause", "path"}
             and d["caught_by"] in CAUGHT_BY and isinstance(d["what"], str) and d["what"].strip()
-            and d.get("cause", CAUSES[0]) in CAUSES for d in defects):
-        raise Fail(f"retro: defects must be a list of objects with caught_by ({'|'.join(CAUGHT_BY)}), a non-empty what "
-                   f"and optionally a cause ({'|'.join(CAUSES)})")
+            and d["class"] in DEFECT_CLASSES and d.get("cause", CAUSES[0]) in CAUSES for d in defects):
+        raise Fail(f"retro: defects must be a list of objects with caught_by ({'|'.join(CAUGHT_BY)}), a non-empty what, "
+                   f"a class ({'|'.join(DEFECT_CLASSES)}) and optionally a cause ({'|'.join(CAUSES)}) and a path")
+    tree = os.path.join(tag["repo"], ".claude", "worktrees", tag["slug"])
+    for path in (d["path"] for d in defects if "path" in d):
+        if not (isinstance(path, str) and path and path == os.path.normpath(path) and not os.path.isabs(path)
+                and not path.startswith("..") and run(["git", "cat-file", "-e", f"HEAD:{path}"], cwd=tree)[0] == 0):
+            raise Fail(f"retro: path {path!r} must be a path of the repository at HEAD, relative to its root")
     log("retros", {**tag, **doc})
     print(f"retro: stored for {tag['slug']}")
     return 0

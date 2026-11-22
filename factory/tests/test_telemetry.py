@@ -429,7 +429,7 @@ class FilingTests(StoreCase):
 
 
 class RetroTests(StoreCase):
-    GOOD = {"defects": [{"caught_by": "reviewer", "what": "off by one"}], "slowed": ["ci"], "rules_missing": [],
+    GOOD = {"defects": [{"caught_by": "reviewer", "what": "off by one", "class": "logic"}], "slowed": ["ci"], "rules_missing": [],
             "rules_dead_weight": ["x"], "brief_questions": []}
 
     def retro(self, doc, project=TASK):
@@ -449,9 +449,9 @@ class RetroTests(StoreCase):
                "empty string": {**self.GOOD, "slowed": [""]}, "blank string": {**self.GOOD, "slowed": ["  "]},
                "non string": {**self.GOOD, "rules_missing": [1]}, "defects not list": {**self.GOOD, "defects": {}},
                "defect not object": {**self.GOOD, "defects": ["x"]},
-               "bad caught_by": {**self.GOOD, "defects": [{"caught_by": "luck", "what": "x"}]},
-               "empty what": {**self.GOOD, "defects": [{"caught_by": "ci", "what": ""}]},
-               "extra defect key": {**self.GOOD, "defects": [{"caught_by": "ci", "what": "x", "n": 1}]}}
+               "bad caught_by": {**self.GOOD, "defects": [{"caught_by": "luck", "what": "x", "class": "logic"}]},
+               "empty what": {**self.GOOD, "defects": [{"caught_by": "ci", "what": "", "class": "logic"}]},
+               "extra defect key": {**self.GOOD, "defects": [{"caught_by": "ci", "what": "x", "class": "logic", "n": 1}]}}
         for name, doc in bad.items():
             with self.subTest(name):
                 code, out, err = self.retro(doc)
@@ -462,16 +462,62 @@ class RetroTests(StoreCase):
     def test_a_defect_may_carry_a_known_cause_and_needs_none(self):
         for cause in factory.CAUSES:
             with self.subTest(cause):
-                doc = {**self.GOOD, "defects": [{"caught_by": "ci", "what": "x", "cause": cause}]}
+                doc = {**self.GOOD, "defects": [{"caught_by": "ci", "what": "x", "class": "logic", "cause": cause}]}
                 self.assertEqual(self.retro(doc)[0], 0)
         self.assertEqual([d["cause"] for line in self.lines("retros") for d in line["defects"]], list(factory.CAUSES))
         self.assertEqual(self.retro(self.GOOD)[0], 0)
 
     def test_an_unknown_cause_is_refused_naming_the_allowed_values(self):
-        doc = {**self.GOOD, "defects": [{"caught_by": "ci", "what": "x", "cause": "luck"}]}
+        doc = {**self.GOOD, "defects": [{"caught_by": "ci", "what": "x", "class": "logic", "cause": "luck"}]}
         code, out, err = self.retro(doc)
         self.assertEqual((code, out), (2, ""))
         self.assertIn("spec|brief|conflict|scope|code", err)
+
+    def defect(self, **extra):
+        return {**self.GOOD, "defects": [{"caught_by": "ci", "what": "x", **extra}]}
+
+    def test_every_class_is_stored(self):
+        for name in factory.DEFECT_CLASSES:
+            with self.subTest(name):
+                self.assertEqual(self.retro(self.defect(**{"class": name}))[0], 0)
+        self.assertEqual([d["class"] for line in self.lines("retros") for d in line["defects"]], list(factory.DEFECT_CLASSES))
+
+    def test_a_missing_or_unknown_class_is_refused_naming_every_class(self):
+        for doc in (self.defect(), self.defect(**{"class": "luck"})):
+            code, out, err = self.retro(doc)
+            self.assertEqual((code, out), (2, ""))
+            self.assertTrue(all(name in err for name in factory.DEFECT_CLASSES))
+        self.assertEqual(self.lines("retros"), [])
+
+    def test_a_path_must_exist_at_head_of_the_task_repository(self):
+        tree = self.tmp / "repo" / ".claude" / "worktrees" / "my-task"
+        (tree / "pkg").mkdir(parents=True)
+        (tree / "pkg" / "file.go").write_text("x")
+        for argv in (["init", "-q"], ["add", "pkg"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c"]):
+            subprocess.run(["git", *argv], cwd=tree, check=True, timeout=30)
+        for path in ("pkg/file.go", "pkg"):
+            self.assertEqual(self.retro(self.defect(**{"class": "logic", "path": path}), str(tree))[0], 0)
+        stored = len(self.lines("retros"))
+        for path in ("absent.go", str(tree / "pkg"), "../x", "./pkg", "", ["pkg"]):
+            with self.subTest(path):
+                code, out, err = self.retro(self.defect(**{"class": "logic", "path": path}), str(tree))
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn(f"path {path!r}", err)
+        self.assertEqual(len(self.lines("retros")), stored)
+
+    def test_a_record_without_class_is_still_printed(self):
+        self.store.mkdir(parents=True)
+        old = {"ts": "2026-01-01T00:00:00Z", "slug": "old", "defects": [{"caught_by": "ci", "what": "x"}]}
+        (self.store / "retros-2026-01.jsonl").write_text(json.dumps(old) + "\n")
+        code, out, _ = self.run_main(["log", "retros"])
+        self.assertEqual(code, 0)
+        self.assertIn('"what": "x"', out)
+
+    def test_role_text_and_docs_name_every_class(self):
+        for path in (PLUGIN / "roles" / "lead.md", PLUGIN.parent / "docs" / "factory.md"):
+            text = path.read_text()
+            for name in factory.DEFECT_CLASSES:
+                self.assertIn(f"`{name}`", text, f"{name} in {path.name}")
 
     def test_empty_lists_are_valid(self):
         empty = {"defects": [], **{k: [] for k in factory.RETRO_LISTS}}
